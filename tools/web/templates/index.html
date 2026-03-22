@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MLB Spring Training — {{ date }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}" />
+  </head>
+  <body>
+    <div class="container">
+      <header class="header">
+        <h1>MLB Games — {{ date }}</h1>
+        <form class="date-form" method="get" action="/">
+          <label>
+            Date
+            <input type="date" name="date" value="{{ date }}" />
+          </label>
+          <button type="submit">Load</button>
+        </form>
+      </header>
+
+      {% if games and games|length > 0 %}
+        <nav class="matchup-strip" aria-label="Matchups">
+          {% for g in games %}
+            <a
+              class="matchup-box"
+              href="#game-{{ g.gamePk }}"
+              data-gamepk="{{ g.gamePk }}"
+              data-awayabbr="{{ g.away.abbr }}"
+              data-homeabbr="{{ g.home.abbr }}"
+              data-start="{{ g.startTime }}"
+              data-abstract="{{ g.status.abstract }}"
+            >
+              <div class="matchup-scorebug" role="group" aria-label="Score">
+                <div></div>
+                <div class="matchup-head">R</div>
+                <div class="matchup-head">H</div>
+                <div class="matchup-head">E</div>
+
+                <div class="matchup-team">
+                  <img class="matchup-logo" src="{{ g.away.logo }}" alt="{{ g.away.abbr }}" loading="lazy" />
+                  <span class="matchup-abbr">{{ g.away.abbr }}</span>
+                  <span class="matchup-name">{{ g.away.name }}</span>
+                </div>
+                <div class="matchup-num" id="matchupAwayR-{{ g.gamePk }}">-</div>
+                <div class="matchup-num" id="matchupAwayH-{{ g.gamePk }}">-</div>
+                <div class="matchup-num" id="matchupAwayE-{{ g.gamePk }}">-</div>
+
+                <div class="matchup-team">
+                  <img class="matchup-logo" src="{{ g.home.logo }}" alt="{{ g.home.abbr }}" loading="lazy" />
+                  <span class="matchup-abbr">{{ g.home.abbr }}</span>
+                  <span class="matchup-name">{{ g.home.name }}</span>
+                </div>
+                <div class="matchup-num" id="matchupHomeR-{{ g.gamePk }}">-</div>
+                <div class="matchup-num" id="matchupHomeH-{{ g.gamePk }}">-</div>
+                <div class="matchup-num" id="matchupHomeE-{{ g.gamePk }}">-</div>
+              </div>
+
+              <div class="matchup-status" id="matchupStatus-{{ g.gamePk }}">
+                {% if g.status.abstract != 'Live' and g.status.abstract != 'Final' %}
+                  {{ g.startTime or g.status.detailed }}
+                {% else %}
+                  —
+                {% endif %}
+              </div>
+            </a>
+          {% endfor %}
+        </nav>
+
+        <div class="grid">
+          {% for g in games %}
+            <div class="card" id="game-{{ g.gamePk }}" data-gamepk="{{ g.gamePk }}" data-date="{{ g.officialDate }}" data-awayabbr="{{ g.away.abbr }}" data-homeabbr="{{ g.home.abbr }}" data-start="{{ g.startTime }}">
+              <div class="card-top">
+                <div class="team">
+                  <img class="logo" src="{{ g.away.logo }}" alt="{{ g.away.abbr }}" loading="lazy" />
+                  <div class="team-meta">
+                    <div class="team-abbr">{{ g.away.abbr }}</div>
+                    <div class="team-name">{{ g.away.name }}</div>
+                  </div>
+                </div>
+                <div class="at">@</div>
+                <div class="team">
+                  <img class="logo" src="{{ g.home.logo }}" alt="{{ g.home.abbr }}" loading="lazy" />
+                  <div class="team-meta">
+                    <div class="team-abbr">{{ g.home.abbr }}</div>
+                    <div class="team-name">{{ g.home.name }}</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card-mid">
+                <div class="status">
+                  <div class="status-line">{{ g.status.abstract }} — {{ g.status.detailed }}</div>
+                  <div class="status-sub">{{ g.gameType }} · {{ g.gameDate }}</div>
+                </div>
+
+                <div class="inplay-line" id="cardInPlay-{{ g.gamePk }}" hidden>—</div>
+
+                <div class="starters">
+                  <div class="starter">
+                    <div class="label">Away starter</div>
+                    <div class="value">
+                      {% if g.probable.away %}
+                        {{ g.probable.away.fullName }}
+                      {% else %}
+                        —
+                      {% endif %}
+                    </div>
+                  </div>
+                  <div class="starter">
+                    <div class="label">Home starter</div>
+                    <div class="value">
+                      {% if g.probable.home %}
+                        {{ g.probable.home.fullName }}
+                      {% else %}
+                        —
+                      {% endif %}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <details class="details" data-kind="live">
+                <summary>Live log</summary>
+                <div class="details-body">
+                  <div class="status-line" id="liveStatus-{{ g.gamePk }}">—</div>
+                  <div class="two-col mt10">
+                    <div>
+                      <div class="label">Away totals</div>
+                      <pre class="pre" id="liveAwayTotals-{{ g.gamePk }}"></pre>
+                    </div>
+                    <div>
+                      <div class="label">Home totals</div>
+                      <pre class="pre" id="liveHomeTotals-{{ g.gamePk }}"></pre>
+                    </div>
+                  </div>
+
+                  <div class="two-col mt10">
+                    <div>
+                      <div class="label">Away batting</div>
+                      <div id="liveAwayBatting-{{ g.gamePk }}"></div>
+                      <div class="label label-spacer">Away pitching</div>
+                      <div id="liveAwayPitching-{{ g.gamePk }}"></div>
+                    </div>
+                    <div>
+                      <div class="label">Home batting</div>
+                      <div id="liveHomeBatting-{{ g.gamePk }}"></div>
+                      <div class="label label-spacer">Home pitching</div>
+                      <div id="liveHomePitching-{{ g.gamePk }}"></div>
+                    </div>
+                  </div>
+
+                  <div class="label label-spacer">Live log</div>
+                  <div class="log" id="liveLog-{{ g.gamePk }}"></div>
+                </div>
+              </details>
+
+              <details class="details" data-kind="sim">
+                <summary>Sim output</summary>
+                <div class="details-body">
+                  <div class="status-line" id="simSummary-{{ g.gamePk }}">Loading on expand…</div>
+                  <div class="two-col mt10">
+                    <div>
+                      <div class="label">Away batting (sim)</div>
+                      <div id="simAwayBatting-{{ g.gamePk }}"></div>
+                      <div class="label label-spacer">Away pitching (sim)</div>
+                      <div id="simAwayPitching-{{ g.gamePk }}"></div>
+                    </div>
+                    <div>
+                      <div class="label">Home batting (sim)</div>
+                      <div id="simHomeBatting-{{ g.gamePk }}"></div>
+                      <div class="label label-spacer">Home pitching (sim)</div>
+                      <div id="simHomePitching-{{ g.gamePk }}"></div>
+                    </div>
+                  </div>
+                </div>
+              </details>
+            </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="empty">No games found for {{ date }}.</div>
+      {% endif %}
+
+      <footer class="footer">
+        <div class="hint">Data source: MLB StatsAPI schedule + feed/live.</div>
+      </footer>
+    </div>
+
+    <script>
+      const liveStreams = new Map();
+      const simLoaded = new Set();
+
+      const cardPollers = new Map();
+
+      function setPre(id, obj) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.textContent = JSON.stringify(obj || {}, null, 2);
+      }
+
+      function appendLogText(el, text) {
+        const div = document.createElement('div');
+        div.className = 'log-line';
+        div.textContent = text;
+        el.appendChild(div);
+        el.scrollTop = el.scrollHeight;
+      }
+
+      function appendPlays(el, plays) {
+        (plays || []).forEach((p) => {
+          const inn = p.inning ? `${p.halfInning || ''} ${p.inning}` : '';
+          const who = [p.batter, p.pitcher].filter(Boolean).join(' vs ');
+          const head = [inn, p.event].filter(Boolean).join(' · ');
+          appendLogText(el, `${head}${who ? ' — ' + who : ''}${p.description ? ' — ' + p.description : ''}`);
+        });
+      }
+
+      function renderTable(containerId, columns, rows) {
+        const el = document.getElementById(containerId);
+        if (!el) return;
+        el.innerHTML = '';
+        const table = document.createElement('table');
+        table.className = 'table';
+        const thead = document.createElement('thead');
+        const hr = document.createElement('tr');
+        columns.forEach((c) => {
+          const th = document.createElement('th');
+          th.textContent = c;
+          hr.appendChild(th);
+        });
+        thead.appendChild(hr);
+        table.appendChild(thead);
+
+        const tbody = document.createElement('tbody');
+        (rows || []).forEach((r) => {
+          const tr = document.createElement('tr');
+          columns.forEach((c) => {
+            const td = document.createElement('td');
+            const v = r[c];
+            td.textContent = (v === null || v === undefined) ? '' : String(v);
+            tr.appendChild(td);
+          });
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        el.appendChild(table);
+      }
+
+      function renderLiveBoxscore(gamePk, box) {
+        const batCols = ['name', 'pos', 'AB', 'R', 'H', 'RBI', 'BB', 'SO', 'HR', 'SB', 'LOB'];
+        const pitCols = ['name', 'GS', 'IP', 'H', 'R', 'ER', 'BB', 'SO', 'HR', 'BF', 'P', 'S'];
+        renderTable(`liveAwayBatting-${gamePk}`, batCols, box?.away?.batting || []);
+        renderTable(`liveHomeBatting-${gamePk}`, batCols, box?.home?.batting || []);
+        renderTable(`liveAwayPitching-${gamePk}`, pitCols, box?.away?.pitching || []);
+        renderTable(`liveHomePitching-${gamePk}`, pitCols, box?.home?.pitching || []);
+      }
+
+      function renderSimBoxscore(gamePk, box) {
+        const batCols = ['name', 'PA', 'AB', 'H', 'BB', 'SO', 'HR'];
+        const pitCols = ['name', 'IP', 'H', 'BB', 'SO', 'HR', 'BF', 'P'];
+        renderTable(`simAwayBatting-${gamePk}`, batCols, box?.away?.batting || []);
+        renderTable(`simHomeBatting-${gamePk}`, batCols, box?.home?.batting || []);
+        renderTable(`simAwayPitching-${gamePk}`, pitCols, box?.away?.pitching || []);
+        renderTable(`simHomePitching-${gamePk}`, pitCols, box?.home?.pitching || []);
+      }
+
+      async function loadLiveSnapshot(gamePk) {
+        const r = await fetch(`/api/game/${gamePk}/snapshot`);
+        if (!r.ok) return;
+        const data = await r.json();
+        const st = (data.status || {});
+        const statusText = `${st.abstractGameState || ''} — ${st.detailedState || ''}`;
+        const stEl = document.getElementById(`liveStatus-${gamePk}`);
+        if (stEl) stEl.textContent = statusText;
+        setPre(`liveAwayTotals-${gamePk}`, data.teams?.away?.totals);
+        setPre(`liveHomeTotals-${gamePk}`, data.teams?.home?.totals);
+        renderLiveBoxscore(gamePk, {
+          away: data.teams?.away?.boxscore,
+          home: data.teams?.home?.boxscore,
+        });
+      }
+
+      function formatHalf(halfInning) {
+        const h = String(halfInning || '').toLowerCase();
+        if (h === 'top') return 'Top';
+        if (h === 'bottom') return 'Bot';
+        return '';
+      }
+
+      function renderCardInPlay(cardEl, snap) {
+        const gamePk = Number(cardEl.dataset.gamepk);
+        const el = document.getElementById(`cardInPlay-${gamePk}`);
+        if (!el) return;
+
+        const st = snap?.status || {};
+        const abstract = String(st.abstractGameState || '');
+        if (abstract !== 'Live') {
+          el.hidden = true;
+          return;
+        }
+
+        const awayAbbr = cardEl.dataset.awayabbr || 'AWAY';
+        const homeAbbr = cardEl.dataset.homeabbr || 'HOME';
+        const awayR = snap?.teams?.away?.totals?.R;
+        const homeR = snap?.teams?.home?.totals?.R;
+        const score = `${awayAbbr} ${awayR ?? '?'} — ${homeAbbr} ${homeR ?? '?'}`;
+
+        const cur = snap?.current || {};
+        const inn = cur.inning;
+        const half = formatHalf(cur.halfInning);
+        const innPart = (inn && half) ? `${half} ${inn}` : '';
+
+        const c = cur.count || {};
+        const balls = c.balls;
+        const strikes = c.strikes;
+        const outs = c.outs;
+        const countPart = (balls !== null && balls !== undefined && strikes !== null && strikes !== undefined)
+          ? `${balls}-${strikes}${(outs !== null && outs !== undefined) ? `, ${outs} out` + (outs === 1 ? '' : 's') : ''}`
+          : '';
+
+        const batter = cur?.batter?.fullName;
+        const pitcher = cur?.pitcher?.fullName;
+        const whoPart = (batter || pitcher) ? `${batter || '?'} vs ${pitcher || '?'}` : '';
+
+        el.textContent = [score, innPart, countPart, whoPart].filter(Boolean).join(' · ');
+        el.hidden = false;
+      }
+
+      function renderMatchupStatus(cardEl, snap) {
+        const gamePk = Number(cardEl.dataset.gamepk);
+        const statusEl = document.getElementById(`matchupStatus-${gamePk}`);
+        const awayREl = document.getElementById(`matchupAwayR-${gamePk}`);
+        const awayHEl = document.getElementById(`matchupAwayH-${gamePk}`);
+        const awayEEl = document.getElementById(`matchupAwayE-${gamePk}`);
+        const homeREl = document.getElementById(`matchupHomeR-${gamePk}`);
+        const homeHEl = document.getElementById(`matchupHomeH-${gamePk}`);
+        const homeEEl = document.getElementById(`matchupHomeE-${gamePk}`);
+        if (!statusEl) return;
+
+        const st = snap?.status || {};
+        const abstract = String(st.abstractGameState || '');
+        const detailed = String(st.detailedState || '');
+
+        const awayTotals = snap?.teams?.away?.totals || {};
+        const homeTotals = snap?.teams?.home?.totals || {};
+        const awayR = awayTotals?.R;
+        const awayH = awayTotals?.H;
+        const awayE = awayTotals?.E;
+        const homeR = homeTotals?.R;
+        const homeH = homeTotals?.H;
+        const homeE = homeTotals?.E;
+
+        if (awayREl) awayREl.textContent = (awayR === null || awayR === undefined) ? '-' : String(awayR);
+        if (awayHEl) awayHEl.textContent = (awayH === null || awayH === undefined) ? '-' : String(awayH);
+        if (awayEEl) awayEEl.textContent = (awayE === null || awayE === undefined) ? '-' : String(awayE);
+        if (homeREl) homeREl.textContent = (homeR === null || homeR === undefined) ? '-' : String(homeR);
+        if (homeHEl) homeHEl.textContent = (homeH === null || homeH === undefined) ? '-' : String(homeH);
+        if (homeEEl) homeEEl.textContent = (homeE === null || homeE === undefined) ? '-' : String(homeE);
+
+        if (abstract === 'Live') {
+          const cur = snap?.current || {};
+          const inn = cur.inning;
+          const half = formatHalf(cur.halfInning);
+          const innPart = (inn && half) ? `${half} ${inn}` : '';
+          statusEl.textContent = [innPart, detailed].filter(Boolean).join(' · ') || 'Live';
+          return;
+        }
+
+        if (abstract === 'Final') {
+          statusEl.textContent = 'Final';
+          return;
+        }
+
+        const start = cardEl.dataset.start || '';
+        statusEl.textContent = start || detailed || '—';
+      }
+
+      async function pollCardInPlay(cardEl) {
+        const gamePk = Number(cardEl.dataset.gamepk);
+        try {
+          const r = await fetch(`/api/game/${gamePk}/snapshot`);
+          if (!r.ok) return;
+          const data = await r.json();
+          renderCardInPlay(cardEl, data);
+          renderMatchupStatus(cardEl, data);
+          const abstract = String((data.status || {}).abstractGameState || '');
+          if (abstract === 'Final') {
+            const t = cardPollers.get(gamePk);
+            if (t) {
+              clearInterval(t);
+              cardPollers.delete(gamePk);
+            }
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+
+      function startLiveStream(gamePk) {
+        if (liveStreams.has(gamePk)) return;
+        const logEl = document.getElementById(`liveLog-${gamePk}`);
+        const es = new EventSource(`/api/game/${gamePk}/stream`);
+
+        es.addEventListener('plays', (ev) => {
+          if (!logEl) return;
+          try {
+            const payload = JSON.parse(ev.data);
+            appendPlays(logEl, payload.plays || []);
+          } catch (e) {}
+        });
+
+        es.addEventListener('stats', (ev) => {
+          try {
+            const payload = JSON.parse(ev.data);
+            setPre(`liveAwayTotals-${gamePk}`, payload.away);
+            setPre(`liveHomeTotals-${gamePk}`, payload.home);
+            renderLiveBoxscore(gamePk, payload.boxscore);
+            const st = payload.status || {};
+            const stEl = document.getElementById(`liveStatus-${gamePk}`);
+            if (stEl) stEl.textContent = `${st.abstractGameState || ''} — ${st.detailedState || ''}`;
+          } catch (e) {}
+        });
+
+        es.addEventListener('changes', (ev) => {
+          if (!logEl) return;
+          try {
+            const payload = JSON.parse(ev.data);
+            const added = payload.added || {};
+            Object.keys(added).forEach((k) => {
+              const names = (added[k] || []).map((p) => p.name || p.id).join(', ');
+              if (names) appendLogText(logEl, `[Change] ${k}: ${names}`);
+            });
+          } catch (e) {}
+        });
+
+        es.addEventListener('pitcher_change', (ev) => {
+          if (!logEl) return;
+          try {
+            const payload = JSON.parse(ev.data);
+            const p = payload.pitcher || {};
+            if (p.name) appendLogText(logEl, `[Pitcher] Now: ${p.name}`);
+          } catch (e) {}
+        });
+
+        es.addEventListener('position_change', (ev) => {
+          if (!logEl) return;
+          try {
+            const payload = JSON.parse(ev.data);
+            (payload.changes || []).forEach((c) => {
+              const nm = c.name || c.id;
+              appendLogText(logEl, `[Position] ${c.side}: ${nm} ${c.from || ''}→${c.to || ''}`);
+            });
+          } catch (e) {}
+        });
+
+        liveStreams.set(gamePk, es);
+      }
+
+      function stopLiveStream(gamePk) {
+        const es = liveStreams.get(gamePk);
+        if (es) {
+          es.close();
+          liveStreams.delete(gamePk);
+        }
+      }
+
+      async function loadSim(gamePk, d) {
+        if (simLoaded.has(gamePk)) return;
+        const el = document.getElementById(`simSummary-${gamePk}`);
+        try {
+          const r = await fetch(`/api/game/${gamePk}/sim?date=${encodeURIComponent(d)}`);
+          if (!r.ok) {
+            if (el) el.textContent = `No sim output (HTTP ${r.status}).`;
+            simLoaded.add(gamePk);
+            return;
+          }
+          const data = await r.json();
+          if (!data.found) {
+            if (el) el.textContent = 'No sim output found for this game.';
+            simLoaded.add(gamePk);
+            return;
+          }
+          const pred = data.predicted || {};
+          const pbpNote = data.hasPbp ? '' : ' (no sim PBP)';
+          if (el) el.textContent = `Predicted final: Away ${pred.away ?? '?'} — Home ${pred.home ?? '?'}${pbpNote} (${data.sourceFile || ''})`;
+          renderSimBoxscore(gamePk, data.boxscore);
+          simLoaded.add(gamePk);
+        } catch (e) {
+          if (el) el.textContent = 'Sim output load failed.';
+          simLoaded.add(gamePk);
+        }
+      }
+
+      document.querySelectorAll('.card').forEach((card) => {
+        const gamePk = Number(card.dataset.gamepk);
+        const d = card.dataset.date;
+
+        // Main-card in-play status (score/inning/matchup/count).
+        pollCardInPlay(card);
+        if (!cardPollers.has(gamePk)) {
+          const t = setInterval(() => pollCardInPlay(card), 20000);
+          cardPollers.set(gamePk, t);
+        }
+
+        card.querySelectorAll('details.details').forEach((det) => {
+          det.addEventListener('toggle', async () => {
+            const kind = det.dataset.kind;
+            if (kind === 'live') {
+              if (det.open) {
+                await loadLiveSnapshot(gamePk);
+                startLiveStream(gamePk);
+              } else {
+                stopLiveStream(gamePk);
+              }
+            }
+            if (kind === 'sim') {
+              if (det.open) {
+                await loadSim(gamePk, d);
+              }
+            }
+          });
+        });
+      });
+    </script>
+  </body>
+</html>

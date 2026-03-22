@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MLB Season Eval - {{ season }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='cards.css') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='season.css') }}" />
+  </head>
+  <body class="cards-body season-body">
+    <div class="season-shell">
+      <header class="season-header">
+        <div class="season-title-block">
+          <div class="season-kicker">Full-season simulation review</div>
+          <div class="season-title-row">
+            <h1>MLB {{ season }} Season Eval</h1>
+            <span class="cards-nav-pill is-active">{{ season }}</span>
+            <span class="cards-nav-pill" id="seasonStatusPill">Loading</span>
+          </div>
+          <p class="season-header-meta" id="seasonHeaderMeta">Loading season manifest...</p>
+        </div>
+        <div class="season-header-actions">
+          <a class="cards-nav-pill" href="/">Daily cards</a>
+          <a class="cards-nav-pill" href="/pitcher-ladders?date={{ date or '' }}">Pitcher ladders</a>
+          <a class="cards-nav-pill" href="/hitter-ladders?date={{ date or '' }}">Hitter ladders</a>
+        </div>
+      </header>
+
+      <section class="season-summary-grid" id="seasonSummary">
+        <div class="cards-loading-state">Loading season recap...</div>
+      </section>
+
+      <section class="season-hitter-panel" id="seasonHitterCalibration">
+        <div class="cards-loading-state">Loading hitter calibration...</div>
+      </section>
+
+      <section class="season-breakdown-panel" id="seasonMonthlyBreakdown">
+        <div class="cards-loading-state">Loading monthly breakdown...</div>
+      </section>
+
+      <section class="season-breakdown-panel" id="seasonBettingCards">
+        <div class="cards-loading-state">Loading betting card recap...</div>
+      </section>
+
+      <section class="season-months" id="seasonMonths" aria-label="Month filters"></section>
+
+      <main class="season-layout">
+        <aside class="season-day-rail">
+          <div class="season-rail-head">
+            <div>
+              <div class="season-kicker">Sim days</div>
+              <div class="season-rail-title">Browse the season</div>
+            </div>
+          </div>
+          <div class="season-day-list" id="seasonDays">
+            <div class="cards-loading-state">Loading days...</div>
+          </div>
+        </aside>
+
+        <section class="season-main">
+          <div class="season-day-head">
+            <div>
+              <div class="season-kicker">Selected day</div>
+              <h2 id="seasonDayTitle">Loading...</h2>
+              <p class="season-day-meta" id="seasonDayMeta">Pulling the daily eval report...</p>
+            </div>
+            <div class="season-day-actions" id="seasonDayActions"></div>
+          </div>
+
+          <section class="season-day-metrics" id="seasonDayMetrics">
+            <div class="cards-loading-state">Loading day recap...</div>
+          </section>
+
+          <section class="season-breakdown-panel season-day-picks-panel" id="seasonDayPicks">
+            <div class="cards-loading-state">Loading day picks...</div>
+          </section>
+
+          <section class="season-games" id="seasonGames">
+            <div class="cards-loading-state">Loading games...</div>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <script>
+      window.MLBSeasonBootstrap = {
+        season: {{ season|tojson }},
+        date: {{ date|tojson }},
+      };
+    </script>
+    <script src="{{ url_for('static', filename='season.js') }}"></script>
+  </body>
+</html>

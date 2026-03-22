@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Game {{ game_pk }} — {{ date }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}" />
+  </head>
+  <body data-gamepk="{{ game_pk }}" data-date="{{ date }}" data-stream-enabled="{{ 'true' if stream_enabled else 'false' }}" data-historical="{{ 'true' if is_historical else 'false' }}">
+    <div class="container">
+      <header class="header">
+        <div class="breadcrumbs">
+          <a href="/?date={{ date }}">← Back to schedule</a>
+        </div>
+        <div class="breadcrumbs">
+          <a href="{{ pitcher_ladders_href }}">Pitcher ladders</a>
+          ·
+          <a href="{{ hitter_ladders_href }}">Hitter ladders</a>
+        </div>
+        <h1>Game {{ game_pk }}</h1>
+        <div id="status" class="status-line">Loading…</div>
+      </header>
+
+      <section class="panel">
+        <div class="panel-title">Starters</div>
+        <div class="starters">
+          <div class="starter">
+            <div class="label">Away</div>
+            <div id="awayStarter" class="value">—</div>
+          </div>
+          <div class="starter">
+            <div class="label">Home</div>
+            <div id="homeStarter" class="value">—</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">Lineups</div>
+        <div class="two-col">
+          <div>
+            <div class="label">Away lineup</div>
+            <ol id="awayLineup" class="lineup"></ol>
+          </div>
+          <div>
+            <div class="label">Home lineup</div>
+            <ol id="homeLineup" class="lineup"></ol>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">{% if is_historical %}Final Stats{% elif stream_enabled %}Live Stats{% else %}Game Stats{% endif %}</div>
+        <div class="two-col">
+          <div>
+            <div class="label">Away totals</div>
+            <pre id="awayTotals" class="pre"></pre>
+          </div>
+          <div>
+            <div class="label">Home totals</div>
+            <pre id="homeTotals" class="pre"></pre>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">Box Score</div>
+        <div class="two-col">
+          <div>
+            <div class="label">Away batting</div>
+            <div id="awayBatting"></div>
+            <div class="label label-spacer">Away pitching</div>
+            <div id="awayPitching"></div>
+          </div>
+          <div>
+            <div class="label">Home batting</div>
+            <div id="homeBatting"></div>
+            <div class="label label-spacer">Home pitching</div>
+            <div id="homePitching"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">{% if is_historical %}Archived Log{% elif stream_enabled %}Live Log{% else %}Game Log{% endif %}</div>
+        <div class="log" id="log"></div>
+      </section>
+
+      <footer class="footer">
+        <div class="hint">{% if is_historical %}Archived final data for {{ date }}.{% elif stream_enabled %}Streaming via Server-Sent Events.{% else %}Live stream is only enabled for the current date.{% endif %}</div>
+      </footer>
+    </div>
+
+    <script>
+      const gamePk = Number(document.body.dataset.gamepk);
+      const selectedDate = String(document.body.dataset.date || '');
+      const streamEnabled = String(document.body.dataset.streamEnabled || 'false') === 'true';
+      const isHistorical = String(document.body.dataset.historical || 'false') === 'true';
+
+      function setPre(id, obj) {
+        const el = document.getElementById(id);
+        el.textContent = JSON.stringify(obj || {}, null, 2);
+      }
+
+      function setLineup(id, lineup) {
+        const el = document.getElementById(id);
+        el.innerHTML = '';
+        (lineup || []).forEach((p) => {
+          const li = document.createElement('li');
+          li.textContent = p.name || String(p.id || '');
+          el.appendChild(li);
+        });
+      }
+
+      function appendLog(lines) {
+        const el = document.getElementById('log');
+        (lines || []).forEach((p) => {
+          const div = document.createElement('div');
+          const inn = p.inning ? `${p.halfInning || ''} ${p.inning}` : '';
+          const who = [p.batter, p.pitcher].filter(Boolean).join(' vs ');
+          const head = [inn, p.event].filter(Boolean).join(' · ');
+          div.className = 'log-line';
+          div.textContent = `${head}${who ? ' — ' + who : ''}${p.description ? ' — ' + p.description : ''}`;
+          el.appendChild(div);
+        });
+        el.scrollTop = el.scrollHeight;
+      }
+
+      function appendLogText(text) {
+        const el = document.getElementById('log');
+        const div = document.createElement('div');
+        div.className = 'log-line';
+        div.textContent = text;
+        el.appendChild(div);
+        el.scrollTop = el.scrollHeight;
+      }
+
+      function renderTable(containerId, columns, rows) {
+        const el = document.getElementById(containerId);
+        el.innerHTML = '';
+        const table = document.createElement('table');
+        table.className = 'table';
+        const thead = document.createElement('thead');
+        const hr = document.createElement('tr');
+        columns.forEach((c) => {
+          const th = document.createElement('th');
+          th.textContent = c;
+          hr.appendChild(th);
+        });
+        thead.appendChild(hr);
+        table.appendChild(thead);
+
+        const tbody = document.createElement('tbody');
+        (rows || []).forEach((r) => {
+          const tr = document.createElement('tr');
+          columns.forEach((c) => {
+            const td = document.createElement('td');
+            const v = r[c];
+            td.textContent = (v === null || v === undefined) ? '' : String(v);
+            tr.appendChild(td);
+          });
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        el.appendChild(table);
+      }
+
+      function renderBoxscore(box) {
+        const batCols = ['name', 'pos', 'AB', 'R', 'H', 'RBI', 'BB', 'SO', 'HR', 'SB', 'LOB'];
+        const pitCols = ['name', 'GS', 'IP', 'H', 'R', 'ER', 'BB', 'SO', 'HR', 'BF', 'P', 'S'];
+        renderTable('awayBatting', batCols, box?.away?.batting || []);
+        renderTable('homeBatting', batCols, box?.home?.batting || []);
+        renderTable('awayPitching', pitCols, box?.away?.pitching || []);
+        renderTable('homePitching', pitCols, box?.home?.pitching || []);
+      }
+
+      async function loadSnapshot() {
+        const r = await fetch(`/api/game/${gamePk}/snapshot?date=${encodeURIComponent(selectedDate)}`);
+        if (!r.ok) return;
+        const data = await r.json();
+        const st = (data.status || {});
+        document.getElementById('status').textContent = `${st.abstractGameState || ''} — ${st.detailedState || ''}`;
+        document.getElementById('awayStarter').textContent = (data.teams?.away?.starter?.name) || '—';
+        document.getElementById('homeStarter').textContent = (data.teams?.home?.starter?.name) || '—';
+        setLineup('awayLineup', data.teams?.away?.lineup);
+        setLineup('homeLineup', data.teams?.home?.lineup);
+        setPre('awayTotals', data.teams?.away?.totals);
+        setPre('homeTotals', data.teams?.home?.totals);
+
+        renderBoxscore({
+          away: data.teams?.away?.boxscore,
+          home: data.teams?.home?.boxscore,
+        });
+      }
+
+      function startStream() {
+        if (!streamEnabled && !isHistorical) {
+          appendLogText('Live stream is only enabled for the current date.');
+          return;
+        }
+
+        const es = new EventSource(`/api/game/${gamePk}/stream?date=${encodeURIComponent(selectedDate)}`);
+
+        es.addEventListener('plays', (ev) => {
+          try {
+            const payload = JSON.parse(ev.data);
+            appendLog(payload.plays || []);
+          } catch (e) {}
+        });
+
+        es.addEventListener('stats', (ev) => {
+          try {
+            const payload = JSON.parse(ev.data);
+            setPre('awayTotals', payload.away);
+            setPre('homeTotals', payload.home);
+            renderBoxscore(payload.boxscore);
+            const st = payload.status || {};
+            document.getElementById('status').textContent = `${st.abstractGameState || ''} — ${st.detailedState || ''}`;
+          } catch (e) {}
+        });
+
+        es.addEventListener('changes', (ev) => {
+          try {
+            const payload = JSON.parse(ev.data);
+            const added = payload.added || {};
+            Object.keys(added).forEach((k) => {
+              const names = (added[k] || []).map((p) => p.name || p.id).join(', ');
+              if (names) appendLogText(`[Change] ${k}: ${names}`);
+            });
+          } catch (e) {}
+        });
+
+        es.addEventListener('pitcher_change', (ev) => {
+          try {
+            const payload = JSON.parse(ev.data);
+            const p = payload.pitcher || {};
+            if (p.name) appendLogText(`[Pitcher] Now: ${p.name}`);
+          } catch (e) {}
+        });
+
+        es.addEventListener('position_change', (ev) => {
+          try {
+            const payload = JSON.parse(ev.data);
+            (payload.changes || []).forEach((c) => {
+              const nm = c.name || c.id;
+              appendLogText(`[Position] ${c.side}: ${nm} ${c.from || ''}→${c.to || ''}`);
+            });
+          } catch (e) {}
+        });
+
+        es.addEventListener('error', () => {
+          // leave connection to auto-retry
+        });
+
+        es.addEventListener('end', () => {
+          es.close();
+        });
+      }
+
+      loadSnapshot().then(() => {
+        if (streamEnabled || isHistorical) startStream();
+      });
+    </script>
+  </body>
+</html>

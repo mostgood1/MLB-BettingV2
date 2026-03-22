@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pitcher Ladders — {{ date }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='cards.css', v='20260321-pitcher-ladders') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='pitcher_ladders.css', v='20260321-pitcher-ladders') }}" />
+  </head>
+  <body class="cards-body ladder-body">
+    <div class="ladder-shell">
+      <header class="ladder-header">
+        <div class="ladder-title-block">
+          <div class="ladder-kicker">Daily pitcher prop distribution board</div>
+          <div class="ladder-title-row">
+            <h1>Pitcher Ladders</h1>
+            <span class="cards-nav-pill is-active" id="ladderDateBadge">{{ date }}</span>
+            <span class="cards-nav-pill" id="ladderPropBadge">{{ prop }}</span>
+          </div>
+          <p class="ladder-header-meta" id="ladderHeaderMeta">Loading pitcher ladder data...</p>
+        </div>
+        <div class="ladder-header-actions">
+          <a class="cards-nav-pill" href="/?date={{ date }}">Daily cards</a>
+          <a class="cards-nav-pill" href="/hitter-ladders?date={{ date }}">Hitter ladders</a>
+          <a class="cards-nav-pill" href="/season/{{ date[:4] }}?date={{ date }}">Season review</a>
+        </div>
+      </header>
+
+      <section class="cards-control-card ladder-controls" aria-label="Pitcher ladder controls">
+        <form class="cards-date-form ladder-form" id="ladderForm" method="get" action="/pitcher-ladders">
+          <a class="cards-nav-pill" id="ladderPrevDateLink" href="/pitcher-ladders?date={{ date }}&prop={{ prop }}&pitcher={{ pitcher }}" rel="prev">Prev</a>
+          <span class="cards-nav-pill cards-form-pill" aria-hidden="true">Date</span>
+          <input id="ladderDateInput" type="date" name="date" value="{{ date }}" aria-label="Ladder date" />
+          <span class="cards-nav-pill cards-form-pill" aria-hidden="true">Prop</span>
+          <select id="ladderPropInput" name="prop" aria-label="Pitcher prop selector">
+            {% for option in prop_options %}
+            <option value="{{ option.value }}" {% if option.value == prop %}selected{% endif %}>{{ option.label }}</option>
+            {% endfor %}
+          </select>
+          <span class="cards-nav-pill cards-form-pill" aria-hidden="true">Pitcher</span>
+          <select id="ladderPitcherInput" name="pitcher" aria-label="Pitcher selector">
+            <option value="">All starters</option>
+          </select>
+          <button type="submit">Load</button>
+          <a class="cards-nav-pill" id="ladderNextDateLink" href="/pitcher-ladders?date={{ date }}&prop={{ prop }}&pitcher={{ pitcher }}" rel="next">Next</a>
+        </form>
+
+        <div class="ladder-source-meta" id="ladderSourceMeta">Loading sources…</div>
+      </section>
+
+      <section class="ladder-summary" id="ladderSummary" aria-live="polite">
+        <div class="cards-loading-state">Loading ladder summary...</div>
+      </section>
+
+      <section class="ladder-selected-pitcher" id="ladderSelectedPitcher" aria-live="polite"></section>
+
+      <main class="ladder-grid" id="ladderGrid" aria-live="polite">
+        <div class="cards-loading-state">Loading pitcher ladders...</div>
+      </main>
+    </div>
+
+    <script id="pitcherLaddersBootstrap" type="application/json">{{ {'date': date, 'prop': prop, 'pitcher': pitcher}|tojson }}</script>
+    <script src="{{ url_for('static', filename='pitcher_ladders.js', v='20260321-pitcher-ladders') }}"></script>
+  </body>
+</html>

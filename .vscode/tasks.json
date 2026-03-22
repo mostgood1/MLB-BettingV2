@@ -1,0 +1,159 @@
+{
+  "version": "2.0.0",
+  "inputs": [
+    {
+      "id": "date",
+      "type": "promptString",
+      "description": "Date (YYYY-MM-DD)",
+      "default": "2026-02-20"
+    },
+    {
+      "id": "season",
+      "type": "promptString",
+      "description": "Season (YYYY)",
+      "default": "2026"
+    },
+    {
+      "id": "gameIndex",
+      "type": "promptString",
+      "description": "Schedule game index (0-based)",
+      "default": "0"
+    },
+    {
+      "id": "dateSet",
+      "type": "promptString",
+      "description": "Date set file path (relative to repo root)",
+      "default": "data/eval/date_sets/random_feed_live_2025_regseason_50days_min10_seed2026.txt"
+    },
+    {
+      "id": "batchSims",
+      "type": "promptString",
+      "description": "Sims per game for batch daily_update",
+      "default": "200"
+    }
+  ],
+  "tasks": [
+    {
+      "label": "V2: Daily update (1 game, PBP pitch)",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv_x64/Scripts/python.exe",
+      "args": [
+        "tools/daily_update.py",
+        "--date",
+        "${input:date}",
+        "--season",
+        "${input:season}",
+        "--spring-mode",
+        "--sims",
+        "50",
+        "--max-games",
+        "1",
+        "--workers",
+        "4",
+        "--pbp",
+        "pitch",
+        "--pbp-max-events",
+        "250",
+        "--use-roster-artifacts",
+        "on",
+        "--write-roster-artifacts",
+        "on"
+      ],
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "V2: Daily update (full day, workers=4)",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv_x64/Scripts/python.exe",
+      "args": [
+        "tools/daily_update.py",
+        "--date",
+        "${input:date}",
+        "--season",
+        "${input:season}",
+        "--workflow",
+        "ui-daily",
+        "--spring-mode",
+        "--sims",
+        "1000",
+        "--workers",
+        "4",
+        "--pbp",
+        "off",
+        "--use-roster-artifacts",
+        "on",
+        "--write-roster-artifacts",
+        "on"
+      ],
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "V2: Smoke sim one schedule game",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv_x64/Scripts/python.exe",
+      "args": [
+        "tools/smoke/smoke_sim_game.py",
+        "--date",
+        "${input:date}",
+        "--season",
+        "${input:season}",
+        "--game-index",
+        "${input:gameIndex}"
+      ],
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "V2: Eval sim day vs actual (quick, 1 sim/game)",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv_x64/Scripts/python.exe",
+      "args": [
+        "tools/eval/eval_sim_day_vs_actual.py",
+        "--date",
+        "${input:date}",
+        "--season",
+        "${input:season}",
+        "--sims-per-game",
+        "1",
+        "--jobs",
+        "4",
+        "--use-raw",
+        "on",
+        "--prop-lines-source",
+        "off",
+        "--use-roster-artifacts",
+        "on",
+        "--write-roster-artifacts",
+        "off"
+      ],
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "V2: Batch daily update (date set)",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv_x64/Scripts/python.exe",
+      "args": [
+        "tools/daily_update_batch.py",
+        "--date-set",
+        "${input:dateSet}",
+        "--season",
+        "${input:season}",
+        "--sims",
+        "${input:batchSims}",
+        "--workers",
+        "4",
+        "--pbp",
+        "off",
+        "--use-roster-artifacts",
+        "on",
+        "--write-roster-artifacts",
+        "on"
+      ],
+      "group": "build",
+      "problemMatcher": []
+    }
+  ]
+}

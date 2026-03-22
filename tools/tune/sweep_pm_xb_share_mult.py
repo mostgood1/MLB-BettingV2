@@ -1,0 +1,536 @@
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+
+_ROOT = Path(__file__).resolve().parents[2]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from sim_engine.pitch_model import PitchModelConfig
+
+
+def _read_text_dates(path: Path) -> List[str]:
+    out: List[str] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        s = line.strip().lstrip("\ufeff")
+        if s and not s.startswith("#"):
+            out.append(s)
+    return out
+
+
+def _write_json(path: Path, obj: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(obj, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _run(cmd: List[str], cwd: Path) -> int:
+    p = subprocess.run(cmd, cwd=str(cwd))
+    return int(p.returncode)
+
+
+def _parse_grid_vals(raw: str) -> List[float]:
+    vals: List[float] = []
+    for part in str(raw).split(","):
+        s = part.strip()
+        if not s:
+            continue
+        v = float(s)
+        if not math.isfinite(v) or v <= 0.0:
+            continue
+        vals.append(float(v))
+    if not vals:
+        raise ValueError("Empty --grid-vals")
+    return vals
+
+
+def _score_one(
+    *,
+    scorer: Path,
+    objective: Path,
+    candidate_summary: Path,
+    baseline_summary: Path,
+    out_path: Path,
+) -> Optional[float]:
+    rc = _run(
+        [
+            sys.executable,
+            str(scorer),
+            "--candidate-summary",
+            str(candidate_summary),
+            "--objective",
+            str(objective),
+            "--baseline-summary",
+            str(baseline_summary),
+            "--out",
+            str(out_path),
+        ],
+        cwd=_ROOT,
+    )
+    if rc != 0 or not out_path.exists():
+        return None
+    try:
+        obj = json.loads(out_path.read_text(encoding="utf-8"))
+        v = obj.get("score")
+        if isinstance(v, (int, float)) and math.isfinite(float(v)):
+            return float(v)
+    except Exception:
+        return None
+    return None
+
+
+def _summarize_batch(*, summarizer: Path, batch_dir: Path, out_path: Path) -> bool:
+    rc = _run(
+        [sys.executable, str(summarizer), "--batch-dir", str(batch_dir), "--out", str(out_path)],
+        cwd=_ROOT,
+    )
+    return rc == 0 and out_path.exists()
+
+
+def _run_batch(
+    *,
+    batch_runner: Path,
+    date_file: Path,
+    out_dir: Path,
+    sims_per_game: int,
+    jobs: int,
+    use_raw: str,
+    prop_lines_source: str,
+    pitch_model_overrides: Optional[str],
+) -> int:
+    cmd = [
+        sys.executable,
+        str(batch_runner),
+        "--date-file",
+        str(date_file),
+        "--sims-per-game",
+        str(int(sims_per_game)),
+        "--jobs",
+        str(int(jobs)),
+        "--use-raw",
+        str(use_raw),
+        "--prop-lines-source",
+        str(prop_lines_source),
+        "--pitch-model-overrides",
+        str(pitch_model_overrides or ""),
+        "--batch-out",
+        str(out_dir),
+    ]
+    return _run(cmd, cwd=_ROOT)
+
+
+def main() -> int:
+    baseline_default = float(PitchModelConfig().xb_share_mult)
+
+    ap = argparse.ArgumentParser(
+        description=(
+            "Sweep PitchModelConfig.xb_share_mult and rank candidates using both objectives with a holdout guardrail.\n\n"
+            "Notes: this is a deterministic run-environment multiplier applied to XB (2B/3B) share on balls in play."
+        )
+    )
+    ap.add_argument(
+        "--tune-date-file",
+        default="data/eval/date_sets/random_feed_live_2025_regseason_50days_min10_seed2026.txt",
+        help="Main tuning date set (regseason batch).",
+    )
+    ap.add_argument(
+        "--holdout-date-file",
+        default="data/eval/date_sets/holdout_disjoint_13days_from_pushPolicy20_half_s10_excluding_tune_random50.txt",
+        help="Holdout/guardrail date set.",
+    )
+    ap.add_argument("--tune-n-days", type=int, default=0, help="If >0, only use first N tune dates")
+    ap.add_argument("--holdout-n-days", type=int, default=0, help="If >0, only use first N holdout dates")
+    ap.add_argument("--sims-per-game", type=int, default=200)
+    ap.add_argument("--jobs", type=int, default=6)
+    ap.add_argument("--use-raw", choices=["on", "off"], default="on")
+    ap.add_argument(
+        "--prop-lines-source",
+        choices=["auto", "oddsapi", "last_known", "bovada", "off"],
+        default="last_known",
+    )
+    ap.add_argument(
+        "--objective-allmetrics",
+        default="data/tuning/objectives/all_metrics_v3_tuned_best20260210b_random50.json",
+        help="Objective file for team totals + core metrics.",
+    )
+    ap.add_argument(
+        "--objective-hitterprops",
+        default="data/tuning/objectives/hitter_props_topn_v1_baseline_20260218_random50_s250.json",
+        help="Objective file for hitter props (top-N likelihood metrics).",
+    )
+    ap.add_argument(
+        "--grid-vals",
+        default="0.94,0.97,1.00,1.03,1.06",
+        help=(
+            "Comma-separated grid values to try for xb_share_mult. "
+            f"Baseline default is {baseline_default:.4f}; that value is auto-skipped if present in the grid."
+        ),
+    )
+    ap.add_argument(
+        "--holdout-tol",
+        type=float,
+        default=0.002,
+        help="Allowable regression on holdout vs holdout-baseline (ratio score). 0.0=strict.",
+    )
+    ap.add_argument("--w-allmetrics", type=float, default=1.0)
+    ap.add_argument("--w-hitterprops", type=float, default=1.0)
+    ap.add_argument(
+        "--batch-root",
+        default="data/eval/batches/tuning_pm_xb_share_mult",
+        help="Root folder for this sweep's outputs.",
+    )
+    args = ap.parse_args()
+
+    tune_date_file = Path(args.tune_date_file)
+    if not tune_date_file.is_absolute():
+        tune_date_file = (_ROOT / tune_date_file).resolve()
+    holdout_date_file = Path(args.holdout_date_file)
+    if not holdout_date_file.is_absolute():
+        holdout_date_file = (_ROOT / holdout_date_file).resolve()
+
+    if not tune_date_file.exists():
+        print(f"Missing tune-date-file: {tune_date_file}")
+        return 2
+    if not holdout_date_file.exists():
+        print(f"Missing holdout-date-file: {holdout_date_file}")
+        return 2
+
+    tune_dates = _read_text_dates(tune_date_file)
+    holdout_dates = _read_text_dates(holdout_date_file)
+    if not tune_dates:
+        print(f"No dates in: {tune_date_file}")
+        return 2
+    if not holdout_dates:
+        print(f"No dates in: {holdout_date_file}")
+        return 2
+
+    if int(args.tune_n_days) > 0:
+        tune_dates = tune_dates[: int(args.tune_n_days)]
+    if int(args.holdout_n_days) > 0:
+        holdout_dates = holdout_dates[: int(args.holdout_n_days)]
+
+    grid_vals = _parse_grid_vals(str(args.grid_vals))
+
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_root = (_ROOT / Path(str(args.batch_root)) / stamp).resolve()
+    out_root.mkdir(parents=True, exist_ok=True)
+
+    tune_dates_path = out_root / "tune_dates.txt"
+    holdout_dates_path = out_root / "holdout_dates.txt"
+    tune_dates_path.write_text("\n".join(tune_dates) + "\n", encoding="utf-8")
+    holdout_dates_path.write_text("\n".join(holdout_dates) + "\n", encoding="utf-8")
+
+    batch_runner = (_ROOT / "tools" / "eval" / "run_batch_eval_days.py").resolve()
+    summarizer = (_ROOT / "tools" / "eval" / "summarize_batch_eval.py").resolve()
+    scorer = (_ROOT / "tools" / "tune" / "score_batch_summary.py").resolve()
+
+    obj_all = (_ROOT / Path(str(args.objective_allmetrics))).resolve()
+    obj_props = (_ROOT / Path(str(args.objective_hitterprops))).resolve()
+    if not obj_all.exists():
+        print(f"Missing objective-allmetrics: {obj_all}")
+        return 2
+    if not obj_props.exists():
+        print(f"Missing objective-hitterprops: {obj_props}")
+        return 2
+
+    # Baselines (separate for tune vs holdout)
+    baseline_dir = out_root / "baseline"
+    baseline_dir.mkdir(parents=True, exist_ok=True)
+    baseline_tune_batch = baseline_dir / "tune_batch"
+    baseline_holdout_batch = baseline_dir / "holdout_batch"
+
+    for bdir, dates_path in [
+        (baseline_tune_batch, tune_dates_path),
+        (baseline_holdout_batch, holdout_dates_path),
+    ]:
+        rc = _run_batch(
+            batch_runner=batch_runner,
+            date_file=dates_path,
+            out_dir=bdir,
+            sims_per_game=int(args.sims_per_game),
+            jobs=int(args.jobs),
+            use_raw=str(args.use_raw),
+            prop_lines_source=str(args.prop_lines_source),
+            pitch_model_overrides=None,
+        )
+        if rc != 0:
+            print(f"Baseline batch failed rc={rc}: {bdir}")
+            return 3
+
+    baseline_tune_summary = baseline_tune_batch / "summary.json"
+    baseline_holdout_summary = baseline_holdout_batch / "summary.json"
+    if not _summarize_batch(summarizer=summarizer, batch_dir=baseline_tune_batch, out_path=baseline_tune_summary):
+        print("Failed to summarize baseline tune batch")
+        return 3
+    if not _summarize_batch(
+        summarizer=summarizer, batch_dir=baseline_holdout_batch, out_path=baseline_holdout_summary
+    ):
+        print("Failed to summarize baseline holdout batch")
+        return 3
+
+    baseline_tune_score_all_path = baseline_dir / "tune_score_allmetrics.json"
+    baseline_tune_score_props_path = baseline_dir / "tune_score_hitterprops.json"
+    baseline_hold_score_all_path = baseline_dir / "holdout_score_allmetrics.json"
+    baseline_hold_score_props_path = baseline_dir / "holdout_score_hitterprops.json"
+
+    if (
+        _score_one(
+            scorer=scorer,
+            objective=obj_all,
+            candidate_summary=baseline_tune_summary,
+            baseline_summary=baseline_tune_summary,
+            out_path=baseline_tune_score_all_path,
+        )
+        is None
+    ):
+        print("Failed to score baseline tune allmetrics")
+        return 3
+    if (
+        _score_one(
+            scorer=scorer,
+            objective=obj_props,
+            candidate_summary=baseline_tune_summary,
+            baseline_summary=baseline_tune_summary,
+            out_path=baseline_tune_score_props_path,
+        )
+        is None
+    ):
+        print("Failed to score baseline tune hitterprops")
+        return 3
+    if (
+        _score_one(
+            scorer=scorer,
+            objective=obj_all,
+            candidate_summary=baseline_holdout_summary,
+            baseline_summary=baseline_holdout_summary,
+            out_path=baseline_hold_score_all_path,
+        )
+        is None
+    ):
+        print("Failed to score baseline holdout allmetrics")
+        return 3
+    if (
+        _score_one(
+            scorer=scorer,
+            objective=obj_props,
+            candidate_summary=baseline_holdout_summary,
+            baseline_summary=baseline_holdout_summary,
+            out_path=baseline_hold_score_props_path,
+        )
+        is None
+    ):
+        print("Failed to score baseline holdout hitterprops")
+        return 3
+
+    leaderboard: List[Dict[str, Any]] = []
+    leaderboard.append(
+        {
+            "id": "baseline",
+            "xb_share_mult": None,
+            "baseline_default": baseline_default,
+            "sims_per_game": int(args.sims_per_game),
+            "jobs": int(args.jobs),
+            "use_raw": str(args.use_raw),
+            "prop_lines_source": str(args.prop_lines_source),
+            "tune_dates": str(tune_dates_path),
+            "holdout_dates": str(holdout_dates_path),
+            "status": "ok",
+            "tune": {
+                "score_allmetrics": 1.0,
+                "score_hitterprops": 1.0,
+                "combined": float(args.w_allmetrics) * 1.0 + float(args.w_hitterprops) * 1.0,
+                "batch_dir": str(baseline_tune_batch),
+                "summary": str(baseline_tune_summary),
+            },
+            "holdout": {
+                "score_allmetrics": 1.0,
+                "score_hitterprops": 1.0,
+                "ok": True,
+                "batch_dir": str(baseline_holdout_batch),
+                "summary": str(baseline_holdout_summary),
+            },
+        }
+    )
+
+    best_row: Dict[str, Any] = leaderboard[0]
+
+    for v in grid_vals:
+        if abs(float(v) - float(baseline_default)) < 1e-12:
+            continue
+
+        tag = f"xb_{str(f'{float(v):.4f}').replace('.', 'p')}"
+        cand_dir = out_root / tag
+        cand_dir.mkdir(parents=True, exist_ok=True)
+
+        overrides = {"xb_share_mult": float(v)}
+        overrides_str = json.dumps(overrides)
+
+        cand_tune_batch = cand_dir / "tune_batch"
+        cand_holdout_batch = cand_dir / "holdout_batch"
+
+        rc = _run_batch(
+            batch_runner=batch_runner,
+            date_file=tune_dates_path,
+            out_dir=cand_tune_batch,
+            sims_per_game=int(args.sims_per_game),
+            jobs=int(args.jobs),
+            use_raw=str(args.use_raw),
+            prop_lines_source=str(args.prop_lines_source),
+            pitch_model_overrides=overrides_str,
+        )
+        if rc != 0:
+            row: Dict[str, Any] = {
+                "id": tag,
+                "xb_share_mult": float(v),
+                "pitch_model_overrides": overrides,
+                "status": f"tune_failed_rc_{rc}",
+            }
+            leaderboard.append(row)
+            _write_json(out_root / "leaderboard.json", leaderboard)
+            continue
+
+        rc = _run_batch(
+            batch_runner=batch_runner,
+            date_file=holdout_dates_path,
+            out_dir=cand_holdout_batch,
+            sims_per_game=int(args.sims_per_game),
+            jobs=int(args.jobs),
+            use_raw=str(args.use_raw),
+            prop_lines_source=str(args.prop_lines_source),
+            pitch_model_overrides=overrides_str,
+        )
+        if rc != 0:
+            row = {
+                "id": tag,
+                "xb_share_mult": float(v),
+                "pitch_model_overrides": overrides,
+                "status": f"holdout_failed_rc_{rc}",
+            }
+            leaderboard.append(row)
+            _write_json(out_root / "leaderboard.json", leaderboard)
+            continue
+
+        cand_tune_summary = cand_tune_batch / "summary.json"
+        cand_holdout_summary = cand_holdout_batch / "summary.json"
+        if not _summarize_batch(summarizer=summarizer, batch_dir=cand_tune_batch, out_path=cand_tune_summary):
+            row = {
+                "id": tag,
+                "xb_share_mult": float(v),
+                "pitch_model_overrides": overrides,
+                "status": "summarize_tune_failed",
+            }
+            leaderboard.append(row)
+            _write_json(out_root / "leaderboard.json", leaderboard)
+            continue
+        if not _summarize_batch(
+            summarizer=summarizer, batch_dir=cand_holdout_batch, out_path=cand_holdout_summary
+        ):
+            row = {
+                "id": tag,
+                "xb_share_mult": float(v),
+                "pitch_model_overrides": overrides,
+                "status": "summarize_holdout_failed",
+            }
+            leaderboard.append(row)
+            _write_json(out_root / "leaderboard.json", leaderboard)
+            continue
+
+        tune_score_all_path = cand_dir / "tune_score_allmetrics.json"
+        tune_score_props_path = cand_dir / "tune_score_hitterprops.json"
+        hold_score_all_path = cand_dir / "holdout_score_allmetrics.json"
+        hold_score_props_path = cand_dir / "holdout_score_hitterprops.json"
+
+        tune_all = _score_one(
+            scorer=scorer,
+            objective=obj_all,
+            candidate_summary=cand_tune_summary,
+            baseline_summary=baseline_tune_summary,
+            out_path=tune_score_all_path,
+        )
+        tune_props = _score_one(
+            scorer=scorer,
+            objective=obj_props,
+            candidate_summary=cand_tune_summary,
+            baseline_summary=baseline_tune_summary,
+            out_path=tune_score_props_path,
+        )
+        hold_all = _score_one(
+            scorer=scorer,
+            objective=obj_all,
+            candidate_summary=cand_holdout_summary,
+            baseline_summary=baseline_holdout_summary,
+            out_path=hold_score_all_path,
+        )
+        hold_props = _score_one(
+            scorer=scorer,
+            objective=obj_props,
+            candidate_summary=cand_holdout_summary,
+            baseline_summary=baseline_holdout_summary,
+            out_path=hold_score_props_path,
+        )
+
+        if any(x is None for x in (tune_all, tune_props, hold_all, hold_props)):
+            row = {
+                "id": tag,
+                "xb_share_mult": float(v),
+                "pitch_model_overrides": overrides,
+                "status": "score_failed",
+            }
+            leaderboard.append(row)
+            _write_json(out_root / "leaderboard.json", leaderboard)
+            continue
+
+        combined = float(args.w_allmetrics) * float(tune_all) + float(args.w_hitterprops) * float(tune_props)
+        ok = (float(hold_all) >= 1.0 - float(args.holdout_tol)) and (float(hold_props) >= 1.0 - float(args.holdout_tol))
+
+        row = {
+            "id": tag,
+            "xb_share_mult": float(v),
+            "pitch_model_overrides": overrides,
+            "sims_per_game": int(args.sims_per_game),
+            "jobs": int(args.jobs),
+            "use_raw": str(args.use_raw),
+            "prop_lines_source": str(args.prop_lines_source),
+            "tune_dates": str(tune_dates_path),
+            "holdout_dates": str(holdout_dates_path),
+            "status": "ok",
+            "tune": {
+                "score_allmetrics": float(tune_all),
+                "score_hitterprops": float(tune_props),
+                "combined": float(combined),
+                "batch_dir": str(cand_tune_batch),
+                "summary": str(cand_tune_summary),
+            },
+            "holdout": {
+                "score_allmetrics": float(hold_all),
+                "score_hitterprops": float(hold_props),
+                "ok": bool(ok),
+                "batch_dir": str(cand_holdout_batch),
+                "summary": str(cand_holdout_summary),
+            },
+        }
+        leaderboard.append(row)
+        _write_json(out_root / "leaderboard.json", leaderboard)
+
+        if bool(ok) and float(combined) > float(best_row.get("tune", {}).get("combined", float("-inf"))):
+            best_row = row
+            _write_json(out_root / "best.json", best_row)
+
+    _write_json(out_root / "leaderboard.json", leaderboard)
+    _write_json(out_root / "best.json", best_row)
+    print(f"Wrote: {out_root}")
+    print(f"Best: {best_row.get('id')} xb_share_mult={best_row.get('xb_share_mult')}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

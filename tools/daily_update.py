@@ -1,0 +1,4142 @@
+from __future__ import annotations
+
+import argparse
+import gzip
+import json
+import math
+import multiprocessing
+import multiprocessing.spawn
+import os
+import subprocess
+import sys
+from concurrent.futures import ProcessPoolExecutor
+from dataclasses import asdict
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple, get_type_hints
+
+
+# On Windows, ensure ProcessPoolExecutor workers use this interpreter (venv).
+if sys.platform.startswith("win"):
+    try:
+        multiprocessing.spawn.set_executable(sys.executable)
+    except Exception:
+        pass
+
+# Ensure the project root (MLB-BettingV2/) is importable when running this file directly.
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from sim_engine.data.statsapi import (
+    StatsApiClient,
+    extract_team_pitcher_pitches_thrown,
+    fetch_game_context,
+    fetch_game_feed_live,
+    fetch_mlb_teams,
+    fetch_schedule_for_date,
+    fetch_team_roster,
+    load_feed_live_from_raw,
+    parse_confirmed_lineup_ids,
+)
+from sim_engine.data.build_roster import build_team, build_team_roster
+from sim_engine.data.statcast_bvp import apply_starter_bvp_hr_multipliers, default_bvp_cache
+from sim_engine.data.statcast_pitch_splits import default_statcast_cache
+from sim_engine.models import GameConfig
+from sim_engine.simulate import simulate_game
+from sim_engine.pitch_model import PitchModelConfig
+from sim_engine.prob_calibration import apply_prop_prob_calibration
+from sim_engine.data.roster_artifact import read_game_roster_artifact, write_game_roster_artifact
+from sim_engine.data.roster_registry import build_roster_events_for_date, update_team_roster_registry
+from tools.eval.build_season_eval_manifest import build_manifest as build_season_eval_manifest
+from tools.eval.build_season_eval_manifest import write_manifest_artifacts as write_season_eval_manifest_artifacts
+from tools.eval.settle_locked_policy_cards import _settle_card
+from tools.oddsapi.fetch_daily_oddsapi_markets import fetch_and_write_live_odds_for_date
+
+
+# --- multiprocessing helpers (must be top-level for Windows spawn pickling) ---
+_SIMW_AWAY = None
+_SIMW_HOME = None
+_SIMW_WEATHER = None
+_SIMW_PARK = None
+_SIMW_UMPIRE = None
+_SIMW_SEED = 0
+_SIMW_WANT_HITTER = False
+_SIMW_BATTER_IDS: List[int] = []
+_SIMW_PROP_IDS: List[int] = []
+_SIMW_CFG_KWARGS: Dict[str, Any] = {}
+_PITCHER_BOX_KEYS: Tuple[str, ...] = ("BF", "P", "OUTS", "H", "R", "BB", "SO", "HR", "HBP")
+_PITCHER_PROP_DIST_SPECS: Tuple[Tuple[str, str, str], ...] = (
+    ("so", "SO", "so_mean"),
+    ("outs", "OUTS", "outs_mean"),
+    ("pitches", "P", "pitches_mean"),
+    ("hits", "H", "hits_mean"),
+    ("walks", "BB", "walks_mean"),
+    ("batters_faced", "BF", "batters_faced_mean"),
+)
+_HITTER_PROP_DIST_SPECS: Tuple[Tuple[str, str, str], ...] = (
+    ("hits", "H", "h_mean"),
+    ("home_runs", "HR", "hr_mean"),
+    ("total_bases", "TB", "tb_mean"),
+    ("runs", "R", "r_mean"),
+    ("rbi", "RBI", "rbi_mean"),
+    ("doubles", "2B", "2b_mean"),
+    ("triples", "3B", "3b_mean"),
+    ("stolen_bases", "SB", "sb_mean"),
+)
+
+
+def _simw_init(
+    away_roster,
+    home_roster,
+    seed: int,
+    weather=None,
+    park=None,
+    umpire=None,
+    want_hitter: bool = False,
+    batter_ids: Optional[List[int]] = None,
+    pitcher_prop_ids: Optional[List[int]] = None,
+    cfg_kwargs: Optional[Dict[str, Any]] = None,
+) -> None:
+    global _SIMW_AWAY, _SIMW_HOME, _SIMW_WEATHER, _SIMW_PARK, _SIMW_UMPIRE, _SIMW_SEED, _SIMW_WANT_HITTER, _SIMW_BATTER_IDS, _SIMW_PROP_IDS, _SIMW_CFG_KWARGS
+    _SIMW_AWAY = away_roster
+    _SIMW_HOME = home_roster
+    _SIMW_WEATHER = weather
+    _SIMW_PARK = park
+    _SIMW_UMPIRE = umpire
+    _SIMW_SEED = int(seed or 0)
+    _SIMW_WANT_HITTER = bool(want_hitter)
+    _SIMW_BATTER_IDS = [int(x) for x in (batter_ids or []) if int(x or 0) > 0]
+    _SIMW_PROP_IDS = [int(x) for x in (pitcher_prop_ids or []) if int(x or 0) > 0]
+    _SIMW_CFG_KWARGS = dict(cfg_kwargs or {})
+
+
+def _build_batter_meta(away_roster, home_roster) -> Dict[int, Dict[str, Any]]:
+    meta: Dict[int, Dict[str, Any]] = {}
+
+    def _add(
+        side: str,
+        team_abbr: str,
+        prof,
+        *,
+        order: Optional[int] = None,
+        is_lineup_batter: bool = False,
+    ) -> None:
+        try:
+            player = prof.player
+            pid = int(player.mlbam_id)
+        except Exception:
+            return
+        row = meta.setdefault(int(pid), {"id": int(pid)})
+        row.setdefault("name", str(getattr(player, "full_name", "") or ""))
+        row.setdefault("team", str(team_abbr or ""))
+        row.setdefault("side", str(side))
+        pos = str(getattr(player, "primary_position", "") or "")
+        if pos and not row.get("pos"):
+            row["pos"] = pos
+        if is_lineup_batter:
+            row["is_lineup_batter"] = True
+        elif "is_lineup_batter" not in row:
+            row["is_lineup_batter"] = False
+        if order is not None and row.get("order") is None:
+            row["order"] = int(order)
+
+    for side, roster in (("away", away_roster), ("home", home_roster)):
+        team_abbr = str(getattr(getattr(roster, "team", None), "abbreviation", "") or "")
+        for idx, prof in enumerate((getattr(getattr(roster, "lineup", None), "batters", None) or []), start=1):
+            _add(side, team_abbr, prof, order=idx, is_lineup_batter=True)
+        for prof in (getattr(getattr(roster, "lineup", None), "bench", None) or []):
+            _add(side, team_abbr, prof, is_lineup_batter=False)
+    return meta
+
+
+def _build_pitcher_meta(away_roster, home_roster) -> Dict[int, Dict[str, Any]]:
+    meta: Dict[int, Dict[str, Any]] = {}
+
+    def _add(side: str, team_abbr: str, prof, *, order: int) -> None:
+        try:
+            player = prof.player
+            pid = int(player.mlbam_id)
+        except Exception:
+            return
+        row = meta.setdefault(int(pid), {"id": int(pid)})
+        row.setdefault("name", str(getattr(player, "full_name", "") or ""))
+        row.setdefault("team", str(team_abbr or ""))
+        row.setdefault("side", str(side))
+        row.setdefault("role", str(getattr(prof, "role", "") or ""))
+        if row.get("order") is None:
+            row["order"] = int(order)
+
+    for side, roster in (("away", away_roster), ("home", home_roster)):
+        team_abbr = str(getattr(getattr(roster, "team", None), "abbreviation", "") or "")
+        lineup = getattr(roster, "lineup", None)
+        starter = getattr(lineup, "pitcher", None)
+        if starter is not None:
+            _add(side, team_abbr, starter, order=0)
+        for idx, prof in enumerate((getattr(lineup, "bullpen", None) or []), start=1):
+            _add(side, team_abbr, prof, order=idx)
+    return meta
+
+
+def _new_pitcher_box_acc_row() -> Dict[str, Any]:
+    row = {key: 0.0 for key in _PITCHER_BOX_KEYS}
+    row["appearances"] = 0
+    return row
+
+
+def _accumulate_pitcher_box_row(dst: Dict[int, Dict[str, Any]], pid: int, row: Dict[str, Any]) -> None:
+    acc = dst.setdefault(int(pid), _new_pitcher_box_acc_row())
+    appeared = False
+    for key in _PITCHER_BOX_KEYS:
+        try:
+            value = float((row or {}).get(key) or 0.0)
+        except Exception:
+            value = 0.0
+        acc[key] = float(acc.get(key, 0.0)) + float(value)
+        if key in ("BF", "P", "OUTS") and value > 0.0:
+            appeared = True
+    if appeared:
+        acc["appearances"] = int(acc.get("appearances", 0) or 0) + 1
+
+
+def _build_aggregate_boxscore(
+    *,
+    sims: int,
+    full_segment: Dict[str, Any],
+    batter_meta: Dict[int, Dict[str, Any]],
+    sum_stats: Dict[int, Dict[str, float]],
+    pitcher_meta: Dict[int, Dict[str, Any]],
+    pitcher_box_acc: Dict[int, Dict[str, Any]],
+) -> Dict[str, Any]:
+    denom = float(max(1, int(sims)))
+    out: Dict[str, Any] = {
+        "away": {"totals": {"R": None, "H": None, "E": None}, "batting": [], "pitching": []},
+        "home": {"totals": {"R": None, "H": None, "E": None}, "batting": [], "pitching": []},
+    }
+
+    def _mean(value: Any) -> float:
+        return round(float(value or 0.0) / denom, 2)
+
+    def _sum_side(side: str, key: str) -> Optional[float]:
+        total = 0.0
+        seen = False
+        for row in out.get(side, {}).get("batting") or []:
+            val = row.get(key)
+            if not isinstance(val, (int, float)):
+                continue
+            total += float(val)
+            seen = True
+        return round(total, 2) if seen else None
+
+    def _sum_rows(side: str, bucket: str, key: str) -> Optional[float]:
+        total = 0.0
+        seen = False
+        for row in out.get(side, {}).get(bucket) or []:
+            val = row.get(key)
+            if not isinstance(val, (int, float)):
+                continue
+            total += float(val)
+            seen = True
+        return round(total, 2) if seen else None
+
+    def _adjust_opponent_pitching(batting_side: str, key: str) -> None:
+        opponent_side = "home" if batting_side == "away" else "away"
+        batting_total = _sum_rows(batting_side, "batting", key)
+        pitching_total = _sum_rows(opponent_side, "pitching", key)
+        if batting_total is None or pitching_total is None:
+            return
+        delta = round(float(batting_total) - float(pitching_total), 2)
+        if abs(delta) < 0.01 or abs(delta) > 0.05:
+            return
+
+        target_row: Optional[Dict[str, Any]] = None
+        target_value = -1.0
+        target_outs = -1.0
+        for row in out.get(opponent_side, {}).get("pitching") or []:
+            value = row.get(key)
+            outs = row.get("OUTS")
+            if not isinstance(value, (int, float)):
+                continue
+            value_f = float(value)
+            outs_f = float(outs) if isinstance(outs, (int, float)) else 0.0
+            if value_f > target_value or (abs(value_f - target_value) < 1e-9 and outs_f > target_outs):
+                target_row = row
+                target_value = value_f
+                target_outs = outs_f
+        if target_row is None:
+            return
+
+        current_value = target_row.get(key)
+        try:
+            target_row[key] = round(max(0.0, float(current_value or 0.0) + float(delta)), 2)
+        except Exception:
+            return
+
+    for pid, meta in batter_meta.items():
+        side = str(meta.get("side") or "")
+        if side not in ("away", "home"):
+            continue
+        stats = sum_stats.get(int(pid)) or {}
+        row = {
+            "id": int(pid),
+            "name": str(meta.get("name") or ""),
+            "pos": str(meta.get("pos") or ""),
+            "PA": _mean(stats.get("PA")),
+            "AB": _mean(stats.get("AB")),
+            "H": _mean(stats.get("H")),
+            "R": _mean(stats.get("R")),
+            "RBI": _mean(stats.get("RBI")),
+            "BB": _mean(stats.get("BB")),
+            "SO": _mean(stats.get("SO")),
+            "HR": _mean(stats.get("HR")),
+            "HBP": _mean(stats.get("HBP")),
+            "SB": _mean(stats.get("SB")),
+            "TB": _mean(stats.get("TB")),
+            "_order": meta.get("order"),
+        }
+        has_usage = any(float(row.get(k) or 0.0) > 0.0 for k in ("PA", "AB", "H", "R", "RBI", "BB", "SO", "HR", "TB"))
+        if not has_usage and row.get("_order") is None:
+            continue
+        out[side]["batting"].append(row)
+
+    for side in ("away", "home"):
+        out[side]["batting"].sort(
+            key=lambda row: (
+                row.get("_order") if isinstance(row.get("_order"), int) else 999,
+                -(float(row.get("PA") or 0.0)),
+                str(row.get("name") or ""),
+            )
+        )
+        for row in out[side]["batting"]:
+            row.pop("_order", None)
+
+    all_pitcher_ids = set(int(pid) for pid in pitcher_meta.keys()) | set(int(pid) for pid in pitcher_box_acc.keys())
+    for pid in sorted(all_pitcher_ids):
+        meta = pitcher_meta.get(int(pid)) or {}
+        side = str(meta.get("side") or "")
+        if side not in ("away", "home"):
+            continue
+        acc = pitcher_box_acc.get(int(pid)) or _new_pitcher_box_acc_row()
+        appearances = int(acc.get("appearances", 0) or 0)
+        row = {
+            "id": int(pid),
+            "name": str(meta.get("name") or ""),
+            "role": str(meta.get("role") or ""),
+            "appearance_rate": round(float(appearances) / denom, 3),
+            "BF": _mean(acc.get("BF")),
+            "P": _mean(acc.get("P")),
+            "OUTS": _mean(acc.get("OUTS")),
+            "IP": round(float(acc.get("OUTS") or 0.0) / 3.0 / denom, 2),
+            "H": _mean(acc.get("H")),
+            "R": _mean(acc.get("R")),
+            "BB": _mean(acc.get("BB")),
+            "SO": _mean(acc.get("SO")),
+            "HR": _mean(acc.get("HR")),
+            "HBP": _mean(acc.get("HBP")),
+            "_order": meta.get("order"),
+        }
+        has_usage = any(float(row.get(k) or 0.0) > 0.0 for k in ("BF", "P", "OUTS", "H", "R", "BB", "SO", "HR", "HBP"))
+        if not has_usage and row.get("_order") != 0:
+            continue
+        out[side]["pitching"].append(row)
+
+    for side in ("away", "home"):
+        out[side]["pitching"].sort(
+            key=lambda row: (
+                row.get("_order") if isinstance(row.get("_order"), int) else 999,
+                -(float(row.get("OUTS") or 0.0)),
+                str(row.get("name") or ""),
+            )
+        )
+        for row in out[side]["pitching"]:
+            row.pop("_order", None)
+
+    for batting_side in ("away", "home"):
+        for key in ("H", "R", "BB", "SO", "HR", "HBP"):
+            _adjust_opponent_pitching(batting_side, key)
+
+    out["away"]["totals"] = {
+        "R": _sum_side("away", "R"),
+        "H": _sum_side("away", "H"),
+        "E": None,
+    }
+    out["home"]["totals"] = {
+        "R": _sum_side("home", "R"),
+        "H": _sum_side("home", "H"),
+        "E": None,
+    }
+    return out
+
+
+def _simw_chunk(start_i: int, n: int) -> Dict[str, Any]:
+    """Run a chunk of sims and return raw counts for aggregation."""
+    away_roster = _SIMW_AWAY
+    home_roster = _SIMW_HOME
+    seed = int(_SIMW_SEED)
+    weather = _SIMW_WEATHER
+    park = _SIMW_PARK
+    umpire = _SIMW_UMPIRE
+    want_hitter = bool(_SIMW_WANT_HITTER)
+    batter_ids = list(_SIMW_BATTER_IDS)
+    prop_ids = list(_SIMW_PROP_IDS)
+    cfg_kwargs = dict(_SIMW_CFG_KWARGS or {})
+
+    def init_seg():
+        return {
+            "home_wins": 0,
+            "away_wins": 0,
+            "ties": 0,
+            "away_runs_sum": 0.0,
+            "home_runs_sum": 0.0,
+            "totals": {},
+            "margins": {},
+            "samples": [],
+        }
+
+    seg_full = init_seg()
+    seg_f5 = init_seg()
+    seg_f3 = init_seg()
+
+    sum_stats: Dict[int, Dict[str, float]] = {}
+    ge_counts: Dict[str, Dict[int, int]] = {}
+    prop_acc: Dict[int, Dict[str, Any]] = {}
+    hitter_prop_acc: Dict[int, Dict[str, Any]] = {}
+    pitcher_box_acc: Dict[int, Dict[str, Any]] = {}
+    for pid in prop_ids:
+        acc: Dict[str, Any] = {}
+        for dist_key, _row_key, mean_key in _PITCHER_PROP_DIST_SPECS:
+            acc[str(dist_key)] = {}
+            acc[str(mean_key)] = 0.0
+        prop_acc[int(pid)] = acc
+    if want_hitter and batter_ids:
+        for pid in batter_ids:
+            acc = {}
+            for dist_key, _row_key, mean_key in _HITTER_PROP_DIST_SPECS:
+                acc[str(dist_key)] = {}
+                acc[str(mean_key)] = 0.0
+            hitter_prop_acc[int(pid)] = acc
+
+    def _inc_sum(pid: int, key: str, v: float) -> None:
+        row = sum_stats.setdefault(int(pid), {})
+        row[key] = float(row.get(key, 0.0)) + float(v)
+
+    def _inc_ge(prop_key: str, pid: int) -> None:
+        m = ge_counts.setdefault(str(prop_key), {})
+        m[int(pid)] = int(m.get(int(pid), 0) + 1)
+
+    def _inc_ge_thresholds(prop_base: str, pid: int, value: int, max_threshold: int) -> None:
+        ivalue = int(value)
+        for threshold in range(1, int(max_threshold) + 1):
+            if ivalue < threshold:
+                break
+            _inc_ge(f"{prop_base}_{threshold}plus", pid)
+
+    def seg_score(r, innings: int) -> Dict[str, int]:
+        a = sum((r.away_inning_runs or [])[:innings])
+        h = sum((r.home_inning_runs or [])[:innings])
+        return {"away": int(a), "home": int(h)}
+
+    for i in range(int(start_i), int(start_i) + int(n)):
+        cfg = GameConfig(rng_seed=seed + int(i), weather=weather, park=park, umpire=umpire, **cfg_kwargs)
+        r = simulate_game(away_roster, home_roster, cfg)
+
+        ps = r.pitcher_stats or {}
+        if ps:
+            for pid_raw, row in ps.items():
+                try:
+                    pid = int(pid_raw)
+                except Exception:
+                    continue
+                if pid <= 0 or not isinstance(row, dict):
+                    continue
+                _accumulate_pitcher_box_row(pitcher_box_acc, int(pid), row)
+
+        if prop_ids:
+            for pid in prop_ids:
+                row = ps.get(int(pid)) or {}
+                acc = prop_acc[int(pid)]
+                for dist_key, row_key, mean_key in _PITCHER_PROP_DIST_SPECS:
+                    try:
+                        value = int(round(float(row.get(str(row_key)) or 0.0)))
+                    except Exception:
+                        value = 0
+                    dist = acc.setdefault(str(dist_key), {})
+                    dist[int(value)] = int(dist.get(int(value), 0) + 1)
+                    acc[str(mean_key)] = float(acc.get(str(mean_key), 0.0) or 0.0) + float(value)
+
+        if want_hitter and batter_ids:
+            bs = r.batter_stats or {}
+            for pid in batter_ids:
+                row = bs.get(int(pid)) or {}
+                try:
+                    pa = int(row.get("PA") or 0)
+                    ab = int(row.get("AB") or 0)
+                    h = int(row.get("H") or 0)
+                    d2 = int(row.get("2B") or 0)
+                    d3 = int(row.get("3B") or 0)
+                    hr = int(row.get("HR") or 0)
+                    rr = int(row.get("R") or 0)
+                    rbi = int(row.get("RBI") or 0)
+                    bb = int(row.get("BB") or 0)
+                    so = int(row.get("SO") or 0)
+                    hbp = int(row.get("HBP") or 0)
+                    sb = int(row.get("SB") or 0)
+                except Exception:
+                    continue
+                tb = int(h + d2 + 2 * d3 + 3 * hr)
+                hitter_stat_values = {
+                    "H": h,
+                    "HR": hr,
+                    "TB": tb,
+                    "R": rr,
+                    "RBI": rbi,
+                    "2B": d2,
+                    "3B": d3,
+                    "SB": sb,
+                }
+
+                _inc_sum(pid, "PA", pa)
+                _inc_sum(pid, "AB", ab)
+                _inc_sum(pid, "H", h)
+                _inc_sum(pid, "2B", d2)
+                _inc_sum(pid, "3B", d3)
+                _inc_sum(pid, "HR", hr)
+                _inc_sum(pid, "R", rr)
+                _inc_sum(pid, "RBI", rbi)
+                _inc_sum(pid, "BB", bb)
+                _inc_sum(pid, "SO", so)
+                _inc_sum(pid, "HBP", hbp)
+                _inc_sum(pid, "SB", sb)
+                _inc_sum(pid, "TB", tb)
+
+                acc = hitter_prop_acc.setdefault(int(pid), {})
+                for dist_key, row_key, mean_key in _HITTER_PROP_DIST_SPECS:
+                    value = int(hitter_stat_values.get(str(row_key), 0))
+                    dist = acc.setdefault(str(dist_key), {})
+                    dist[int(value)] = int(dist.get(int(value), 0) + 1)
+                    acc[str(mean_key)] = float(acc.get(str(mean_key), 0.0) or 0.0) + float(value)
+
+                _inc_ge_thresholds("hits", pid, h, 3)
+                if d2 >= 1:
+                    _inc_ge("doubles_1plus", pid)
+                if d3 >= 1:
+                    _inc_ge("triples_1plus", pid)
+                if hr >= 1:
+                    _inc_ge("hr_1plus", pid)
+                _inc_ge_thresholds("runs", pid, rr, 3)
+                _inc_ge_thresholds("rbi", pid, rbi, 4)
+                _inc_ge_thresholds("total_bases", pid, tb, 5)
+                if sb >= 1:
+                    _inc_ge("sb_1plus", pid)
+
+        full = {"away": int(r.away_score), "home": int(r.home_score)}
+        f5 = seg_score(r, 5)
+        f3 = seg_score(r, 3)
+
+        for seg, score in ((seg_full, full), (seg_f5, f5), (seg_f3, f3)):
+            if len(seg["samples"]) < 50:
+                seg["samples"].append(score)
+            seg["away_runs_sum"] = float(seg.get("away_runs_sum", 0.0)) + float(score["away"])
+            seg["home_runs_sum"] = float(seg.get("home_runs_sum", 0.0)) + float(score["home"])
+            tot = int(score["away"] + score["home"])
+            seg["totals"][tot] = seg["totals"].get(tot, 0) + 1
+            margin = int(score["home"] - score["away"])
+            seg["margins"][margin] = seg["margins"].get(margin, 0) + 1
+            if score["home"] > score["away"]:
+                seg["home_wins"] += 1
+            elif score["away"] > score["home"]:
+                seg["away_wins"] += 1
+            else:
+                seg["ties"] += 1
+
+    return {
+        "seg_full": seg_full,
+        "seg_f5": seg_f5,
+        "seg_f3": seg_f3,
+        "sum_stats": sum_stats,
+        "ge_counts": ge_counts,
+        "prop_acc": prop_acc,
+        "hitter_prop_acc": hitter_prop_acc,
+        "pitcher_box_acc": pitcher_box_acc,
+    }
+
+
+def _abbr(team_obj: dict) -> str:
+    return (team_obj.get("abbreviation") or team_obj.get("teamName") or team_obj.get("name") or "UNK")
+
+
+def _ensure_dir(p: Path) -> None:
+    p.mkdir(parents=True, exist_ok=True)
+
+
+def _write_json(path: Path, obj: Any) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f, indent=2)
+    tmp.replace(path)
+
+
+def _write_gz_json(path: Path, obj: Any) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with gzip.open(tmp, "wt", encoding="utf-8") as f:
+        json.dump(obj, f)
+    tmp.replace(path)
+
+
+def _resolve_path_arg(value: str, *, default: Path) -> Path:
+    raw = str(value or "").strip()
+    path = Path(raw) if raw else default
+    if not path.is_absolute():
+        path = (_ROOT / path).resolve()
+    return path
+
+
+def _relative_path_str(path: Optional[Path]) -> Optional[str]:
+    if path is None:
+        return None
+    try:
+        return str(path.resolve().relative_to(_ROOT.resolve())).replace("\\", "/")
+    except Exception:
+        return str(path.resolve()).replace("\\", "/")
+
+
+def _date_plus_days(date_str: str, days: int) -> str:
+    try:
+        base = datetime.strptime(str(date_str).strip(), "%Y-%m-%d")
+    except Exception as exc:
+        raise SystemExit(f"Invalid date (expected YYYY-MM-DD): {date_str}") from exc
+    return (base + timedelta(days=int(days))).strftime("%Y-%m-%d")
+
+
+def _season_from_date_str(date_str: str, fallback: int) -> int:
+    text = str(date_str or "").strip()
+    try:
+        return int(text.split("-", 1)[0])
+    except Exception:
+        return int(fallback)
+
+
+def _default_ui_profile_out_dirs(game_out: Path) -> Tuple[Path, Path]:
+    default_game = (_ROOT / "data" / "daily").resolve()
+    try:
+        resolved_game = game_out.resolve()
+    except Exception:
+        resolved_game = game_out
+    if resolved_game == default_game:
+        return (
+            (_ROOT / "data" / "daily_pitcher_props").resolve(),
+            (_ROOT / "data" / "daily_hitter_props").resolve(),
+        )
+    base_name = str(game_out.name or "daily").strip() or "daily"
+    return (
+        (game_out.parent / f"{base_name}_pitcher_props").resolve(),
+        (game_out.parent / f"{base_name}_hitter_props").resolve(),
+    )
+
+
+def _strip_cli_args(
+    argv: List[str],
+    *,
+    flags_with_values: Tuple[str, ...],
+    flags_no_values: Tuple[str, ...],
+) -> List[str]:
+    out: List[str] = []
+    skip_next = False
+    value_flags = set(flags_with_values)
+    bare_flags = set(flags_no_values)
+    all_flags = value_flags | bare_flags
+    for raw in argv:
+        if skip_next:
+            skip_next = False
+            continue
+        arg = str(raw or "")
+        if not arg:
+            continue
+        if arg.startswith("--") and "=" in arg:
+            flag = arg.split("=", 1)[0]
+            if flag in all_flags:
+                continue
+        if arg in value_flags:
+            skip_next = True
+            continue
+        if arg in bare_flags:
+            continue
+        out.append(arg)
+    return out
+
+
+def _refresh_feed_live_cache_for_date(
+    *,
+    client: StatsApiClient,
+    date_str: str,
+    season: int,
+) -> Dict[str, Any]:
+    games = fetch_schedule_for_date(client, str(date_str))
+    out_dir = (_ROOT / "data" / "raw" / "statsapi" / "feed_live" / str(int(season)) / str(date_str)).resolve()
+    _ensure_dir(out_dir)
+
+    scheduled = 0
+    regular_scheduled = 0
+    wrote = 0
+    errors: List[Dict[str, Any]] = []
+    seen_game_pks = set()
+    for game in games:
+        game_pk = game.get("gamePk")
+        try:
+            game_pk_i = int(game_pk)
+        except Exception:
+            continue
+        if game_pk_i in seen_game_pks:
+            continue
+        seen_game_pks.add(game_pk_i)
+        scheduled += 1
+        if str(game.get("gameType") or "").strip().upper() == "R":
+            regular_scheduled += 1
+        try:
+            payload = fetch_game_feed_live(client, game_pk_i)
+            _write_gz_json(out_dir / f"{game_pk_i}.json.gz", payload)
+            wrote += 1
+        except Exception as exc:
+            errors.append(
+                {
+                    "game_pk": int(game_pk_i),
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+
+    status = "ok" if not errors else "warning"
+    return {
+        "status": status,
+        "date": str(date_str),
+        "season": int(season),
+        "games_scheduled": int(scheduled),
+        "regular_season_games_scheduled": int(regular_scheduled),
+        "games_written": int(wrote),
+        "errors": errors,
+        "error_count": int(len(errors)),
+        "out_dir": _relative_path_str(out_dir),
+        "pbp_source": "statsapi_feed_live",
+    }
+
+
+def _build_prior_eval_command(
+    *,
+    args: argparse.Namespace,
+    prior_date: str,
+    prior_season: int,
+    out_path: Path,
+    daily_snapshots_root: Path,
+    lineups_last_known_path: Optional[Path],
+) -> List[str]:
+    cmd = [
+        str(Path(sys.executable).resolve()),
+        str((_ROOT / "tools" / "eval" / "eval_sim_day_vs_actual.py").resolve()),
+        "--date",
+        str(prior_date),
+        "--season",
+        str(int(prior_season)),
+        "--spring-mode",
+        ("on" if bool(getattr(args, "spring_mode", False)) else "off"),
+        "--stats-season",
+        str(int(getattr(args, "stats_season", 0) or 0)),
+        "--use-daily-snapshots",
+        "on",
+        "--daily-snapshots-root",
+        str(daily_snapshots_root),
+        "--use-roster-artifacts",
+        str(getattr(args, "use_roster_artifacts", "on") or "on"),
+        "--write-roster-artifacts",
+        str(getattr(args, "write_roster_artifacts", "on") or "on"),
+        "--sims-per-game",
+        str(int(getattr(args, "prior_eval_sims", 0) or getattr(args, "sims", 0) or 1000)),
+        "--bvp-hr",
+        str(getattr(args, "bvp_hr", "off") or "off"),
+        "--bvp-days-back",
+        str(int(getattr(args, "bvp_days_back", 365) or 365)),
+        "--bvp-min-pa",
+        str(int(getattr(args, "bvp_min_pa", 10) or 10)),
+        "--bvp-shrink-pa",
+        str(float(getattr(args, "bvp_shrink_pa", 50.0) or 50.0)),
+        "--bvp-clamp-lo",
+        str(float(getattr(args, "bvp_clamp_lo", 0.80) or 0.80)),
+        "--bvp-clamp-hi",
+        str(float(getattr(args, "bvp_clamp_hi", 1.25) or 1.25)),
+        "--hitter-hr-topn",
+        str(int(getattr(args, "hitter_hr_topn", 0) or 0)),
+        "--hitter-props-topn",
+        str(int(getattr(args, "hitter_props_topn", 24) or 24)),
+        "--seed",
+        str(int(getattr(args, "seed", 1337) or 1337)),
+        "--jobs",
+        str(int(getattr(args, "workers", 1) or 1)),
+        "--use-raw",
+        "on",
+        "--write-missing-raw",
+        "on",
+        "--prop-lines-source",
+        str(getattr(args, "prior_eval_prop_lines_source", "auto") or "auto"),
+        "--cache-ttl-hours",
+        str(int(getattr(args, "cache_ttl_hours", 24) or 24)),
+        "--umpire-shrink",
+        str(float(getattr(args, "umpire_shrink", 0.75) or 0.75)),
+        "--pitch-model-overrides",
+        str(getattr(args, "pitch_model_overrides", "") or ""),
+        "--manager-pitching",
+        str(getattr(args, "manager_pitching", "v2") or "v2"),
+        "--manager-pitching-overrides",
+        str(getattr(args, "manager_pitching_overrides", "") or ""),
+        "--pitcher-rate-sampling",
+        str(getattr(args, "pitcher_rate_sampling", "on") or "on"),
+        "--bip-baserunning",
+        str(getattr(args, "bip_baserunning", "on") or "on"),
+        "--out",
+        str(out_path),
+    ]
+    if lineups_last_known_path is not None and lineups_last_known_path.exists():
+        cmd.extend(["--lineups-last-known", str(lineups_last_known_path)])
+    if getattr(args, "bip_dp_rate", None) is not None:
+        cmd.extend(["--bip-dp-rate", str(float(args.bip_dp_rate))])
+    if getattr(args, "bip_sf_rate_flypop", None) is not None:
+        cmd.extend(["--bip-sf-rate-flypop", str(float(args.bip_sf_rate_flypop))])
+    if getattr(args, "bip_sf_rate_line", None) is not None:
+        cmd.extend(["--bip-sf-rate-line", str(float(args.bip_sf_rate_line))])
+    if getattr(args, "bip_1b_p2_scores_mult", None) is not None:
+        cmd.extend(["--bip-1b-p2-scores-mult", str(float(args.bip_1b_p2_scores_mult))])
+    if getattr(args, "bip_2b_p1_scores_mult", None) is not None:
+        cmd.extend(["--bip-2b-p1-scores-mult", str(float(args.bip_2b_p1_scores_mult))])
+    if getattr(args, "bip_1b_p1_to_3b_rate", None) is not None:
+        cmd.extend(["--bip-1b-p1-to-3b-rate", str(float(args.bip_1b_p1_to_3b_rate))])
+    if getattr(args, "bip_ground_rbi_out_rate", None) is not None:
+        cmd.extend(["--bip-ground-rbi-out-rate", str(float(args.bip_ground_rbi_out_rate))])
+    if getattr(args, "bip_out_2b_to_3b_rate", None) is not None:
+        cmd.extend(["--bip-out-2b-to-3b-rate", str(float(args.bip_out_2b_to_3b_rate))])
+    if getattr(args, "bip_out_1b_to_2b_rate", None) is not None:
+        cmd.extend(["--bip-out-1b-to-2b-rate", str(float(args.bip_out_1b_to_2b_rate))])
+    if getattr(args, "bip_misc_advance_pitch_rate", None) is not None:
+        cmd.extend(["--bip-misc-advance-pitch-rate", str(float(args.bip_misc_advance_pitch_rate))])
+    if getattr(args, "bip_roe_rate", None) is not None:
+        cmd.extend(["--bip-roe-rate", str(float(args.bip_roe_rate))])
+    if getattr(args, "bip_fc_rate", None) is not None:
+        cmd.extend(["--bip-fc-rate", str(float(args.bip_fc_rate))])
+    return cmd
+
+
+def _current_day_inputs_stage(*, game_out: Path, date_str: str) -> Dict[str, Any]:
+    snapshot_dir = game_out / "snapshots" / str(date_str)
+    roster_path = snapshot_dir / "team_rosters_raw.json"
+    injuries_path = snapshot_dir / "injuries_raw.json"
+    roster_events_path = snapshot_dir / "roster_events.json"
+    lineups_path = snapshot_dir / "lineups.json"
+    probables_path = snapshot_dir / "probables.json"
+    last_known_path = game_out / "lineups_last_known_by_team.json"
+
+    lineups_games = None
+    lineups_summary: Dict[str, Any] = {}
+    probables_games = None
+    if lineups_path.exists() and lineups_path.is_file():
+        try:
+            lineups_doc = json.loads(lineups_path.read_text(encoding="utf-8")) or {}
+            lineups_games = int(len((lineups_doc or {}).get("games") or []))
+            if isinstance((lineups_doc or {}).get("summary"), dict):
+                lineups_summary = dict((lineups_doc or {}).get("summary") or {})
+        except Exception:
+            lineups_games = None
+            lineups_summary = {}
+    if probables_path.exists() and probables_path.is_file():
+        try:
+            probables_games = int(len((json.loads(probables_path.read_text(encoding="utf-8")) or {}).get("games") or []))
+        except Exception:
+            probables_games = None
+
+    roster_ok = roster_path.exists() and injuries_path.exists()
+    lineups_ok = lineups_path.exists()
+    probables_ok = probables_path.exists()
+
+    return {
+        "roster_snapshot": {
+            "status": ("ok" if roster_ok else "missing"),
+            "snapshot_dir": _relative_path_str(snapshot_dir),
+            "team_rosters_raw": _relative_path_str(roster_path),
+            "injuries_raw": _relative_path_str(injuries_path),
+            "roster_events": _relative_path_str(roster_events_path),
+            "lineups_last_known": _relative_path_str(last_known_path if last_known_path.exists() else None),
+        },
+        "batting_lineups": {
+            "status": ("ok" if lineups_ok else "missing"),
+            "path": _relative_path_str(lineups_path),
+            "games": lineups_games,
+            "summary": lineups_summary,
+            "adjusted_teams": int(lineups_summary.get("adjusted_teams") or 0),
+            "partial_teams": int(lineups_summary.get("partial_teams") or 0),
+            "fallback_pool_teams": int(lineups_summary.get("fallback_pool_teams") or 0),
+        },
+        "probable_pitchers": {
+            "status": ("ok" if probables_ok else "missing"),
+            "path": _relative_path_str(probables_path),
+            "games": probables_games,
+        },
+    }
+
+
+def _publish_live_season_manifests(
+    *,
+    season: int,
+    batch_dir: Path,
+    betting_profile: str,
+    season_dir: Path,
+) -> Dict[str, Any]:
+    _ensure_dir(season_dir)
+
+    season_manifest = build_season_eval_manifest(
+        season=int(season),
+        batch_dir=batch_dir,
+        title=f"MLB {int(season)} Rolling Season Eval",
+        game_types="R",
+    )
+    season_manifest_path, season_recap_path = write_season_eval_manifest_artifacts(
+        season_manifest,
+        season=int(season),
+        out=str(season_dir / "season_eval_manifest.json"),
+        recap_md=str(season_dir / "season_eval_recap.md"),
+    )
+
+    normalized_profile = str(betting_profile or "retuned").strip().lower()
+    if normalized_profile not in ("baseline", "retuned"):
+        normalized_profile = "retuned"
+    betting_manifest_path = season_dir / (
+        "season_betting_cards_retuned_manifest.json"
+        if normalized_profile == "retuned"
+        else "season_betting_cards_manifest.json"
+    )
+    betting_recap_path = season_dir / (
+        "season_betting_cards_retuned_recap.md"
+        if normalized_profile == "retuned"
+        else "season_betting_cards_recap.md"
+    )
+    betting_cards_dir = season_dir / (
+        "locked_cards_retuned"
+        if normalized_profile == "retuned"
+        else "locked_cards"
+    )
+    cmd = [
+        str(Path(sys.executable).resolve()),
+        str((_ROOT / "tools" / "eval" / "build_season_betting_cards_manifest.py").resolve()),
+        "--season",
+        str(int(season)),
+        "--batch-dir",
+        str(batch_dir),
+        "--out",
+        str(betting_manifest_path),
+        "--recap-md",
+        str(betting_recap_path),
+        "--cards-dir",
+        str(betting_cards_dir),
+        "--title",
+        f"MLB {int(season)} Betting Card Recap",
+    ]
+    betting_rc = subprocess.run(cmd, check=False).returncode
+
+    return {
+        "season_eval_manifest": _relative_path_str(season_manifest_path),
+        "season_eval_recap": _relative_path_str(season_recap_path),
+        "season_eval_status": str((season_manifest.get("meta") or {}).get("status") or "unknown"),
+        "season_eval_partial": bool((season_manifest.get("meta") or {}).get("partial")),
+        "season_eval_days": int((season_manifest.get("overview") or {}).get("days") or 0),
+        "betting_profile": normalized_profile,
+        "season_betting_manifest": _relative_path_str(betting_manifest_path),
+        "season_betting_recap": _relative_path_str(betting_recap_path),
+        "season_betting_cards_dir": _relative_path_str(betting_cards_dir),
+        "season_betting_exit_code": int(betting_rc),
+        "season_betting_manifest_exists": bool(betting_manifest_path.exists()),
+    }
+
+
+def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> int:
+    game_out = _resolve_path_arg(str(getattr(args, "out", "") or ""), default=(_ROOT / "data" / "daily"))
+    default_pitcher_out, default_hitter_out = _default_ui_profile_out_dirs(game_out)
+    pitcher_out = _resolve_path_arg(
+        str(getattr(args, "workflow_out_pitcher", "") or ""),
+        default=default_pitcher_out,
+    )
+    hitter_out = _resolve_path_arg(
+        str(getattr(args, "workflow_out_hitter", "") or ""),
+        default=default_hitter_out,
+    )
+    _ensure_dir(game_out)
+
+    token = str(args.date).replace("-", "_")
+    prior_date = str(getattr(args, "reconcile_date", "") or "").strip() or _date_plus_days(str(args.date), -1)
+    prior_token = str(prior_date).replace("-", "_")
+    prior_season = _season_from_date_str(prior_date, int(args.season))
+
+    settlement_out_arg = str(getattr(args, "prior_card_settlement_out", "") or "").strip()
+    settlement_path = _resolve_path_arg(
+        settlement_out_arg,
+        default=(game_out / "settlements" / f"daily_summary_{prior_token}_locked_policy_settlement.json"),
+    )
+    season_batch_dir_arg = str(getattr(args, "season_batch_dir", "") or "").strip()
+    season_batch_dir = _resolve_path_arg(
+        season_batch_dir_arg,
+        default=(_ROOT / "data" / "eval" / "batches" / f"season_{int(args.season)}_ui_daily_live"),
+    )
+    season_output_dir_arg = str(getattr(args, "season_output_dir", "") or "").strip()
+    season_output_dir = _resolve_path_arg(
+        season_output_dir_arg,
+        default=(_ROOT / "data" / "eval" / "seasons" / str(int(args.season))),
+    )
+    prior_report_path = season_batch_dir / f"sim_vs_actual_{prior_date}.json"
+    ops_report_arg = str(getattr(args, "ops_report_out", "") or "").strip()
+    ops_report_path = _resolve_path_arg(
+        ops_report_arg,
+        default=(game_out / "ops" / f"daily_ops_{token}.json"),
+    )
+
+    report: Dict[str, Any] = {
+        "tool": "tools/daily_update.py",
+        "workflow": "ui-daily",
+        "generated_at": datetime.now().isoformat(),
+        "date": str(args.date),
+        "season": int(args.season),
+        "prior_day": {
+            "date": str(prior_date),
+            "season": int(prior_season),
+            "eval_report_path": _relative_path_str(prior_report_path),
+        },
+        "current_day": {
+            "date": str(args.date),
+            "season": int(args.season),
+            "out_game": _relative_path_str(game_out),
+            "out_pitcher": _relative_path_str(pitcher_out),
+            "out_hitter": _relative_path_str(hitter_out),
+            "summary_path": _relative_path_str(game_out / f"daily_summary_{token}.json"),
+            "profile_bundle_path": _relative_path_str(game_out / f"daily_summary_{token}_profile_bundle.json"),
+            "locked_policy_path": _relative_path_str(game_out / f"daily_summary_{token}_locked_policy.json"),
+        },
+        "stages": {},
+        "warnings": [],
+        "errors": [],
+    }
+
+    refresh_stage: Dict[str, Any]
+    if str(getattr(args, "refresh_prior_feed_live", "on") or "on") == "on":
+        print(f"[ui-daily] Refreshing prior-day StatsAPI feed/live cache for {prior_date}...")
+        try:
+            client = StatsApiClient.with_default_cache(ttl_seconds=int(args.cache_ttl_hours * 3600))
+            refresh_stage = _refresh_feed_live_cache_for_date(
+                client=client,
+                date_str=str(prior_date),
+                season=int(prior_season),
+            )
+            if int(refresh_stage.get("error_count") or 0) > 0:
+                report["warnings"].append(
+                    f"prior-day feed/live refresh had {int(refresh_stage.get('error_count') or 0)} fetch error(s)"
+                )
+        except Exception as exc:
+            refresh_stage = {
+                "status": "error",
+                "date": str(prior_date),
+                "season": int(prior_season),
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            report["errors"].append(f"prior-day feed/live refresh failed: {type(exc).__name__}: {exc}")
+    else:
+        refresh_stage = {
+            "status": "skipped",
+            "date": str(prior_date),
+            "season": int(prior_season),
+            "reason": "refresh_prior_feed_live=off",
+        }
+    report["stages"]["prior_day_feed_live_refresh"] = refresh_stage
+
+    settlement_stage: Dict[str, Any]
+    prior_card_path = game_out / f"daily_summary_{prior_token}_locked_policy.json"
+    if str(getattr(args, "settle_prior_card", "on") or "on") == "on":
+        if prior_card_path.exists() and prior_card_path.is_file():
+            print(f"[ui-daily] Settling prior-day locked card for {prior_date}...")
+            try:
+                settled_card = _settle_card(prior_card_path)
+                _ensure_dir(settlement_path.parent)
+                _write_json(settlement_path, settled_card)
+                settlement_stage = {
+                    "status": "ok",
+                    "date": str(prior_date),
+                    "card_path": _relative_path_str(prior_card_path),
+                    "settlement_path": _relative_path_str(settlement_path),
+                    "selected_counts": dict(settled_card.get("selected_counts") or {}),
+                    "playable_selected_counts": dict(settled_card.get("playable_selected_counts") or {}),
+                    "all_selected_counts": dict(settled_card.get("all_selected_counts") or {}),
+                    "results": dict(settled_card.get("results") or {}),
+                    "playable_results": dict(settled_card.get("playable_results") or {}),
+                    "all_results": dict(settled_card.get("all_results") or {}),
+                    "settled_n": int(settled_card.get("settled_n") or 0),
+                    "playable_settled_n": int(settled_card.get("playable_settled_n") or 0),
+                    "all_settled_n": int(settled_card.get("all_settled_n") or 0),
+                    "unresolved_n": int(settled_card.get("unresolved_n") or 0),
+                    "playable_unresolved_n": int(settled_card.get("playable_unresolved_n") or 0),
+                    "all_unresolved_n": int(settled_card.get("all_unresolved_n") or 0),
+                }
+                if int(settlement_stage.get("all_unresolved_n") or 0) > 0:
+                    report["warnings"].append(
+                        f"prior-day card settlement left {int(settlement_stage.get('all_unresolved_n') or 0)} unresolved recommendation(s)"
+                    )
+            except Exception as exc:
+                settlement_stage = {
+                    "status": "error",
+                    "date": str(prior_date),
+                    "card_path": _relative_path_str(prior_card_path),
+                    "settlement_path": _relative_path_str(settlement_path),
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+                report["errors"].append(f"prior-day card settlement failed: {type(exc).__name__}: {exc}")
+        else:
+            settlement_stage = {
+                "status": "skipped",
+                "date": str(prior_date),
+                "card_path": _relative_path_str(prior_card_path),
+                "reason": "prior-day locked-policy card not found",
+            }
+    else:
+        settlement_stage = {
+            "status": "skipped",
+            "date": str(prior_date),
+            "card_path": _relative_path_str(prior_card_path),
+            "reason": "settle_prior_card=off",
+        }
+    report["stages"]["prior_day_card_settlement"] = settlement_stage
+
+    prior_eval_stage: Dict[str, Any]
+    publish_stage: Dict[str, Any]
+    if str(getattr(args, "refresh_season_manifests", "on") or "on") == "on":
+        refresh_games_scheduled = int((refresh_stage.get("regular_season_games_scheduled") or 0)) if isinstance(refresh_stage, dict) else 0
+        if str(refresh_stage.get("status") or "") == "skipped":
+            try:
+                client = StatsApiClient.with_default_cache(ttl_seconds=int(args.cache_ttl_hours * 3600))
+                refresh_games_scheduled = int(
+                    sum(
+                        1
+                        for game in (fetch_schedule_for_date(client, str(prior_date)) or [])
+                        if str((game or {}).get("gameType") or "").strip().upper() == "R"
+                    )
+                )
+            except Exception:
+                refresh_games_scheduled = 0
+
+        if refresh_games_scheduled <= 0:
+            prior_eval_stage = {
+                "status": "skipped",
+                "date": str(prior_date),
+                "report_path": _relative_path_str(prior_report_path),
+                "reason": "no scheduled prior-day regular-season games",
+            }
+            publish_stage = {
+                "status": "skipped",
+                "season": int(args.season),
+                "batch_dir": _relative_path_str(season_batch_dir),
+                "reason": "no prior-day report to publish",
+            }
+        else:
+            print(f"[ui-daily] Reconciling prior-day season report for {prior_date}...")
+            _ensure_dir(season_batch_dir)
+            lineups_last_known_path = game_out / "lineups_last_known_by_team.json"
+            eval_cmd = _build_prior_eval_command(
+                args=args,
+                prior_date=str(prior_date),
+                prior_season=int(prior_season),
+                out_path=prior_report_path,
+                daily_snapshots_root=(game_out / "snapshots"),
+                lineups_last_known_path=(lineups_last_known_path if lineups_last_known_path.exists() else None),
+            )
+            prior_eval_stage = {
+                "status": "ok",
+                "date": str(prior_date),
+                "batch_dir": _relative_path_str(season_batch_dir),
+                "report_path": _relative_path_str(prior_report_path),
+                "command": [str(part) for part in eval_cmd],
+            }
+            try:
+                eval_rc = subprocess.run(eval_cmd, check=False).returncode
+                prior_eval_stage["exit_code"] = int(eval_rc)
+                prior_eval_stage["report_exists"] = bool(prior_report_path.exists())
+                if eval_rc != 0 or not prior_report_path.exists():
+                    prior_eval_stage["status"] = "error"
+                    report["errors"].append(
+                        f"prior-day eval report refresh failed for {prior_date}"
+                    )
+                    publish_stage = {
+                        "status": "skipped",
+                        "season": int(args.season),
+                        "batch_dir": _relative_path_str(season_batch_dir),
+                        "reason": "prior-day eval report refresh failed",
+                    }
+                else:
+                    print(f"[ui-daily] Publishing rolling season manifests for {args.season}...")
+                    publish_stage = {
+                        "status": "ok",
+                        "season": int(args.season),
+                        "batch_dir": _relative_path_str(season_batch_dir),
+                    }
+                    try:
+                        publish_details = _publish_live_season_manifests(
+                            season=int(args.season),
+                            batch_dir=season_batch_dir,
+                            betting_profile=str(getattr(args, "season_betting_profile", "retuned") or "retuned"),
+                            season_dir=season_output_dir,
+                        )
+                        publish_stage.update(publish_details)
+                        if int(publish_stage.get("season_betting_exit_code") or 0) != 0:
+                            publish_stage["status"] = "error"
+                            report["errors"].append(
+                                f"season betting-card manifest publish failed with exit {int(publish_stage.get('season_betting_exit_code') or 0)}"
+                            )
+                    except Exception as exc:
+                        publish_stage["status"] = "error"
+                        publish_stage["error"] = f"{type(exc).__name__}: {exc}"
+                        report["errors"].append(f"season manifest publish failed: {type(exc).__name__}: {exc}")
+            except Exception as exc:
+                prior_eval_stage["status"] = "error"
+                prior_eval_stage["error"] = f"{type(exc).__name__}: {exc}"
+                report["errors"].append(f"prior-day eval report refresh failed: {type(exc).__name__}: {exc}")
+                publish_stage = {
+                    "status": "skipped",
+                    "season": int(args.season),
+                    "batch_dir": _relative_path_str(season_batch_dir),
+                    "reason": "prior-day eval report refresh failed",
+                }
+    else:
+        prior_eval_stage = {
+            "status": "skipped",
+            "date": str(prior_date),
+            "report_path": _relative_path_str(prior_report_path),
+            "reason": "refresh_season_manifests=off",
+        }
+        publish_stage = {
+            "status": "skipped",
+            "season": int(args.season),
+            "batch_dir": _relative_path_str(season_batch_dir),
+            "reason": "refresh_season_manifests=off",
+        }
+    report["stages"]["prior_day_eval_report"] = prior_eval_stage
+    report["stages"]["season_publish"] = publish_stage
+
+    odds_stage: Dict[str, Any]
+    if str(getattr(args, "refresh_current_oddsapi", "on") or "on") == "on":
+        print(f"[ui-daily] Fetching current-day OddsAPI markets for {args.date}...")
+        try:
+            hitter_markets = [
+                part.strip()
+                for part in str(getattr(args, "current_oddsapi_hitter_markets", "") or "").split(",")
+                if part.strip()
+            ]
+            odds_stage = fetch_and_write_live_odds_for_date(
+                str(args.date),
+                overwrite=(str(getattr(args, "current_oddsapi_overwrite", "on") or "on") == "on"),
+                regions=str(getattr(args, "current_oddsapi_regions", "us") or "us"),
+                bookmakers=(
+                    str(getattr(args, "current_oddsapi_bookmakers", "") or "").strip() or None
+                ),
+                hitter_markets=(hitter_markets or None),
+            )
+            game_counts = dict(((odds_stage.get("counts") or {}).get("game_lines") or {}))
+            pitcher_counts = dict(((odds_stage.get("counts") or {}).get("pitcher_props") or {}))
+            hitter_counts = dict(((odds_stage.get("counts") or {}).get("hitter_props") or {}))
+            odds_warnings: List[str] = []
+            if int(game_counts.get("games") or 0) <= 0:
+                odds_warnings.append("current-day OddsAPI ingest captured no game lines")
+            elif int(game_counts.get("h2h_games") or 0) > 0 and int(game_counts.get("totals_games") or 0) <= 0:
+                odds_warnings.append("current-day OddsAPI game lines currently expose moneylines without totals")
+            if int(pitcher_counts.get("players") or 0) <= 0:
+                odds_warnings.append("current-day OddsAPI ingest captured no pitcher props")
+            if int(hitter_counts.get("players") or 0) <= 0:
+                odds_warnings.append("current-day OddsAPI ingest captured no hitter props")
+            if odds_warnings and str(odds_stage.get("status") or "") == "ok":
+                odds_stage["status"] = "warning"
+            if odds_warnings:
+                odds_stage["warnings"] = list(odds_warnings)
+                report["warnings"].extend(list(odds_warnings))
+        except Exception as exc:
+            odds_stage = {
+                "status": "warning",
+                "date": str(args.date),
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            report["warnings"].append(f"current-day OddsAPI ingest failed: {type(exc).__name__}: {exc}")
+    else:
+        odds_stage = {
+            "status": "skipped",
+            "date": str(args.date),
+            "reason": "refresh_current_oddsapi=off",
+        }
+    report["stages"]["current_day_oddsapi"] = odds_stage
+
+    print(f"[ui-daily] Building current-day multi-profile outputs for {args.date}...")
+    passthrough_args = _strip_cli_args(
+        list(raw_argv),
+        flags_with_values=(
+            "--workflow",
+            "--date",
+            "--season",
+            "--out",
+            "--workflow-out-pitcher",
+            "--workflow-out-hitter",
+            "--reconcile-date",
+            "--refresh-prior-feed-live",
+            "--settle-prior-card",
+            "--prior-card-settlement-out",
+            "--ops-report-out",
+            "--refresh-current-oddsapi",
+            "--current-oddsapi-overwrite",
+            "--current-oddsapi-regions",
+            "--current-oddsapi-bookmakers",
+            "--current-oddsapi-hitter-markets",
+        ),
+        flags_no_values=(),
+    )
+    multi_profile_py = (_ROOT / "tools" / "daily_update_multi_profile.py").resolve()
+    cmd = [
+        sys.executable,
+        str(multi_profile_py),
+        "--date",
+        str(args.date),
+        "--season",
+        str(int(args.season)),
+        "--python-exe",
+        str(Path(sys.executable).resolve()),
+        "--out-game",
+        str(game_out),
+        "--out-pitcher",
+        str(pitcher_out),
+        "--out-hitter",
+        str(hitter_out),
+    ]
+    cmd.extend(passthrough_args)
+    current_stage: Dict[str, Any] = {
+        "status": "ok",
+        "command": [str(part) for part in cmd],
+        "summary_path": _relative_path_str(game_out / f"daily_summary_{token}.json"),
+        "profile_bundle_path": _relative_path_str(game_out / f"daily_summary_{token}_profile_bundle.json"),
+        "locked_policy_path": _relative_path_str(game_out / f"daily_summary_{token}_locked_policy.json"),
+    }
+    try:
+        rc = subprocess.run(cmd, check=False).returncode
+        current_stage["exit_code"] = int(rc)
+        summary_path = game_out / f"daily_summary_{token}.json"
+        bundle_path = game_out / f"daily_summary_{token}_profile_bundle.json"
+        locked_path = game_out / f"daily_summary_{token}_locked_policy.json"
+        current_stage["summary_exists"] = bool(summary_path.exists())
+        current_stage["profile_bundle_exists"] = bool(bundle_path.exists())
+        current_stage["locked_policy_exists"] = bool(locked_path.exists())
+        if rc != 0:
+            current_stage["status"] = "error"
+            report["errors"].append(f"current-day multi-profile build failed with exit {rc}")
+        else:
+            missing = [
+                name
+                for name, path in (
+                    ("daily_summary", summary_path),
+                    ("profile_bundle", bundle_path),
+                )
+                if not path.exists()
+            ]
+            if missing:
+                current_stage["status"] = "error"
+                current_stage["missing_outputs"] = list(missing)
+                report["errors"].append(
+                    "current-day multi-profile build completed without expected output(s): " + ", ".join(missing)
+                )
+            elif not locked_path.exists():
+                current_stage["status"] = "warning"
+                report["warnings"].append("current-day locked-policy card was not written")
+    except Exception as exc:
+        current_stage["status"] = "error"
+        current_stage["error"] = f"{type(exc).__name__}: {exc}"
+        report["errors"].append(f"current-day multi-profile build failed: {type(exc).__name__}: {exc}")
+    report["stages"]["current_day_multi_profile"] = current_stage
+
+    current_inputs = _current_day_inputs_stage(game_out=game_out, date_str=str(args.date))
+    report["stages"]["current_day_roster_snapshot"] = current_inputs["roster_snapshot"]
+    report["stages"]["current_day_batting_lineups"] = current_inputs["batting_lineups"]
+    report["stages"]["current_day_probable_pitchers"] = current_inputs["probable_pitchers"]
+    lineup_stage = current_inputs["batting_lineups"]
+    if int(lineup_stage.get("adjusted_teams") or 0) > 0:
+        report["warnings"].append(
+            f"current-day lineup validation adjusted projected lineups for {int(lineup_stage.get('adjusted_teams') or 0)} team(s)"
+        )
+    if int(lineup_stage.get("partial_teams") or 0) > 0:
+        report["warnings"].append(
+            f"current-day lineup validation remained partial for {int(lineup_stage.get('partial_teams') or 0)} team(s)"
+        )
+    for stage_name in (
+        "current_day_roster_snapshot",
+        "current_day_batting_lineups",
+        "current_day_probable_pitchers",
+    ):
+        stage_status = str(((report.get("stages") or {}).get(stage_name) or {}).get("status") or "")
+        if stage_status == "missing":
+            report["errors"].append(f"{stage_name} artifact missing after current-day build")
+
+    if report["errors"]:
+        status = "error"
+    elif report["warnings"]:
+        status = "partial"
+    else:
+        status = "ok"
+    report["status"] = status
+
+    _ensure_dir(ops_report_path.parent)
+    _write_json(ops_report_path, report)
+    print(f"[ui-daily] Wrote ops report: {ops_report_path}")
+
+    if str(report.get("status") or "") == "error":
+        return int((report.get("stages") or {}).get("current_day_multi_profile", {}).get("exit_code") or 1)
+    return 0
+
+
+def _apply_umpire_shrink(umpire, shrink: float) -> None:
+    """Shrink umpire.called_strike_mult toward 1.0.
+
+    shrink=1.0 keeps the raw value.
+    shrink=0.0 forces neutral (1.0).
+    """
+
+    if umpire is None:
+        return
+
+    try:
+        s = float(shrink)
+    except Exception:
+        s = 1.0
+
+    if s >= 0.999:
+        return
+    if s <= 0.0:
+        umpire.called_strike_mult = 1.0
+        return
+
+    try:
+        old = float(getattr(umpire, "called_strike_mult", 1.0) or 1.0)
+    except Exception:
+        old = 1.0
+
+    umpire.called_strike_mult = float(1.0 + s * (old - 1.0))
+
+
+def _maybe_prefetch_statcast_x64(args: argparse.Namespace, snapshot_dir: Path) -> bool:
+    """Optionally pre-populate cached Statcast pitch splits via the x64 helper.
+
+    This is useful on Windows ARM64 where `pybaseball` may not install, but it can
+    be installed in a side-by-side x64 venv. The simulator reads cache-only.
+    """
+    mode = str(getattr(args, "statcast_x64_prefetch", "off") or "off").lower()
+    if mode == "off":
+        return False
+
+    report_path = snapshot_dir / "statcast_fetch_report.json"
+    ttl_hours = int(getattr(args, "statcast_cache_ttl_hours", 24 * 14) or (24 * 14))
+
+    # In auto mode, skip if we already fetched recently.
+    if mode == "auto" and report_path.exists():
+        try:
+            age_sec = max(0.0, (datetime.now().timestamp() - report_path.stat().st_mtime))
+            if age_sec < float(ttl_hours * 3600):
+                print(f"Statcast x64 prefetch: skip (fresh report: {report_path})")
+                return False
+        except Exception:
+            pass
+
+    # Determine x64 python.
+    x64_py = str(getattr(args, "statcast_x64_python", "") or "").strip()
+    if not x64_py:
+        default = _ROOT / ".venv_x64" / "Scripts" / "python.exe"
+        x64_py = str(default)
+
+    if not Path(x64_py).exists():
+        msg = f"Statcast x64 prefetch: missing x64 python at {x64_py}"
+        if mode == "force":
+            raise RuntimeError(msg)
+        print(msg)
+        return False
+
+    tool = _ROOT / "tools" / "statcast" / "fetch_pitcher_pitch_splits_x64.py"
+    cmd = [
+        x64_py,
+        str(tool),
+        "--date",
+        str(args.date),
+        "--season",
+        str(int(args.season)),
+        "--out-report",
+        str(report_path),
+    ]
+
+    print("Statcast x64 prefetch: running helper...")
+    try:
+        r = subprocess.run(cmd, check=False)
+        if r.returncode != 0:
+            if mode == "force":
+                raise RuntimeError(f"Statcast x64 helper failed with exit code {r.returncode}")
+            print(f"Statcast x64 prefetch: helper failed (exit {r.returncode}); continuing")
+            return False
+        return True
+    except Exception:
+        if mode == "force":
+            raise
+        print("Statcast x64 prefetch: error; continuing")
+        return False
+
+
+def _maybe_prefetch_umpire_factors_x64(args: argparse.Namespace, snapshot_dir: Path) -> bool:
+    """Optionally build Statcast-based umpire called-strike multipliers via the x64 helper.
+
+    The helper writes the local map at MLB-BettingV2/data/umpire/umpire_factors.json,
+    which the simulator reads at runtime.
+    """
+    mode = str(getattr(args, "umpire_x64_prefetch", "off") or "off").lower()
+    if mode == "off":
+        return False
+
+    report_path = snapshot_dir / "umpire_statcast_report.json"
+    ttl_hours = int(getattr(args, "umpire_x64_ttl_hours", 24 * 14) or (24 * 14))
+
+    # In auto mode, skip if we already fetched recently.
+    if mode == "auto" and report_path.exists():
+        try:
+            age_sec = max(0.0, (datetime.now().timestamp() - report_path.stat().st_mtime))
+            if age_sec < float(ttl_hours * 3600):
+                print(f"Umpire Statcast x64 prefetch: skip (fresh report: {report_path})")
+                return False
+        except Exception:
+            pass
+
+    # Determine x64 python.
+    x64_py = str(getattr(args, "umpire_x64_python", "") or "").strip()
+    if not x64_py:
+        default = _ROOT / ".venv_x64" / "Scripts" / "python.exe"
+        x64_py = str(default)
+
+    if not Path(x64_py).exists():
+        msg = f"Umpire Statcast x64 prefetch: missing x64 python at {x64_py}"
+        if mode == "force":
+            raise RuntimeError(msg)
+        print(msg)
+        return False
+
+    tool = _ROOT / "tools" / "statcast" / "fetch_umpire_factors_x64.py"
+    cmd = [
+        x64_py,
+        str(tool),
+        "--date",
+        str(args.date),
+        "--days-back",
+        str(int(getattr(args, "umpire_statcast_days_back", 21) or 21)),
+        "--min-pitches",
+        str(int(getattr(args, "umpire_statcast_min_pitches", 1500) or 1500)),
+        "--out-report",
+        str(report_path),
+    ]
+
+    print("Umpire Statcast x64 prefetch: running helper...")
+    try:
+        r = subprocess.run(cmd, check=False)
+        if r.returncode != 0:
+            if mode == "force":
+                raise RuntimeError(f"Umpire Statcast x64 helper failed with exit code {r.returncode}")
+            print(f"Umpire Statcast x64 prefetch: helper failed (exit {r.returncode}); continuing")
+            return False
+        return True
+    except Exception as e:
+        if mode == "force":
+            raise
+        print(f"Umpire Statcast x64 prefetch: error ({type(e).__name__}); continuing")
+        return False
+
+
+def _sim_many(
+    away_roster,
+    home_roster,
+    sims: int,
+    seed: int,
+    workers: int = 1,
+    weather=None,
+    park=None,
+    umpire=None,
+    hitter_hr_top_n: int = 0,
+    hitter_props_top_n: int = 24,
+    hitter_hr_prob_calibration: Optional[Dict[str, Any]] = None,
+    hitter_props_prob_calibration: Optional[Dict[str, Any]] = None,
+    pitcher_prop_ids: Optional[List[int]] = None,
+    cfg_kwargs: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    rng_seed = seed
+
+    away_abbr = str(getattr(getattr(away_roster, "team", None), "abbreviation", ""))
+    home_abbr = str(getattr(getattr(home_roster, "team", None), "abbreviation", ""))
+
+    try:
+        batter_meta = _build_batter_meta(away_roster, home_roster)
+    except Exception:
+        batter_meta = {}
+    try:
+        pitcher_meta = _build_pitcher_meta(away_roster, home_roster)
+    except Exception:
+        pitcher_meta = {}
+
+    hr_top_n = max(0, int(hitter_hr_top_n or 0))
+    props_top_n_raw = int(hitter_props_top_n or 0)
+    props_top_n = hr_top_n if props_top_n_raw < 0 else max(0, props_top_n_raw)
+    max_top_n = max(hr_top_n, props_top_n)
+    want_hitter = bool(batter_meta)
+    sum_stats: Dict[int, Dict[str, float]] = {}
+    ge_counts: Dict[str, Dict[int, int]] = {}
+    prop_ids = [int(x) for x in (pitcher_prop_ids or []) if int(x or 0) > 0]
+    prop_acc: Dict[int, Dict[str, Any]] = {}
+    hitter_prop_acc: Dict[int, Dict[str, Any]] = {}
+    pitcher_box_acc: Dict[int, Dict[str, Any]] = {}
+    for pid in prop_ids:
+        acc: Dict[str, Any] = {}
+        for dist_key, _row_key, mean_key in _PITCHER_PROP_DIST_SPECS:
+            acc[str(dist_key)] = {}
+            acc[str(mean_key)] = 0.0
+        prop_acc[int(pid)] = acc
+    if want_hitter and batter_meta:
+        for pid in batter_meta.keys():
+            acc = {}
+            for dist_key, _row_key, mean_key in _HITTER_PROP_DIST_SPECS:
+                acc[str(dist_key)] = {}
+                acc[str(mean_key)] = 0.0
+            hitter_prop_acc[int(pid)] = acc
+
+    def _stat(pid: int, key: str) -> float:
+        return float((sum_stats.get(int(pid)) or {}).get(key) or 0.0)
+
+    def _inc_sum(pid: int, key: str, v: float) -> None:
+        row = sum_stats.setdefault(int(pid), {})
+        row[key] = float(row.get(key, 0.0)) + float(v)
+
+    def _inc_ge(prop_key: str, pid: int) -> None:
+        m = ge_counts.setdefault(str(prop_key), {})
+        m[int(pid)] = int(m.get(int(pid), 0) + 1)
+
+    def _inc_ge_thresholds(prop_base: str, pid: int, value: int, max_threshold: int) -> None:
+        ivalue = int(value)
+        for threshold in range(1, int(max_threshold) + 1):
+            if ivalue < threshold:
+                break
+            _inc_ge(f"{prop_base}_{threshold}plus", pid)
+
+    def seg_score(r, innings: int) -> Dict[str, int]:
+        a = sum((r.away_inning_runs or [])[:innings])
+        h = sum((r.home_inning_runs or [])[:innings])
+        return {"away": int(a), "home": int(h)}
+
+    def init_seg():
+        return {
+            "home_wins": 0,
+            "away_wins": 0,
+            "ties": 0,
+            "away_runs_sum": 0.0,
+            "home_runs_sum": 0.0,
+            "totals": {},
+            "margins": {},
+            "samples": [],
+        }
+
+    seg_full = init_seg()
+    seg_f5 = init_seg()
+    seg_f3 = init_seg()
+
+    total_sims = int(max(1, sims))
+    workers = int(max(1, workers or 1))
+
+    def _merge_seg(dst: Dict[str, Any], src: Dict[str, Any]) -> None:
+        dst["home_wins"] += int(src.get("home_wins") or 0)
+        dst["away_wins"] += int(src.get("away_wins") or 0)
+        dst["ties"] += int(src.get("ties") or 0)
+        dst["away_runs_sum"] = float(dst.get("away_runs_sum", 0.0)) + float(src.get("away_runs_sum", 0.0) or 0.0)
+        dst["home_runs_sum"] = float(dst.get("home_runs_sum", 0.0)) + float(src.get("home_runs_sum", 0.0) or 0.0)
+        for k, v in (src.get("totals") or {}).items():
+            kk = int(k)
+            dst["totals"][kk] = dst["totals"].get(kk, 0) + int(v)
+        for k, v in (src.get("margins") or {}).items():
+            kk = int(k)
+            dst["margins"][kk] = dst["margins"].get(kk, 0) + int(v)
+        for s in (src.get("samples") or []):
+            if len(dst["samples"]) >= 50:
+                break
+            dst["samples"].append(s)
+
+    def _merge_sum_stats(src: Dict[int, Dict[str, float]]) -> None:
+        for pid, row in (src or {}).items():
+            dst_row = sum_stats.setdefault(int(pid), {})
+            for key, value in (row or {}).items():
+                dst_row[str(key)] = float(dst_row.get(str(key), 0.0)) + float(value or 0.0)
+
+    def _merge_ge_counts(src: Dict[str, Dict[int, int]]) -> None:
+        for prop_key, m in (src or {}).items():
+            dst_m = ge_counts.setdefault(str(prop_key), {})
+            for pid, c in (m or {}).items():
+                dst_m[int(pid)] = int(dst_m.get(int(pid), 0) + int(c))
+
+    def _merge_prop_acc(src: Dict[int, Dict[str, Any]]) -> None:
+        for pid, row in (src or {}).items():
+            dst_row = prop_acc.setdefault(int(pid), {})
+            for dist_key, _row_key, mean_key in _PITCHER_PROP_DIST_SPECS:
+                dst_row.setdefault(str(dist_key), {})
+                dst_row.setdefault(str(mean_key), 0.0)
+            for dist_key, _row_key, _mean_key in _PITCHER_PROP_DIST_SPECS:
+                src_dist = (row or {}).get(str(dist_key)) or {}
+                dst_dist = dst_row.setdefault(str(dist_key), {})
+                for bucket, count in src_dist.items():
+                    bucket_i = int(bucket)
+                    dst_dist[bucket_i] = int(dst_dist.get(bucket_i, 0) + int(count))
+            for _dist_key, _row_key, mean_key in _PITCHER_PROP_DIST_SPECS:
+                dst_row[str(mean_key)] = float(dst_row.get(str(mean_key), 0.0)) + float((row or {}).get(str(mean_key), 0.0) or 0.0)
+
+    def _merge_hitter_prop_acc(src: Dict[int, Dict[str, Any]]) -> None:
+        for pid, row in (src or {}).items():
+            dst_row = hitter_prop_acc.setdefault(int(pid), {})
+            for dist_key, _row_key, mean_key in _HITTER_PROP_DIST_SPECS:
+                dst_row.setdefault(str(dist_key), {})
+                dst_row.setdefault(str(mean_key), 0.0)
+            for dist_key, _row_key, _mean_key in _HITTER_PROP_DIST_SPECS:
+                src_dist = (row or {}).get(str(dist_key)) or {}
+                dst_dist = dst_row.setdefault(str(dist_key), {})
+                for bucket, count in src_dist.items():
+                    bucket_i = int(bucket)
+                    dst_dist[bucket_i] = int(dst_dist.get(bucket_i, 0) + int(count))
+            for _dist_key, _row_key, mean_key in _HITTER_PROP_DIST_SPECS:
+                dst_row[str(mean_key)] = float(dst_row.get(str(mean_key), 0.0)) + float((row or {}).get(str(mean_key), 0.0) or 0.0)
+
+    def _merge_pitcher_box_acc(src: Dict[int, Dict[str, Any]]) -> None:
+        for pid, row in (src or {}).items():
+            dst_row = pitcher_box_acc.setdefault(int(pid), _new_pitcher_box_acc_row())
+            for key in _PITCHER_BOX_KEYS:
+                dst_row[key] = float(dst_row.get(key, 0.0)) + float((row or {}).get(key, 0.0) or 0.0)
+            dst_row["appearances"] = int(dst_row.get("appearances", 0) or 0) + int((row or {}).get("appearances", 0) or 0)
+
+    batter_ids = [int(pid) for pid in batter_meta.keys()] if batter_meta else []
+    cfg_kwargs = dict(cfg_kwargs or {})
+    if workers > 1 and total_sims > 1:
+        ctx = multiprocessing.get_context("spawn")
+        chunk_count = min(int(workers), int(total_sims))
+        chunk_size = int(math.ceil(float(total_sims) / float(chunk_count)))
+        chunks = []
+        start = 0
+        while start < total_sims:
+            n = min(chunk_size, total_sims - start)
+            chunks.append((int(start), int(n)))
+            start += n
+
+        with ProcessPoolExecutor(
+            max_workers=int(chunk_count),
+            mp_context=ctx,
+            initializer=_simw_init,
+            initargs=(
+                away_roster,
+                home_roster,
+                int(rng_seed),
+                weather,
+                park,
+                umpire,
+                bool(want_hitter),
+                batter_ids,
+                prop_ids,
+                cfg_kwargs,
+            ),
+        ) as ex:
+            futures = [ex.submit(_simw_chunk, st, n) for st, n in chunks]
+            for fut in futures:
+                res = fut.result()
+                _merge_seg(seg_full, res.get("seg_full") or {})
+                _merge_seg(seg_f5, res.get("seg_f5") or {})
+                _merge_seg(seg_f3, res.get("seg_f3") or {})
+                _merge_sum_stats(res.get("sum_stats") or {})
+                _merge_ge_counts(res.get("ge_counts") or {})
+                _merge_prop_acc(res.get("prop_acc") or {})
+                _merge_hitter_prop_acc(res.get("hitter_prop_acc") or {})
+                _merge_pitcher_box_acc(res.get("pitcher_box_acc") or {})
+    else:
+        for i in range(total_sims):
+            cfg = GameConfig(rng_seed=rng_seed + i, weather=weather, park=park, umpire=umpire, **cfg_kwargs)
+            r = simulate_game(away_roster, home_roster, cfg)
+
+            ps = r.pitcher_stats or {}
+            if ps:
+                for pid_raw, row in ps.items():
+                    try:
+                        pid = int(pid_raw)
+                    except Exception:
+                        continue
+                    if pid <= 0 or not isinstance(row, dict):
+                        continue
+                    _accumulate_pitcher_box_row(pitcher_box_acc, int(pid), row)
+
+            if prop_ids:
+                for pid in prop_ids:
+                    row = ps.get(int(pid)) or {}
+                    acc = prop_acc[int(pid)]
+                    for dist_key, row_key, mean_key in _PITCHER_PROP_DIST_SPECS:
+                        try:
+                            value = int(round(float(row.get(str(row_key)) or 0.0)))
+                        except Exception:
+                            value = 0
+                        dist = acc.setdefault(str(dist_key), {})
+                        dist[int(value)] = int(dist.get(int(value), 0) + 1)
+                        acc[str(mean_key)] = float(acc.get(str(mean_key), 0.0) or 0.0) + float(value)
+
+            if want_hitter and batter_meta:
+                bs = r.batter_stats or {}
+                for pid in batter_meta.keys():
+                    row = bs.get(int(pid)) or {}
+                    try:
+                        pa = int(row.get("PA") or 0)
+                        ab = int(row.get("AB") or 0)
+                        h = int(row.get("H") or 0)
+                        d2 = int(row.get("2B") or 0)
+                        d3 = int(row.get("3B") or 0)
+                        hr = int(row.get("HR") or 0)
+                        rr = int(row.get("R") or 0)
+                        rbi = int(row.get("RBI") or 0)
+                        bb = int(row.get("BB") or 0)
+                        so = int(row.get("SO") or 0)
+                        hbp = int(row.get("HBP") or 0)
+                        sb = int(row.get("SB") or 0)
+                    except Exception:
+                        continue
+                    tb = int(h + d2 + 2 * d3 + 3 * hr)
+                    hitter_stat_values = {
+                        "H": h,
+                        "HR": hr,
+                        "TB": tb,
+                        "R": rr,
+                        "RBI": rbi,
+                        "2B": d2,
+                        "3B": d3,
+                        "SB": sb,
+                    }
+
+                    _inc_sum(pid, "PA", pa)
+                    _inc_sum(pid, "AB", ab)
+                    _inc_sum(pid, "H", h)
+                    _inc_sum(pid, "2B", d2)
+                    _inc_sum(pid, "3B", d3)
+                    _inc_sum(pid, "HR", hr)
+                    _inc_sum(pid, "R", rr)
+                    _inc_sum(pid, "RBI", rbi)
+                    _inc_sum(pid, "BB", bb)
+                    _inc_sum(pid, "SO", so)
+                    _inc_sum(pid, "HBP", hbp)
+                    _inc_sum(pid, "SB", sb)
+                    _inc_sum(pid, "TB", tb)
+
+                    acc = hitter_prop_acc.setdefault(int(pid), {})
+                    for dist_key, row_key, mean_key in _HITTER_PROP_DIST_SPECS:
+                        value = int(hitter_stat_values.get(str(row_key), 0))
+                        dist = acc.setdefault(str(dist_key), {})
+                        dist[int(value)] = int(dist.get(int(value), 0) + 1)
+                        acc[str(mean_key)] = float(acc.get(str(mean_key), 0.0) or 0.0) + float(value)
+
+                    _inc_ge_thresholds("hits", pid, h, 3)
+                    if d2 >= 1:
+                        _inc_ge("doubles_1plus", pid)
+                    if d3 >= 1:
+                        _inc_ge("triples_1plus", pid)
+                    if hr >= 1:
+                        _inc_ge("hr_1plus", pid)
+                    _inc_ge_thresholds("runs", pid, rr, 3)
+                    _inc_ge_thresholds("rbi", pid, rbi, 4)
+                    _inc_ge_thresholds("total_bases", pid, tb, 5)
+                    if sb >= 1:
+                        _inc_ge("sb_1plus", pid)
+
+            full = {"away": int(r.away_score), "home": int(r.home_score)}
+            f5 = seg_score(r, 5)
+            f3 = seg_score(r, 3)
+
+            for seg, score in ((seg_full, full), (seg_f5, f5), (seg_f3, f3)):
+                if len(seg["samples"]) < 50:
+                    seg["samples"].append(score)
+                seg["away_runs_sum"] = float(seg.get("away_runs_sum", 0.0)) + float(score["away"])
+                seg["home_runs_sum"] = float(seg.get("home_runs_sum", 0.0)) + float(score["home"])
+                tot = int(score["away"] + score["home"])
+                seg["totals"][tot] = seg["totals"].get(tot, 0) + 1
+                margin = int(score["home"] - score["away"])
+                seg["margins"][margin] = seg["margins"].get(margin, 0) + 1
+                if score["home"] > score["away"]:
+                    seg["home_wins"] += 1
+                elif score["away"] > score["home"]:
+                    seg["away_wins"] += 1
+                else:
+                    seg["ties"] += 1
+
+    denom = float(max(1, sims))
+
+    def finalize(seg: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "home_win_prob": seg["home_wins"] / denom,
+            "away_win_prob": seg["away_wins"] / denom,
+            "tie_prob": seg["ties"] / denom,
+            "away_runs_mean": float(seg.get("away_runs_sum", 0.0)) / denom,
+            "home_runs_mean": float(seg.get("home_runs_sum", 0.0)) / denom,
+            "total_runs_dist": seg["totals"],
+            "run_margin_dist": seg["margins"],
+            "samples": seg["samples"],
+        }
+
+    out: Dict[str, Any] = {
+        "sims": sims,
+        "segments": {
+            "full": finalize(seg_full),
+            "first5": finalize(seg_f5),
+            "first3": finalize(seg_f3),
+        },
+    }
+
+    out["aggregate_boxscore"] = _build_aggregate_boxscore(
+        sims=int(sims),
+        full_segment=out["segments"]["full"],
+        batter_meta=batter_meta,
+        sum_stats=sum_stats,
+        pitcher_meta=pitcher_meta,
+        pitcher_box_acc=pitcher_box_acc,
+    )
+
+    if prop_acc:
+        out["pitcher_props"] = {
+            str(int(pid)): {
+                **{
+                    f"{dist_key}_dist": {str(int(k)): int(v) for k, v in (acc.get(str(dist_key)) or {}).items()}
+                    for dist_key, _row_key, _mean_key in _PITCHER_PROP_DIST_SPECS
+                },
+                **{
+                    str(mean_key): float(acc.get(str(mean_key), 0.0)) / float(max(1, sims))
+                    for _dist_key, _row_key, mean_key in _PITCHER_PROP_DIST_SPECS
+                },
+            }
+            for pid, acc in prop_acc.items()
+        }
+
+    if want_hitter and batter_meta and sims > 0:
+        denom_sims = float(max(1, int(sims)))
+        eligible_batter_ids = [
+            int(pid) for pid, meta in (batter_meta or {}).items() if bool((meta or {}).get("is_lineup_batter"))
+        ]
+        if not eligible_batter_ids:
+            eligible_batter_ids = [
+                int(pid) for pid, meta in (batter_meta or {}).items() if isinstance((meta or {}).get("order"), int)
+            ]
+        if not eligible_batter_ids:
+            eligible_batter_ids = [int(pid) for pid in batter_meta.keys()]
+
+        def _p(prop_key: str, pid: int) -> float:
+            return float((ge_counts.get(str(prop_key)) or {}).get(int(pid), 0)) / denom_sims
+
+        def _row(pid: int, prop_key: str, p_field: str, stat_key: str, mean_field: str) -> Dict[str, Any]:
+            meta = batter_meta.get(int(pid)) or {}
+            p0 = _p(prop_key, int(pid))
+            p_cal = apply_prop_prob_calibration(float(p0), hitter_props_prob_calibration, prop_key=str(prop_key))
+            if str(prop_key) == "hr_1plus":
+                p_cal = apply_prop_prob_calibration(float(p0), hitter_hr_prob_calibration, prop_key="hr_1plus")
+
+            return {
+                "batter_id": int(pid),
+                "name": str(meta.get("name") or ""),
+                "team": str(meta.get("team") or ""),
+                str(p_field): float(p0),
+                str(p_field) + "_cal": float(p_cal),
+                str(mean_field): float(_stat(pid, str(stat_key))) / denom_sims,
+                "pa_mean": float(_stat(pid, "PA")) / denom_sims,
+                "ab_mean": float(_stat(pid, "AB")) / denom_sims,
+                "lineup_order": meta.get("order"),
+                "is_lineup_batter": bool(meta.get("is_lineup_batter")),
+            }
+
+        # HR top-N
+        if int(hr_top_n) > 0:
+            rows = []
+            for pid in eligible_batter_ids:
+                rows.append(
+                    {
+                        "batter_id": int(pid),
+                        "name": str((batter_meta.get(int(pid)) or {}).get("name") or ""),
+                        "team": str((batter_meta.get(int(pid)) or {}).get("team") or ""),
+                        "p_hr_1plus": float(_p("hr_1plus", int(pid))),
+                        "p_hr_1plus_cal": float(
+                            apply_prop_prob_calibration(
+                                float(_p("hr_1plus", int(pid))), hitter_hr_prob_calibration, prop_key="hr_1plus"
+                            )
+                        ),
+                        "hr_mean": float(_stat(pid, "HR")) / denom_sims,
+                        "pa_mean": float(_stat(pid, "PA")) / denom_sims,
+                        "ab_mean": float(_stat(pid, "AB")) / denom_sims,
+                        "lineup_order": (batter_meta.get(int(pid)) or {}).get("order"),
+                        "is_lineup_batter": bool((batter_meta.get(int(pid)) or {}).get("is_lineup_batter")),
+                    }
+                )
+            rows.sort(key=lambda r: float(r.get("p_hr_1plus") or 0.0), reverse=True)
+            out["hitter_hr_likelihood_topn"] = {"n": int(hr_top_n), "overall": rows[: int(hr_top_n)]}
+
+        # Other hitter props top-N
+        if int(props_top_n) > 0:
+            mapping = {
+                "hits_1plus": ("p_h_1plus", "H", "h_mean"),
+                "hits_2plus": ("p_h_2plus", "H", "h_mean"),
+                "hits_3plus": ("p_h_3plus", "H", "h_mean"),
+                "doubles_1plus": ("p_2b_1plus", "2B", "2b_mean"),
+                "triples_1plus": ("p_3b_1plus", "3B", "3b_mean"),
+                "runs_1plus": ("p_r_1plus", "R", "r_mean"),
+                "runs_2plus": ("p_r_2plus", "R", "r_mean"),
+                "runs_3plus": ("p_r_3plus", "R", "r_mean"),
+                "rbi_1plus": ("p_rbi_1plus", "RBI", "rbi_mean"),
+                "rbi_2plus": ("p_rbi_2plus", "RBI", "rbi_mean"),
+                "rbi_3plus": ("p_rbi_3plus", "RBI", "rbi_mean"),
+                "rbi_4plus": ("p_rbi_4plus", "RBI", "rbi_mean"),
+                "total_bases_1plus": ("p_tb_1plus", "TB", "tb_mean"),
+                "total_bases_2plus": ("p_tb_2plus", "TB", "tb_mean"),
+                "total_bases_3plus": ("p_tb_3plus", "TB", "tb_mean"),
+                "total_bases_4plus": ("p_tb_4plus", "TB", "tb_mean"),
+                "total_bases_5plus": ("p_tb_5plus", "TB", "tb_mean"),
+                "sb_1plus": ("p_sb_1plus", "SB", "sb_mean"),
+            }
+            props_out: Dict[str, Any] = {"n": int(props_top_n)}
+            for prop_key, (p_field, stat_key, mean_field) in mapping.items():
+                rows = [_row(pid, prop_key, p_field, stat_key, mean_field) for pid in eligible_batter_ids]
+                rows.sort(key=lambda r: float(r.get(p_field) or 0.0), reverse=True)
+                props_out[str(prop_key)] = rows[: int(props_top_n)]
+            out["hitter_props_likelihood_topn"] = props_out
+
+    if hitter_prop_acc and batter_meta and sims > 0:
+        out["hitter_props"] = {
+            str(int(pid)): {
+                "batter_id": int(pid),
+                "name": str((batter_meta.get(int(pid)) or {}).get("name") or ""),
+                "team": str((batter_meta.get(int(pid)) or {}).get("team") or ""),
+                "lineup_order": (batter_meta.get(int(pid)) or {}).get("order"),
+                "is_lineup_batter": bool((batter_meta.get(int(pid)) or {}).get("is_lineup_batter")),
+                "pa_mean": float(_stat(int(pid), "PA")) / denom,
+                "ab_mean": float(_stat(int(pid), "AB")) / denom,
+                **{
+                    f"{dist_key}_dist": {str(int(k)): int(v) for k, v in (acc.get(str(dist_key)) or {}).items()}
+                    for dist_key, _row_key, _mean_key in _HITTER_PROP_DIST_SPECS
+                },
+                **{
+                    str(mean_key): float(acc.get(str(mean_key), 0.0)) / float(max(1, sims))
+                    for _dist_key, _row_key, mean_key in _HITTER_PROP_DIST_SPECS
+                },
+            }
+            for pid, acc in hitter_prop_acc.items()
+        }
+
+    return out
+
+
+def _load_json_cfg(path_str: str) -> Optional[Dict[str, Any]]:
+    s = str(path_str or "").strip()
+    if not s or s.lower() in ("off", "false", "0", "none", "null"):
+        return None
+    p = Path(s)
+    if not p.is_absolute():
+        p = _ROOT / p
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _load_jsonish(val: str) -> Optional[Dict[str, Any]]:
+    s = str(val or "").strip()
+    if not s or s.lower() in ("off", "false", "0", "none", "null"):
+        return None
+    try:
+        if s.startswith("{"):
+            obj = json.loads(s)
+        else:
+            p = Path(s)
+            if not p.is_absolute():
+                p = _ROOT / p
+            if not p.exists():
+                return None
+            obj = json.loads(p.read_text(encoding="utf-8"))
+        return obj if isinstance(obj, dict) else None
+    except Exception:
+        return None
+
+
+def _coerce_pitch_model_scalar(field: str, raw_val: str) -> Any:
+    """Parse and coerce a PitchModelConfig scalar field override.
+
+    Accepts values as JSON when possible (e.g. 0.15, true, "name").
+    Falls back to raw string. Only scalar PitchModelConfig fields are allowed.
+    """
+
+    allowed_fields = set(PitchModelConfig.__dataclass_fields__.keys())
+    if field not in allowed_fields:
+        raise ValueError(f"Unknown PitchModelConfig field: {field}")
+
+    # Only allow scalar typed fields via this path.
+    # PitchModelConfig uses postponed annotations, so resolve via get_type_hints.
+    ftype = get_type_hints(PitchModelConfig).get(field, PitchModelConfig.__dataclass_fields__[field].type)
+    if ftype not in (float, int, str, bool):
+        raise ValueError(f"Field is not a supported scalar type for --pm-set: {field}")
+
+    s = str(raw_val).strip()
+    if s == "":
+        raise ValueError(f"Empty value for --pm-set {field}=")
+
+    parsed: Any
+    try:
+        # Handle common Python-ish literals.
+        if s in ("True", "False", "None"):
+            s = {"True": "true", "False": "false", "None": "null"}[s]
+        parsed = json.loads(s)
+    except Exception:
+        parsed = s
+
+    if isinstance(parsed, (dict, list)):
+        raise ValueError(f"Non-scalar value not supported for --pm-set: {field}")
+
+    if ftype is float:
+        return float(parsed)
+    if ftype is int:
+        return int(parsed)
+    if ftype is bool:
+        if isinstance(parsed, bool):
+            return bool(parsed)
+        if isinstance(parsed, str):
+            v = parsed.strip().lower()
+            if v in ("true", "1", "yes", "y", "on"):
+                return True
+            if v in ("false", "0", "no", "n", "off"):
+                return False
+        return bool(parsed)
+    return str(parsed)
+
+
+def _parse_json_scalar(raw_val: str) -> Any:
+    s = str(raw_val).strip()
+    if s == "":
+        raise ValueError("empty value")
+    try:
+        if s in ("True", "False", "None"):
+            s = {"True": "true", "False": "false", "None": "null"}[s]
+        v = json.loads(s)
+    except Exception:
+        v = s
+    if isinstance(v, (dict, list)):
+        raise ValueError("non-scalar value")
+    return v
+
+
+def _set_nested_scalar(cfg: Dict[str, Any], dotted_key: str, value: Any) -> None:
+    """Set a nested dict value using a dotted key path.
+
+    Examples:
+      - mode=affine_logit
+      - default.mode=tail_shrink
+      - props.hr_1plus.a=0.95
+    """
+
+    parts = [p for p in str(dotted_key or "").split(".") if str(p).strip()]
+    if not parts:
+        raise ValueError("empty key")
+
+    cur: Dict[str, Any] = cfg
+    for p in parts[:-1]:
+        nxt = cur.get(p)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            cur[p] = nxt
+        cur = nxt
+    cur[parts[-1]] = value
+
+
+def _scale_affine_logit_params_toward_identity(a: float, b: float, scale: float) -> Tuple[float, float]:
+    """Scale affine-logit calibration toward identity (a=1,b=0).
+
+    scale=1.0 keeps params as-is.
+    scale=0.0 turns calibration off (identity).
+    """
+
+    s = float(scale)
+    if not math.isfinite(s):
+        raise ValueError(f"non-finite scale: {scale}")
+    # Allow slight extrapolation, but clamp to avoid truly wild params.
+    s = float(max(-1.0, min(2.0, s)))
+    aa = float(a)
+    bb = float(b)
+    return (1.0 + (aa - 1.0) * s, bb * s)
+
+
+def _apply_prop_calibration_scale(cfg: Optional[Dict[str, Any]], prop_key: str, scale: float) -> Optional[Dict[str, Any]]:
+    """Apply a scale override for a single prop block in a per-prop wrapper calibration."""
+
+    if not isinstance(cfg, dict) or not cfg:
+        return cfg
+
+    props = cfg.get("props")
+    if not isinstance(props, dict):
+        raise ValueError("calibration cfg is missing 'props' dict; cannot apply per-prop scaling")
+
+    key = str(prop_key)
+    if key == "default":
+        blk = cfg.get("default")
+        if not isinstance(blk, dict) or not blk:
+            raise ValueError("calibration cfg missing 'default' block")
+        if str(blk.get("mode") or "affine_logit").strip().lower() not in ("", "affine_logit", "logit_affine"):
+            return cfg
+        a0 = float(blk.get("a") or 1.0)
+        b0 = float(blk.get("b") or 0.0)
+        a1, b1 = _scale_affine_logit_params_toward_identity(a0, b0, float(scale))
+        blk2 = dict(blk)
+        blk2["a"] = float(a1)
+        blk2["b"] = float(b1)
+        out = dict(cfg)
+        out["default"] = blk2
+        return out
+
+    if key == "all":
+        out = dict(cfg)
+        props2 = dict(props)
+        out["props"] = props2
+        for pk, blk in list(props2.items()):
+            if not isinstance(blk, dict) or not blk:
+                continue
+            if str(blk.get("mode") or "affine_logit").strip().lower() not in ("", "affine_logit", "logit_affine"):
+                continue
+            a0 = float(blk.get("a") or 1.0)
+            b0 = float(blk.get("b") or 0.0)
+            a1, b1 = _scale_affine_logit_params_toward_identity(a0, b0, float(scale))
+            blk2 = dict(blk)
+            blk2["a"] = float(a1)
+            blk2["b"] = float(b1)
+            props2[pk] = blk2
+        return out
+
+    blk = props.get(key)
+    if not isinstance(blk, dict) or not blk:
+        raise ValueError(f"unknown prop key in calibration cfg: {key}")
+    if str(blk.get("mode") or "affine_logit").strip().lower() not in ("", "affine_logit", "logit_affine"):
+        return cfg
+    a0 = float(blk.get("a") or 1.0)
+    b0 = float(blk.get("b") or 0.0)
+    a1, b1 = _scale_affine_logit_params_toward_identity(a0, b0, float(scale))
+    blk2 = dict(blk)
+    blk2["a"] = float(a1)
+    blk2["b"] = float(b1)
+    out = dict(cfg)
+    props2 = dict(props)
+    props2[key] = blk2
+    out["props"] = props2
+    return out
+
+
+def _as_boxscore(game_result) -> Dict[str, Any]:
+    # Minimal serializable "boxscore" view.
+    return {
+        "away_score": int(game_result.away_score),
+        "home_score": int(game_result.home_score),
+        "innings_played": int(game_result.innings_played),
+        "away_inning_runs": [int(x) for x in (game_result.away_inning_runs or [])],
+        "home_inning_runs": [int(x) for x in (game_result.home_inning_runs or [])],
+        "batter_stats": game_result.batter_stats,
+        "pitcher_stats": game_result.pitcher_stats,
+    }
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="V2 daily updater: core sim rebuild or UI daily ops workflow")
+    ap.add_argument("--date", default=datetime.now().strftime("%Y-%m-%d"))
+    ap.add_argument("--season", type=int, default=datetime.now().year)
+    ap.add_argument(
+        "--workflow",
+        choices=["core", "ui-daily"],
+        default="core",
+        help=(
+            "core = single-profile snapshot/sim rebuild used by internal callers; "
+            "ui-daily = refresh yesterday's actual feed/PBP cache, settle yesterday's locked card, "
+            "refresh today's canonical OddsAPI market snapshot, then build today's multi-profile UI artifacts."
+        ),
+    )
+    ap.add_argument(
+        "--spring-mode",
+        action="store_true",
+        help="Spring training mode: default stats season to prior year and enable roster-type fallbacks for sparse/empty active rosters.",
+    )
+    ap.add_argument(
+        "--stats-season",
+        type=int,
+        default=0,
+        help="Season to use for player season stats (default: --season, or --season-1 when --spring-mode).",
+    )
+    ap.add_argument("--sims", type=int, default=1000)
+    ap.add_argument(
+        "--bvp-hr",
+        choices=["on", "off"],
+        default="off",
+        help="If on, apply a shrunk batter-vs-starter HR multiplier from local Statcast raw pitch files.",
+    )
+    ap.add_argument("--bvp-days-back", type=int, default=365, help="How many days of history to consider for BvP lookup.")
+    ap.add_argument("--bvp-min-pa", type=int, default=10, help="Minimum BvP PA required to apply a multiplier.")
+    ap.add_argument("--bvp-shrink-pa", type=float, default=50.0, help="Shrinkage PA constant (higher = more shrink toward 1.0).")
+    ap.add_argument("--bvp-clamp-lo", type=float, default=0.80, help="Lower clamp for BvP HR multiplier.")
+    ap.add_argument("--bvp-clamp-hi", type=float, default=1.25, help="Upper clamp for BvP HR multiplier.")
+    ap.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        help="Number of worker processes for distribution sims (set to 1 to disable multiprocessing).",
+    )
+    ap.add_argument(
+        "--use-roster-artifacts",
+        choices=["on", "off"],
+        default="on",
+        help="If on, reuse serialized roster artifacts from data/daily/snapshots/<date>/roster_objs/ when present.",
+    )
+    ap.add_argument(
+        "--write-roster-artifacts",
+        choices=["on", "off"],
+        default="on",
+        help="If on, write serialized roster artifacts to data/daily/snapshots/<date>/roster_objs/.",
+    )
+    ap.add_argument(
+        "--roster-events-baseline",
+        choices=["off", "on"],
+        default="off",
+        help="If on, include full baseline player lists in roster_events.json for roster types with no previous snapshot.",
+    )
+    ap.add_argument("--seed", type=int, default=1337)
+    ap.add_argument("--out", default=str(_ROOT / "data" / "daily"))
+    ap.add_argument(
+        "--max-games",
+        type=int,
+        default=0,
+        help="If >0, limit processing to the first N games on the schedule (useful for smoke runs).",
+    )
+    ap.add_argument("--cache-ttl-hours", type=int, default=6)
+    ap.add_argument(
+        "--statcast-starter-splits",
+        choices=["off", "starter"],
+        default="starter",
+        help="If enabled, enrich probable starters with Statcast-derived pitch mix + pitch-type whiff/in-play multipliers.",
+    )
+    ap.add_argument("--statcast-cache-ttl-hours", type=int, default=24 * 14)
+    ap.add_argument(
+        "--statcast-x64-prefetch",
+        choices=["off", "auto", "force"],
+        default="off",
+        help="Optionally run the x64 pybaseball helper to populate cached Statcast splits before simming.",
+    )
+    ap.add_argument(
+        "--statcast-x64-python",
+        default="",
+        help="Override path to x64 python.exe (defaults to .venv_x64/Scripts/python.exe)",
+    )
+    ap.add_argument(
+        "--pbp",
+        choices=["off", "pa", "pitch"],
+        default="off",
+        help="If enabled, persist play-by-play for ONE representative sim (not for all sims).",
+    )
+    ap.add_argument(
+        "--pbp-max-events",
+        type=int,
+        default=20000,
+        help="Maximum number of PBP events to store (only applies when --pbp != off).",
+    )
+    ap.add_argument(
+        "--workflow-out-pitcher",
+        default="",
+        help=(
+            "Optional pitcher-props output root for --workflow ui-daily. "
+            "Default: data/daily_pitcher_props for the canonical UI path, or a sibling <out>_pitcher_props for custom --out roots."
+        ),
+    )
+    ap.add_argument(
+        "--workflow-out-hitter",
+        default="",
+        help=(
+            "Optional hitter-props output root for --workflow ui-daily. "
+            "Default: data/daily_hitter_props for the canonical UI path, or a sibling <out>_hitter_props for custom --out roots."
+        ),
+    )
+    ap.add_argument(
+        "--reconcile-date",
+        default="",
+        help="Optional prior-day override for --workflow ui-daily (defaults to --date minus one day).",
+    )
+    ap.add_argument(
+        "--refresh-prior-feed-live",
+        choices=["on", "off"],
+        default="on",
+        help="If on, refresh cached StatsAPI feed/live raw for the reconcile date before settlement (includes actual play-by-play).",
+    )
+    ap.add_argument(
+        "--settle-prior-card",
+        choices=["on", "off"],
+        default="on",
+        help="If on, write an exact-settlement artifact for the prior-day locked-policy card during --workflow ui-daily.",
+    )
+    ap.add_argument(
+        "--prior-card-settlement-out",
+        default="",
+        help="Optional exact-settlement JSON path for the prior-day locked card in --workflow ui-daily.",
+    )
+    ap.add_argument(
+        "--ops-report-out",
+        default="",
+        help="Optional workflow report JSON path for --workflow ui-daily.",
+    )
+    ap.add_argument(
+        "--refresh-current-oddsapi",
+        choices=["on", "off"],
+        default="on",
+        help="If on, refresh the canonical current-day OddsAPI market snapshot before building --workflow ui-daily outputs.",
+    )
+    ap.add_argument(
+        "--current-oddsapi-overwrite",
+        choices=["on", "off"],
+        default="on",
+        help="If on, overwrite canonical current-day OddsAPI files when rerunning --workflow ui-daily.",
+    )
+    ap.add_argument(
+        "--current-oddsapi-regions",
+        default="us",
+        help="Regions string passed to the current-day OddsAPI fetch during --workflow ui-daily.",
+    )
+    ap.add_argument(
+        "--current-oddsapi-bookmakers",
+        default="",
+        help="Optional comma-separated bookmaker keys for the current-day OddsAPI fetch during --workflow ui-daily.",
+    )
+    ap.add_argument(
+        "--current-oddsapi-hitter-markets",
+        default="",
+        help="Optional comma-separated hitter market keys for the current-day OddsAPI fetch during --workflow ui-daily.",
+    )
+    ap.add_argument(
+        "--prior-eval-sims",
+        type=int,
+        default=0,
+        help="Optional sims-per-game override for the prior-day eval report refresh in --workflow ui-daily (default: reuse --sims).",
+    )
+    ap.add_argument(
+        "--prior-eval-prop-lines-source",
+        choices=["auto", "oddsapi", "last_known", "bovada", "off"],
+        default="auto",
+        help="Prop-lines source for the prior-day eval report used to refresh rolling season manifests.",
+    )
+    ap.add_argument(
+        "--refresh-season-manifests",
+        choices=["on", "off"],
+        default="on",
+        help="If on, rebuild a rolling prior-day sim_vs_actual report and refresh season eval/betting manifests during --workflow ui-daily.",
+    )
+    ap.add_argument(
+        "--season-batch-dir",
+        default="",
+        help="Optional rolling batch dir for prior-day season reports in --workflow ui-daily.",
+    )
+    ap.add_argument(
+        "--season-output-dir",
+        default="",
+        help="Optional season manifest output directory for --workflow ui-daily.",
+    )
+    ap.add_argument(
+        "--season-betting-profile",
+        choices=["baseline", "retuned"],
+        default="retuned",
+        help="Season betting-manifest profile name written by --workflow ui-daily.",
+    )
+    ap.add_argument(
+        "--umpire-x64-prefetch",
+        choices=["off", "auto", "force"],
+        default="off",
+        help="Optionally run the x64 helper to build Statcast-based umpire called-strike multipliers before simming.",
+    )
+    ap.add_argument(
+        "--umpire-x64-python",
+        default="",
+        help="Override path to x64 python.exe for umpire helper (defaults to .venv_x64/Scripts/python.exe)",
+    )
+    ap.add_argument("--umpire-x64-ttl-hours", type=int, default=24 * 14)
+    ap.add_argument("--umpire-statcast-days-back", type=int, default=21)
+    ap.add_argument("--umpire-statcast-min-pitches", type=int, default=1500)
+    ap.add_argument(
+        "--umpire-shrink",
+        type=float,
+        default=0.75,
+        help="Shrink fetched umpire called_strike_mult toward 1.0. 1.0=no shrink, 0.75=default, 0.0=neutral.",
+    )
+    ap.add_argument(
+        "--hitter-hr-topn",
+        type=int,
+        default=0,
+        help="If >0, include top-N hitter HR likelihood rows in each sim_*.json output.",
+    )
+    ap.add_argument(
+        "--hitter-props-topn",
+        type=int,
+        default=24,
+        help=(
+            "Top-N size for broader hitter props (hits/runs/RBI/SB/etc) in each sim_*.json output. "
+            "Default 24. -1=use --hitter-hr-topn (back-compat), 0=disable."
+        ),
+    )
+    ap.add_argument(
+        "--hitter-hr-prob-calibration",
+        default="data/tuning/hitter_hr_calibration/default.json",
+        help="Calibration JSON for hitter HR likelihood probabilities (use 'off' to disable)",
+    )
+    ap.add_argument(
+        "--hitter-props-prob-calibration",
+        default="data/tuning/hitter_props_calibration/default.json",
+        help="Calibration JSON for hitter props likelihood probabilities (use 'off' to disable)",
+    )
+    ap.add_argument(
+        "--hitter-hr-calib-set",
+        action="append",
+        default=[],
+        help=(
+            "Override hitter HR calibration config key(s) as key=value (repeatable). "
+            "Supports dotted keys for nested dicts. Value is parsed as JSON when possible."
+        ),
+    )
+    ap.add_argument(
+        "--hitter-props-calib-set",
+        action="append",
+        default=[],
+        help=(
+            "Override hitter props calibration config key(s) as key=value (repeatable). "
+            "Supports dotted keys for nested dicts. Value is parsed as JSON when possible."
+        ),
+    )
+    ap.add_argument(
+        "--hitter-props-calib-scale",
+        action="append",
+        default=[],
+        help=(
+            "Scale affine_logit calibration toward identity for a prop as prop=scale (repeatable). "
+            "scale=1 keeps as-is; scale=0 disables calibration for that prop. "
+            "Special keys: all=<s>, default=<s>."
+        ),
+    )
+    ap.add_argument(
+        "--pitch-model-overrides",
+        default="",
+        help="JSON dict or path to JSON file to override sim_engine.pitch_model.PitchModelConfig fields (tuning hook)",
+    )
+
+    # Convenience pitch-model knobs (merged into --pitch-model-overrides).
+    # These are aimed at quick regular-season tuning without writing JSON files.
+    ap.add_argument(
+        "--pm-k-logit-mult",
+        type=float,
+        default=None,
+        help="Override PitchModelConfig.k_logit_mult (optional; merged into pitch_model_overrides)",
+    )
+    ap.add_argument(
+        "--pm-k-logit-bias",
+        type=float,
+        default=None,
+        help="Override PitchModelConfig.k_logit_bias (optional; merged into pitch_model_overrides)",
+    )
+    ap.add_argument(
+        "--pm-hr-rate-mult",
+        type=float,
+        default=None,
+        help="Override PitchModelConfig.hr_rate_mult (optional; merged into pitch_model_overrides)",
+    )
+    ap.add_argument(
+        "--pm-inplay-hit-rate-mult",
+        type=float,
+        default=None,
+        help="Override PitchModelConfig.inplay_hit_rate_mult (optional; merged into pitch_model_overrides)",
+    )
+    ap.add_argument(
+        "--pm-xb-share-mult",
+        type=float,
+        default=None,
+        help="Override PitchModelConfig.xb_share_mult (optional; merged into pitch_model_overrides)",
+    )
+    ap.add_argument(
+        "--pm-run-env-sigma",
+        type=float,
+        default=None,
+        help="Override PitchModelConfig.run_env_sigma (optional; 0 disables latent run environment)",
+    )
+    ap.add_argument(
+        "--pm-batter-pt-alpha",
+        type=float,
+        default=None,
+        help="Override PitchModelConfig.batter_pt_alpha (optional; 0 disables batter-vs-pitch-type effects)",
+    )
+
+    # Additional convenience pitch-model knobs.
+    ap.add_argument(
+        "--pm-hr-on-bip-factor",
+        type=float,
+        default=None,
+        help="Override PitchModelConfig.hr_on_ball_in_play_factor (optional)",
+    )
+    ap.add_argument(
+        "--pm-bbtype-sample-scale",
+        type=float,
+        default=None,
+        help="Override PitchModelConfig.bbtype_sample_scale (optional; higher=more shrink-to-prior)",
+    )
+    ap.add_argument(
+        "--pm-bbtype-prior-weight",
+        type=float,
+        default=None,
+        help="Override PitchModelConfig.bbtype_prior_weight (optional)",
+    )
+    ap.add_argument(
+        "--pm-bbtype-batter-weight",
+        type=float,
+        default=None,
+        help="Override PitchModelConfig.bbtype_batter_weight (optional)",
+    )
+    ap.add_argument(
+        "--pm-bbtype-pitcher-weight",
+        type=float,
+        default=None,
+        help="Override PitchModelConfig.bbtype_pitcher_weight (optional)",
+    )
+    ap.add_argument(
+        "--pm-run-env-clamp-min",
+        type=float,
+        default=None,
+        help="Override PitchModelConfig.run_env_clamp_min (optional)",
+    )
+    ap.add_argument(
+        "--pm-run-env-clamp-max",
+        type=float,
+        default=None,
+        help="Override PitchModelConfig.run_env_clamp_max (optional)",
+    )
+    ap.add_argument(
+        "--pm-run-env-hr-weight",
+        type=float,
+        default=None,
+        help="Override PitchModelConfig.run_env_hr_weight (optional)",
+    )
+    ap.add_argument(
+        "--pm-run-env-inplay-hit-weight",
+        type=float,
+        default=None,
+        help="Override PitchModelConfig.run_env_inplay_hit_weight (optional)",
+    )
+    ap.add_argument(
+        "--pm-run-env-xb-share-weight",
+        type=float,
+        default=None,
+        help="Override PitchModelConfig.run_env_xb_share_weight (optional)",
+    )
+    ap.add_argument(
+        "--pm-set",
+        action="append",
+        default=[],
+        help=(
+            "Extra PitchModelConfig scalar override(s) as field=value. Repeatable. "
+            "Value is parsed as JSON when possible (e.g. 0.15, true, \"name\")."
+        ),
+    )
+
+    ap.add_argument(
+        "--pitcher-distribution-overrides",
+        default="",
+        help="JSON dict or path to JSON file to override sim_engine.pitcher_distributions.PitcherDistributionConfig fields (tuning hook)",
+    )
+    ap.add_argument(
+        "--manager-pitching",
+        choices=["off", "legacy", "v2"],
+        default="v2",
+        help="Pitching change / bullpen management model",
+    )
+    ap.add_argument(
+        "--manager-pitching-overrides",
+        default="data/tuning/manager_pitching_overrides/default.json",
+        help=(
+            "JSON dict or path to JSON file to override manager pitching behavior. "
+            "Use --manager-pitching-overrides '' to disable."
+        ),
+    )
+    ap.add_argument(
+        "--pitcher-rate-sampling",
+        choices=["on", "off"],
+        default="on",
+        help="Toggle per-game pitcher day-rate sampling (uncertainty)",
+    )
+    ap.add_argument(
+        "--bip-baserunning",
+        choices=["on", "off"],
+        default="on",
+        help="Toggle batted-ball-informed baserunning (DP/SF/advancement)",
+    )
+    ap.add_argument(
+        "--bip-dp-rate",
+        type=float,
+        default=None,
+        help="Override DP rate on in-play ground-ball outs. If omitted, uses GameConfig default.",
+    )
+    ap.add_argument(
+        "--bip-sf-rate-flypop",
+        type=float,
+        default=None,
+        help="Override sac-fly rate for fly/pop outs with runner on 3B. If omitted, uses GameConfig default.",
+    )
+    ap.add_argument(
+        "--bip-sf-rate-line",
+        type=float,
+        default=None,
+        help="Override sac-fly rate for line-drive outs with runner on 3B. If omitted, uses GameConfig default.",
+    )
+    ap.add_argument(
+        "--bip-1b-p2-scores-mult",
+        type=float,
+        default=None,
+        help="Override probability scale for runner on 2B scoring on a 1B. If omitted, uses GameConfig default.",
+    )
+    ap.add_argument(
+        "--bip-2b-p1-scores-mult",
+        type=float,
+        default=None,
+        help="Override probability scale for runner on 1B scoring on a 2B. If omitted, uses GameConfig default.",
+    )
+    ap.add_argument(
+        "--bip-1b-p1-to-3b-rate",
+        type=float,
+        default=None,
+        help="Override probability runner on 1B advances to 3B on a 1B when not forced. If omitted, uses GameConfig default.",
+    )
+    ap.add_argument(
+        "--bip-ground-rbi-out-rate",
+        type=float,
+        default=None,
+        help="Override probability of a ground-ball RBI out with runner on 3B and less than 2 outs. If omitted, uses GameConfig default.",
+    )
+    ap.add_argument(
+        "--bip-out-2b-to-3b-rate",
+        type=float,
+        default=None,
+        help="Override probability runner on 2B advances to 3B on a productive out. If omitted, uses GameConfig default.",
+    )
+    ap.add_argument(
+        "--bip-out-1b-to-2b-rate",
+        type=float,
+        default=None,
+        help="Override probability runner on 1B advances to 2B on a productive out. If omitted, uses GameConfig default.",
+    )
+    ap.add_argument(
+        "--bip-misc-advance-pitch-rate",
+        type=float,
+        default=None,
+        help="Override probability of a WP/PB/balk-style runner advance on a non-in-play pitch. If omitted, uses GameConfig default.",
+    )
+    ap.add_argument(
+        "--bip-roe-rate",
+        type=float,
+        default=None,
+        help="Override probability an in-play out becomes reach-on-error. If omitted, uses GameConfig default.",
+    )
+    ap.add_argument(
+        "--bip-fc-rate",
+        type=float,
+        default=None,
+        help="Override probability of a fielder's-choice style out on a ground ball with runner on 1B. If omitted, uses GameConfig default.",
+    )
+    args = ap.parse_args()
+
+    if str(getattr(args, "workflow", "core") or "core") == "ui-daily":
+        return _run_ui_daily_workflow(args, raw_argv=list(sys.argv[1:]))
+
+    spring_mode = bool(getattr(args, "spring_mode", False))
+    stats_season = int(getattr(args, "stats_season", 0) or 0)
+    if stats_season <= 0:
+        stats_season = int(args.season) - 1 if spring_mode else int(args.season)
+    args.stats_season = int(stats_season)
+
+    hitter_hr_prob_calibration = _load_json_cfg(str(getattr(args, "hitter_hr_prob_calibration", "") or ""))
+    hitter_props_prob_calibration = _load_json_cfg(str(getattr(args, "hitter_props_prob_calibration", "") or ""))
+
+    # Apply optional CLI overrides for hitter calibration configs.
+    # This is a convenience layer to avoid editing JSON files during tuning.
+    hr_sets = list(getattr(args, "hitter_hr_calib_set", []) or [])
+    if hr_sets:
+        hitter_hr_prob_calibration = dict(hitter_hr_prob_calibration or {})
+        for item in hr_sets:
+            s = str(item or "").strip()
+            if not s:
+                continue
+            if "=" not in s:
+                raise SystemExit(f"Invalid --hitter-hr-calib-set (expected key=value): {s}")
+            k, v = s.split("=", 1)
+            k = str(k).strip()
+            if not k:
+                raise SystemExit(f"Invalid --hitter-hr-calib-set (empty key): {s}")
+            try:
+                _set_nested_scalar(hitter_hr_prob_calibration, k, _parse_json_scalar(v))
+            except Exception as e:
+                raise SystemExit(f"Invalid --hitter-hr-calib-set {k}={v}: {e}")
+
+    props_sets = list(getattr(args, "hitter_props_calib_set", []) or [])
+    if props_sets:
+        hitter_props_prob_calibration = dict(hitter_props_prob_calibration or {})
+        for item in props_sets:
+            s = str(item or "").strip()
+            if not s:
+                continue
+            if "=" not in s:
+                raise SystemExit(f"Invalid --hitter-props-calib-set (expected key=value): {s}")
+            k, v = s.split("=", 1)
+            k = str(k).strip()
+            if not k:
+                raise SystemExit(f"Invalid --hitter-props-calib-set (empty key): {s}")
+            try:
+                _set_nested_scalar(hitter_props_prob_calibration, k, _parse_json_scalar(v))
+            except Exception as e:
+                raise SystemExit(f"Invalid --hitter-props-calib-set {k}={v}: {e}")
+
+    props_scales = list(getattr(args, "hitter_props_calib_scale", []) or [])
+    if props_scales:
+        hitter_props_prob_calibration = dict(hitter_props_prob_calibration or {})
+        for item in props_scales:
+            s = str(item or "").strip()
+            if not s:
+                continue
+            if "=" not in s:
+                raise SystemExit(f"Invalid --hitter-props-calib-scale (expected prop=scale): {s}")
+            k, v = s.split("=", 1)
+            k = str(k).strip()
+            if not k:
+                raise SystemExit(f"Invalid --hitter-props-calib-scale (empty prop): {s}")
+            try:
+                sc = float(str(v).strip())
+            except Exception as e:
+                raise SystemExit(f"Invalid --hitter-props-calib-scale {k}={v}: {e}")
+            try:
+                hitter_props_prob_calibration = _apply_prop_calibration_scale(hitter_props_prob_calibration, prop_key=k, scale=sc)
+            except Exception as e:
+                raise SystemExit(f"Invalid --hitter-props-calib-scale {k}={v}: {e}")
+
+    pitch_model_overrides = _load_jsonish(str(getattr(args, "pitch_model_overrides", "") or ""))
+    pitcher_distribution_overrides = _load_jsonish(str(getattr(args, "pitcher_distribution_overrides", "") or ""))
+    manager_pitching_overrides = _load_jsonish(str(getattr(args, "manager_pitching_overrides", "") or ""))
+
+    # Merge convenience pitch-model knobs into overrides (CLI flags win).
+    pitch_model_overrides = dict(pitch_model_overrides or {})
+    if getattr(args, "pm_k_logit_mult", None) is not None:
+        pitch_model_overrides["k_logit_mult"] = float(getattr(args, "pm_k_logit_mult"))
+    if getattr(args, "pm_k_logit_bias", None) is not None:
+        pitch_model_overrides["k_logit_bias"] = float(getattr(args, "pm_k_logit_bias"))
+    if getattr(args, "pm_hr_rate_mult", None) is not None:
+        pitch_model_overrides["hr_rate_mult"] = float(getattr(args, "pm_hr_rate_mult"))
+    if getattr(args, "pm_inplay_hit_rate_mult", None) is not None:
+        pitch_model_overrides["inplay_hit_rate_mult"] = float(getattr(args, "pm_inplay_hit_rate_mult"))
+    if getattr(args, "pm_xb_share_mult", None) is not None:
+        pitch_model_overrides["xb_share_mult"] = float(getattr(args, "pm_xb_share_mult"))
+    if getattr(args, "pm_run_env_sigma", None) is not None:
+        pitch_model_overrides["run_env_sigma"] = float(getattr(args, "pm_run_env_sigma"))
+    if getattr(args, "pm_batter_pt_alpha", None) is not None:
+        pitch_model_overrides["batter_pt_alpha"] = float(getattr(args, "pm_batter_pt_alpha"))
+    if getattr(args, "pm_hr_on_bip_factor", None) is not None:
+        pitch_model_overrides["hr_on_ball_in_play_factor"] = float(getattr(args, "pm_hr_on_bip_factor"))
+    if getattr(args, "pm_bbtype_sample_scale", None) is not None:
+        pitch_model_overrides["bbtype_sample_scale"] = float(getattr(args, "pm_bbtype_sample_scale"))
+    if getattr(args, "pm_bbtype_prior_weight", None) is not None:
+        pitch_model_overrides["bbtype_prior_weight"] = float(getattr(args, "pm_bbtype_prior_weight"))
+    if getattr(args, "pm_bbtype_batter_weight", None) is not None:
+        pitch_model_overrides["bbtype_batter_weight"] = float(getattr(args, "pm_bbtype_batter_weight"))
+    if getattr(args, "pm_bbtype_pitcher_weight", None) is not None:
+        pitch_model_overrides["bbtype_pitcher_weight"] = float(getattr(args, "pm_bbtype_pitcher_weight"))
+    if getattr(args, "pm_run_env_clamp_min", None) is not None:
+        pitch_model_overrides["run_env_clamp_min"] = float(getattr(args, "pm_run_env_clamp_min"))
+    if getattr(args, "pm_run_env_clamp_max", None) is not None:
+        pitch_model_overrides["run_env_clamp_max"] = float(getattr(args, "pm_run_env_clamp_max"))
+    if getattr(args, "pm_run_env_hr_weight", None) is not None:
+        pitch_model_overrides["run_env_hr_weight"] = float(getattr(args, "pm_run_env_hr_weight"))
+    if getattr(args, "pm_run_env_inplay_hit_weight", None) is not None:
+        pitch_model_overrides["run_env_inplay_hit_weight"] = float(getattr(args, "pm_run_env_inplay_hit_weight"))
+    if getattr(args, "pm_run_env_xb_share_weight", None) is not None:
+        pitch_model_overrides["run_env_xb_share_weight"] = float(getattr(args, "pm_run_env_xb_share_weight"))
+
+    pm_set_items = list(getattr(args, "pm_set", []) or [])
+    if pm_set_items:
+        for item in pm_set_items:
+            s = str(item or "").strip()
+            if not s:
+                continue
+            if "=" not in s:
+                raise SystemExit(f"Invalid --pm-set (expected field=value): {s}")
+            k, v = s.split("=", 1)
+            k = str(k).strip()
+            if not k:
+                raise SystemExit(f"Invalid --pm-set (empty field): {s}")
+            try:
+                pitch_model_overrides[str(k)] = _coerce_pitch_model_scalar(str(k), str(v))
+            except Exception as e:
+                raise SystemExit(f"Invalid --pm-set {k}={v}: {e}")
+
+    cfg_defaults = GameConfig()
+    cfg_kwargs: Dict[str, Any] = {
+        "bip_baserunning": (str(getattr(args, "bip_baserunning", "on")) == "on"),
+        "bip_dp_rate": float(args.bip_dp_rate) if args.bip_dp_rate is not None else float(cfg_defaults.bip_dp_rate),
+        "bip_sf_rate_flypop": float(args.bip_sf_rate_flypop) if args.bip_sf_rate_flypop is not None else float(cfg_defaults.bip_sf_rate_flypop),
+        "bip_sf_rate_line": float(args.bip_sf_rate_line) if args.bip_sf_rate_line is not None else float(cfg_defaults.bip_sf_rate_line),
+        "bip_1b_p2_scores_mult": float(args.bip_1b_p2_scores_mult) if args.bip_1b_p2_scores_mult is not None else float(cfg_defaults.bip_1b_p2_scores_mult),
+        "bip_2b_p1_scores_mult": float(args.bip_2b_p1_scores_mult) if args.bip_2b_p1_scores_mult is not None else float(cfg_defaults.bip_2b_p1_scores_mult),
+        "bip_1b_p1_to_3b_rate": float(args.bip_1b_p1_to_3b_rate) if args.bip_1b_p1_to_3b_rate is not None else float(cfg_defaults.bip_1b_p1_to_3b_rate),
+        "bip_ground_rbi_out_rate": float(args.bip_ground_rbi_out_rate) if args.bip_ground_rbi_out_rate is not None else float(cfg_defaults.bip_ground_rbi_out_rate),
+        "bip_out_2b_to_3b_rate": float(args.bip_out_2b_to_3b_rate) if args.bip_out_2b_to_3b_rate is not None else float(cfg_defaults.bip_out_2b_to_3b_rate),
+        "bip_out_1b_to_2b_rate": float(args.bip_out_1b_to_2b_rate) if args.bip_out_1b_to_2b_rate is not None else float(cfg_defaults.bip_out_1b_to_2b_rate),
+        "bip_misc_advance_pitch_rate": float(args.bip_misc_advance_pitch_rate) if args.bip_misc_advance_pitch_rate is not None else float(cfg_defaults.bip_misc_advance_pitch_rate),
+        "bip_roe_rate": float(args.bip_roe_rate) if args.bip_roe_rate is not None else float(cfg_defaults.bip_roe_rate),
+        "bip_fc_rate": float(args.bip_fc_rate) if args.bip_fc_rate is not None else float(cfg_defaults.bip_fc_rate),
+        "pitcher_rate_sampling": (str(getattr(args, "pitcher_rate_sampling", "on")) == "on"),
+        "manager_pitching": str(getattr(args, "manager_pitching", "v2") or "v2"),
+        "manager_pitching_overrides": (manager_pitching_overrides or {}),
+        "pitch_model_overrides": (pitch_model_overrides or {}),
+        "pitcher_distribution_overrides": (pitcher_distribution_overrides or {}),
+    }
+
+    out_root = Path(args.out)
+    _ensure_dir(out_root)
+    snapshot_dir = out_root / "snapshots" / args.date
+    sim_dir = out_root / "sims" / args.date
+    _ensure_dir(snapshot_dir)
+    _ensure_dir(sim_dir)
+    roster_obj_dir = snapshot_dir / "roster_objs"
+    _ensure_dir(roster_obj_dir)
+
+    # Persist run metadata for debugging/repro.
+    _write_json(
+        snapshot_dir / "meta.json",
+        {
+            "date": str(args.date),
+            "season": int(args.season),
+            "stats_season": int(args.stats_season),
+            "spring_mode": bool(spring_mode),
+            "cfg_kwargs": cfg_kwargs,
+            "hitter_hr_prob_calibration": hitter_hr_prob_calibration,
+            "hitter_props_prob_calibration": hitter_props_prob_calibration,
+            "generated_at": datetime.now().isoformat(),
+        },
+    )
+
+    client = StatsApiClient.with_default_cache(ttl_seconds=int(args.cache_ttl_hours * 3600))
+
+    statcast_cache = None
+    statcast_ttl_seconds = None
+    if args.statcast_starter_splits != "off":
+        statcast_ttl_seconds = int(args.statcast_cache_ttl_hours * 3600)
+        statcast_cache = default_statcast_cache(ttl_seconds=statcast_ttl_seconds)
+
+    bvp_hr_on = True if str(args.bvp_hr) == "on" else False
+    try:
+        daily_date = datetime.fromisoformat(str(args.date)).date()
+    except Exception:
+        daily_date = datetime.strptime(str(args.date), "%Y-%m-%d").date()
+    bvp_days_back = max(0, int(args.bvp_days_back))
+    bvp_start_date = daily_date - timedelta(days=bvp_days_back)
+    bvp_min_pa = max(1, int(args.bvp_min_pa))
+    bvp_shrink_pa = float(args.bvp_shrink_pa)
+    bvp_clamp_lo = float(args.bvp_clamp_lo)
+    bvp_clamp_hi = float(args.bvp_clamp_hi)
+    bvp_cache = default_bvp_cache() if bvp_hr_on else None
+
+    games = fetch_schedule_for_date(client, args.date)
+    if not games:
+        print(f"No games found for {args.date}")
+        return 2
+
+    if int(getattr(args, "max_games", 0) or 0) > 0:
+        games = list(games)[: int(args.max_games)]
+
+    # Save raw schedule snapshot
+    _write_json(snapshot_dir / "schedule_raw.json", games)
+
+    # Scaffold artifacts: snapshot raw per-team rosters + normalized injuries (best-effort).
+    # Prefer snapshotting the entire league so artifacts exist even for off-days.
+    injuries_by_team_id: Dict[int, List[int]] = {}
+    try:
+        teams_by_id: Dict[int, Dict[str, Any]] = {}
+        try:
+            league_teams = fetch_mlb_teams(client, season=int(args.season))
+        except Exception:
+            league_teams = []
+
+        if league_teams:
+            for t in league_teams:
+                if not isinstance(t, dict):
+                    continue
+                try:
+                    tid = int(t.get("id") or 0)
+                except Exception:
+                    tid = 0
+                if tid <= 0:
+                    continue
+                teams_by_id[tid] = {
+                    "id": tid,
+                    "name": t.get("name"),
+                    "abbreviation": _abbr(t),
+                }
+        else:
+            # Fallback: only teams on today's schedule.
+            for g in games or []:
+                for side in ("away", "home"):
+                    t = (((g.get("teams") or {}).get(side) or {}).get("team") or {})
+                    try:
+                        tid = int(t.get("id") or 0)
+                    except Exception:
+                        tid = 0
+                    if tid <= 0:
+                        continue
+                    teams_by_id[tid] = {
+                        "id": tid,
+                        "name": t.get("name"),
+                        "abbreviation": _abbr(t),
+                    }
+
+        roster_types: List[str] = ["active"]
+        if spring_mode:
+            roster_types.extend(["40Man", "nonRosterInvitees"])
+
+        roster_artifacts: Dict[str, Any] = {
+            "date": str(args.date),
+            "season": int(args.season),
+            "spring_mode": bool(spring_mode),
+            "teams": {},
+            "errors": [],
+        }
+
+        def _status_is_injured(status_obj: Any) -> bool:
+            if not isinstance(status_obj, dict) or not status_obj:
+                return False
+            code = str(status_obj.get("code") or "").strip().upper()
+            desc = str(status_obj.get("description") or "").strip().lower()
+            if code.startswith("IL") or code.startswith("DL"):
+                return True
+            # StatsAPI often uses D10/D15/D60/etc for disabled list.
+            if len(code) >= 2 and code.startswith("D") and any(ch.isdigit() for ch in code[1:]):
+                return True
+            if "injured list" in desc or "disabled list" in desc:
+                return True
+            return False
+
+        injuries_artifacts: Dict[str, Any] = {
+            "date": str(args.date),
+            "season": int(args.season),
+            "spring_mode": bool(spring_mode),
+            "teams": {},
+            "players": [],
+        }
+
+        for tid, tinfo in sorted(teams_by_id.items(), key=lambda kv: kv[0]):
+            team_obj: Dict[str, Any] = {"team": tinfo, "rosters": {}}
+            injured_ids: set[int] = set()
+            injured_players: List[Dict[str, Any]] = []
+            for rt in roster_types:
+                try:
+                    entries = fetch_team_roster(client, int(tid), roster_type=str(rt), date_str=str(args.date))
+                    team_obj["rosters"][rt] = entries
+                    for e in entries or []:
+                        if not isinstance(e, dict):
+                            continue
+                        person = (e.get("person") or {})
+                        try:
+                            pid = int(person.get("id") or 0)
+                        except Exception:
+                            pid = 0
+                        if pid <= 0:
+                            continue
+                        status = e.get("status") or {}
+                        if _status_is_injured(status):
+                            injured_ids.add(int(pid))
+                            injured_players.append(
+                                {
+                                    "player_id": int(pid),
+                                    "full_name": person.get("fullName"),
+                                    "status": status,
+                                    "position": e.get("position"),
+                                    "roster_type_source": str(rt),
+                                }
+                            )
+                except Exception as e:
+                    team_obj["rosters"][rt] = []
+                    roster_artifacts["errors"].append(
+                        {
+                            "team_id": int(tid),
+                            "roster_type": str(rt),
+                            "error": f"{type(e).__name__}: {e}",
+                        }
+                    )
+
+            # Persist a per-team roster history file for longitudinal tracking.
+            try:
+                update_team_roster_registry(
+                    team_id=int(tid),
+                    team_abbr=str(tinfo.get("abbreviation") or ""),
+                    date_str=str(args.date),
+                    rosters_by_type=team_obj.get("rosters") or {},
+                )
+            except Exception:
+                pass
+            roster_artifacts["teams"][str(tid)] = team_obj
+
+            injuries_by_team_id[int(tid)] = sorted(injured_ids)
+            injuries_artifacts["teams"][str(tid)] = {
+                "team": tinfo,
+                "injured_ids": sorted(injured_ids),
+                "injured": injured_players,
+            }
+            for row in injured_players:
+                injuries_artifacts["players"].append({"team_id": int(tid), **row})
+
+        _write_json(snapshot_dir / "team_rosters_raw.json", roster_artifacts)
+        _write_json(snapshot_dir / "injuries_raw.json", injuries_artifacts)
+
+        # Emit a single daily roster-events artifact derived from the per-team registries.
+        try:
+            events = build_roster_events_for_date(date_str=str(args.date), include_baseline=(args.roster_events_baseline == "on"))
+            _write_json(snapshot_dir / "roster_events.json", events)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    # Optional x64 prefetch (cache population) step.
+    if args.statcast_starter_splits != "off" and args.statcast_x64_prefetch != "off":
+        _maybe_prefetch_statcast_x64(args, snapshot_dir)
+
+    # Optional x64 prefetch (umpire factor population) step.
+    if args.umpire_x64_prefetch != "off":
+        _maybe_prefetch_umpire_factors_x64(args, snapshot_dir)
+
+    # Pre-compute bullpen availability multipliers from recent workload (best-effort).
+    # We only consult raw feed/live files (fast, no extra API calls).
+    pitcher_availability_by_team: Dict[int, Dict[int, float]] = {}
+    try:
+        today = datetime.strptime(str(args.date), "%Y-%m-%d").date()
+        weights = {1: 1.0, 2: 0.6, 3: 0.4}
+        pitches_by_team_day: Dict[int, Dict[int, Dict[int, int]]] = {}
+        pitched_days_by_team_pitcher: Dict[int, Dict[int, set[int]]] = {}
+
+        for days_ago in (1, 2, 3):
+            d = (today - timedelta(days=days_ago)).strftime("%Y-%m-%d")
+            sched = fetch_schedule_for_date(client, d)
+            for g in sched or []:
+                try:
+                    game_pk = int(g.get("gamePk") or 0)
+                except Exception:
+                    game_pk = 0
+                if game_pk <= 0:
+                    continue
+                away = (g.get("teams") or {}).get("away") or {}
+                home = (g.get("teams") or {}).get("home") or {}
+                away_team = away.get("team") or {}
+                home_team = home.get("team") or {}
+                try:
+                    away_id = int(away_team.get("id") or 0)
+                    home_id = int(home_team.get("id") or 0)
+                except Exception:
+                    continue
+                if away_id <= 0 or home_id <= 0:
+                    continue
+
+                feed = load_feed_live_from_raw(int(args.season), d, game_pk)
+                if not isinstance(feed, dict) or not feed:
+                    continue
+
+                for tid in (away_id, home_id):
+                    pitches = extract_team_pitcher_pitches_thrown(feed, tid)
+                    if not pitches:
+                        continue
+                    td = pitches_by_team_day.setdefault(tid, {})
+                    day_map = td.setdefault(days_ago, {})
+                    pitched_days = pitched_days_by_team_pitcher.setdefault(tid, {})
+                    for pid, pth in pitches.items():
+                        day_map[pid] = int(day_map.get(pid, 0) + int(pth or 0))
+                        if int(pth or 0) > 0:
+                            pitched_days.setdefault(pid, set()).add(int(days_ago))
+
+        for tid, by_day in pitches_by_team_day.items():
+            weighted: Dict[int, float] = {}
+            for days_ago, pitch_map in (by_day or {}).items():
+                w = float(weights.get(int(days_ago), 0.0))
+                if w <= 0:
+                    continue
+                for pid, pth in (pitch_map or {}).items():
+                    weighted[int(pid)] = float(weighted.get(int(pid), 0.0)) + w * float(pth or 0.0)
+
+            avail_map: Dict[int, float] = {}
+            pitched_days = pitched_days_by_team_pitcher.get(tid, {})
+            for pid, wp in weighted.items():
+                # 120 weighted pitches ~= fully gassed; clamp to a conservative floor.
+                avail = max(0.35, 1.0 - (float(wp) / 120.0))
+                days = pitched_days.get(int(pid), set())
+                if 1 in days and 2 in days and 3 in days:
+                    avail *= 0.75
+                elif 1 in days and 2 in days:
+                    avail *= 0.85
+                avail_map[int(pid)] = float(max(0.25, min(1.0, avail)))
+
+            pitcher_availability_by_team[int(tid)] = avail_map
+    except Exception:
+        pitcher_availability_by_team = {}
+
+    outputs: List[Dict[str, Any]] = []
+    failures: List[Dict[str, Any]] = []
+
+    # Lineups: persist confirmed lineups + projected (last-known) fallback.
+    last_known_path = out_root / "lineups_last_known_by_team.json"
+    last_known_by_team: Dict[str, Any] = {}
+    try:
+        if last_known_path.exists():
+            last_known_by_team = json.loads(last_known_path.read_text(encoding="utf-8"))
+            if not isinstance(last_known_by_team, dict):
+                last_known_by_team = {}
+    except Exception:
+        last_known_by_team = {}
+
+    def _normalize_lineup_ids(ids: Any) -> List[int]:
+        if not ids:
+            return []
+        out: List[int] = []
+        seen = set()
+        for x in ids or []:
+            try:
+                pid = int(x)
+            except Exception:
+                continue
+            if pid <= 0 or pid in seen:
+                continue
+            seen.add(pid)
+            out.append(pid)
+        return out
+
+    def _extract_hitter_ids_from_roster_entries(entries: Any, *, excluded_ids: Optional[set[int]] = None) -> List[int]:
+        out: List[int] = []
+        seen = set()
+        blocked = set(int(x) for x in (excluded_ids or set()) if int(x) > 0)
+        for entry in entries or []:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                pid = int(entry.get("player_id") or ((entry.get("person") or {}).get("id") or 0))
+            except Exception:
+                pid = 0
+            if pid <= 0 or pid in seen or pid in blocked:
+                continue
+            pos_obj = entry.get("position") or {}
+            pos = str(entry.get("primary_pos_abbr") or entry.get("pos") or pos_obj.get("abbreviation") or "").strip().upper()
+            pos_type = str(pos_obj.get("type") or "").strip().lower()
+            if pos == "P" or pos_type == "pitcher":
+                continue
+            seen.add(pid)
+            out.append(pid)
+        return out
+
+    def _tighten_projected_lineup(team_id: int, projected_ids: Any) -> Dict[str, Any]:
+        raw_ids = _normalize_lineup_ids(projected_ids)
+        if not raw_ids:
+            return {
+                "status": "none",
+                "raw_ids": [],
+                "ids": [],
+                "missing_ids": [],
+                "backfilled_ids": [],
+                "pool_source": "none",
+                "pool_size": 0,
+            }
+
+        team_block = ((roster_artifacts.get("teams") or {}).get(str(int(team_id))) or {}) if isinstance(roster_artifacts, dict) else {}
+        rosters = (team_block.get("rosters") or {}) if isinstance(team_block, dict) else {}
+        excluded_ids = set(int(x) for x in (injuries_by_team_id.get(int(team_id), []) or []) if int(x) > 0)
+        active_pool = _extract_hitter_ids_from_roster_entries(rosters.get("active") or [], excluded_ids=excluded_ids)
+        fallback_pool = _extract_hitter_ids_from_roster_entries(rosters.get("40Man") or [], excluded_ids=excluded_ids)
+        if not fallback_pool:
+            fallback_pool = _extract_hitter_ids_from_roster_entries(rosters.get("nonRosterInvitees") or [], excluded_ids=excluded_ids)
+        usable_pool = list(active_pool or fallback_pool)
+        pool_source = "active" if active_pool else ("fallback" if usable_pool else "none")
+        usable_set = set(int(pid) for pid in usable_pool)
+
+        kept_ids = [int(pid) for pid in raw_ids if int(pid) in usable_set]
+        missing_ids = [int(pid) for pid in raw_ids if int(pid) not in usable_set]
+        backfilled_ids: List[int] = []
+        if len(kept_ids) < 9:
+            for pid in usable_pool:
+                pid_i = int(pid)
+                if pid_i in kept_ids:
+                    continue
+                kept_ids.append(pid_i)
+                backfilled_ids.append(pid_i)
+                if len(kept_ids) >= 9:
+                    break
+
+        status = "ok"
+        if missing_ids or backfilled_ids:
+            status = "adjusted" if len(kept_ids) >= 9 else "partial"
+        elif len(kept_ids) < 9:
+            status = "partial"
+
+        return {
+            "status": status,
+            "raw_ids": [int(pid) for pid in raw_ids],
+            "ids": [int(pid) for pid in kept_ids[:9]],
+            "missing_ids": [int(pid) for pid in missing_ids],
+            "backfilled_ids": [int(pid) for pid in backfilled_ids],
+            "pool_source": str(pool_source),
+            "pool_size": int(len(usable_pool)),
+        }
+
+    def _is_mlb_team(team_obj: Dict[str, Any]) -> bool:
+        try:
+            sport = (team_obj or {}).get("sport") or {}
+            return int(sport.get("id") or 0) == 1
+        except Exception:
+            return False
+
+    lineup_games: List[Dict[str, Any]] = []
+    probable_games: List[Dict[str, Any]] = []
+    for idx, g in enumerate(games):
+        game_pk = g.get("gamePk")
+        game_type = g.get("gameType")
+        double_header = g.get("doubleHeader")
+        game_number = g.get("gameNumber")
+        series_game_number = g.get("seriesGameNumber")
+        status = (g.get("status") or {})
+        status_obj = {
+            "abstract": status.get("abstractGameState"),
+            "detailed": status.get("detailedState"),
+        }
+
+        away = (g.get("teams") or {}).get("away") or {}
+        home = (g.get("teams") or {}).get("home") or {}
+        away_team = away.get("team") or {}
+        home_team = home.get("team") or {}
+
+        # Spring training schedules can include college/minor/non-MLB opponents.
+        # Skip those games to avoid unsupported roster building.
+        if not (_is_mlb_team(away_team) and _is_mlb_team(home_team)):
+            away_abbr = _abbr(away_team)
+            home_abbr = _abbr(home_team)
+            gn = f"_g{int(game_number)}" if isinstance(game_number, (int, float)) else ""
+            pk_label = f" gamePk={game_pk}" if game_pk else ""
+            print(f"[{idx+1}/{len(games)}] Skipping non-MLB game:{pk_label} {away_abbr} @ {home_abbr}")
+
+            try:
+                if game_pk:
+                    sim_path = sim_dir / f"sim_{idx}_{away_abbr}_at_{home_abbr}_pk{game_pk}{gn}.json"
+                    if sim_path.exists():
+                        sim_path.unlink()
+                    roster_path = snapshot_dir / f"roster_{idx}_{away_abbr}_at_{home_abbr}_pk{game_pk}{gn}.json"
+                    if roster_path.exists():
+                        roster_path.unlink()
+            except Exception:
+                pass
+
+            failures.append(
+                {
+                    "idx": int(idx),
+                    "game_pk": int(game_pk) if game_pk else None,
+                    "stage": "skip_non_mlb",
+                    "error": "non-MLB opponent in schedule",
+                    "away": {"abbr": away_abbr, "team_id": int(away_team.get("id") or 0)},
+                    "home": {"abbr": home_abbr, "team_id": int(home_team.get("id") or 0)},
+                }
+            )
+            continue
+        try:
+            away_id = int(away_team.get("id") or 0)
+            home_id = int(home_team.get("id") or 0)
+        except Exception:
+            failures.append(
+                {
+                    "idx": int(idx),
+                    "game_pk": game_pk,
+                    "stage": "schedule",
+                    "error": "Missing team id",
+                }
+            )
+            continue
+
+        if away_id <= 0 or home_id <= 0:
+            failures.append(
+                {
+                    "idx": int(idx),
+                    "game_pk": game_pk,
+                    "stage": "schedule",
+                    "error": "Invalid team id",
+                    "away": away_team,
+                    "home": home_team,
+                }
+            )
+            continue
+
+        away_prob_schedule = (away.get("probablePitcher") or {})
+        home_prob_schedule = (home.get("probablePitcher") or {})
+        away_prob_schedule_id = away_prob_schedule.get("id")
+        home_prob_schedule_id = home_prob_schedule.get("id")
+        away_prob_schedule_name = away_prob_schedule.get("fullName") or away_prob_schedule.get("name") or ""
+        home_prob_schedule_name = home_prob_schedule.get("fullName") or home_prob_schedule.get("name") or ""
+
+        away_prob_feed_id = None
+        home_prob_feed_id = None
+        away_prob_feed_name = ""
+        home_prob_feed_name = ""
+
+        away_prob_id = None
+        home_prob_id = None
+        away_prob_source = "none"
+        home_prob_source = "none"
+        away_prob_confidence = 0.0
+        home_prob_confidence = 0.0
+
+        away_lineup_ids: List[int] = []
+        home_lineup_ids: List[int] = []
+        away_projected_ids: List[int] = []
+        home_projected_ids: List[int] = []
+        away_projected_validation: Dict[str, Any] = {"status": "none", "raw_ids": [], "ids": []}
+        home_projected_validation: Dict[str, Any] = {"status": "none", "raw_ids": [], "ids": []}
+        away_lineup_source = "none"
+        home_lineup_source = "none"
+        away_lineup_confidence = 0.0
+        home_lineup_confidence = 0.0
+        feed = None
+        if game_pk:
+            try:
+                feed = fetch_game_feed_live(client, int(game_pk))
+                away_lineup_ids = _normalize_lineup_ids(parse_confirmed_lineup_ids(feed, "away"))
+                home_lineup_ids = _normalize_lineup_ids(parse_confirmed_lineup_ids(feed, "home"))
+
+                prob = (feed.get("gameData") or {}).get("probablePitchers") or {}
+                ap = prob.get("away") or {}
+                hp = prob.get("home") or {}
+                away_prob_feed_id = ap.get("id")
+                home_prob_feed_id = hp.get("id")
+                away_prob_feed_name = ap.get("fullName") or ap.get("name") or ""
+                home_prob_feed_name = hp.get("fullName") or hp.get("name") or ""
+            except Exception:
+                away_lineup_ids = []
+                home_lineup_ids = []
+
+        # Probable starters: prefer feed (gameData.probablePitchers) when present; else schedule.hydrate probablePitcher.
+        if away_prob_feed_id:
+            away_prob_id = away_prob_feed_id
+            away_prob_source = "feed_gameData_probablePitchers"
+            away_prob_confidence = 0.75
+        elif away_prob_schedule_id:
+            away_prob_id = away_prob_schedule_id
+            away_prob_source = "schedule_probablePitcher"
+            away_prob_confidence = 0.80
+
+        if home_prob_feed_id:
+            home_prob_id = home_prob_feed_id
+            home_prob_source = "feed_gameData_probablePitchers"
+            home_prob_confidence = 0.75
+        elif home_prob_schedule_id:
+            home_prob_id = home_prob_schedule_id
+            home_prob_source = "schedule_probablePitcher"
+            home_prob_confidence = 0.80
+
+        # Projected lineups: last-known confirmed lineup for the team.
+        try:
+            if not away_lineup_ids:
+                lk = last_known_by_team.get(str(int(away_id))) or {}
+                away_projected_validation = _tighten_projected_lineup(int(away_id), lk.get("ids"))
+                away_projected_ids = [int(pid) for pid in (away_projected_validation.get("ids") or [])]
+            if not home_lineup_ids:
+                lk = last_known_by_team.get(str(int(home_id))) or {}
+                home_projected_validation = _tighten_projected_lineup(int(home_id), lk.get("ids"))
+                home_projected_ids = [int(pid) for pid in (home_projected_validation.get("ids") or [])]
+        except Exception:
+            away_projected_ids = []
+            home_projected_ids = []
+            away_projected_validation = {"status": "none", "raw_ids": [], "ids": []}
+            home_projected_validation = {"status": "none", "raw_ids": [], "ids": []}
+
+        if len(away_lineup_ids) >= 9:
+            away_lineup_source = "confirmed_feed_live"
+            away_lineup_confidence = 1.0
+            last_known_by_team[str(int(away_id))] = {"date": str(args.date), "ids": away_lineup_ids[:9], "source": "confirmed_feed_live"}
+        elif (away_projected_validation.get("raw_ids") or away_projected_ids):
+            away_lineup_source = "projected_last_known"
+            away_lineup_confidence = 0.6 if str(away_projected_validation.get("status") or "") == "ok" else (0.35 if len(away_projected_ids) >= 9 else 0.15)
+            away_projected_ids = away_projected_ids[:9]
+
+        if len(home_lineup_ids) >= 9:
+            home_lineup_source = "confirmed_feed_live"
+            home_lineup_confidence = 1.0
+            last_known_by_team[str(int(home_id))] = {"date": str(args.date), "ids": home_lineup_ids[:9], "source": "confirmed_feed_live"}
+        elif (home_projected_validation.get("raw_ids") or home_projected_ids):
+            home_lineup_source = "projected_last_known"
+            home_lineup_confidence = 0.6 if str(home_projected_validation.get("status") or "") == "ok" else (0.35 if len(home_projected_ids) >= 9 else 0.15)
+            home_projected_ids = home_projected_ids[:9]
+
+        lineup_games.append(
+            {
+                "idx": int(idx),
+                "game_pk": int(game_pk) if game_pk else None,
+                "away": {"team_id": int(away_id), "abbr": _abbr(away_team)},
+                "home": {"team_id": int(home_id), "abbr": _abbr(home_team)},
+                "away_confirmed_ids": away_lineup_ids[:9] if len(away_lineup_ids) >= 9 else [],
+                "home_confirmed_ids": home_lineup_ids[:9] if len(home_lineup_ids) >= 9 else [],
+                "away_projected_ids": [int(pid) for pid in away_projected_ids[:9]],
+                "home_projected_ids": [int(pid) for pid in home_projected_ids[:9]],
+                "away_projected_validation": dict(away_projected_validation or {}),
+                "home_projected_validation": dict(home_projected_validation or {}),
+                "away_source": away_lineup_source,
+                "home_source": home_lineup_source,
+                "away_confidence": float(away_lineup_confidence),
+                "home_confidence": float(home_lineup_confidence),
+            }
+        )
+
+        probable_games.append(
+            {
+                "idx": int(idx),
+                "game_pk": int(game_pk) if game_pk else None,
+                "away": {"team_id": int(away_id), "abbr": _abbr(away_team)},
+                "home": {"team_id": int(home_id), "abbr": _abbr(home_team)},
+                "away_probable_id": (int(away_prob_id) if away_prob_id else None),
+                "home_probable_id": (int(home_prob_id) if home_prob_id else None),
+                "away_source": str(away_prob_source),
+                "home_source": str(home_prob_source),
+                "away_confidence": float(away_prob_confidence),
+                "home_confidence": float(home_prob_confidence),
+                "raw": {
+                    "away_schedule_id": (int(away_prob_schedule_id) if away_prob_schedule_id else None),
+                    "home_schedule_id": (int(home_prob_schedule_id) if home_prob_schedule_id else None),
+                    "away_schedule_name": str(away_prob_schedule_name or ""),
+                    "home_schedule_name": str(home_prob_schedule_name or ""),
+                    "away_feed_id": (int(away_prob_feed_id) if away_prob_feed_id else None),
+                    "home_feed_id": (int(home_prob_feed_id) if home_prob_feed_id else None),
+                    "away_feed_name": str(away_prob_feed_name or ""),
+                    "home_feed_name": str(home_prob_feed_name or ""),
+                },
+            }
+        )
+
+        t_away = build_team(away_id, away_team.get("name") or "Away", _abbr(away_team))
+        t_home = build_team(home_id, home_team.get("name") or "Home", _abbr(home_team))
+
+        dh_label = ""
+        if double_header and str(double_header).strip() not in ("", "N", "n", "0"):
+            dh_label = f" DH={double_header} G={game_number if game_number is not None else '-'}"
+        pk_label = f" gamePk={game_pk}" if game_pk else ""
+        print(f"[{idx+1}/{len(games)}] Preparing rosters:{pk_label}{dh_label} {t_away.abbreviation} @ {t_home.abbreviation}")
+
+        gn = f"_g{int(game_number)}" if isinstance(game_number, (int, float)) else ""
+        roster_obj_path = None
+        if game_pk:
+            roster_obj_path = roster_obj_dir / f"roster_obj_{idx}_{t_away.abbreviation}_at_{t_home.abbreviation}_pk{game_pk}{gn}.json"
+
+        used_roster_artifact = False
+        if (
+            str(getattr(args, "use_roster_artifacts", "off")) == "on"
+            and roster_obj_path is not None
+            and roster_obj_path.exists()
+        ):
+            try:
+                rr = read_game_roster_artifact(roster_obj_path)
+                away_roster = rr["away"]
+                home_roster = rr["home"]
+                used_roster_artifact = True
+                print(f"[{idx+1}/{len(games)}] Loaded roster artifact: {roster_obj_path.name}")
+            except KeyboardInterrupt:
+                raise
+            except Exception:
+                used_roster_artifact = False
+        try:
+            if not used_roster_artifact:
+                # Reuse the already-snapshotted raw team rosters when available.
+                away_roster_entries = None
+                home_roster_entries = None
+                try:
+                    tblock_away = (roster_artifacts.get("teams") or {}).get(str(int(away_id))) or {}
+                    tblock_home = (roster_artifacts.get("teams") or {}).get(str(int(home_id))) or {}
+                    rosters_away = tblock_away.get("rosters") or {}
+                    rosters_home = tblock_home.get("rosters") or {}
+                    if isinstance(rosters_away, dict):
+                        away_roster_entries = rosters_away.get("active")
+                    if isinstance(rosters_home, dict):
+                        home_roster_entries = rosters_home.get("active")
+                except Exception:
+                    away_roster_entries = None
+                    home_roster_entries = None
+
+                away_roster = build_team_roster(
+                    client,
+                    t_away,
+                    int(args.stats_season),
+                    as_of_date=str(args.date),
+                    probable_pitcher_id=int(away_prob_id) if away_prob_id else None,
+                    statcast_cache=statcast_cache,
+                    statcast_ttl_seconds=statcast_ttl_seconds,
+                    confirmed_lineup_ids=away_lineup_ids,
+                    projected_lineup_ids=away_projected_ids,
+                    pitcher_availability=pitcher_availability_by_team.get(int(away_id), {}),
+                    roster_type="active",
+                    fallback_roster_types=(["40Man", "nonRosterInvitees"] if spring_mode else None),
+                    injured_player_ids=injuries_by_team_id.get(int(away_id)),
+                    roster_entries=away_roster_entries,
+                    fast_mode=bool(spring_mode),
+                )
+                home_roster = build_team_roster(
+                    client,
+                    t_home,
+                    int(args.stats_season),
+                    as_of_date=str(args.date),
+                    probable_pitcher_id=int(home_prob_id) if home_prob_id else None,
+                    statcast_cache=statcast_cache,
+                    statcast_ttl_seconds=statcast_ttl_seconds,
+                    confirmed_lineup_ids=home_lineup_ids,
+                    projected_lineup_ids=home_projected_ids,
+                    pitcher_availability=pitcher_availability_by_team.get(int(home_id), {}),
+                    roster_type="active",
+                    fallback_roster_types=(["40Man", "nonRosterInvitees"] if spring_mode else None),
+                    injured_player_ids=injuries_by_team_id.get(int(home_id)),
+                    roster_entries=home_roster_entries,
+                    fast_mode=bool(spring_mode),
+                )
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            failures.append(
+                {
+                    "idx": int(idx),
+                    "game_pk": game_pk,
+                    "stage": "build_roster",
+                    "error": f"{type(e).__name__}: {e}",
+                    "away": {"team_id": int(away_id), "abbr": t_away.abbreviation},
+                    "home": {"team_id": int(home_id), "abbr": t_home.abbreviation},
+                }
+            )
+            print(f"[{idx+1}/{len(games)}] ERROR building rosters: {type(e).__name__}")
+            continue
+
+        if bvp_hr_on:
+            try:
+                away_pitcher_id = int(getattr(getattr(getattr(home_roster, "lineup", None), "pitcher", None), "player", None).mlbam_id or 0)
+            except Exception:
+                away_pitcher_id = 0
+            try:
+                home_pitcher_id = int(getattr(getattr(getattr(away_roster, "lineup", None), "pitcher", None), "player", None).mlbam_id or 0)
+            except Exception:
+                home_pitcher_id = 0
+
+            if away_pitcher_id > 0:
+                try:
+                    apply_starter_bvp_hr_multipliers(
+                        batting_roster=away_roster,
+                        pitcher_id=away_pitcher_id,
+                        season=int(args.season),
+                        start_date=bvp_start_date,
+                        end_date=daily_date,
+                        cache=bvp_cache,
+                        min_pa=bvp_min_pa,
+                        shrink_pa=bvp_shrink_pa,
+                        clamp_lo=bvp_clamp_lo,
+                        clamp_hi=bvp_clamp_hi,
+                    )
+                except Exception:
+                    pass
+
+            if home_pitcher_id > 0:
+                try:
+                    apply_starter_bvp_hr_multipliers(
+                        batting_roster=home_roster,
+                        pitcher_id=home_pitcher_id,
+                        season=int(args.season),
+                        start_date=bvp_start_date,
+                        end_date=daily_date,
+                        cache=bvp_cache,
+                        min_pa=bvp_min_pa,
+                        shrink_pa=bvp_shrink_pa,
+                        clamp_lo=bvp_clamp_lo,
+                        clamp_hi=bvp_clamp_hi,
+                    )
+                except Exception:
+                    pass
+
+        if (
+            str(getattr(args, "write_roster_artifacts", "off")) == "on"
+            and roster_obj_path is not None
+            and not used_roster_artifact
+        ):
+            try:
+                write_game_roster_artifact(
+                    roster_obj_path,
+                    away_roster=away_roster,
+                    home_roster=home_roster,
+                    meta={
+                        "date": str(args.date),
+                        "stats_season": int(args.stats_season),
+                        "spring_mode": bool(spring_mode),
+                        "game_pk": int(game_pk) if game_pk else None,
+                        "away_abbr": str(t_away.abbreviation),
+                        "home_abbr": str(t_home.abbreviation),
+                        "statcast_starter_splits": str(getattr(args, "statcast_starter_splits", "")),
+                        "roster_builder": {
+                            "as_of_date": str(args.date),
+                            "roster_type": "active",
+                            "fallback_roster_types": (["40Man", "nonRosterInvitees"] if spring_mode else None),
+                            "exclude_injured": True,
+                            "enable_batter_vs_pitch_type": True,
+                            "enable_batter_platoon": True,
+                            "enable_pitcher_platoon": True,
+                            "batter_platoon_alpha": 0.55,
+                            "pitcher_platoon_alpha": 0.55,
+                            "away_probable_pitcher_id": (int(away_prob_id) if away_prob_id else None),
+                            "home_probable_pitcher_id": (int(home_prob_id) if home_prob_id else None),
+                        },
+                    },
+                )
+            except KeyboardInterrupt:
+                raise
+            except Exception:
+                pass
+
+        def _batter_feat(b):
+            return {
+                "id": b.player.mlbam_id,
+                "name": b.player.full_name,
+                "pos": b.player.primary_position,
+                "bat": b.player.bat_side.value,
+                "throw": b.player.throw_side.value,
+                "k_rate": b.k_rate,
+                "bb_rate": b.bb_rate,
+                "hbp_rate": b.hbp_rate,
+                "hr_rate": b.hr_rate,
+                "inplay_hit_rate": b.inplay_hit_rate,
+                "xb_hit_share": b.xb_hit_share,
+                "vs_pitch_type": {k.value: float(v) for k, v in (b.vs_pitch_type or {}).items()},
+                "platoon_mult_vs_lhp": {str(k): float(v) for k, v in (getattr(b, "platoon_mult_vs_lhp", {}) or {}).items() if isinstance(v, (int, float))},
+                "platoon_mult_vs_rhp": {str(k): float(v) for k, v in (getattr(b, "platoon_mult_vs_rhp", {}) or {}).items() if isinstance(v, (int, float))},
+                "statcast_quality_mult": {str(k): float(v) for k, v in (getattr(b, "statcast_quality_mult", {}) or {}).items() if isinstance(v, (int, float))},
+            }
+
+        def _pitcher_feat(p):
+            return {
+                "id": p.player.mlbam_id,
+                "name": p.player.full_name,
+                "throw": p.player.throw_side.value,
+                "role": p.role,
+                "leverage_skill": p.leverage_skill,
+                "stamina_pitches": p.stamina_pitches,
+                "availability_mult": float(getattr(p, "availability_mult", 1.0) or 1.0),
+                "platoon_mult_vs_lhb": {str(k): float(v) for k, v in (getattr(p, "platoon_mult_vs_lhb", {}) or {}).items() if isinstance(v, (int, float))},
+                "platoon_mult_vs_rhb": {str(k): float(v) for k, v in (getattr(p, "platoon_mult_vs_rhb", {}) or {}).items() if isinstance(v, (int, float))},
+                "statcast_quality_mult": {str(k): float(v) for k, v in (getattr(p, "statcast_quality_mult", {}) or {}).items() if isinstance(v, (int, float))},
+                "arsenal_source": getattr(p, "arsenal_source", "default"),
+                "arsenal_sample_size": int(getattr(p, "arsenal_sample_size", 0) or 0),
+                "statcast_splits_found": bool(getattr(p, "statcast_splits_n_pitches", 0) or 0),
+                "statcast_splits_source": str(getattr(p, "statcast_splits_source", "") or ""),
+                "statcast_splits_n_pitches": int(getattr(p, "statcast_splits_n_pitches", 0) or 0),
+                "statcast_splits_start_date": str(getattr(p, "statcast_splits_start_date", "") or ""),
+                "statcast_splits_end_date": str(getattr(p, "statcast_splits_end_date", "") or ""),
+                "k_rate": p.k_rate,
+                "bb_rate": p.bb_rate,
+                "hbp_rate": p.hbp_rate,
+                "hr_rate": p.hr_rate,
+                "inplay_hit_rate": p.inplay_hit_rate,
+                "arsenal": {k.value: float(v) for k, v in (p.arsenal or {}).items()},
+                "pitch_type_whiff_mult": {k.value: float(v) for k, v in (getattr(p, "pitch_type_whiff_mult", {}) or {}).items()},
+                "pitch_type_inplay_mult": {k.value: float(v) for k, v in (getattr(p, "pitch_type_inplay_mult", {}) or {}).items()},
+            }
+
+        # Persist a feature snapshot (exact sim inputs)
+        pitch_model = PitchModelConfig()
+        roster_snap = {
+            "pitch_model": {
+                "name": pitch_model.name,
+            },
+            "mode": {
+                "spring_mode": bool(spring_mode),
+                "season": int(args.season),
+                "stats_season": int(args.stats_season),
+            },
+            "statcast": {
+                "starter_splits": args.statcast_starter_splits,
+                "cache_ttl_hours": int(args.statcast_cache_ttl_hours),
+                "enabled": bool(statcast_cache is not None),
+                "x64_prefetch": str(args.statcast_x64_prefetch),
+            },
+            "umpire_factors": {
+                "x64_prefetch": str(args.umpire_x64_prefetch),
+                "x64_ttl_hours": int(args.umpire_x64_ttl_hours),
+                "statcast_days_back": int(args.umpire_statcast_days_back),
+                "statcast_min_pitches": int(args.umpire_statcast_min_pitches),
+                "shrink": float(args.umpire_shrink),
+            },
+            "pbp": {
+                "mode": str(args.pbp),
+                "max_events": int(args.pbp_max_events),
+            },
+            "away": {
+                "team": asdict(away_roster.team),
+                "manager": asdict(away_roster.manager),
+                "confirmed_lineup_ids": [int(x) for x in (away_lineup_ids or [])],
+                "projected_lineup_ids": [int(x) for x in (away_projected_ids or [])],
+                "lineup_source": str(away_lineup_source),
+                "lineup_confidence": float(away_lineup_confidence),
+                "probable_pitcher": {
+                    "id": (int(away_prob_id) if away_prob_id else None),
+                    "source": str(away_prob_source),
+                    "confidence": float(away_prob_confidence),
+                    "raw_schedule_id": (int(away_prob_schedule_id) if away_prob_schedule_id else None),
+                    "raw_feed_id": (int(away_prob_feed_id) if away_prob_feed_id else None),
+                },
+                "starter": {
+                    "id": away_roster.lineup.pitcher.player.mlbam_id,
+                    "name": away_roster.lineup.pitcher.player.full_name,
+                    "role": away_roster.lineup.pitcher.role,
+                    "selection_source": str(getattr(away_roster.lineup.pitcher, "starter_selection_source", "") or ""),
+                    "requested_id": getattr(away_roster.lineup.pitcher, "starter_requested_id", None),
+                },
+                "bullpen": [
+                    {"id": p.player.mlbam_id, "name": p.player.full_name, "role": p.role, "lev": p.leverage_skill}
+                    for p in away_roster.lineup.bullpen
+                ],
+                "lineup": [_batter_feat(b) for b in away_roster.lineup.batters],
+                "bench": [_batter_feat(b) for b in (away_roster.lineup.bench or [])],
+                "starter_profile": _pitcher_feat(away_roster.lineup.pitcher),
+                "bullpen_profiles": [_pitcher_feat(p) for p in (away_roster.lineup.bullpen or [])],
+            },
+            "home": {
+                "team": asdict(home_roster.team),
+                "manager": asdict(home_roster.manager),
+                "confirmed_lineup_ids": [int(x) for x in (home_lineup_ids or [])],
+                "projected_lineup_ids": [int(x) for x in (home_projected_ids or [])],
+                "lineup_source": str(home_lineup_source),
+                "lineup_confidence": float(home_lineup_confidence),
+                "probable_pitcher": {
+                    "id": (int(home_prob_id) if home_prob_id else None),
+                    "source": str(home_prob_source),
+                    "confidence": float(home_prob_confidence),
+                    "raw_schedule_id": (int(home_prob_schedule_id) if home_prob_schedule_id else None),
+                    "raw_feed_id": (int(home_prob_feed_id) if home_prob_feed_id else None),
+                },
+                "starter": {
+                    "id": home_roster.lineup.pitcher.player.mlbam_id,
+                    "name": home_roster.lineup.pitcher.player.full_name,
+                    "role": home_roster.lineup.pitcher.role,
+                    "selection_source": str(getattr(home_roster.lineup.pitcher, "starter_selection_source", "") or ""),
+                    "requested_id": getattr(home_roster.lineup.pitcher, "starter_requested_id", None),
+                },
+                "bullpen": [
+                    {"id": p.player.mlbam_id, "name": p.player.full_name, "role": p.role, "lev": p.leverage_skill}
+                    for p in home_roster.lineup.bullpen
+                ],
+                "lineup": [_batter_feat(b) for b in home_roster.lineup.batters],
+                "bench": [_batter_feat(b) for b in (home_roster.lineup.bench or [])],
+                "starter_profile": _pitcher_feat(home_roster.lineup.pitcher),
+                "bullpen_profiles": [_pitcher_feat(p) for p in (home_roster.lineup.bullpen or [])],
+            },
+        }
+        try:
+            weather, park, umpire = fetch_game_context(client, int(game_pk)) if game_pk else (None, None, None)
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            failures.append(
+                {
+                    "idx": int(idx),
+                    "game_pk": game_pk,
+                    "stage": "context",
+                    "error": f"{type(e).__name__}: {e}",
+                }
+            )
+            weather, park, umpire = None, None, None
+
+        # Apply the same umpire shrink used in eval tuning so daily sims stay consistent.
+        _apply_umpire_shrink(umpire, float(getattr(args, "umpire_shrink", 1.0)))
+        gn = f"_g{int(game_number)}" if isinstance(game_number, (int, float)) else ""
+        roster_path = snapshot_dir / f"roster_{idx}_{t_away.abbreviation}_at_{t_home.abbreviation}_pk{game_pk}{gn}.json"
+
+        weather_obj = None
+        if weather is not None:
+            wm = weather.multipliers()
+            weather_obj = {
+                "source": weather.source,
+                "condition": weather.condition,
+                "temperature_f": weather.temperature_f,
+                "wind_speed_mph": weather.wind_speed_mph,
+                "wind_direction": weather.wind_direction,
+                "wind_raw": weather.wind_raw,
+                "is_dome": weather.is_dome,
+                "multipliers": {
+                    "hr_mult": wm.hr_mult,
+                    "inplay_hit_mult": wm.inplay_hit_mult,
+                    "xb_share_mult": wm.xb_share_mult,
+                },
+            }
+
+        park_obj = None
+        if park is not None:
+            pm = park.multipliers()
+            park_obj = {
+                "source": park.source,
+                "venue_id": park.venue_id,
+                "venue_name": park.venue_name,
+                "roof_type": park.roof_type,
+                "roof_status": park.roof_status,
+                "left_line": park.left_line,
+                "center": park.center,
+                "right_line": park.right_line,
+                "multipliers": {
+                    "hr_mult": pm.hr_mult,
+                    "inplay_hit_mult": pm.inplay_hit_mult,
+                    "xb_share_mult": pm.xb_share_mult,
+                },
+            }
+
+        umpire_obj = None
+        if umpire is not None:
+            um = umpire.multipliers()
+            umpire_obj = {
+                "source": umpire.source,
+                "home_plate_umpire_id": umpire.home_plate_umpire_id,
+                "home_plate_umpire_name": umpire.home_plate_umpire_name,
+                "called_strike_mult": umpire.called_strike_mult,
+                "multipliers": {
+                    "called_strike_mult": um.called_strike_mult,
+                },
+            }
+
+        if weather_obj is not None:
+            roster_snap["weather"] = weather_obj
+        if park_obj is not None:
+            roster_snap["park"] = park_obj
+        if umpire_obj is not None:
+            roster_snap["umpire"] = umpire_obj
+        _write_json(roster_path, roster_snap)
+
+        print(
+            f"[{idx+1}/{len(games)}] Simulating ({args.sims}, workers={int(getattr(args, 'workers', 1) or 1)}): {t_away.abbreviation} @ {t_home.abbreviation}"
+        )
+
+        try:
+            sim_out = _sim_many(
+                away_roster,
+                home_roster,
+                sims=args.sims,
+                seed=args.seed + idx * 100000,
+                workers=int(getattr(args, "workers", 1) or 1),
+                weather=weather,
+                park=park,
+                umpire=umpire,
+                hitter_hr_top_n=int(getattr(args, "hitter_hr_topn", 0) or 0),
+                hitter_props_top_n=int(getattr(args, "hitter_props_topn", 0) or 0),
+                hitter_hr_prob_calibration=hitter_hr_prob_calibration,
+                hitter_props_prob_calibration=hitter_props_prob_calibration,
+                pitcher_prop_ids=[
+                    int(away_roster.lineup.pitcher.player.mlbam_id),
+                    int(home_roster.lineup.pitcher.player.mlbam_id),
+                ],
+                cfg_kwargs=cfg_kwargs,
+            )
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            failures.append(
+                {
+                    "idx": int(idx),
+                    "game_pk": game_pk,
+                    "stage": "simulate",
+                    "error": f"{type(e).__name__}: {e}",
+                    "away": {"abbr": t_away.abbreviation, "team_id": int(t_away.team_id)},
+                    "home": {"abbr": t_home.abbreviation, "team_id": int(t_home.team_id)},
+                }
+            )
+            print(f"[{idx+1}/{len(games)}] ERROR simulating: {type(e).__name__}")
+            continue
+
+        # Representative single-game boxscore (and optional PBP) separate from distribution sims.
+        # Even when --pbp off, we still run 1 representative game so the web UI can render a boxscore.
+        pbp_mode = str(args.pbp).lower().strip() if getattr(args, "pbp", None) is not None else "off"
+        want_pbp = pbp_mode != "off"
+        pbp_cfg = GameConfig(
+            rng_seed=(args.seed + idx * 100000 + 999),
+            weather=weather,
+            park=park,
+            umpire=umpire,
+            **cfg_kwargs,
+            pbp=(pbp_mode if want_pbp else "off"),
+            pbp_max_events=(int(args.pbp_max_events) if want_pbp else 0),
+        )
+        r1 = simulate_game(away_roster, home_roster, pbp_cfg)
+        pbp_obj = {
+            "pbp_mode": str(getattr(r1, "pbp_mode", "off")),
+            "pbp_truncated": bool(getattr(r1, "pbp_truncated", False)),
+            "pbp": (getattr(r1, "pbp", []) or []) if want_pbp else [],
+            "boxscore": _as_boxscore(r1),
+        }
+
+        record = {
+            "date": args.date,
+            "season": args.season,
+            "stats_season": int(args.stats_season),
+            "spring_mode": bool(spring_mode),
+            "game_pk": game_pk,
+            "schedule": {
+                "game_type": game_type,
+                "double_header": double_header,
+                "game_number": game_number,
+                "series_game_number": series_game_number,
+                "status": status_obj,
+            },
+            "away": asdict(t_away),
+            "home": asdict(t_home),
+            "probable": {
+                "away_id": (int(away_prob_id) if away_prob_id else None),
+                "home_id": (int(home_prob_id) if home_prob_id else None),
+                "away_source": str(away_prob_source),
+                "home_source": str(home_prob_source),
+                "away_confidence": float(away_prob_confidence),
+                "home_confidence": float(home_prob_confidence),
+                "raw": {
+                    "away_schedule_id": (int(away_prob_schedule_id) if away_prob_schedule_id else None),
+                    "home_schedule_id": (int(home_prob_schedule_id) if home_prob_schedule_id else None),
+                    "away_feed_id": (int(away_prob_feed_id) if away_prob_feed_id else None),
+                    "home_feed_id": (int(home_prob_feed_id) if home_prob_feed_id else None),
+                },
+            },
+            "starters": {
+                "away": int(away_roster.lineup.pitcher.player.mlbam_id),
+                "home": int(home_roster.lineup.pitcher.player.mlbam_id),
+            },
+            "starter_names": {
+                "away": str(away_roster.lineup.pitcher.player.full_name),
+                "home": str(home_roster.lineup.pitcher.player.full_name),
+            },
+            "weather": weather_obj,
+            "park": park_obj,
+            "umpire": umpire_obj,
+            "sim": sim_out,
+            "pbp": pbp_obj,
+            "meta": {
+                "spring_mode": bool(spring_mode),
+                "stats_season": int(args.stats_season),
+                "away_lineup_source": str(away_lineup_source),
+                "home_lineup_source": str(home_lineup_source),
+                "hitter_hr_topn": int(getattr(args, "hitter_hr_topn", 0) or 0),
+                "hitter_props_topn": int(getattr(args, "hitter_props_topn", 0) or 0),
+                "hitter_props_topn_effective": (
+                    int(getattr(args, "hitter_hr_topn", 0) or 0)
+                    if int(getattr(args, "hitter_props_topn", 0) or 0) < 0
+                    else int(getattr(args, "hitter_props_topn", 0) or 0)
+                ),
+                "hitter_hr_prob_calibration": str(getattr(args, "hitter_hr_prob_calibration", "") or ""),
+                "hitter_props_prob_calibration": str(getattr(args, "hitter_props_prob_calibration", "") or ""),
+            },
+        }
+        outputs.append(record)
+
+        sim_path = sim_dir / f"sim_{idx}_{t_away.abbreviation}_at_{t_home.abbreviation}_pk{game_pk}{gn}.json"
+        _write_json(sim_path, record)
+
+    # Summary index
+    summary = {
+        "date": args.date,
+        "season": args.season,
+        "games": len(outputs),
+        "failures": failures,
+        "failures_n": int(len(failures)),
+        "generated_at": datetime.now().isoformat(),
+        "outputs": [
+            {
+                "game_pk": o.get("game_pk"),
+                "double_header": (o.get("schedule") or {}).get("double_header"),
+                "game_number": (o.get("schedule") or {}).get("game_number"),
+                "away": o["away"]["abbreviation"],
+                "home": o["home"]["abbreviation"],
+                "starter_names": o.get("starter_names"),
+                "full": {
+                    "home_win_prob": (o.get("sim") or {}).get("segments", {}).get("full", {}).get("home_win_prob"),
+                    "away_win_prob": (o.get("sim") or {}).get("segments", {}).get("full", {}).get("away_win_prob"),
+                    "tie_prob": (o.get("sim") or {}).get("segments", {}).get("full", {}).get("tie_prob"),
+                },
+                "first5": {
+                    "home_win_prob": (o.get("sim") or {}).get("segments", {}).get("first5", {}).get("home_win_prob"),
+                    "away_win_prob": (o.get("sim") or {}).get("segments", {}).get("first5", {}).get("away_win_prob"),
+                    "tie_prob": (o.get("sim") or {}).get("segments", {}).get("first5", {}).get("tie_prob"),
+                },
+                "first3": {
+                    "home_win_prob": (o.get("sim") or {}).get("segments", {}).get("first3", {}).get("home_win_prob"),
+                    "away_win_prob": (o.get("sim") or {}).get("segments", {}).get("first3", {}).get("away_win_prob"),
+                    "tie_prob": (o.get("sim") or {}).get("segments", {}).get("first3", {}).get("tie_prob"),
+                },
+                "hitter_hr_likelihood_topn": (o.get("sim") or {}).get("hitter_hr_likelihood_topn"),
+                "hitter_props_likelihood_topn": (o.get("sim") or {}).get("hitter_props_likelihood_topn"),
+                "pitcher_props": (o.get("sim") or {}).get("pitcher_props"),
+            }
+            for o in outputs
+        ],
+    }
+    summary_path = out_root / f"daily_summary_{args.date.replace('-', '_')}.json"
+    _write_json(summary_path, summary)
+
+    # Persist lineup artifacts (best-effort).
+    try:
+        lineup_summary = {
+            "games": int(len(lineup_games)),
+            "projected_teams": 0,
+            "adjusted_teams": 0,
+            "partial_teams": 0,
+            "fallback_pool_teams": 0,
+        }
+        for row in lineup_games:
+            for side in ("away", "home"):
+                validation = dict((row.get(f"{side}_projected_validation") or {}))
+                raw_ids = [int(pid) for pid in (validation.get("raw_ids") or []) if int(pid) > 0]
+                if raw_ids:
+                    lineup_summary["projected_teams"] = int(lineup_summary.get("projected_teams") or 0) + 1
+                status = str(validation.get("status") or "")
+                if status == "adjusted":
+                    lineup_summary["adjusted_teams"] = int(lineup_summary.get("adjusted_teams") or 0) + 1
+                elif status == "partial":
+                    lineup_summary["partial_teams"] = int(lineup_summary.get("partial_teams") or 0) + 1
+                if str(validation.get("pool_source") or "") == "fallback":
+                    lineup_summary["fallback_pool_teams"] = int(lineup_summary.get("fallback_pool_teams") or 0) + 1
+        _write_json(
+            snapshot_dir / "lineups.json",
+            {
+                "date": str(args.date),
+                "season": int(args.season),
+                "spring_mode": bool(spring_mode),
+                "generated_at": datetime.now().isoformat(),
+                "summary": lineup_summary,
+                "games": lineup_games,
+            },
+        )
+    except Exception:
+        pass
+
+    # Persist probable starters artifact (best-effort).
+    try:
+        _write_json(
+            snapshot_dir / "probables.json",
+            {
+                "date": str(args.date),
+                "season": int(args.season),
+                "spring_mode": bool(spring_mode),
+                "generated_at": datetime.now().isoformat(),
+                "games": probable_games,
+            },
+        )
+    except Exception:
+        pass
+    try:
+        tmp = last_known_path.with_suffix(last_known_path.suffix + ".tmp")
+        tmp.write_text(json.dumps(last_known_by_team, indent=2), encoding="utf-8")
+        tmp.replace(last_known_path)
+    except Exception:
+        pass
+    print(f"Wrote: {summary_path}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

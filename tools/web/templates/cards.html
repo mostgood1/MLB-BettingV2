@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MLB Game Cards — {{ date }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='cards.css', v='20260318-compact-rhe') }}" />
+  </head>
+  <body class="cards-body">
+    <div class="cards-shell">
+      <header class="cards-header">
+        <div class="cards-title-block">
+          <div class="cards-title-row">
+            <h1>MLB Game Cards</h1>
+            <span class="cards-nav-pill is-active" id="cardsDateBadge">{{ date }}</span>
+          </div>
+          <p class="cards-header-meta" id="cardsHeaderMeta">Loading slate...</p>
+        </div>
+      </header>
+
+      <section class="cards-control-card" aria-label="Slate controls">
+        <form class="cards-date-form" method="get" action="/">
+          <a class="cards-nav-pill" id="cardsPrevDateLink" href="/?date={{ date }}" rel="prev">Prev</a>
+          <span class="cards-nav-pill cards-form-pill" aria-hidden="true">Date</span>
+          <input id="cardsDateInput" type="date" name="date" value="{{ date }}" aria-label="Slate date" />
+          <button type="submit">Load</button>
+          <a class="cards-nav-pill" id="cardsNextDateLink" href="/?date={{ date }}" rel="next">Next</a>
+          <a class="cards-nav-pill" href="/pitcher-ladders?date={{ date }}">Pitcher ladders</a>
+          <a class="cards-nav-pill" href="/hitter-ladders?date={{ date }}">Hitter ladders</a>
+          <a class="cards-nav-pill" href="/season/{{ date[:4] }}">Season review</a>
+        </form>
+
+        <div class="cards-source-meta" id="cardsSourceMeta">Loading slate…</div>
+      </section>
+
+      <section class="cards-toolbar">
+        <div class="cards-filters" id="cardsFilters"></div>
+      </section>
+
+      <section class="cards-scoreboard" id="cardsScoreboard" aria-label="Games">
+        <div class="cards-loading-strip">Loading scoreboard…</div>
+      </section>
+
+      <main class="cards-grid" id="cardsGrid" aria-live="polite">
+        <div class="cards-loading-state">Loading cards…</div>
+      </main>
+    </div>
+
+    <script>
+      window.MLBCardsBootstrap = {
+        date: {{ date|tojson }},
+      };
+    </script>
+    <script src="{{ url_for('static', filename='cards.js', v='20260318-compact-rhe') }}"></script>
+  </body>
+</html>

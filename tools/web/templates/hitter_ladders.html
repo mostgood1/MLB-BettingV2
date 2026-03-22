@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hitter Ladders — {{ date }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='cards.css', v='20260321-hitter-ladders') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='pitcher_ladders.css', v='20260321-hitter-ladders') }}" />
+  </head>
+  <body class="cards-body ladder-body">
+    <div class="ladder-shell">
+      <header class="ladder-header">
+        <div class="ladder-title-block">
+          <div class="ladder-kicker">Daily hitter prop threshold board</div>
+          <div class="ladder-title-row">
+            <h1>Hitter Ladders</h1>
+            <span class="cards-nav-pill is-active" id="hitterLadderDateBadge">{{ date }}</span>
+            <span class="cards-nav-pill" id="hitterLadderPropBadge">{{ prop }}</span>
+          </div>
+          <p class="ladder-header-meta" id="hitterLadderHeaderMeta">Loading hitter ladder data...</p>
+        </div>
+        <div class="ladder-header-actions">
+          <a class="cards-nav-pill" href="/?date={{ date }}">Daily cards</a>
+          <a class="cards-nav-pill" href="/pitcher-ladders?date={{ date }}">Pitcher ladders</a>
+          <a class="cards-nav-pill" href="/season/{{ date[:4] }}?date={{ date }}">Season review</a>
+        </div>
+      </header>
+
+      <section class="cards-control-card ladder-controls" aria-label="Hitter ladder controls">
+        <form class="cards-date-form ladder-form" id="hitterLadderForm" method="get" action="/hitter-ladders">
+          <a class="cards-nav-pill" id="hitterLadderPrevDateLink" href="/hitter-ladders?date={{ date }}&prop={{ prop }}&team={{ team }}&hitter={{ hitter }}&sort={{ sort }}" rel="prev">Prev</a>
+          <span class="cards-nav-pill cards-form-pill" aria-hidden="true">Date</span>
+          <input id="hitterLadderDateInput" type="date" name="date" value="{{ date }}" aria-label="Hitter ladder date" />
+          <span class="cards-nav-pill cards-form-pill" aria-hidden="true">Prop</span>
+          <select id="hitterLadderPropInput" name="prop" aria-label="Hitter prop selector">
+            {% for option in prop_options %}
+            <option value="{{ option.value }}" {% if option.value == prop %}selected{% endif %}>{{ option.label }}</option>
+            {% endfor %}
+          </select>
+          <span class="cards-nav-pill cards-form-pill" aria-hidden="true">Team</span>
+          <select id="hitterLadderTeamInput" name="team" aria-label="Hitter team selector">
+            <option value="">All teams</option>
+          </select>
+          <span class="cards-nav-pill cards-form-pill" aria-hidden="true">Hitter</span>
+          <select id="hitterLadderHitterInput" name="hitter" aria-label="Hitter selector">
+            <option value="">All hitters</option>
+          </select>
+          <span class="cards-nav-pill cards-form-pill" aria-hidden="true">Sort</span>
+          <select id="hitterLadderSortInput" name="sort" aria-label="Hitter sort selector">
+            {% for option in sort_options %}
+            <option value="{{ option.value }}" {% if option.value == sort %}selected{% endif %}>{{ option.label }}</option>
+            {% endfor %}
+          </select>
+          <button type="submit">Load</button>
+          <a class="cards-nav-pill" id="hitterLadderNextDateLink" href="/hitter-ladders?date={{ date }}&prop={{ prop }}&team={{ team }}&hitter={{ hitter }}&sort={{ sort }}" rel="next">Next</a>
+        </form>
+
+        <div class="ladder-source-meta" id="hitterLadderSourceMeta">Loading sources…</div>
+      </section>
+
+      <section class="ladder-summary" id="hitterLadderSummary" aria-live="polite">
+        <div class="cards-loading-state">Loading ladder summary...</div>
+      </section>
+
+      <section class="ladder-selected-pitcher" id="hitterLadderSelectedHitter" aria-live="polite"></section>
+
+      <main class="ladder-grid" id="hitterLadderGrid" aria-live="polite">
+        <div class="cards-loading-state">Loading hitter ladders...</div>
+      </main>
+    </div>
+
+    <script id="hitterLaddersBootstrap" type="application/json">{{ {'date': date, 'prop': prop, 'team': team, 'hitter': hitter, 'sort': sort}|tojson }}</script>
+    <script src="{{ url_for('static', filename='hitter_ladders.js', v='20260321-hitter-ladders') }}"></script>
+  </body>
+</html>
