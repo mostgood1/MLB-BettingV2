@@ -608,6 +608,17 @@ def _date_plus_days(date_str: str, days: int) -> str:
     return (base + timedelta(days=int(days))).strftime("%Y-%m-%d")
 
 
+def _parse_date_str(date_str: str) -> datetime.date:
+    text = str(date_str or "").strip()
+    try:
+        return datetime.fromisoformat(text).date()
+    except Exception:
+        try:
+            return datetime.strptime(text, "%Y-%m-%d").date()
+        except Exception as exc:
+            raise SystemExit(f"Invalid date (expected YYYY-MM-DD): {date_str}") from exc
+
+
 def _season_from_date_str(date_str: str, fallback: int) -> int:
     text = str(date_str or "").strip()
     try:
@@ -663,6 +674,39 @@ def _strip_cli_args(
             continue
         out.append(arg)
     return out
+
+
+def _argv_has_flag(argv: List[str], flag: str) -> bool:
+    needle = str(flag or "").strip()
+    if not needle:
+        return False
+    for raw in argv:
+        arg = str(raw or "")
+        if arg == needle:
+            return True
+        if arg.startswith(f"{needle}="):
+            return True
+    return False
+
+
+def _fresh_auto_seed() -> int:
+    return max(1, int.from_bytes(os.urandom(8), "big") % 2147483647)
+
+
+def _resolve_effective_seed(args: argparse.Namespace, raw_argv: List[str]) -> Tuple[int, str, bool]:
+    seed_source = str(getattr(args, "seed_source", "") or "").strip()
+    if seed_source:
+        return int(args.seed), seed_source, (seed_source == "explicit_cli")
+
+    explicit_cli = _argv_has_flag(raw_argv, "--seed")
+    if explicit_cli:
+        return int(args.seed), "explicit_cli", True
+
+    target_date = _parse_date_str(str(args.date))
+    if target_date > datetime.now().date():
+        return _fresh_auto_seed(), "auto_future_date", False
+
+    return int(args.seed), "default_fixed", False
 
 
 def _refresh_feed_live_cache_for_date(
@@ -997,6 +1041,11 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
         "generated_at": datetime.now().isoformat(),
         "date": str(args.date),
         "season": int(args.season),
+        "seed": {
+            "value": int(getattr(args, "seed", 1337) or 1337),
+            "source": str(getattr(args, "seed_source", "default_fixed") or "default_fixed"),
+            "explicit_cli": bool(getattr(args, "seed_explicit", False)),
+        },
         "prior_day": {
             "date": str(prior_date),
             "season": int(prior_season),
@@ -1291,6 +1340,13 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
         ),
         flags_no_values=(),
     )
+    if not _argv_has_flag(list(raw_argv), "--seed"):
+        passthrough_args.extend([
+            "--seed",
+            str(int(getattr(args, "seed", 1337) or 1337)),
+            "--seed-source",
+            str(getattr(args, "seed_source", "default_fixed") or "default_fixed"),
+        ])
     multi_profile_py = (_ROOT / "tools" / "daily_update_multi_profile.py").resolve()
     cmd = [
         sys.executable,
@@ -1312,6 +1368,7 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
     current_stage: Dict[str, Any] = {
         "status": "ok",
         "command": [str(part) for part in cmd],
+        "seed": dict(report.get("seed") or {}),
         "summary_path": _relative_path_str(game_out / f"daily_summary_{token}.json"),
         "profile_bundle_path": _relative_path_str(game_out / f"daily_summary_{token}_profile_bundle.json"),
         "locked_policy_path": _relative_path_str(game_out / f"daily_summary_{token}_locked_policy.json"),
@@ -2306,6 +2363,7 @@ def main() -> int:
         help="If on, include full baseline player lists in roster_events.json for roster types with no previous snapshot.",
     )
     ap.add_argument("--seed", type=int, default=1337)
+    ap.add_argument("--seed-source", default="", help=argparse.SUPPRESS)
     ap.add_argument("--out", default=str(_ROOT / "data" / "daily"))
     ap.add_argument(
         "--max-games",
@@ -2746,10 +2804,15 @@ def main() -> int:
         default=None,
         help="Override probability of a fielder's-choice style out on a ground ball with runner on 1B. If omitted, uses GameConfig default.",
     )
+    raw_argv = list(sys.argv[1:])
     args = ap.parse_args()
+    effective_seed, seed_source, seed_explicit = _resolve_effective_seed(args, raw_argv)
+    args.seed = int(effective_seed)
+    args.seed_source = str(seed_source)
+    args.seed_explicit = bool(seed_explicit)
 
     if str(getattr(args, "workflow", "core") or "core") == "ui-daily":
-        return _run_ui_daily_workflow(args, raw_argv=list(sys.argv[1:]))
+        return _run_ui_daily_workflow(args, raw_argv=raw_argv)
 
     spring_mode = bool(getattr(args, "spring_mode", False))
     stats_season = int(getattr(args, "stats_season", 0) or 0)
@@ -2917,6 +2980,9 @@ def main() -> int:
             "season": int(args.season),
             "stats_season": int(args.stats_season),
             "spring_mode": bool(spring_mode),
+            "seed": int(getattr(args, "seed", 1337) or 1337),
+            "seed_source": str(getattr(args, "seed_source", "default_fixed") or "default_fixed"),
+            "seed_explicit_cli": bool(getattr(args, "seed_explicit", False)),
             "cfg_kwargs": cfg_kwargs,
             "hitter_hr_prob_calibration": hitter_hr_prob_calibration,
             "hitter_props_prob_calibration": hitter_props_prob_calibration,
