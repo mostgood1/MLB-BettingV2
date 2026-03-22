@@ -1,0 +1,154 @@
+{
+  "tool": "tools/daily_update.py",
+  "workflow": "ui-daily",
+  "generated_at": "2026-03-21T18:18:11.605612",
+  "date": "2026-03-25",
+  "season": 2026,
+  "prior_day": {
+    "date": "2026-03-24",
+    "season": 2026,
+    "eval_report_path": "data/eval/batches/season_2026_ui_daily_live/sim_vs_actual_2026-03-24.json"
+  },
+  "current_day": {
+    "date": "2026-03-25",
+    "season": 2026,
+    "out_game": "data/daily",
+    "out_pitcher": "data/daily_pitcher_props",
+    "out_hitter": "data/daily_hitter_props",
+    "summary_path": "data/daily/daily_summary_2026_03_25.json",
+    "profile_bundle_path": "data/daily/daily_summary_2026_03_25_profile_bundle.json",
+    "locked_policy_path": "data/daily/daily_summary_2026_03_25_locked_policy.json"
+  },
+  "stages": {
+    "prior_day_feed_live_refresh": {
+      "status": "skipped",
+      "date": "2026-03-24",
+      "season": 2026,
+      "reason": "refresh_prior_feed_live=off"
+    },
+    "prior_day_card_settlement": {
+      "status": "skipped",
+      "date": "2026-03-24",
+      "card_path": "data/daily/daily_summary_2026_03_24_locked_policy.json",
+      "reason": "settle_prior_card=off"
+    },
+    "prior_day_eval_report": {
+      "status": "skipped",
+      "date": "2026-03-24",
+      "report_path": "data/eval/batches/season_2026_ui_daily_live/sim_vs_actual_2026-03-24.json",
+      "reason": "refresh_season_manifests=off"
+    },
+    "season_publish": {
+      "status": "skipped",
+      "season": 2026,
+      "batch_dir": "data/eval/batches/season_2026_ui_daily_live",
+      "reason": "refresh_season_manifests=off"
+    },
+    "current_day_oddsapi": {
+      "status": "warning",
+      "date": "2026-03-25",
+      "mode": "live",
+      "out_dir": "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\data\\market\\oddsapi",
+      "game_lines_path": "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\data\\market\\oddsapi\\oddsapi_game_lines_2026_03_25.json",
+      "pitcher_props_path": "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\data\\market\\oddsapi\\oddsapi_pitcher_props_2026_03_25.json",
+      "hitter_props_path": "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\data\\market\\oddsapi\\oddsapi_hitter_props_2026_03_25.json",
+      "counts": {
+        "game_lines": {
+          "events_matched": 1,
+          "games": 1,
+          "h2h_games": 1,
+          "totals_games": 1,
+          "spreads_games": 1
+        },
+        "pitcher_props": {
+          "players": 2,
+          "markets": {
+            "strikeouts": 2
+          },
+          "events_matched": 1
+        },
+        "hitter_props": {
+          "players": 0,
+          "markets": {},
+          "events_matched": 1
+        }
+      },
+      "warnings": [
+        "current-day OddsAPI ingest captured no hitter props"
+      ]
+    },
+    "current_day_multi_profile": {
+      "status": "ok",
+      "command": [
+        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\.venv_x64\\Scripts\\python.exe",
+        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\tools\\daily_update_multi_profile.py",
+        "--date",
+        "2026-03-25",
+        "--season",
+        "2026",
+        "--python-exe",
+        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\.venv_x64\\Scripts\\python.exe",
+        "--out-game",
+        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\data\\daily",
+        "--out-pitcher",
+        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\data\\daily_pitcher_props",
+        "--out-hitter",
+        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\data\\daily_hitter_props",
+        "--spring-mode",
+        "--sims",
+        "1000",
+        "--workers",
+        "4",
+        "--pbp",
+        "off",
+        "--use-roster-artifacts",
+        "on",
+        "--write-roster-artifacts",
+        "on",
+        "--refresh-season-manifests",
+        "off"
+      ],
+      "summary_path": "data/daily/daily_summary_2026_03_25.json",
+      "profile_bundle_path": "data/daily/daily_summary_2026_03_25_profile_bundle.json",
+      "locked_policy_path": "data/daily/daily_summary_2026_03_25_locked_policy.json",
+      "exit_code": 0,
+      "summary_exists": true,
+      "profile_bundle_exists": true,
+      "locked_policy_exists": true
+    },
+    "current_day_roster_snapshot": {
+      "status": "ok",
+      "snapshot_dir": "data/daily/snapshots/2026-03-25",
+      "team_rosters_raw": "data/daily/snapshots/2026-03-25/team_rosters_raw.json",
+      "injuries_raw": "data/daily/snapshots/2026-03-25/injuries_raw.json",
+      "roster_events": "data/daily/snapshots/2026-03-25/roster_events.json",
+      "lineups_last_known": "data/daily/lineups_last_known_by_team.json"
+    },
+    "current_day_batting_lineups": {
+      "status": "ok",
+      "path": "data/daily/snapshots/2026-03-25/lineups.json",
+      "games": 1,
+      "summary": {
+        "games": 1,
+        "projected_teams": 2,
+        "adjusted_teams": 2,
+        "partial_teams": 0,
+        "fallback_pool_teams": 0
+      },
+      "adjusted_teams": 2,
+      "partial_teams": 0,
+      "fallback_pool_teams": 0
+    },
+    "current_day_probable_pitchers": {
+      "status": "ok",
+      "path": "data/daily/snapshots/2026-03-25/probables.json",
+      "games": 1
+    }
+  },
+  "warnings": [
+    "current-day OddsAPI ingest captured no hitter props",
+    "current-day lineup validation adjusted projected lineups for 2 team(s)"
+  ],
+  "errors": [],
+  "status": "partial"
+}
