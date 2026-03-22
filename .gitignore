@@ -31,53 +31,12 @@ data/daily/**
 !data/daily/snapshots/*/lineups.json
 !data/daily/snapshots/*/roster_*.json
 
-# Keep OddsAPI market captures surfaced by the frontend.
-!data/market/
+# Ignore optional archive/enrichment datasets to keep repo tracking lean.
 data/market/**
-!data/market/oddsapi/
-!data/market/oddsapi/oddsapi_game_lines_*.json
-!data/market/oddsapi/oddsapi_pitcher_props_*.json
-!data/market/oddsapi/oddsapi_hitter_props_*.json
-data/market/oddsapi/coverage_summary*.json
-
-# Keep season archive manifests, reports, and locked card payloads used by season/history views.
-!data/eval/
 data/eval/**
-!data/eval/seasons/
-!data/eval/seasons/*/
-!data/eval/seasons/*/season_eval_manifest.json
-!data/eval/seasons/*/manifest.json
-!data/eval/seasons/*/season_betting_cards_manifest.json
-!data/eval/seasons/*/season_betting_cards_retuned_manifest.json
-!data/eval/seasons/*/locked_cards/
-!data/eval/seasons/*/locked_cards/daily_summary_*_locked_policy.json
-!data/eval/seasons/*/locked_cards_retuned/
-!data/eval/seasons/*/locked_cards_retuned/daily_summary_*_locked_policy.json
-!data/eval/batches/
-data/eval/batches/*/
-!data/eval/batches/season_2025_regular_sims500_20260316_111829/
-!data/eval/batches/season_2025_regular_sims500_20260316_111829/batch_meta.json
-!data/eval/batches/season_2025_regular_sims500_20260316_111829/summary.json
-!data/eval/batches/season_2025_regular_sims500_20260316_111829/sim_vs_actual_*.json
-
-# Keep archived StatsAPI live feeds used for historical game pages/streams.
-!data/raw/
 data/raw/**
-!data/raw/statsapi/
-data/raw/statsapi/**
-!data/raw/statsapi/feed_live/
-!data/raw/statsapi/feed_live/*/
-!data/raw/statsapi/feed_live/*/*/
-!data/raw/statsapi/feed_live/*/*/*.json
-!data/raw/statsapi/feed_live/*/*/*.json.gz
 
 # Local scratch and cache data should stay untracked even under kept trees.
 data/daily/_tmp_*/
 data/daily/snapshots/*/team_rosters_raw.json
-data/eval/seasons/*/_tmp_*.json
-data/eval/seasons/*/_tmp_*.md
-data/eval/seasons/*/_partial_*.json
-data/eval/seasons/*/_partial_*.md
-data/eval/seasons/*/*.md
-data/raw/.locks/
 data/_tmp_*/
