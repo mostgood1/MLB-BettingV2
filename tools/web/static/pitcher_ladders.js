@@ -11,12 +11,14 @@
     date: String(bootstrap.date || ""),
     prop: String(bootstrap.prop || "strikeouts"),
     pitcher: String(bootstrap.pitcher || ""),
+    sort: String(bootstrap.sort || "team"),
   };
 
   const formEl = document.getElementById("ladderForm");
   const dateInputEl = document.getElementById("ladderDateInput");
   const propInputEl = document.getElementById("ladderPropInput");
   const pitcherInputEl = document.getElementById("ladderPitcherInput");
+  const sortInputEl = document.getElementById("ladderSortInput");
   const headerMetaEl = document.getElementById("ladderHeaderMeta");
   const sourceMetaEl = document.getElementById("ladderSourceMeta");
   const summaryEl = document.getElementById("ladderSummary");
@@ -56,19 +58,21 @@
     return `${(num * 100).toFixed(1)}%`;
   }
 
-  function pageHref(dateValue, propValue, pitcherValue) {
+  function pageHref(dateValue, propValue, pitcherValue, sortValue) {
     const params = new URLSearchParams();
     if (dateValue) params.set("date", dateValue);
     if (propValue) params.set("prop", propValue);
     if (pitcherValue) params.set("pitcher", pitcherValue);
+    if (sortValue) params.set("sort", sortValue);
     return `/pitcher-ladders?${params.toString()}`;
   }
 
-  function apiHref(dateValue, propValue, pitcherValue) {
+  function apiHref(dateValue, propValue, pitcherValue, sortValue) {
     const params = new URLSearchParams();
     if (dateValue) params.set("date", dateValue);
     if (propValue) params.set("prop", propValue);
     if (pitcherValue) params.set("pitcher", pitcherValue);
+    if (sortValue) params.set("sort", sortValue);
     return `/api/pitcher-ladders?${params.toString()}`;
   }
 
@@ -108,7 +112,7 @@
     const teamLogoUrl = selected.teamLogoUrl || "";
     const pitcherName = selected.pitcherName || selected.label || currentValue;
     const label = selected.label || pitcherName;
-    const clearHref = pageHref(state.date, state.prop, "");
+    const clearHref = pageHref(state.date, state.prop, "", state.sort);
 
     selectedPitcherEl.style.display = "block";
     selectedPitcherEl.innerHTML = `
@@ -231,20 +235,24 @@
   function renderPayload(payload) {
     dateBadgeEl.textContent = payload.date || state.date || "-";
     propBadgeEl.textContent = payload.propLabel || payload.prop || state.prop || "-";
+    if (sortInputEl) {
+      sortInputEl.value = String(payload.selectedSort || state.sort || "team");
+    }
     renderPitcherSelector(payload);
     renderSelectedPitcher(payload);
 
     const summary = payload.summary || {};
     const simCounts = Array.isArray(summary.simCounts) ? summary.simCounts : [];
+    const sortLabel = String((Array.isArray(payload.sortOptions) ? payload.sortOptions : []).find((option) => String(option.value || "") === String(payload.selectedSort || state.sort || "team"))?.label || (payload.selectedSort || state.sort || "team"));
     headerMetaEl.textContent = payload.found
-      ? `${summary.starters || 0} starters across ${summary.games || 0} games. Sim counts: ${simCounts.length ? simCounts.join(", ") : "-"}.${state.pitcher ? ` Filtered to pitcher ${state.pitcher}.` : ""}`
+      ? `${summary.starters || 0} starters across ${summary.games || 0} games. Sorted by ${sortLabel}. Sim counts: ${simCounts.length ? simCounts.join(", ") : "-"}.${state.pitcher ? ` Filtered to pitcher ${state.pitcher}.` : ""}`
       : "No ladder data found for this selection.";
 
     sourceMetaEl.textContent = `Sim dir: ${payload.sourceDir || "-"} | Market file: ${payload.marketSource || "-"} | Default daily sims: ${payload.defaultSims || "-"}`;
 
     const nav = payload.nav || {};
-    prevDateLinkEl.href = pageHref(nav.prevDate || state.date, state.prop, state.pitcher);
-    nextDateLinkEl.href = pageHref(nav.nextDate || state.date, state.prop, state.pitcher);
+    prevDateLinkEl.href = pageHref(nav.prevDate || state.date, state.prop, state.pitcher, state.sort);
+    nextDateLinkEl.href = pageHref(nav.nextDate || state.date, state.prop, state.pitcher, state.sort);
     prevDateLinkEl.style.visibility = nav.prevDate ? "visible" : "hidden";
     nextDateLinkEl.style.visibility = nav.nextDate ? "visible" : "hidden";
 
@@ -260,10 +268,11 @@
     dateInputEl.value = state.date;
     propInputEl.value = state.prop;
     pitcherInputEl.value = state.pitcher;
+    if (sortInputEl) sortInputEl.value = state.sort;
     gridEl.innerHTML = '<div class="cards-loading-state">Loading pitcher ladders...</div>';
     summaryEl.innerHTML = '<div class="cards-loading-state">Loading ladder summary...</div>';
 
-    const response = await fetch(apiHref(state.date, state.prop, state.pitcher));
+    const response = await fetch(apiHref(state.date, state.prop, state.pitcher, state.sort));
     const payload = await response.json();
     renderPayload(payload);
   }
@@ -273,7 +282,8 @@
     state.date = String(dateInputEl.value || "");
     state.prop = String(propInputEl.value || "strikeouts");
     state.pitcher = String(pitcherInputEl.value || "");
-    window.history.replaceState({}, "", pageHref(state.date, state.prop, state.pitcher));
+    state.sort = String((sortInputEl && sortInputEl.value) || "team");
+    window.history.replaceState({}, "", pageHref(state.date, state.prop, state.pitcher, state.sort));
     await loadPayload();
   });
 
@@ -292,6 +302,16 @@
     }
     formEl.dispatchEvent(new Event("submit", { cancelable: true }));
   });
+
+  if (sortInputEl) {
+    sortInputEl.addEventListener("change", () => {
+      if (formEl.requestSubmit) {
+        formEl.requestSubmit();
+        return;
+      }
+      formEl.dispatchEvent(new Event("submit", { cancelable: true }));
+    });
+  }
 
   loadPayload().catch((error) => {
     headerMetaEl.textContent = "Failed to load pitcher ladders.";

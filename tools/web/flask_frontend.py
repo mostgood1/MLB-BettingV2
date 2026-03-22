@@ -3,6 +3,7 @@ from __future__ import annotations
 from bisect import bisect_left
 import gzip
 import json
+import os
 import sys
 import time
 from collections import defaultdict
@@ -15,6 +16,7 @@ from flask import Flask, Response, abort, jsonify, render_template, request
 
 # Ensure the project root (MLB-BettingV2/) is importable when running directly.
 _ROOT = Path(__file__).resolve().parents[2]
+_WEB_DIR = Path(__file__).resolve().parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
@@ -30,8 +32,8 @@ from tools.eval.settle_locked_policy_cards import _settle_card
 
 app = Flask(
     __name__,
-    template_folder=str((__file__).rsplit("\\", 1)[0] + "\\templates"),
-    static_folder=str((__file__).rsplit("\\", 1)[0] + "\\static"),
+    template_folder=str(_WEB_DIR / "templates"),
+    static_folder=str(_WEB_DIR / "static"),
 )
 
 
@@ -692,6 +694,53 @@ def _normalize_hitter_team_selector(value: Any) -> str:
     return str(value or "").strip().upper()
 
 
+def _pitcher_ladder_sort_options() -> List[Dict[str, str]]:
+    return [
+        {"value": "team", "label": "Team"},
+        {"value": "mean", "label": "Mean"},
+        {"value": "mode", "label": "Mode"},
+    ]
+
+
+def _normalize_pitcher_ladder_sort(value: Any) -> str:
+    token = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if token not in {"team", "mean", "mode"}:
+        return "team"
+    return token
+
+
+def _sort_pitcher_ladder_rows(rows: List[Dict[str, Any]], sort_key: str) -> List[Dict[str, Any]]:
+    normalized = _normalize_pitcher_ladder_sort(sort_key)
+    if normalized == "mean":
+        return sorted(
+            rows,
+            key=lambda row: (
+                -float(_safe_float(row.get("mean")) or float("-inf")),
+                str(row.get("team") or ""),
+                str(row.get("pitcherName") or ""),
+            ),
+        )
+    if normalized == "mode":
+        return sorted(
+            rows,
+            key=lambda row: (
+                -int(_safe_int(row.get("mode")) or -1),
+                -float(_safe_float(row.get("modeProb")) or -1.0),
+                -float(_safe_float(row.get("mean")) or float("-inf")),
+                str(row.get("team") or ""),
+                str(row.get("pitcherName") or ""),
+            ),
+        )
+    return sorted(
+        rows,
+        key=lambda row: (
+            str(row.get("team") or ""),
+            str(row.get("opponent") or ""),
+            str(row.get("pitcherName") or ""),
+        ),
+    )
+
+
 def _hitter_ladder_sort_options() -> List[Dict[str, str]]:
     return [
         {"value": "team", "label": "Team"},
@@ -740,9 +789,10 @@ def _sort_hitter_ladder_rows(rows: List[Dict[str, Any]], sort_key: str) -> List[
     )
 
 
-def _pitcher_ladders_payload(d: str, prop_value: Any) -> Dict[str, Any]:
+def _pitcher_ladders_payload(d: str, prop_value: Any, sort_value: Any) -> Dict[str, Any]:
     prop = _normalize_pitcher_ladder_prop(prop_value)
     selected_pitcher = _normalize_pitcher_selector(request.args.get("pitcher"))
+    sort_key = _normalize_pitcher_ladder_sort(sort_value)
     prop_cfg = _PITCHER_LADDER_PROPS[prop]
     artifacts = _load_cards_artifacts(d)
     sim_dir = artifacts.get("sim_dir") if isinstance(artifacts.get("sim_dir"), Path) else None
@@ -756,7 +806,9 @@ def _pitcher_ladders_payload(d: str, prop_value: Any) -> Dict[str, Any]:
         "propUnit": str(prop_cfg.get("unit") or ""),
         "propOptions": _pitcher_ladder_prop_options(),
         "selectedPitcher": selected_pitcher,
+        "selectedSort": sort_key,
         "pitcherOptions": [],
+        "sortOptions": _pitcher_ladder_sort_options(),
         "defaultSims": 1000,
         "found": False,
         "sourceDir": _relative_path_str(sim_dir),
@@ -841,7 +893,7 @@ def _pitcher_ladders_payload(d: str, prop_value: Any) -> Dict[str, Any]:
                 }
             )
 
-    rows.sort(key=lambda row: (str(row.get("matchup") or ""), str(row.get("pitcherName") or "")))
+    rows = _sort_pitcher_ladder_rows(rows, sort_key)
     payload["pitcherOptions"] = [
         {
             "value": str(int(row.get("pitcherId") or 0)),
@@ -3495,12 +3547,15 @@ def pitcher_ladders_view() -> str:
     d = str(request.args.get("date") or "").strip() or _default_cards_date()
     prop = _normalize_pitcher_ladder_prop(request.args.get("prop"))
     pitcher = _normalize_pitcher_selector(request.args.get("pitcher"))
+    sort = _normalize_pitcher_ladder_sort(request.args.get("sort"))
     return render_template(
         "pitcher_ladders.html",
         date=d,
         prop=prop,
         pitcher=pitcher,
+        sort=sort,
         prop_options=_pitcher_ladder_prop_options(),
+        sort_options=_pitcher_ladder_sort_options(),
     )
 
 
@@ -3610,7 +3665,7 @@ def api_cards() -> Response:
 @app.get("/api/pitcher-ladders")
 def api_pitcher_ladders() -> Response:
     d = str(request.args.get("date") or "").strip() or _default_cards_date()
-    payload = _pitcher_ladders_payload(d, request.args.get("prop"))
+    payload = _pitcher_ladders_payload(d, request.args.get("prop"), request.args.get("sort"))
     status_code = 200 if payload.get("found") else 404
     return jsonify(payload), status_code
 
@@ -4155,4 +4210,13 @@ def api_game_sim(game_pk: int) -> Response:
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5000, debug=True, threaded=True)
+    host = str(os.environ.get("HOST") or "0.0.0.0").strip() or "0.0.0.0"
+    port_raw = os.environ.get("PORT")
+    try:
+        port = int(port_raw or 5000)
+    except Exception:
+        port = 5000
+
+    debug_env = str(os.environ.get("FLASK_DEBUG") or "").strip().lower()
+    debug = debug_env in {"1", "true", "yes", "on"}
+    app.run(host=host, port=port, debug=debug, threaded=True)
