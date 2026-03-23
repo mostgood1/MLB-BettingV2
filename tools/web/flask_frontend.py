@@ -625,6 +625,61 @@ def _load_hitter_prop_market_lines(d: str) -> Tuple[Optional[Path], Dict[str, Di
     return path, out
 
 
+def _market_line_entry(*, stat_key: str, label: str, unit: str, market: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(market, dict):
+        return None
+    line = _safe_float(market.get("line"))
+    if line is None:
+        return None
+    return {
+        "stat": str(stat_key),
+        "label": str(label),
+        "unit": str(unit),
+        "line": float(line),
+        "overOdds": _safe_int(market.get("over_odds")),
+        "underOdds": _safe_int(market.get("under_odds")),
+        "alternates": list(market.get("alternates") or []),
+    }
+
+
+def _pitcher_market_lines_by_stat(markets: Any) -> List[Dict[str, Any]]:
+    if not isinstance(markets, dict):
+        return []
+    out: List[Dict[str, Any]] = []
+    for stat_key, cfg in _PITCHER_LADDER_PROPS.items():
+        market_key = str(cfg.get("market_key") or "").strip()
+        if not market_key:
+            continue
+        entry = _market_line_entry(
+            stat_key=str(stat_key),
+            label=str(cfg.get("label") or stat_key),
+            unit=str(cfg.get("unit") or ""),
+            market=markets.get(market_key),
+        )
+        if entry:
+            out.append(entry)
+    return out
+
+
+def _hitter_market_lines_by_stat(markets: Any) -> List[Dict[str, Any]]:
+    if not isinstance(markets, dict):
+        return []
+    out: List[Dict[str, Any]] = []
+    for stat_key, cfg in _HITTER_LADDER_PROPS.items():
+        market_key = str(cfg.get("market_key") or "").strip()
+        if not market_key:
+            continue
+        entry = _market_line_entry(
+            stat_key=str(stat_key),
+            label=str(cfg.get("label") or stat_key),
+            unit=str(cfg.get("unit") or ""),
+            market=markets.get(market_key),
+        )
+        if entry:
+            out.append(entry)
+    return out
+
+
 def _dist_to_ladder_rows(raw_dist: Any) -> Tuple[List[Dict[str, Any]], int, Optional[int], Optional[int]]:
     if not isinstance(raw_dist, dict):
         return [], 0, None, None
@@ -850,10 +905,11 @@ def _pitcher_ladders_payload(d: str, prop_value: Any, sort_value: Any) -> Dict[s
             opponent = home_abbr if side == "away" else away_abbr
             team_id = away_team_id if side == "away" else home_team_id
             opponent_team_id = home_team_id if side == "away" else away_team_id
+            player_market_lines = market_lines.get(normalize_pitcher_name(starter_name)) or {}
             market = {}
             market_key = prop_cfg.get("market_key")
             if market_key:
-                market = ((market_lines.get(normalize_pitcher_name(starter_name)) or {}).get(str(market_key)) or {})
+                market = (player_market_lines.get(str(market_key)) or {})
             market_line = _safe_float(market.get("line")) if isinstance(market, dict) else None
             over_line_count = None
             over_line_prob = None
@@ -886,6 +942,7 @@ def _pitcher_ladders_payload(d: str, prop_value: Any, sort_value: Any) -> Dict[s
                     "minTotal": min_total,
                     "maxTotal": max_total,
                     "marketLine": market_line,
+                    "marketLinesByStat": _pitcher_market_lines_by_stat(player_market_lines),
                     "overLineCount": over_line_count,
                     "overLineProb": over_line_prob,
                     "ladder": ladder_rows,
@@ -1019,10 +1076,11 @@ def _hitter_ladders_payload(d: str, prop_value: Any) -> Dict[str, Any]:
                 opponent = home_abbr if side == "away" else (away_abbr if side == "home" else "")
                 team_id = away_team_id if side == "away" else (home_team_id if side == "home" else None)
                 opponent_team_id = home_team_id if side == "away" else (away_team_id if side == "home" else None)
+                player_market_lines = market_lines.get(normalize_pitcher_name(hitter_name)) or {}
                 market = {}
                 market_key = prop_cfg.get("market_key")
                 if market_key:
-                    market = ((market_lines.get(normalize_pitcher_name(hitter_name)) or {}).get(str(market_key)) or {})
+                    market = (player_market_lines.get(str(market_key)) or {})
                 market_line = _safe_float(market.get("line")) if isinstance(market, dict) else None
                 over_line_count = None
                 over_line_prob = None
@@ -1061,6 +1119,7 @@ def _hitter_ladders_payload(d: str, prop_value: Any) -> Dict[str, Any]:
                         "minTotal": min_total,
                         "maxTotal": max_total,
                         "marketLine": market_line,
+                        "marketLinesByStat": _hitter_market_lines_by_stat(player_market_lines),
                         "overLineCount": over_line_count,
                         "overLineProb": over_line_prob,
                         "ladder": ladder_rows,
@@ -1091,7 +1150,8 @@ def _hitter_ladders_payload(d: str, prop_value: Any) -> Dict[str, Any]:
                 opponent = home_abbr if side == "away" else (away_abbr if side == "home" else "")
                 team_id = away_team_id if side == "away" else (home_team_id if side == "home" else None)
                 opponent_team_id = home_team_id if side == "away" else (away_team_id if side == "home" else None)
-                market = ((market_lines.get(normalize_pitcher_name(hitter_name)) or {}).get("batter_home_runs") or {})
+                player_market_lines = market_lines.get(normalize_pitcher_name(hitter_name)) or {}
+                market = (player_market_lines.get("batter_home_runs") or {})
                 market_line = _safe_float(market.get("line")) if isinstance(market, dict) else None
                 hit_prob = float(_safe_float(raw_row.get("p_hr_1plus")) or 0.0)
                 hit_count = _threshold_prob_to_count(hit_prob, sim_count)
@@ -1123,6 +1183,7 @@ def _hitter_ladders_payload(d: str, prop_value: Any) -> Dict[str, Any]:
                         "modeProb": None,
                         "simCount": int(sim_count),
                         "marketLine": market_line,
+                        "marketLinesByStat": _hitter_market_lines_by_stat(player_market_lines),
                         "overLineCount": over_line_count,
                         "overLineProb": over_line_prob,
                         "ladder": [{"total": 1, "hitCount": hit_count, "hitProb": hit_prob}],
@@ -1203,10 +1264,11 @@ def _hitter_ladders_payload(d: str, prop_value: Any) -> Dict[str, Any]:
             ladder_rows = _threshold_ladder_rows(prob_by_total, int(batter.get("simCount") or 0))
             if not ladder_rows:
                 continue
+            player_market_lines = market_lines.get(normalize_pitcher_name(batter.get("hitterName"))) or {}
             market = {}
             market_key = prop_cfg.get("market_key")
             if market_key:
-                market = ((market_lines.get(normalize_pitcher_name(batter.get("hitterName"))) or {}).get(str(market_key)) or {})
+                market = (player_market_lines.get(str(market_key)) or {})
             market_line = _safe_float(market.get("line")) if isinstance(market, dict) else None
             over_line_count = None
             over_line_prob = None
@@ -1217,6 +1279,7 @@ def _hitter_ladders_payload(d: str, prop_value: Any) -> Dict[str, Any]:
                     over_line_count = int(line_row.get("hitCount") or 0)
                     over_line_prob = float(line_row.get("hitProb") or 0.0)
             batter["marketLine"] = market_line
+            batter["marketLinesByStat"] = _hitter_market_lines_by_stat(player_market_lines)
             batter["overLineCount"] = over_line_count
             batter["overLineProb"] = over_line_prob
             batter["ladder"] = ladder_rows

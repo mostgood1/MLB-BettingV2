@@ -58,6 +58,64 @@
     return `${(num * 100).toFixed(1)}%`;
   }
 
+  function formatOdds(value) {
+    if (value == null || value === "") return "-";
+    const num = Number(value);
+    if (!Number.isFinite(num) || num === 0) return "-";
+    return num > 0 ? `+${Math.round(num)}` : `${Math.round(num)}`;
+  }
+
+  function toNumber(value) {
+    if (value == null || value === "") return null;
+    const num = Number(value);
+    return Number.isFinite(num) ? num : null;
+  }
+
+  function activeMarketEntry(row, payload) {
+    const entries = Array.isArray(row.marketLinesByStat) ? row.marketLinesByStat : [];
+    const activeStat = String(payload.prop || "");
+    return entries.find((entry) => String(entry.stat || "") === activeStat) || null;
+  }
+
+  function thresholdBookOdds(row, payload, total) {
+    const market = activeMarketEntry(row, payload);
+    if (!market) return "";
+    const targetLine = Number(total) - 0.5;
+    if (!Number.isFinite(targetLine) || targetLine < 0) return "";
+    const candidates = [market, ...(Array.isArray(market.alternates) ? market.alternates : [])];
+    const match = candidates.find((candidate) => {
+      const line = toNumber(candidate && (candidate.line ?? candidate.value));
+      return line != null && Math.abs(line - targetLine) < 1e-9;
+    });
+    if (!match) return "";
+    const overOdds = match.overOdds ?? match.over_odds;
+    const formatted = formatOdds(overOdds);
+    return formatted === "-" ? "" : formatted;
+  }
+
+  function renderMarketLineChips(row, payload) {
+    const entries = Array.isArray(row.marketLinesByStat) ? row.marketLinesByStat : [];
+    if (!entries.length) return "";
+    const activeStat = String(payload.prop || "");
+    return `
+      <div class="ladder-market-lines">
+        ${entries.map((entry) => {
+          const isActive = String(entry.stat || "") === activeStat;
+          const oddsBits = [];
+          if (entry.overOdds != null) oddsBits.push(`O ${escapeHtml(formatOdds(entry.overOdds))}`);
+          if (entry.underOdds != null) oddsBits.push(`U ${escapeHtml(formatOdds(entry.underOdds))}`);
+          return `
+            <span class="ladder-market-line${isActive ? " is-active" : ""}">
+              <span class="ladder-market-line-label">${escapeHtml(entry.label || entry.stat || "Prop")}</span>
+              <strong>${escapeHtml(formatNumber(entry.line, 1))}</strong>
+              ${oddsBits.length ? `<span class="ladder-market-line-odds">${oddsBits.join(" / ")}</span>` : ""}
+            </span>
+          `;
+        }).join("")}
+      </div>
+    `;
+  }
+
   function pageHref(dateValue, propValue, pitcherValue, sortValue) {
     const params = new URLSearchParams();
     if (dateValue) params.set("date", dateValue);
@@ -186,8 +244,10 @@
         <td>${escapeHtml(formatCount(ladderRow.total))}</td>
         <td>${escapeHtml(formatCount(ladderRow.hitCount))}</td>
         <td>${escapeHtml(formatPercent(ladderRow.hitProb))}</td>
+        <td>${escapeHtml(thresholdBookOdds(row, payload, ladderRow.total))}</td>
         <td>${escapeHtml(formatCount(ladderRow.exactCount))}</td>
         <td>${escapeHtml(formatPercent(ladderRow.exactProb))}</td>
+        <td></td>
       </tr>
     `).join("");
 
@@ -212,6 +272,7 @@
           ${row.marketLine == null ? "" : `<span class="ladder-pill"><span>Market line</span><strong>${escapeHtml(formatNumber(row.marketLine, 1))}</strong></span>`}
           ${overLineText}
         </div>
+        ${renderMarketLineChips(row, payload)}
         <div class="ladder-table-wrap">
           <table class="ladder-table">
             <thead>
@@ -219,8 +280,10 @@
                 <th>Total</th>
                 <th>&ge; Total</th>
                 <th>Hit %</th>
+                <th>Hit Odds</th>
                 <th>Exact</th>
                 <th>Exact %</th>
+                <th>Exact Odds</th>
               </tr>
             </thead>
             <tbody>

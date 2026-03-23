@@ -1,11 +1,11 @@
 {
   "tool": "tools/daily_update.py",
   "workflow": "ui-daily",
-  "generated_at": "2026-03-22T11:05:33.827390",
+  "generated_at": "2026-03-23T11:19:19.936386",
   "date": "2026-03-25",
   "season": 2026,
   "seed": {
-    "value": 1035820871,
+    "value": 864776066,
     "source": "auto_future_date",
     "explicit_cli": false
   },
@@ -26,31 +26,37 @@
   },
   "stages": {
     "prior_day_feed_live_refresh": {
-      "status": "skipped",
+      "status": "ok",
       "date": "2026-03-24",
       "season": 2026,
-      "reason": "refresh_prior_feed_live=off"
+      "games_scheduled": 10,
+      "regular_season_games_scheduled": 0,
+      "games_written": 10,
+      "errors": [],
+      "error_count": 0,
+      "out_dir": "data/raw/statsapi/feed_live/2026/2026-03-24",
+      "pbp_source": "statsapi_feed_live"
     },
     "prior_day_card_settlement": {
       "status": "skipped",
       "date": "2026-03-24",
       "card_path": "data/daily/daily_summary_2026_03_24_locked_policy.json",
-      "reason": "settle_prior_card=off"
+      "reason": "prior-day locked-policy card not found"
     },
     "prior_day_eval_report": {
       "status": "skipped",
       "date": "2026-03-24",
       "report_path": "data/eval/batches/season_2026_ui_daily_live/sim_vs_actual_2026-03-24.json",
-      "reason": "refresh_season_manifests=off"
+      "reason": "no scheduled prior-day regular-season games"
     },
     "season_publish": {
       "status": "skipped",
       "season": 2026,
       "batch_dir": "data/eval/batches/season_2026_ui_daily_live",
-      "reason": "refresh_season_manifests=off"
+      "reason": "no prior-day report to publish"
     },
     "current_day_oddsapi": {
-      "status": "warning",
+      "status": "ok",
       "date": "2026-03-25",
       "mode": "live",
       "out_dir": "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\data\\market\\oddsapi",
@@ -73,14 +79,14 @@
           "events_matched": 1
         },
         "hitter_props": {
-          "players": 0,
-          "markets": {},
+          "players": 18,
+          "markets": {
+            "batter_hits": 18,
+            "batter_home_runs": 18
+          },
           "events_matched": 1
         }
-      },
-      "warnings": [
-        "current-day OddsAPI ingest captured no hitter props"
-      ]
+      }
     },
     "current_day_multi_profile": {
       "status": "ok",
@@ -110,15 +116,13 @@
         "on",
         "--write-roster-artifacts",
         "on",
-        "--refresh-season-manifests",
-        "off",
         "--seed",
-        "1035820871",
+        "864776066",
         "--seed-source",
         "auto_future_date"
       ],
       "seed": {
-        "value": 1035820871,
+        "value": 864776066,
         "source": "auto_future_date",
         "explicit_cli": false
       },
@@ -160,7 +164,6 @@
     }
   },
   "warnings": [
-    "current-day OddsAPI ingest captured no hitter props",
     "current-day lineup validation adjusted projected lineups for 2 team(s)"
   ],
   "errors": [],
