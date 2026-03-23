@@ -1367,7 +1367,8 @@
     if (counts.finalCount) statusBits.push(`${counts.finalCount} final`);
     if (statusBits.length) pills.push(sourceMetaPill(statusBits.join(" / ")));
     if (counts.officialCount) pills.push(sourceMetaPill(`${counts.officialCount} with official plays`));
-    if (counts.simCount) pills.push(sourceMetaPill(`${counts.simCount} with sims`));
+    if (counts.simCount) pills.push(sourceMetaPill(`${counts.simCount} ${counts.simCount === 1 ? "game" : "games"} with sim projections`));
+    if (Number(workflow.simsPerGame || 0) > 0) pills.push(sourceMetaPill(`${workflow.simsPerGame} sims/game`));
 
     if (gameLines.exists) {
       const lineCounts = gameLines.counts || {};

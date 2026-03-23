@@ -387,10 +387,27 @@ def _lineup_health_summary(lineups_path: Optional[Path], lineups_doc: Optional[D
 def _workflow_summary(ops_report_path: Optional[Path], ops_report_doc: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     warnings = list((ops_report_doc or {}).get("warnings") or []) if isinstance(ops_report_doc, dict) else []
     errors = list((ops_report_doc or {}).get("errors") or []) if isinstance(ops_report_doc, dict) else []
+    sims_per_game = None
+    stages = (ops_report_doc or {}).get("stages") if isinstance(ops_report_doc, dict) else None
+    if isinstance(stages, dict):
+        for stage in stages.values():
+            command = (stage or {}).get("command") if isinstance(stage, dict) else None
+            if not isinstance(command, list):
+                continue
+            try:
+                sims_idx = command.index("--sims")
+            except ValueError:
+                continue
+            if sims_idx + 1 >= len(command):
+                continue
+            sims_per_game = _safe_int(command[sims_idx + 1])
+            if sims_per_game is not None:
+                break
     return {
         "exists": bool(ops_report_path and ops_report_path.exists() and ops_report_path.is_file()),
         "path": _relative_path_str(ops_report_path),
         "status": str((ops_report_doc or {}).get("status") or "") if isinstance(ops_report_doc, dict) else "",
+        "simsPerGame": sims_per_game,
         "warningCount": int(len(warnings)),
         "errorCount": int(len(errors)),
         "warnings": [str(msg) for msg in warnings[:6]],
@@ -401,12 +418,18 @@ def _workflow_summary(ops_report_path: Optional[Path], ops_report_doc: Optional[
 def _load_cards_artifacts(d: str) -> Dict[str, Any]:
     slug = _date_slug(d)
     data_dir = _ROOT_DIR / "data"
+    canonical_daily_dir = data_dir / "daily"
+    canonical_profile_bundle_path = canonical_daily_dir / f"daily_summary_{slug}_profile_bundle.json"
+    canonical_locked_policy_path = canonical_daily_dir / f"daily_summary_{slug}_locked_policy.json"
+    canonical_game_summary_path = canonical_daily_dir / f"daily_summary_{slug}.json"
+    canonical_sim_dir = canonical_daily_dir / "sims" / str(d)
+    canonical_snapshot_dir = canonical_daily_dir / "snapshots" / str(d)
 
     profile_bundle_path = _find_candidate_file(
         preferred=[
+            canonical_profile_bundle_path,
             data_dir / "_tmp_live_subcap_random_day" / f"daily_summary_{slug}_profile_bundle.json",
             data_dir / "_tmp_live_subcap_smoke" / f"daily_summary_{slug}_profile_bundle.json",
-            data_dir / "daily" / f"daily_summary_{slug}_profile_bundle.json",
         ],
         recursive_pattern=f"**/daily_summary_{slug}_profile_bundle.json",
     )
@@ -414,6 +437,7 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
 
     locked_policy_path = _find_candidate_file(
         preferred=[
+            canonical_locked_policy_path,
             data_dir / "_tmp_live_subcap_random_day" / f"daily_summary_{slug}_locked_policy.json",
             data_dir / "_tmp_live_subcap_smoke" / f"daily_summary_{slug}_locked_policy.json",
             data_dir / f"daily_summary_{slug}_locked_policy.json",
@@ -426,9 +450,9 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
         )
     locked_policy = _load_json_file(locked_policy_path)
 
-    game_summary_path: Optional[Path] = None
-    sim_dir: Optional[Path] = None
-    snapshot_dir: Optional[Path] = None
+    game_summary_path: Optional[Path] = canonical_game_summary_path if canonical_game_summary_path.exists() and canonical_game_summary_path.is_file() else None
+    sim_dir: Optional[Path] = canonical_sim_dir if canonical_sim_dir.exists() and canonical_sim_dir.is_dir() else None
+    snapshot_dir: Optional[Path] = canonical_snapshot_dir if canonical_snapshot_dir.exists() and canonical_snapshot_dir.is_dir() else None
     for artifact in (locked_policy, profile_bundle):
         if not isinstance(artifact, dict):
             continue
@@ -448,22 +472,18 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
 
     if not game_summary_path:
         game_summary_path = _find_candidate_file(
-            preferred=[data_dir / "daily" / f"daily_summary_{slug}.json"],
+            preferred=[canonical_game_summary_path],
             recursive_pattern=f"**/daily_summary_{slug}.json",
         )
-    if not sim_dir:
-        candidate = data_dir / "daily" / "sims" / str(d)
-        if candidate.exists() and candidate.is_dir():
-            sim_dir = candidate
-    if not snapshot_dir:
-        candidate = data_dir / "daily" / "snapshots" / str(d)
-        if candidate.exists() and candidate.is_dir():
-            snapshot_dir = candidate
+    if not sim_dir and canonical_sim_dir.exists() and canonical_sim_dir.is_dir():
+        sim_dir = canonical_sim_dir
+    if not snapshot_dir and canonical_snapshot_dir.exists() and canonical_snapshot_dir.is_dir():
+        snapshot_dir = canonical_snapshot_dir
 
     preferred_ops_paths: List[Path] = []
+    preferred_ops_paths.append(canonical_daily_dir / "ops" / f"daily_ops_{slug}.json")
     if game_summary_path:
         preferred_ops_paths.append(game_summary_path.parent / "ops" / f"daily_ops_{slug}.json")
-    preferred_ops_paths.append(data_dir / "daily" / "ops" / f"daily_ops_{slug}.json")
     ops_report_path = _find_candidate_file(
         preferred=preferred_ops_paths,
         recursive_pattern=f"**/daily_ops_{slug}.json",
@@ -488,6 +508,10 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
         "ops_report_path": ops_report_path,
         "ops_report": ops_report,
         "market_availability": market_availability,
+        "canonical_daily": bool(
+            (canonical_locked_policy_path.exists() and canonical_locked_policy_path.is_file())
+            or (canonical_game_summary_path.exists() and canonical_game_summary_path.is_file())
+        ),
     }
 
 
@@ -3653,15 +3677,19 @@ def api_cards() -> Response:
     artifacts = _load_cards_artifacts(d)
     archive = _load_cards_archive_context(d)
 
-    if isinstance(archive.get("card"), dict):
+    if isinstance(artifacts.get("locked_policy"), dict):
+        recos_by_game = _recommendations_by_game(artifacts.get("locked_policy"))
+    elif isinstance(archive.get("card"), dict):
         recos_by_game = _recommendations_by_game(archive.get("card"))
     else:
-        recos_by_game = _recommendations_by_game(artifacts.get("locked_policy"))
+        recos_by_game = {}
 
-    if isinstance(archive.get("report"), dict):
+    if isinstance(artifacts.get("game_summary"), dict):
+        outputs_by_game = _game_outputs_by_game(artifacts.get("game_summary"))
+    elif isinstance(archive.get("report"), dict):
         outputs_by_game = _season_report_outputs_by_game(archive.get("report"))
     else:
-        outputs_by_game = _game_outputs_by_game(artifacts.get("game_summary"))
+        outputs_by_game = {}
 
     schedule_games: List[Dict[str, Any]] = []
     try:
@@ -3678,7 +3706,7 @@ def api_cards() -> Response:
 
     has_legacy_data = bool(artifacts.get("locked_policy") or artifacts.get("game_summary"))
     has_archive_data = bool(archive.get("report") or archive.get("card"))
-    view_mode = "season_archive" if archive.get("manifest_path") else ("legacy_daily" if has_legacy_data else "schedule_only")
+    view_mode = "legacy_daily" if has_legacy_data else ("season_archive" if has_archive_data else "schedule_only")
     nav = dict(archive.get("nav") or {})
     if not nav:
         nav = _cards_nav_from_schedule(d)

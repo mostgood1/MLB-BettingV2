@@ -276,7 +276,6 @@
           <td>${escapeHtml(thresholdBookOdds(row, payload, ladderRow.total))}</td>
           <td>${escapeHtml(formatCount(ladderRow.exactCount))}</td>
           <td>${escapeHtml(formatPercent(ladderRow.exactProb))}</td>
-          <td></td>
         </tr>
       `).join("")
       : ladderRows.map((ladderRow) => `
@@ -323,7 +322,6 @@
                     <th>Hit Odds</th>
                     <th>Exact</th>
                     <th>Exact %</th>
-                    <th>Exact Odds</th>
                   </tr>`
                 : `<tr>
                     <th>Threshold</th>
