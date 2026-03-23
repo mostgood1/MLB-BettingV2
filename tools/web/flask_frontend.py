@@ -2348,7 +2348,76 @@ def _season_betting_day_payload(season: int, date_str: str, requested_profile: s
         "found": False,
         "games": {},
     }
+
+    daily_artifacts = _load_cards_artifacts(str(date_str))
+    canonical_card_path = daily_artifacts.get("locked_policy_path")
+    canonical_card_obj = daily_artifacts.get("locked_policy")
+
+    def _finalize_from_card(
+        *,
+        card_path: Optional[Path],
+        card_obj: Optional[Dict[str, Any]],
+        summary: Optional[Dict[str, Any]] = None,
+        manifest_source: Optional[Path] = None,
+        source_kind: str,
+    ) -> Dict[str, Any]:
+        if not card_path or not isinstance(card_obj, dict):
+            return payload
+        try:
+            settled_card = _settle_card(card_path)
+        except Exception as exc:
+            if manifest_source is not None:
+                payload["manifest_source"] = _relative_path_str(manifest_source)
+            payload["card_source"] = _relative_path_str(card_path)
+            if isinstance(summary, dict):
+                payload["summary"] = summary
+            payload["error"] = "season_betting_day_settle_failed"
+            payload["detail"] = str(exc)
+            return payload
+
+        payload.update(
+            {
+                "found": True,
+                "source_kind": str(source_kind),
+                "manifest_source": _relative_path_str(manifest_source) if manifest_source is not None else None,
+                "card_source": _relative_path_str(card_path),
+                "summary": summary if isinstance(summary, dict) else None,
+                "cap_profile": card_obj.get("cap_profile"),
+                "selected_counts": _betting_selected_counts_with_defaults(
+                    (summary.get("selected_counts") if isinstance(summary, dict) else None)
+                    or settled_card.get("selected_counts")
+                    or {}
+                ),
+                "playable_selected_counts": _betting_selected_counts_with_defaults(
+                    settled_card.get("playable_selected_counts") or {}
+                ),
+                "all_selected_counts": _betting_selected_counts_with_defaults(
+                    settled_card.get("all_selected_counts") or {}
+                ),
+                "results": _settled_results_from_rows(list(settled_card.get("_settled_rows") or [])),
+                "playable_results": _settled_results_from_rows(list(settled_card.get("_playable_settled_rows") or [])),
+                "all_results": _settled_results_from_rows(
+                    list(settled_card.get("_all_settled_rows") or [])
+                ),
+                "games": _season_betting_games_payload(card_obj, settled_card),
+            }
+        )
+        return payload
+
+    if not _is_historical_date(str(date_str)) and canonical_card_path and isinstance(canonical_card_obj, dict):
+        return _finalize_from_card(
+            card_path=canonical_card_path,
+            card_obj=canonical_card_obj,
+            source_kind="canonical_daily",
+        )
+
     if not manifest_path or not isinstance(manifest, dict):
+        if canonical_card_path and isinstance(canonical_card_obj, dict):
+            return _finalize_from_card(
+                card_path=canonical_card_path,
+                card_obj=canonical_card_obj,
+                source_kind="canonical_daily_fallback",
+            )
         payload["error"] = "season_betting_cards_missing"
         return payload
 
@@ -2360,6 +2429,13 @@ def _season_betting_day_payload(season: int, date_str: str, requested_profile: s
             day_row = row
             break
     if not isinstance(day_row, dict):
+        if canonical_card_path and isinstance(canonical_card_obj, dict):
+            return _finalize_from_card(
+                card_path=canonical_card_path,
+                card_obj=canonical_card_obj,
+                manifest_source=manifest_path,
+                source_kind="canonical_daily_fallback",
+            )
         payload["manifest_source"] = _relative_path_str(manifest_path)
         payload["error"] = "season_betting_day_missing"
         return payload
@@ -2367,46 +2443,26 @@ def _season_betting_day_payload(season: int, date_str: str, requested_profile: s
     card_path = _resolve_season_betting_day_card_path(manifest, str(date_str))
     card_obj = _load_json_file(card_path)
     if not card_path or not isinstance(card_obj, dict):
+        if canonical_card_path and isinstance(canonical_card_obj, dict):
+            return _finalize_from_card(
+                card_path=canonical_card_path,
+                card_obj=canonical_card_obj,
+                summary=day_row,
+                manifest_source=manifest_path,
+                source_kind="canonical_daily_fallback",
+            )
         payload["manifest_source"] = _relative_path_str(manifest_path)
         payload["summary"] = day_row
         payload["error"] = "season_betting_day_card_missing"
         return payload
 
-    try:
-        settled_card = _settle_card(card_path)
-    except Exception as exc:
-        payload["manifest_source"] = _relative_path_str(manifest_path)
-        payload["card_source"] = _relative_path_str(card_path)
-        payload["summary"] = day_row
-        payload["error"] = "season_betting_day_settle_failed"
-        payload["detail"] = str(exc)
-        return payload
-
-    payload.update(
-        {
-            "found": True,
-            "manifest_source": _relative_path_str(manifest_path),
-            "card_source": _relative_path_str(card_path),
-            "summary": day_row,
-            "cap_profile": card_obj.get("cap_profile"),
-            "selected_counts": _betting_selected_counts_with_defaults(
-                (day_row.get("selected_counts") if isinstance(day_row, dict) else None)
-                or settled_card.get("selected_counts")
-                or {}
-            ),
-            "playable_selected_counts": _betting_selected_counts_with_defaults(
-                settled_card.get("playable_selected_counts") or {}
-            ),
-            "all_selected_counts": _betting_selected_counts_with_defaults(settled_card.get("all_selected_counts") or {}),
-            "results": _settled_results_from_rows(list(settled_card.get("_settled_rows") or [])),
-            "playable_results": _settled_results_from_rows(list(settled_card.get("_playable_settled_rows") or [])),
-            "all_results": _settled_results_from_rows(
-                list(settled_card.get("_all_settled_rows") or [])
-            ),
-            "games": _season_betting_games_payload(card_obj, settled_card),
-        }
+    return _finalize_from_card(
+        card_path=card_path,
+        card_obj=card_obj,
+        summary=day_row,
+        manifest_source=manifest_path,
+        source_kind="season_manifest",
     )
-    return payload
 
 
 def _season_day_payload(
