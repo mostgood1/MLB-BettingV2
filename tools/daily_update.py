@@ -2368,6 +2368,14 @@ def main() -> int:
     ap.add_argument("--seed-source", default="", help=argparse.SUPPRESS)
     ap.add_argument("--out", default=str(_ROOT / "data" / "daily"))
     ap.add_argument(
+        "--lineups-last-known",
+        default="",
+        help=(
+            "Optional shared path to lineups_last_known_by_team.json. "
+            "Defaults to <out>/lineups_last_known_by_team.json when unset."
+        ),
+    )
+    ap.add_argument(
         "--max-games",
         type=int,
         default=0,
@@ -3257,7 +3265,14 @@ def main() -> int:
     failures: List[Dict[str, Any]] = []
 
     # Lineups: persist confirmed lineups + projected (last-known) fallback.
-    last_known_path = out_root / "lineups_last_known_by_team.json"
+    last_known_path = (
+        _resolve_path_arg(
+            str(args.lineups_last_known),
+            default=(out_root / "lineups_last_known_by_team.json"),
+        )
+        if str(getattr(args, "lineups_last_known", "") or "").strip()
+        else (out_root / "lineups_last_known_by_team.json")
+    )
     last_known_by_team: Dict[str, Any] = {}
     try:
         if last_known_path.exists():
@@ -4197,6 +4212,7 @@ def main() -> int:
     except Exception:
         pass
     try:
+        last_known_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = last_known_path.with_suffix(last_known_path.suffix + ".tmp")
         tmp.write_text(json.dumps(last_known_by_team, indent=2), encoding="utf-8")
         tmp.replace(last_known_path)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 import json
+import shutil
 import subprocess
 import sys
 from datetime import datetime
@@ -1249,6 +1250,7 @@ def _run_profile(
     passthrough_args: List[str],
     out_dir: Path,
     extra_args: List[str],
+    lineups_last_known_path: Optional[Path] = None,
 ) -> Tuple[int, List[str]]:
     cmd: List[str] = [
         str(py_exe),
@@ -1260,11 +1262,27 @@ def _run_profile(
     ]
     cmd.extend(list(passthrough_args))
     cmd.extend(["--out", str(out_dir)])
+    if lineups_last_known_path is not None:
+        cmd.extend(["--lineups-last-known", str(lineups_last_known_path)])
     cmd.extend(list(extra_args))
 
     print(f"[multi-profile] Running profile '{profile_name}' -> {_rel(out_dir)}")
     rc = subprocess.run(cmd, check=False).returncode
     return int(rc), cmd
+
+
+def _sync_profile_snapshot_dir(source_dir: Path, target_dir: Path) -> None:
+    if not source_dir.exists() or not source_dir.is_dir():
+        return
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for source_path in source_dir.rglob("*"):
+        rel_path = source_path.relative_to(source_dir)
+        target_path = target_dir / rel_path
+        if source_path.is_dir():
+            target_path.mkdir(parents=True, exist_ok=True)
+            continue
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, target_path)
 
 
 def main() -> int:
@@ -1485,11 +1503,15 @@ def main() -> int:
 
     failures: List[Dict[str, Any]] = []
     profile_info: Dict[str, Any] = {}
+    shared_lineups_last_known_path = out_game / "lineups_last_known_by_team.json"
 
     for profile_name, role_name, out_dir, extra in profiles:
         summary_path = out_dir / f"daily_summary_{token}.json"
         sim_dir = out_dir / "sims" / str(args.date)
         snapshot_dir = out_dir / "snapshots" / str(args.date)
+        if role_name != "game_recos":
+            source_snapshot_dir = out_game / "snapshots" / str(args.date)
+            _sync_profile_snapshot_dir(source_snapshot_dir, snapshot_dir)
         skip_reason = profile_skip_reasons.get(profile_name)
         if skip_reason:
             print(f"[multi-profile] Skipping profile '{profile_name}' -> {skip_reason}")
@@ -1514,6 +1536,7 @@ def main() -> int:
             passthrough_args=list(passthrough),
             out_dir=out_dir,
             extra_args=extra,
+            lineups_last_known_path=shared_lineups_last_known_path,
         )
         profile_info[role_name] = {
             "profile": profile_name,
