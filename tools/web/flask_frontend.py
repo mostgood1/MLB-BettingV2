@@ -69,6 +69,13 @@ _PITCHER_LADDER_PROPS: Dict[str, Dict[str, Any]] = {
         "market_key": None,
         "unit": "Hits",
     },
+    "earned_runs": {
+        "label": "Earned Runs",
+        "dist_key": "earned_runs_dist",
+        "mean_key": "er_mean",
+        "market_key": "earned_runs",
+        "unit": "ER",
+    },
     "walks": {
         "label": "Walks Allowed",
         "dist_key": "walks_dist",
@@ -535,6 +542,10 @@ def _normalize_pitcher_ladder_prop(value: Any) -> str:
         "outs": "outs",
         "hit": "hits",
         "hits": "hits",
+        "er": "earned_runs",
+        "earned_run": "earned_runs",
+        "earned_runs": "earned_runs",
+        "earnedruns": "earned_runs",
         "bb": "walks",
         "walk": "walks",
         "walks": "walks",
@@ -605,7 +616,7 @@ def _load_pitcher_prop_market_lines(d: str) -> Tuple[Optional[Path], Dict[str, D
         nk = normalize_pitcher_name(str(raw_name))
         if not nk or not isinstance(markets, dict):
             continue
-        for market_key in ("strikeouts", "outs"):
+        for market_key in ("strikeouts", "outs", "earned_runs"):
             market = markets.get(market_key)
             if not isinstance(market, dict):
                 continue

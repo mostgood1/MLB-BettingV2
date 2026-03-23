@@ -1783,6 +1783,7 @@ def simulate_game(away: TeamRoster, home: TeamRoster, config: Optional[GameConfi
         br["RBI"] += runs
         pr = st.pitcher_row(pitcher_id)
         pr["R"] += float(runs)
+        pr["ER"] += float(runs)
 
     def record_runner_runs(runner_ids: List[int]) -> None:
         for rid in runner_ids:
@@ -1798,6 +1799,7 @@ def simulate_game(away: TeamRoster, home: TeamRoster, config: Optional[GameConfi
         if runs <= 0:
             return
         st.pitcher_row(pitcher_id)["R"] += float(runs)
+        st.pitcher_row(pitcher_id)["ER"] += float(runs)
 
     innings_target = cfg.innings
     extra_innings_cap = max(0, int(getattr(cfg, "extra_innings", 0) or 0))

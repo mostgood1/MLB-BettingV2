@@ -199,20 +199,33 @@ def fetch_live_pitcher_props_for_date(
 ) -> Dict[str, Any]:
     live_events = list(events or _fetch_live_events_for_date(api_key, date_str))
     desired_markets = list(PITCHER_MARKET_KEY_MAP.keys())
-    markets_csv = ",".join(desired_markets)
     pitcher_props: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    market_warnings: List[str] = []
 
     for event in live_events:
         event_id = str(event.get("id") or "").strip()
         if not event_id:
             continue
-        payload = _fetch_live_event_odds(
-            api_key,
-            event_id,
-            markets_csv=markets_csv,
-            regions=regions,
-            bookmakers=bookmakers,
-        )
+        try:
+            payload = _fetch_live_event_odds(
+                api_key,
+                event_id,
+                markets_csv=",".join(desired_markets),
+                regions=regions,
+                bookmakers=bookmakers,
+            )
+        except requests.HTTPError as exc:
+            fallback_markets = [market for market in desired_markets if market != "pitcher_earned_runs"]
+            if not fallback_markets:
+                raise
+            market_warnings.append(f"pitcher_earned_runs unavailable for event {event_id}; fetched legacy pitcher markets only")
+            payload = _fetch_live_event_odds(
+                api_key,
+                event_id,
+                markets_csv=",".join(fallback_markets),
+                regions=regions,
+                bookmakers=bookmakers,
+            )
         if not isinstance(payload, dict):
             continue
         for bookmaker in (payload.get("bookmakers") or []):
@@ -237,6 +250,7 @@ def fetch_live_pitcher_props_for_date(
             "regions": str(regions or "us"),
             "bookmakers": (str(bookmakers).split(",") if bookmakers else None),
             "counts": counts,
+            "warnings": market_warnings,
         },
     }
 

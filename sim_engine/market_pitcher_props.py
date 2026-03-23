@@ -118,7 +118,7 @@ def load_pitcher_prop_lines(
     original_repo_root: Optional[Path] = None,
     prefer: str = "auto",
 ) -> Tuple[Dict[str, Dict[str, Dict[str, Any]]], Dict[str, Any]]:
-    """Load pitcher strikeout/outs props lines from the original app repo.
+    """Load pitcher props lines from the original app repo.
 
     Returns:
       (lines_by_pitcher, meta)
@@ -184,7 +184,7 @@ def load_pitcher_prop_lines(
                 nk = normalize_pitcher_name(str(raw_name))
                 if not nk or not isinstance(markets, dict):
                     continue
-                for mkey in ("strikeouts", "outs"):
+                for mkey in ("strikeouts", "outs", "earned_runs"):
                     mk = markets.get(mkey)
                     if not isinstance(mk, dict):
                         continue
@@ -207,7 +207,7 @@ def load_pitcher_prop_lines(
                 nk = normalize_pitcher_name(str(raw_name))
                 if not nk or not isinstance(markets, dict):
                     continue
-                for mkey in ("strikeouts", "outs"):
+                for mkey in ("strikeouts", "outs", "earned_runs"):
                     mk = markets.get(mkey)
                     if not isinstance(mk, dict):
                         continue

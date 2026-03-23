@@ -65,12 +65,13 @@ _SIMW_WANT_HITTER = False
 _SIMW_BATTER_IDS: List[int] = []
 _SIMW_PROP_IDS: List[int] = []
 _SIMW_CFG_KWARGS: Dict[str, Any] = {}
-_PITCHER_BOX_KEYS: Tuple[str, ...] = ("BF", "P", "OUTS", "H", "R", "BB", "SO", "HR", "HBP")
+_PITCHER_BOX_KEYS: Tuple[str, ...] = ("BF", "P", "OUTS", "H", "R", "ER", "BB", "SO", "HR", "HBP")
 _PITCHER_PROP_DIST_SPECS: Tuple[Tuple[str, str, str], ...] = (
     ("so", "SO", "so_mean"),
     ("outs", "OUTS", "outs_mean"),
     ("pitches", "P", "pitches_mean"),
     ("hits", "H", "hits_mean"),
+    ("earned_runs", "ER", "er_mean"),
     ("walks", "BB", "walks_mean"),
     ("batters_faced", "BF", "batters_faced_mean"),
 )
@@ -329,13 +330,14 @@ def _build_aggregate_boxscore(
             "IP": round(float(acc.get("OUTS") or 0.0) / 3.0 / denom, 2),
             "H": _mean(acc.get("H")),
             "R": _mean(acc.get("R")),
+            "ER": _mean(acc.get("ER")),
             "BB": _mean(acc.get("BB")),
             "SO": _mean(acc.get("SO")),
             "HR": _mean(acc.get("HR")),
             "HBP": _mean(acc.get("HBP")),
             "_order": meta.get("order"),
         }
-        has_usage = any(float(row.get(k) or 0.0) > 0.0 for k in ("BF", "P", "OUTS", "H", "R", "BB", "SO", "HR", "HBP"))
+        has_usage = any(float(row.get(k) or 0.0) > 0.0 for k in ("BF", "P", "OUTS", "H", "R", "ER", "BB", "SO", "HR", "HBP"))
         if not has_usage and row.get("_order") != 0:
             continue
         out[side]["pitching"].append(row)

@@ -30,6 +30,7 @@ def _pitcher_template() -> Dict[str, float]:
         "OUTS": 0.0,
         "H": 0.0,
         "R": 0.0,
+        "ER": 0.0,
         "BB": 0.0,
         "SO": 0.0,
         "HR": 0.0,
