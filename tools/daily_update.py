@@ -3608,6 +3608,9 @@ def main() -> int:
             if len(default_vs_lhp) >= 9:
                 options.append(("projected_rotowire_default_vs_lhp", default_vs_lhp[:9], 0.58))
 
+        status_rank = {"ok": 2, "adjusted": 1, "partial": 0, "none": -1}
+        best_choice: Dict[str, Any] = {}
+        best_key: Tuple[float, int, int, float] | None = None
         for source_label, candidate_names, base_confidence in options:
             validation = _match_projected_names_to_lineup(int(team_id), candidate_names, source_label)
             ids = [int(pid) for pid in (validation.get("ids") or []) if int(pid) > 0][:9]
@@ -3622,14 +3625,23 @@ def main() -> int:
                 confidence = min(confidence, 0.35)
             if missing_count > 0:
                 confidence = max(0.2, confidence - 0.04 * float(missing_count))
-            return {
+            candidate = {
                 "source": str(source_label),
                 "confidence": float(confidence),
                 "ids": ids,
                 "validation": validation,
                 "opposing_pitcher_hand": str(opposing_hand),
             }
-        return {}
+            candidate_key = (
+                float(confidence),
+                int(status_rank.get(status, -1)),
+                -int(missing_count),
+                float(base_confidence),
+            )
+            if best_key is None or candidate_key > best_key:
+                best_key = candidate_key
+                best_choice = candidate
+        return best_choice
 
     def _is_mlb_team(team_obj: Dict[str, Any]) -> bool:
         try:
