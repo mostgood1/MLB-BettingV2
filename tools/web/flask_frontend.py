@@ -38,6 +38,7 @@ app = Flask(
 
 
 _ROOT_DIR = Path(__file__).resolve().parents[2]
+_TRACKED_DAILY_SNAPSHOT_DIR = _ROOT_DIR / "data" / "daily" / "snapshots"
 _DEMO_DATE = "2025-06-04"
 _CARDS_PRESEASON_DEFAULT_WINDOW_DAYS = 21
 _PITCHER_LADDER_PROPS: Dict[str, Dict[str, Any]] = {
@@ -235,6 +236,18 @@ def _relative_path_str(path: Optional[Path]) -> Optional[str]:
         return str(path).replace("\\", "/")
 
 
+def _resolve_oddsapi_market_file(d: str, prefix: str) -> Optional[Path]:
+    slug = _date_slug(d)
+    filename = f"{prefix}_{slug}.json"
+    return _find_candidate_file(
+        preferred=[
+            _TRACKED_DAILY_SNAPSHOT_DIR / str(d) / filename,
+            _ROOT_DIR / "data" / "market" / "oddsapi" / filename,
+        ],
+        recursive_pattern=f"**/{filename}",
+    )
+
+
 def _find_candidate_file(*, preferred: List[Path], recursive_pattern: str) -> Optional[Path]:
     seen: set[str] = set()
     for p in preferred:
@@ -350,11 +363,9 @@ def _market_file_summary(path: Optional[Path], *, root_key: str) -> Dict[str, An
 
 
 def _load_market_availability(d: str) -> Dict[str, Any]:
-    slug = _date_slug(d)
-    odds_dir = _ROOT_DIR / "data" / "market" / "oddsapi"
-    game_lines = _market_file_summary(odds_dir / f"oddsapi_game_lines_{slug}.json", root_key="games")
-    pitcher_props = _market_file_summary(odds_dir / f"oddsapi_pitcher_props_{slug}.json", root_key="pitcher_props")
-    hitter_props = _market_file_summary(odds_dir / f"oddsapi_hitter_props_{slug}.json", root_key="hitter_props")
+    game_lines = _market_file_summary(_resolve_oddsapi_market_file(d, "oddsapi_game_lines"), root_key="games")
+    pitcher_props = _market_file_summary(_resolve_oddsapi_market_file(d, "oddsapi_pitcher_props"), root_key="pitcher_props")
+    hitter_props = _market_file_summary(_resolve_oddsapi_market_file(d, "oddsapi_hitter_props"), root_key="hitter_props")
 
     warnings: List[str] = []
     game_counts = dict(game_lines.get("counts") or {})
@@ -604,8 +615,7 @@ def _normalize_hitter_ladder_prop(value: Any) -> str:
 
 
 def _load_pitcher_prop_market_lines(d: str) -> Tuple[Optional[Path], Dict[str, Dict[str, Dict[str, Any]]]]:
-    slug = _date_slug(d)
-    path = _ROOT_DIR / "data" / "market" / "oddsapi" / f"oddsapi_pitcher_props_{slug}.json"
+    path = _resolve_oddsapi_market_file(d, "oddsapi_pitcher_props")
     doc = _load_json_file(path)
     raw = (doc or {}).get("pitcher_props") or {}
     out: Dict[str, Dict[str, Dict[str, Any]]] = {}
@@ -633,8 +643,7 @@ def _load_pitcher_prop_market_lines(d: str) -> Tuple[Optional[Path], Dict[str, D
 
 
 def _load_hitter_prop_market_lines(d: str) -> Tuple[Optional[Path], Dict[str, Dict[str, Dict[str, Any]]]]:
-    slug = _date_slug(d)
-    path = _ROOT_DIR / "data" / "market" / "oddsapi" / f"oddsapi_hitter_props_{slug}.json"
+    path = _resolve_oddsapi_market_file(d, "oddsapi_hitter_props")
     doc = _load_json_file(path)
     raw = (doc or {}).get("hitter_props") or {}
     out: Dict[str, Dict[str, Dict[str, Any]]] = {}

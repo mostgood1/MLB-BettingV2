@@ -7,6 +7,7 @@ import math
 import multiprocessing
 import multiprocessing.spawn
 import os
+import shutil
 import subprocess
 import sys
 from concurrent.futures import ProcessPoolExecutor
@@ -600,6 +601,29 @@ def _relative_path_str(path: Optional[Path]) -> Optional[str]:
         return str(path.resolve().relative_to(_ROOT.resolve())).replace("\\", "/")
     except Exception:
         return str(path.resolve()).replace("\\", "/")
+
+
+def _sync_oddsapi_market_snapshots(date_str: str, snapshot_dir: Path) -> Dict[str, str]:
+    token = str(date_str or "").strip().replace("-", "_")
+    market_dir = (_ROOT / "data" / "market" / "oddsapi").resolve()
+    names = (
+        f"oddsapi_game_lines_{token}.json",
+        f"oddsapi_pitcher_props_{token}.json",
+        f"oddsapi_hitter_props_{token}.json",
+    )
+    copied: Dict[str, str] = {}
+    _ensure_dir(snapshot_dir)
+    for name in names:
+        src = market_dir / name
+        if not src.exists() or not src.is_file():
+            continue
+        dst = snapshot_dir / name
+        try:
+            shutil.copy2(src, dst)
+        except Exception:
+            continue
+        copied[name] = str(dst)
+    return copied
 
 
 def _date_plus_days(date_str: str, days: int) -> str:
@@ -2981,6 +3005,7 @@ def main() -> int:
     _ensure_dir(sim_dir)
     roster_obj_dir = snapshot_dir / "roster_objs"
     _ensure_dir(roster_obj_dir)
+    _sync_oddsapi_market_snapshots(str(args.date), snapshot_dir)
 
     # Persist run metadata for debugging/repro.
     _write_json(
