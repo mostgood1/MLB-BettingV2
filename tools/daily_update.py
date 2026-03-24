@@ -3349,6 +3349,25 @@ def main() -> int:
             out.append(pid)
         return out
 
+    def _projected_lineup_roster_keys(team_id: int) -> List[str]:
+        team_block = ((roster_artifacts.get("teams") or {}).get(str(int(team_id))) or {}) if isinstance(roster_artifacts, dict) else {}
+        rosters = (team_block.get("rosters") or {}) if isinstance(team_block, dict) else {}
+        excluded_ids = set(int(x) for x in (injuries_by_team_id.get(int(team_id), []) or []) if int(x) > 0)
+
+        active_pool = _extract_hitter_ids_from_roster_entries(rosters.get("active") or [], excluded_ids=excluded_ids)
+        if active_pool:
+            return ["active"]
+
+        fallback_pool = _extract_hitter_ids_from_roster_entries(rosters.get("40Man") or [], excluded_ids=excluded_ids)
+        if fallback_pool:
+            return ["40Man"]
+
+        nri_pool = _extract_hitter_ids_from_roster_entries(rosters.get("nonRosterInvitees") or [], excluded_ids=excluded_ids)
+        if nri_pool:
+            return ["nonRosterInvitees"]
+
+        return []
+
     def _tighten_projected_lineup(team_id: int, projected_ids: Any) -> Dict[str, Any]:
         raw_ids = _normalize_lineup_ids(projected_ids)
         if not raw_ids:
@@ -3437,7 +3456,7 @@ def main() -> int:
         blocked_ids = {int(x) for x in (injuries_by_team_id.get(tid, []) or []) if int(x) > 0}
         name_index: Dict[str, List[Dict[str, Any]]] = {}
         seen_ids: set[int] = set()
-        for priority, roster_key in enumerate(("active", "40Man", "nonRosterInvitees")):
+        for priority, roster_key in enumerate(_projected_lineup_roster_keys(tid)):
             entries = rosters.get(roster_key) or []
             for entry in entries:
                 pid = _roster_entry_player_id(entry)
