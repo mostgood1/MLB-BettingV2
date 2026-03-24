@@ -7,9 +7,11 @@ import math
 import multiprocessing
 import multiprocessing.spawn
 import os
+import re
 import shutil
 import subprocess
 import sys
+import unicodedata
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict
 from datetime import datetime, timedelta
@@ -32,9 +34,12 @@ if str(_ROOT) not in sys.path:
 from sim_engine.data.statsapi import (
     StatsApiClient,
     extract_team_pitcher_pitches_thrown,
+    fetch_person,
+    fetch_official_starting_lineups_for_date,
     fetch_game_context,
     fetch_game_feed_live,
     fetch_mlb_teams,
+    fetch_rotowire_batting_orders_for_team,
     fetch_schedule_for_date,
     fetch_team_roster,
     load_feed_live_from_raw,
@@ -3060,8 +3065,15 @@ def main() -> int:
     # Scaffold artifacts: snapshot raw per-team rosters + normalized injuries (best-effort).
     # Prefer snapshotting the entire league so artifacts exist even for off-days.
     injuries_by_team_id: Dict[int, List[int]] = {}
+    teams_by_id: Dict[int, Dict[str, Any]] = {}
+    roster_artifacts: Dict[str, Any] = {
+        "date": str(args.date),
+        "season": int(args.season),
+        "spring_mode": bool(spring_mode),
+        "teams": {},
+        "errors": [],
+    }
     try:
-        teams_by_id: Dict[int, Dict[str, Any]] = {}
         try:
             league_teams = fetch_mlb_teams(client, season=int(args.season))
         except Exception:
@@ -3102,14 +3114,6 @@ def main() -> int:
         roster_types: List[str] = ["active"]
         if spring_mode:
             roster_types.extend(["40Man", "nonRosterInvitees"])
-
-        roster_artifacts: Dict[str, Any] = {
-            "date": str(args.date),
-            "season": int(args.season),
-            "spring_mode": bool(spring_mode),
-            "teams": {},
-            "errors": [],
-        }
 
         def _status_is_injured(status_obj: Any) -> bool:
             if not isinstance(status_obj, dict) or not status_obj:
@@ -3398,6 +3402,216 @@ def main() -> int:
             "pool_size": int(len(usable_pool)),
         }
 
+    def _normalize_player_name(name: Any) -> str:
+        text = unicodedata.normalize("NFKD", str(name or ""))
+        text = "".join(ch for ch in text if not unicodedata.combining(ch))
+        text = text.replace("’", "'").replace("`", "'")
+        text = re.sub(r"\b(jr|sr|ii|iii|iv|v)\b\.?", " ", text, flags=re.IGNORECASE)
+        text = re.sub(r"[^a-z0-9]+", " ", text.casefold())
+        text = re.sub(r"\s+", " ", text).strip()
+        return text
+
+    def _roster_entry_player_id(entry: Any) -> int:
+        if not isinstance(entry, dict):
+            return 0
+        try:
+            return int(entry.get("player_id") or ((entry.get("person") or {}).get("id") or 0))
+        except Exception:
+            return 0
+
+    def _roster_entry_full_name(entry: Any) -> str:
+        if not isinstance(entry, dict):
+            return ""
+        return str(entry.get("full_name") or entry.get("name") or ((entry.get("person") or {}).get("fullName") or "")).strip()
+
+    projected_name_index_by_team: Dict[int, Dict[str, List[Dict[str, Any]]]] = {}
+
+    def _build_team_hitter_name_index(team_id: int) -> Dict[str, List[Dict[str, Any]]]:
+        tid = int(team_id or 0)
+        cached = projected_name_index_by_team.get(tid)
+        if isinstance(cached, dict):
+            return cached
+
+        team_block = ((roster_artifacts.get("teams") or {}).get(str(tid)) or {}) if isinstance(roster_artifacts, dict) else {}
+        rosters = (team_block.get("rosters") or {}) if isinstance(team_block, dict) else {}
+        blocked_ids = {int(x) for x in (injuries_by_team_id.get(tid, []) or []) if int(x) > 0}
+        name_index: Dict[str, List[Dict[str, Any]]] = {}
+        seen_ids: set[int] = set()
+        for priority, roster_key in enumerate(("active", "40Man", "nonRosterInvitees")):
+            entries = rosters.get(roster_key) or []
+            for entry in entries:
+                pid = _roster_entry_player_id(entry)
+                if pid <= 0 or pid in seen_ids or pid in blocked_ids:
+                    continue
+                pos_obj = entry.get("position") or {} if isinstance(entry, dict) else {}
+                pos = str(entry.get("primary_pos_abbr") or entry.get("pos") or pos_obj.get("abbreviation") or "").strip().upper() if isinstance(entry, dict) else ""
+                pos_type = str(pos_obj.get("type") or "").strip().lower() if isinstance(pos_obj, dict) else ""
+                if pos == "P" or pos_type == "pitcher":
+                    continue
+                full_name = _roster_entry_full_name(entry)
+                norm_name = _normalize_player_name(full_name)
+                if not norm_name:
+                    continue
+                seen_ids.add(pid)
+                name_index.setdefault(norm_name, []).append(
+                    {
+                        "id": int(pid),
+                        "name": full_name,
+                        "priority": int(priority),
+                        "roster_key": str(roster_key),
+                    }
+                )
+
+        projected_name_index_by_team[tid] = name_index
+        return name_index
+
+    def _match_projected_names_to_lineup(team_id: int, names: Any, source_label: str) -> Dict[str, Any]:
+        ordered_names = [str(name or "").strip() for name in (names or []) if str(name or "").strip()]
+        if not ordered_names:
+            return {
+                "status": "none",
+                "raw_ids": [],
+                "ids": [],
+                "missing_ids": [],
+                "backfilled_ids": [],
+                "pool_source": "none",
+                "pool_size": 0,
+                "raw_names": [],
+                "matched_names": [],
+                "missing_name_labels": [],
+                "mapping_source": str(source_label),
+            }
+
+        name_index = _build_team_hitter_name_index(int(team_id))
+        matched_ids: List[int] = []
+        matched_names: List[str] = []
+        missing_name_labels: List[str] = []
+        used_ids: set[int] = set()
+        for raw_name in ordered_names[:9]:
+            norm_name = _normalize_player_name(raw_name)
+            candidates = name_index.get(norm_name) or []
+            chosen = next((entry for entry in candidates if int(entry.get("id") or 0) not in used_ids), None)
+            if not chosen:
+                missing_name_labels.append(str(raw_name))
+                continue
+            pid = int(chosen.get("id") or 0)
+            if pid <= 0:
+                missing_name_labels.append(str(raw_name))
+                continue
+            used_ids.add(pid)
+            matched_ids.append(pid)
+            matched_names.append(str(chosen.get("name") or raw_name))
+
+        validation = _tighten_projected_lineup(int(team_id), matched_ids)
+        validation["raw_names"] = ordered_names[:9]
+        validation["matched_names"] = matched_names
+        validation["missing_name_labels"] = missing_name_labels
+        validation["mapping_source"] = str(source_label)
+        return validation
+
+    probable_throw_side_by_pitcher: Dict[int, str] = {}
+
+    def _pitcher_throw_side(person_id: Any) -> str:
+        try:
+            pid = int(person_id or 0)
+        except Exception:
+            pid = 0
+        if pid <= 0:
+            return ""
+        cached = probable_throw_side_by_pitcher.get(pid)
+        if isinstance(cached, str):
+            return cached
+        hand = ""
+        try:
+            person = fetch_person(client, pid)
+            raw = str(((person.get("pitchHand") or {}).get("code") or (person.get("throwSide") or {}).get("code") or "")).strip().upper()
+            if raw.startswith("L"):
+                hand = "L"
+            elif raw.startswith("R"):
+                hand = "R"
+            elif raw.startswith("S"):
+                hand = "S"
+        except Exception:
+            hand = ""
+        probable_throw_side_by_pitcher[pid] = hand
+        return hand
+
+    rotowire_projected_by_team: Dict[int, Dict[str, Any]] = {}
+    try:
+        scheduled_team_ids: set[int] = set()
+        for game in games or []:
+            for side in ("away", "home"):
+                team_obj = (((game.get("teams") or {}).get(side) or {}).get("team") or {})
+                try:
+                    tid = int(team_obj.get("id") or 0)
+                except Exception:
+                    tid = 0
+                if tid <= 0:
+                    continue
+                scheduled_team_ids.add(tid)
+        for tid in sorted(scheduled_team_ids):
+            team_info = teams_by_id.get(int(tid)) or {}
+            team_abbr = str(team_info.get("abbreviation") or "").strip().upper()
+            if not team_abbr:
+                continue
+            parsed = fetch_rotowire_batting_orders_for_team(client, team_abbr)
+            if isinstance(parsed, dict) and parsed:
+                rotowire_projected_by_team[int(tid)] = parsed
+    except Exception:
+        rotowire_projected_by_team = {}
+
+    def _select_rotowire_projected_lineup(team_id: int, opposing_probable_pitcher_id: Any) -> Dict[str, Any]:
+        team_page = rotowire_projected_by_team.get(int(team_id)) or {}
+        if not isinstance(team_page, dict) or not team_page:
+            return {}
+
+        today_lineup = [str(x or "").strip() for x in (team_page.get("today_lineup") or []) if str(x or "").strip()]
+        default_vs_rhp = [str(x or "").strip() for x in (team_page.get("default_vs_rhp") or []) if str(x or "").strip()]
+        default_vs_lhp = [str(x or "").strip() for x in (team_page.get("default_vs_lhp") or []) if str(x or "").strip()]
+        opposing_hand = _pitcher_throw_side(opposing_probable_pitcher_id)
+
+        options: List[Tuple[str, List[str], float]] = []
+        if len(today_lineup) >= 9:
+            options.append(("projected_rotowire_today_lineup", today_lineup[:9], 0.72))
+        if opposing_hand == "L":
+            if len(default_vs_lhp) >= 9:
+                options.append(("projected_rotowire_default_vs_lhp", default_vs_lhp[:9], 0.66))
+            if len(default_vs_rhp) >= 9:
+                options.append(("projected_rotowire_default_vs_rhp", default_vs_rhp[:9], 0.56))
+        elif opposing_hand == "R":
+            if len(default_vs_rhp) >= 9:
+                options.append(("projected_rotowire_default_vs_rhp", default_vs_rhp[:9], 0.66))
+            if len(default_vs_lhp) >= 9:
+                options.append(("projected_rotowire_default_vs_lhp", default_vs_lhp[:9], 0.56))
+        else:
+            if len(default_vs_rhp) >= 9:
+                options.append(("projected_rotowire_default_vs_rhp", default_vs_rhp[:9], 0.58))
+            if len(default_vs_lhp) >= 9:
+                options.append(("projected_rotowire_default_vs_lhp", default_vs_lhp[:9], 0.58))
+
+        for source_label, candidate_names, base_confidence in options:
+            validation = _match_projected_names_to_lineup(int(team_id), candidate_names, source_label)
+            ids = [int(pid) for pid in (validation.get("ids") or []) if int(pid) > 0][:9]
+            if not ids:
+                continue
+            confidence = float(base_confidence)
+            missing_count = len(validation.get("missing_name_labels") or [])
+            status = str(validation.get("status") or "")
+            if status == "adjusted":
+                confidence = min(confidence, 0.52)
+            elif status == "partial":
+                confidence = min(confidence, 0.35)
+            if missing_count > 0:
+                confidence = max(0.2, confidence - 0.04 * float(missing_count))
+            return {
+                "source": str(source_label),
+                "confidence": float(confidence),
+                "ids": ids,
+                "validation": validation,
+                "opposing_pitcher_hand": str(opposing_hand),
+            }
+        return {}
+
     def _is_mlb_team(team_obj: Dict[str, Any]) -> bool:
         try:
             sport = (team_obj or {}).get("sport") or {}
@@ -3407,6 +3621,11 @@ def main() -> int:
 
     lineup_games: List[Dict[str, Any]] = []
     probable_games: List[Dict[str, Any]] = []
+    official_starting_lineups_by_game: Dict[int, Dict[str, Any]] = {}
+    try:
+        official_starting_lineups_by_game = fetch_official_starting_lineups_for_date(client, str(args.date))
+    except Exception:
+        official_starting_lineups_by_game = {}
     for idx, g in enumerate(games):
         game_pk = g.get("gamePk")
         game_type = g.get("gameType")
@@ -3503,6 +3722,8 @@ def main() -> int:
 
         away_lineup_ids: List[int] = []
         home_lineup_ids: List[int] = []
+        away_rotowire_projection: Dict[str, Any] = {}
+        home_rotowire_projection: Dict[str, Any] = {}
         away_projected_ids: List[int] = []
         home_projected_ids: List[int] = []
         away_projected_validation: Dict[str, Any] = {"status": "none", "raw_ids": [], "ids": []}
@@ -3529,6 +3750,16 @@ def main() -> int:
                 away_lineup_ids = []
                 home_lineup_ids = []
 
+        official_lineup_block = {}
+        if game_pk:
+            official_lineup_block = dict(official_starting_lineups_by_game.get(int(game_pk)) or {})
+        away_official_lineup_ids = _normalize_lineup_ids((official_lineup_block.get("away_ids") or []))
+        home_official_lineup_ids = _normalize_lineup_ids((official_lineup_block.get("home_ids") or []))
+        if len(away_lineup_ids) < 9 and len(away_official_lineup_ids) >= 9:
+            away_lineup_ids = away_official_lineup_ids[:9]
+        if len(home_lineup_ids) < 9 and len(home_official_lineup_ids) >= 9:
+            home_lineup_ids = home_official_lineup_ids[:9]
+
         # Probable starters: prefer feed (gameData.probablePitchers) when present; else schedule.hydrate probablePitcher.
         if away_prob_feed_id:
             away_prob_id = away_prob_feed_id
@@ -3551,32 +3782,60 @@ def main() -> int:
         # Projected lineups: last-known confirmed lineup for the team.
         try:
             if not away_lineup_ids:
-                lk = last_known_by_team.get(str(int(away_id))) or {}
-                away_projected_validation = _tighten_projected_lineup(int(away_id), lk.get("ids"))
-                away_projected_ids = [int(pid) for pid in (away_projected_validation.get("ids") or [])]
+                away_rotowire_projection = _select_rotowire_projected_lineup(int(away_id), home_prob_id)
+                if away_rotowire_projection:
+                    away_projected_validation = dict(away_rotowire_projection.get("validation") or {})
+                    away_projected_ids = [int(pid) for pid in (away_rotowire_projection.get("ids") or [])]
+                else:
+                    lk = last_known_by_team.get(str(int(away_id))) or {}
+                    away_projected_validation = _tighten_projected_lineup(int(away_id), lk.get("ids"))
+                    away_projected_ids = [int(pid) for pid in (away_projected_validation.get("ids") or [])]
             if not home_lineup_ids:
-                lk = last_known_by_team.get(str(int(home_id))) or {}
-                home_projected_validation = _tighten_projected_lineup(int(home_id), lk.get("ids"))
-                home_projected_ids = [int(pid) for pid in (home_projected_validation.get("ids") or [])]
+                home_rotowire_projection = _select_rotowire_projected_lineup(int(home_id), away_prob_id)
+                if home_rotowire_projection:
+                    home_projected_validation = dict(home_rotowire_projection.get("validation") or {})
+                    home_projected_ids = [int(pid) for pid in (home_rotowire_projection.get("ids") or [])]
+                else:
+                    lk = last_known_by_team.get(str(int(home_id))) or {}
+                    home_projected_validation = _tighten_projected_lineup(int(home_id), lk.get("ids"))
+                    home_projected_ids = [int(pid) for pid in (home_projected_validation.get("ids") or [])]
         except Exception:
             away_projected_ids = []
             home_projected_ids = []
+            away_rotowire_projection = {}
+            home_rotowire_projection = {}
             away_projected_validation = {"status": "none", "raw_ids": [], "ids": []}
             home_projected_validation = {"status": "none", "raw_ids": [], "ids": []}
 
         if len(away_lineup_ids) >= 9:
-            away_lineup_source = "confirmed_feed_live"
+            away_lineup_source = (
+                "confirmed_feed_live"
+                if len(_normalize_lineup_ids(parse_confirmed_lineup_ids(feed, "away") if isinstance(feed, dict) else [])) >= 9
+                else "confirmed_official_starting_lineups"
+            )
             away_lineup_confidence = 1.0
-            last_known_by_team[str(int(away_id))] = {"date": str(args.date), "ids": away_lineup_ids[:9], "source": "confirmed_feed_live"}
+            last_known_by_team[str(int(away_id))] = {"date": str(args.date), "ids": away_lineup_ids[:9], "source": away_lineup_source}
+        elif away_rotowire_projection:
+            away_lineup_source = str(away_rotowire_projection.get("source") or "projected_rotowire")
+            away_lineup_confidence = float(away_rotowire_projection.get("confidence") or 0.0)
+            away_projected_ids = away_projected_ids[:9]
         elif (away_projected_validation.get("raw_ids") or away_projected_ids):
             away_lineup_source = "projected_last_known"
             away_lineup_confidence = 0.6 if str(away_projected_validation.get("status") or "") == "ok" else (0.35 if len(away_projected_ids) >= 9 else 0.15)
             away_projected_ids = away_projected_ids[:9]
 
         if len(home_lineup_ids) >= 9:
-            home_lineup_source = "confirmed_feed_live"
+            home_lineup_source = (
+                "confirmed_feed_live"
+                if len(_normalize_lineup_ids(parse_confirmed_lineup_ids(feed, "home") if isinstance(feed, dict) else [])) >= 9
+                else "confirmed_official_starting_lineups"
+            )
             home_lineup_confidence = 1.0
-            last_known_by_team[str(int(home_id))] = {"date": str(args.date), "ids": home_lineup_ids[:9], "source": "confirmed_feed_live"}
+            last_known_by_team[str(int(home_id))] = {"date": str(args.date), "ids": home_lineup_ids[:9], "source": home_lineup_source}
+        elif home_rotowire_projection:
+            home_lineup_source = str(home_rotowire_projection.get("source") or "projected_rotowire")
+            home_lineup_confidence = float(home_rotowire_projection.get("confidence") or 0.0)
+            home_projected_ids = home_projected_ids[:9]
         elif (home_projected_validation.get("raw_ids") or home_projected_ids):
             home_lineup_source = "projected_last_known"
             home_lineup_confidence = 0.6 if str(home_projected_validation.get("status") or "") == "ok" else (0.35 if len(home_projected_ids) >= 9 else 0.15)

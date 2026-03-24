@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 import gzip
+import html
 import json
 import os
 import random
@@ -237,6 +238,168 @@ def parse_confirmed_lineup_ids(feed_live: Dict[str, Any], side: str) -> List[int
 def fetch_confirmed_lineup_ids(client: StatsApiClient, game_pk: int, side: str) -> List[int]:
     feed = fetch_game_feed_live(client, game_pk)
     return parse_confirmed_lineup_ids(feed, side)
+
+
+def _parse_starting_lineups_block_lineup_ids(block_html: str, side: str) -> List[int]:
+    side_token = str(side or "").strip().lower()
+    if side_token not in ("away", "home"):
+        return []
+    pattern = rf'<ol class="starting-lineups__team[^\"]*starting-lineups__team--{side_token}[^\"]*">(.*?)</ol>'
+    seen_variants: set[tuple[int, ...]] = set()
+    for match in re.finditer(pattern, str(block_html or ""), flags=re.IGNORECASE | re.DOTALL):
+        section_html = str(match.group(1) or "")
+        if "starting-lineups__player--TBD" in section_html:
+            continue
+        ids: List[int] = []
+        seen_ids: set[int] = set()
+        for href_match in re.finditer(r'href="/player/[^\"]*-(\d+)"', section_html, flags=re.IGNORECASE):
+            try:
+                pid = int(href_match.group(1))
+            except Exception:
+                continue
+            if pid <= 0 or pid in seen_ids:
+                continue
+            seen_ids.add(pid)
+            ids.append(pid)
+        if len(ids) >= 9:
+            return ids[:9]
+        key = tuple(ids)
+        if key and key not in seen_variants:
+            seen_variants.add(key)
+    return []
+
+
+def parse_official_starting_lineups_page(html_text: str) -> Dict[int, Dict[str, Any]]:
+    text = html.unescape(str(html_text or ""))
+    out: Dict[int, Dict[str, Any]] = {}
+    if not text:
+        return out
+
+    starts = list(re.finditer(r'<div class="starting-lineups__matchup\b[^>]*data-gamePk=?"?(\d+)"?[^>]*>', text, flags=re.IGNORECASE))
+    if not starts:
+        return out
+
+    for idx, match in enumerate(starts):
+        try:
+            game_pk = int(match.group(1))
+        except Exception:
+            continue
+        start_pos = int(match.start())
+        end_pos = int(starts[idx + 1].start()) if idx + 1 < len(starts) else len(text)
+        block = text[start_pos:end_pos]
+        tri_codes = re.findall(r'data-tri-code="([A-Z]{2,3})"', block, flags=re.IGNORECASE)
+        away_ids = _parse_starting_lineups_block_lineup_ids(block, "away")
+        home_ids = _parse_starting_lineups_block_lineup_ids(block, "home")
+        out[int(game_pk)] = {
+            "game_pk": int(game_pk),
+            "away_ids": [int(pid) for pid in away_ids[:9]],
+            "home_ids": [int(pid) for pid in home_ids[:9]],
+            "away_team": str(tri_codes[0]).upper() if len(tri_codes) >= 1 else "",
+            "home_team": str(tri_codes[1]).upper() if len(tri_codes) >= 2 else "",
+            "official": bool(len(away_ids) >= 9 and len(home_ids) >= 9),
+        }
+    return out
+
+
+def fetch_official_starting_lineups_for_date(client: StatsApiClient, date_str: str) -> Dict[int, Dict[str, Any]]:
+    text = str(date_str or "").strip()
+    if not text:
+        return {}
+    url = f"https://www.mlb.com/starting-lineups/{text}"
+    cache_key = {"url": url, "date": text}
+    if client.cache is not None:
+        hit = client.cache.get("mlb_starting_lineups_html", cache_key, ttl_seconds=int(min(client.cache_ttl_seconds, 900)))
+        if isinstance(hit, dict) and isinstance(hit.get("html"), str):
+            return parse_official_starting_lineups_page(str(hit.get("html") or ""))
+
+    session = requests.Session()
+    session.trust_env = client._effective_trust_env()
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "text/html,application/xhtml+xml",
+    }
+    response = session.get(url, headers=headers, timeout=(client.timeout_sec, client.timeout_sec))
+    response.raise_for_status()
+    html_text = str(response.text or "")
+    if client.cache is not None and html_text:
+        client.cache.set("mlb_starting_lineups_html", cache_key, {"html": html_text})
+    return parse_official_starting_lineups_page(html_text)
+
+
+def _parse_rotowire_batting_order_block(html_text: str, label: str) -> List[str]:
+    pattern = rf'>{re.escape(str(label or "").strip())}</div>\s*<ol class="list is-rankings pad-5-10">(.*?)</ol>'
+    match = re.search(pattern, str(html_text or ""), flags=re.IGNORECASE | re.DOTALL)
+    if not match:
+        return []
+    block = str(match.group(1) or "")
+    out: List[str] = []
+    seen: set[str] = set()
+    for raw_name in re.findall(r'<a [^>]*>(.*?)</a>', block, flags=re.IGNORECASE | re.DOTALL):
+        clean = re.sub(r"<[^>]+>", "", html.unescape(str(raw_name or "")))
+        clean = re.sub(r"\s+", " ", clean).strip()
+        if not clean:
+            continue
+        key = clean.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(clean)
+    return out
+
+
+def parse_rotowire_batting_orders_page(html_text: str) -> Dict[str, Any]:
+    text = html.unescape(str(html_text or ""))
+    if not text:
+        return {}
+
+    team_name = ""
+    title_match = re.search(r"<title>\s*\d{4}\s+(.*?)\s+Batting Orders\s*\|\s*RotoWire\s*</title>", text, flags=re.IGNORECASE | re.DOTALL)
+    if title_match:
+        team_name = re.sub(r"\s+", " ", str(title_match.group(1) or "")).strip()
+
+    today_lineup = _parse_rotowire_batting_order_block(text, "Today's Lineup")
+    default_vs_rhp = _parse_rotowire_batting_order_block(text, "Default vs. RHP")
+    default_vs_lhp = _parse_rotowire_batting_order_block(text, "Default vs. LHP")
+
+    return {
+        "team_name": team_name,
+        "today_lineup": today_lineup[:9],
+        "default_vs_rhp": default_vs_rhp[:9],
+        "default_vs_lhp": default_vs_lhp[:9],
+        "has_today_lineup": bool(len(today_lineup) >= 9),
+    }
+
+
+def fetch_rotowire_batting_orders_for_team(client: StatsApiClient, team_abbr: str) -> Dict[str, Any]:
+    abbr = str(team_abbr or "").strip().upper()
+    if not abbr:
+        return {}
+
+    url = f"https://www.rotowire.com/baseball/batting-orders.php?team={abbr}"
+    cache_key = {"url": url, "team": abbr}
+    if client.cache is not None:
+        hit = client.cache.get("rotowire_batting_orders_html", cache_key, ttl_seconds=int(min(client.cache_ttl_seconds, 3600)))
+        if isinstance(hit, dict) and isinstance(hit.get("html"), str):
+            parsed = parse_rotowire_batting_orders_page(str(hit.get("html") or ""))
+            if parsed:
+                parsed["team_abbr"] = abbr
+            return parsed
+
+    session = requests.Session()
+    session.trust_env = client._effective_trust_env()
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "text/html,application/xhtml+xml",
+    }
+    response = session.get(url, headers=headers, timeout=(client.timeout_sec, client.timeout_sec))
+    response.raise_for_status()
+    html_text = str(response.text or "")
+    if client.cache is not None and html_text:
+        client.cache.set("rotowire_batting_orders_html", cache_key, {"html": html_text})
+    parsed = parse_rotowire_batting_orders_page(html_text)
+    if parsed:
+        parsed["team_abbr"] = abbr
+    return parsed
 
 
 def extract_team_pitcher_pitches_thrown(feed_live: Dict[str, Any], team_id: int) -> Dict[int, int]:
