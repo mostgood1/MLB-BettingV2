@@ -10,6 +10,7 @@
   const state = {
     date: String(bootstrap.date || ""),
     prop: String(bootstrap.prop || "hits"),
+    game: String(bootstrap.game || ""),
     team: String(bootstrap.team || ""),
     hitter: String(bootstrap.hitter || ""),
     sort: String(bootstrap.sort || "team"),
@@ -18,6 +19,7 @@
   const formEl = document.getElementById("hitterLadderForm");
   const dateInputEl = document.getElementById("hitterLadderDateInput");
   const propInputEl = document.getElementById("hitterLadderPropInput");
+  const gameInputEl = document.getElementById("hitterLadderGameInput");
   const teamInputEl = document.getElementById("hitterLadderTeamInput");
   const hitterInputEl = document.getElementById("hitterLadderHitterInput");
   const sortInputEl = document.getElementById("hitterLadderSortInput");
@@ -118,24 +120,41 @@
     `;
   }
 
-  function pageHref(dateValue, propValue, teamValue, hitterValue, sortValue) {
+  function pageHref(dateValue, propValue, gameValue, teamValue, hitterValue, sortValue) {
     const params = new URLSearchParams();
     if (dateValue) params.set("date", dateValue);
     if (propValue) params.set("prop", propValue);
+    if (gameValue) params.set("game", gameValue);
     if (teamValue) params.set("team", teamValue);
     if (hitterValue) params.set("hitter", hitterValue);
     if (sortValue) params.set("sort", sortValue);
     return `/hitter-ladders?${params.toString()}`;
   }
 
-  function apiHref(dateValue, propValue, teamValue, hitterValue, sortValue) {
+  function apiHref(dateValue, propValue, gameValue, teamValue, hitterValue, sortValue) {
     const params = new URLSearchParams();
     if (dateValue) params.set("date", dateValue);
     if (propValue) params.set("prop", propValue);
+    if (gameValue) params.set("game", gameValue);
     if (teamValue) params.set("team", teamValue);
     if (hitterValue) params.set("hitter", hitterValue);
     if (sortValue) params.set("sort", sortValue);
     return `/api/hitter-ladders?${params.toString()}`;
+  }
+
+  function renderGameSelector(payload) {
+    if (!gameInputEl) return;
+    const options = Array.isArray(payload.gameOptions) ? payload.gameOptions : [];
+    const currentValue = String(payload.selectedGame || state.game || "");
+    gameInputEl.innerHTML = [
+      '<option value="">All games</option>',
+      ...options.map((option) => {
+        const value = String(option.value || "");
+        const selected = value === currentValue ? ' selected' : '';
+        return `<option value="${escapeHtml(value)}"${selected}>${escapeHtml(option.label || value)}</option>`;
+      }),
+    ].join("");
+    gameInputEl.value = currentValue;
   }
 
   function renderTeamSelector(payload) {
@@ -188,7 +207,7 @@
     const teamLogoUrl = selected.teamLogoUrl || "";
     const hitterName = selected.hitterName || selected.playerName || selected.label || currentValue;
     const label = selected.label || hitterName;
-    const clearHref = pageHref(state.date, state.prop, state.team, "", state.sort);
+    const clearHref = pageHref(state.date, state.prop, state.game, state.team, "", state.sort);
 
     selectedHitterEl.style.display = "block";
     selectedHitterEl.innerHTML = `
@@ -223,6 +242,10 @@
       <article class="ladder-stat">
         <div class="ladder-stat-label">Games</div>
         <div class="ladder-stat-value">${formatCount(summary.games)}</div>
+      </article>
+      <article class="ladder-stat">
+        <div class="ladder-stat-label">Available games</div>
+        <div class="ladder-stat-value">${formatCount(summary.availableGames)}</div>
       </article>
       <article class="ladder-stat">
         <div class="ladder-stat-label">Hitters</div>
@@ -345,6 +368,7 @@
     if (sortInputEl) {
       sortInputEl.value = String(payload.selectedSort || state.sort || "team");
     }
+    renderGameSelector(payload);
     renderTeamSelector(payload);
     renderHitterSelector(payload);
     renderSelectedHitter(payload);
@@ -353,16 +377,17 @@
     const simCounts = Array.isArray(summary.simCounts) ? summary.simCounts : [];
     const shape = String(payload.ladderShape || "threshold");
     const sortLabel = String((Array.isArray(payload.sortOptions) ? payload.sortOptions : []).find((option) => String(option.value || "") === String(payload.selectedSort || state.sort || "team"))?.label || (payload.selectedSort || state.sort || "team"));
+    const gameLabel = String((Array.isArray(payload.gameOptions) ? payload.gameOptions : []).find((option) => String(option.value || "") === String(payload.selectedGame || state.game || ""))?.label || (payload.selectedGame || state.game || ""));
     const teamLabel = String((Array.isArray(payload.teamOptions) ? payload.teamOptions : []).find((option) => String(option.value || "") === String(payload.selectedTeam || state.team || ""))?.label || (payload.selectedTeam || state.team || ""));
     headerMetaEl.textContent = payload.found
-      ? `${summary.hitters || 0} hitters across ${summary.games || 0} games from ${shape === "exact" ? "stored exact hitter distributions" : `stored top-${summary.topN || "?"} hitter likelihoods`}. Sorted by ${sortLabel}. Sim counts: ${simCounts.length ? simCounts.join(", ") : "-"}.${state.team ? ` Filtered to team ${teamLabel || state.team}.` : ""}${state.hitter ? ` Filtered to hitter ${state.hitter}.` : ""}`
+      ? `${summary.hitters || 0} hitters across ${summary.games || 0} games from ${shape === "exact" ? "stored exact hitter distributions" : `stored top-${summary.topN || "?"} hitter likelihoods`}. Sorted by ${sortLabel}. Sim counts: ${simCounts.length ? simCounts.join(", ") : "-"}.${state.game ? ` Filtered to game ${gameLabel || state.game}.` : ""}${state.team ? ` Filtered to team ${teamLabel || state.team}.` : ""}${state.hitter ? ` Filtered to hitter ${state.hitter}.` : ""}`
       : "No hitter ladder data found for this selection.";
 
     sourceMetaEl.textContent = `Sim dir: ${payload.sourceDir || "-"} | Market file: ${payload.marketSource || "-"} | Default daily sims: ${payload.defaultSims || "-"} | Shape: ${shape} ladder`;
 
     const nav = payload.nav || {};
-    prevDateLinkEl.href = pageHref(nav.prevDate || state.date, state.prop, state.team, state.hitter, state.sort);
-    nextDateLinkEl.href = pageHref(nav.nextDate || state.date, state.prop, state.team, state.hitter, state.sort);
+    prevDateLinkEl.href = pageHref(nav.prevDate || state.date, state.prop, state.game, state.team, state.hitter, state.sort);
+    nextDateLinkEl.href = pageHref(nav.nextDate || state.date, state.prop, state.game, state.team, state.hitter, state.sort);
     prevDateLinkEl.style.visibility = nav.prevDate ? "visible" : "hidden";
     nextDateLinkEl.style.visibility = nav.nextDate ? "visible" : "hidden";
 
@@ -377,13 +402,14 @@
   async function loadPayload() {
     dateInputEl.value = state.date;
     propInputEl.value = state.prop;
+    if (gameInputEl) gameInputEl.value = state.game;
     if (teamInputEl) teamInputEl.value = state.team;
     hitterInputEl.value = state.hitter;
     if (sortInputEl) sortInputEl.value = state.sort;
     gridEl.innerHTML = '<div class="cards-loading-state">Loading hitter ladders...</div>';
     summaryEl.innerHTML = '<div class="cards-loading-state">Loading ladder summary...</div>';
 
-    const response = await fetch(apiHref(state.date, state.prop, state.team, state.hitter, state.sort));
+    const response = await fetch(apiHref(state.date, state.prop, state.game, state.team, state.hitter, state.sort));
     const payload = await response.json();
     renderPayload(payload);
   }
@@ -392,14 +418,21 @@
     event.preventDefault();
     state.date = String(dateInputEl.value || "");
     state.prop = String(propInputEl.value || "hits");
+    state.game = String((gameInputEl && gameInputEl.value) || "");
     state.team = String((teamInputEl && teamInputEl.value) || "");
     state.hitter = String(hitterInputEl.value || "");
     state.sort = String((sortInputEl && sortInputEl.value) || "team");
-    window.history.replaceState({}, "", pageHref(state.date, state.prop, state.team, state.hitter, state.sort));
+    window.history.replaceState({}, "", pageHref(state.date, state.prop, state.game, state.team, state.hitter, state.sort));
     await loadPayload();
   });
 
   propInputEl.addEventListener("change", () => {
+    state.game = "";
+    if (gameInputEl) gameInputEl.value = "";
+    state.team = "";
+    if (teamInputEl) teamInputEl.value = "";
+    state.hitter = "";
+    if (hitterInputEl) hitterInputEl.value = "";
     if (formEl.requestSubmit) {
       formEl.requestSubmit();
       return;
@@ -410,6 +443,20 @@
   if (teamInputEl) {
     teamInputEl.addEventListener("change", () => {
       state.hitter = "";
+      if (hitterInputEl) hitterInputEl.value = "";
+      if (formEl.requestSubmit) {
+        formEl.requestSubmit();
+        return;
+      }
+      formEl.dispatchEvent(new Event("submit", { cancelable: true }));
+    });
+  }
+
+  if (gameInputEl) {
+    gameInputEl.addEventListener("change", () => {
+      state.team = "";
+      state.hitter = "";
+      if (teamInputEl) teamInputEl.value = "";
       if (hitterInputEl) hitterInputEl.value = "";
       if (formEl.requestSubmit) {
         formEl.requestSubmit();

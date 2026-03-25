@@ -21,14 +21,14 @@
         </div>
         <div class="ladder-header-actions">
           <a class="cards-nav-pill" href="/?date={{ date }}">Daily cards</a>
-          <a class="cards-nav-pill" href="/hitter-ladders?date={{ date }}">Hitter ladders</a>
+          <a class="cards-nav-pill" href="/hitter-ladders?date={{ date }}&game={{ game }}">Hitter ladders</a>
           <a class="cards-nav-pill" href="/season/{{ date[:4] }}?date={{ date }}">Season review</a>
         </div>
       </header>
 
       <section class="cards-control-card ladder-controls" aria-label="Pitcher ladder controls">
         <form class="cards-date-form ladder-form" id="ladderForm" method="get" action="/pitcher-ladders">
-          <a class="cards-nav-pill" id="ladderPrevDateLink" href="/pitcher-ladders?date={{ date }}&prop={{ prop }}&pitcher={{ pitcher }}&sort={{ sort }}" rel="prev">Prev</a>
+          <a class="cards-nav-pill" id="ladderPrevDateLink" href="/pitcher-ladders?date={{ date }}&prop={{ prop }}&game={{ game }}&pitcher={{ pitcher }}&sort={{ sort }}" rel="prev">Prev</a>
           <span class="cards-nav-pill cards-form-pill" aria-hidden="true">Date</span>
           <input id="ladderDateInput" type="date" name="date" value="{{ date }}" aria-label="Ladder date" />
           <span class="cards-nav-pill cards-form-pill" aria-hidden="true">Prop</span>
@@ -36,6 +36,10 @@
             {% for option in prop_options %}
             <option value="{{ option.value }}" {% if option.value == prop %}selected{% endif %}>{{ option.label }}</option>
             {% endfor %}
+          </select>
+          <span class="cards-nav-pill cards-form-pill" aria-hidden="true">Game</span>
+          <select id="ladderGameInput" name="game" aria-label="Pitcher game selector">
+            <option value="">All games</option>
           </select>
           <span class="cards-nav-pill cards-form-pill" aria-hidden="true">Pitcher</span>
           <select id="ladderPitcherInput" name="pitcher" aria-label="Pitcher selector">
@@ -48,7 +52,7 @@
             {% endfor %}
           </select>
           <button type="submit">Load</button>
-          <a class="cards-nav-pill" id="ladderNextDateLink" href="/pitcher-ladders?date={{ date }}&prop={{ prop }}&pitcher={{ pitcher }}&sort={{ sort }}" rel="next">Next</a>
+          <a class="cards-nav-pill" id="ladderNextDateLink" href="/pitcher-ladders?date={{ date }}&prop={{ prop }}&game={{ game }}&pitcher={{ pitcher }}&sort={{ sort }}" rel="next">Next</a>
         </form>
 
         <div class="ladder-source-meta" id="ladderSourceMeta">Loading sources…</div>
@@ -65,7 +69,7 @@
       </main>
     </div>
 
-    <script id="pitcherLaddersBootstrap" type="application/json">{{ {'date': date, 'prop': prop, 'pitcher': pitcher, 'sort': sort}|tojson }}</script>
+    <script id="pitcherLaddersBootstrap" type="application/json">{{ {'date': date, 'prop': prop, 'game': game, 'pitcher': pitcher, 'sort': sort}|tojson }}</script>
     <script src="{{ url_for('static', filename='pitcher_ladders.js', v='20260321-pitcher-ladders') }}"></script>
   </body>
 </html>

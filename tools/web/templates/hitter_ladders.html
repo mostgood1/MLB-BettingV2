@@ -21,14 +21,14 @@
         </div>
         <div class="ladder-header-actions">
           <a class="cards-nav-pill" href="/?date={{ date }}">Daily cards</a>
-          <a class="cards-nav-pill" href="/pitcher-ladders?date={{ date }}">Pitcher ladders</a>
+          <a class="cards-nav-pill" href="/pitcher-ladders?date={{ date }}&game={{ game }}">Pitcher ladders</a>
           <a class="cards-nav-pill" href="/season/{{ date[:4] }}?date={{ date }}">Season review</a>
         </div>
       </header>
 
       <section class="cards-control-card ladder-controls" aria-label="Hitter ladder controls">
         <form class="cards-date-form ladder-form" id="hitterLadderForm" method="get" action="/hitter-ladders">
-          <a class="cards-nav-pill" id="hitterLadderPrevDateLink" href="/hitter-ladders?date={{ date }}&prop={{ prop }}&team={{ team }}&hitter={{ hitter }}&sort={{ sort }}" rel="prev">Prev</a>
+          <a class="cards-nav-pill" id="hitterLadderPrevDateLink" href="/hitter-ladders?date={{ date }}&prop={{ prop }}&game={{ game }}&team={{ team }}&hitter={{ hitter }}&sort={{ sort }}" rel="prev">Prev</a>
           <span class="cards-nav-pill cards-form-pill" aria-hidden="true">Date</span>
           <input id="hitterLadderDateInput" type="date" name="date" value="{{ date }}" aria-label="Hitter ladder date" />
           <span class="cards-nav-pill cards-form-pill" aria-hidden="true">Prop</span>
@@ -36,6 +36,10 @@
             {% for option in prop_options %}
             <option value="{{ option.value }}" {% if option.value == prop %}selected{% endif %}>{{ option.label }}</option>
             {% endfor %}
+          </select>
+          <span class="cards-nav-pill cards-form-pill" aria-hidden="true">Game</span>
+          <select id="hitterLadderGameInput" name="game" aria-label="Hitter game selector">
+            <option value="">All games</option>
           </select>
           <span class="cards-nav-pill cards-form-pill" aria-hidden="true">Team</span>
           <select id="hitterLadderTeamInput" name="team" aria-label="Hitter team selector">
@@ -52,7 +56,7 @@
             {% endfor %}
           </select>
           <button type="submit">Load</button>
-          <a class="cards-nav-pill" id="hitterLadderNextDateLink" href="/hitter-ladders?date={{ date }}&prop={{ prop }}&team={{ team }}&hitter={{ hitter }}&sort={{ sort }}" rel="next">Next</a>
+          <a class="cards-nav-pill" id="hitterLadderNextDateLink" href="/hitter-ladders?date={{ date }}&prop={{ prop }}&game={{ game }}&team={{ team }}&hitter={{ hitter }}&sort={{ sort }}" rel="next">Next</a>
         </form>
 
         <div class="ladder-source-meta" id="hitterLadderSourceMeta">Loading sources…</div>
@@ -69,7 +73,7 @@
       </main>
     </div>
 
-    <script id="hitterLaddersBootstrap" type="application/json">{{ {'date': date, 'prop': prop, 'team': team, 'hitter': hitter, 'sort': sort}|tojson }}</script>
+    <script id="hitterLaddersBootstrap" type="application/json">{{ {'date': date, 'prop': prop, 'game': game, 'team': team, 'hitter': hitter, 'sort': sort}|tojson }}</script>
     <script src="{{ url_for('static', filename='hitter_ladders.js', v='20260321-hitter-ladders') }}"></script>
   </body>
 </html>

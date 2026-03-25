@@ -764,6 +764,11 @@ def _normalize_pitcher_selector(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _normalize_game_selector(value: Any) -> str:
+    token = str(value or "").strip()
+    return token if token.isdigit() else ""
+
+
 def _threshold_prob_to_count(prob: Any, sim_count: int) -> int:
     value = _safe_float(prob)
     if value is None or sim_count <= 0:
@@ -890,6 +895,7 @@ def _sort_hitter_ladder_rows(rows: List[Dict[str, Any]], sort_key: str) -> List[
 
 def _pitcher_ladders_payload(d: str, prop_value: Any, sort_value: Any) -> Dict[str, Any]:
     prop = _normalize_pitcher_ladder_prop(prop_value)
+    selected_game = _normalize_game_selector(request.args.get("game"))
     selected_pitcher = _normalize_pitcher_selector(request.args.get("pitcher"))
     sort_key = _normalize_pitcher_ladder_sort(sort_value)
     prop_cfg = _PITCHER_LADDER_PROPS[prop]
@@ -904,7 +910,9 @@ def _pitcher_ladders_payload(d: str, prop_value: Any, sort_value: Any) -> Dict[s
         "propLabel": str(prop_cfg.get("label") or prop.title()),
         "propUnit": str(prop_cfg.get("unit") or ""),
         "propOptions": _pitcher_ladder_prop_options(),
+        "selectedGame": selected_game,
         "selectedPitcher": selected_pitcher,
+        "gameOptions": [],
         "selectedSort": sort_key,
         "pitcherOptions": [],
         "sortOptions": _pitcher_ladder_sort_options(),
@@ -994,6 +1002,29 @@ def _pitcher_ladders_payload(d: str, prop_value: Any, sort_value: Any) -> Dict[s
                 }
             )
 
+    payload["gameOptions"] = [
+        {
+            "value": str(int(row.get("gamePk") or 0)),
+            "label": str(row.get("matchup") or f"Game {int(row.get('gamePk') or 0)}"),
+            "gamePk": int(row.get("gamePk") or 0),
+            "matchup": str(row.get("matchup") or ""),
+        }
+        for row in sorted(
+            {
+                int(row.get("gamePk") or 0): {
+                    "gamePk": int(row.get("gamePk") or 0),
+                    "matchup": str(row.get("matchup") or ""),
+                }
+                for row in rows
+                if _safe_int(row.get("gamePk")) is not None
+            }.values(),
+            key=lambda item: (str(item.get("matchup") or ""), int(item.get("gamePk") or 0)),
+        )
+    ]
+
+    if selected_game:
+        rows = [row for row in rows if str(int(row.get("gamePk") or 0)) == selected_game]
+
     rows = _sort_pitcher_ladder_rows(rows, sort_key)
     payload["pitcherOptions"] = [
         {
@@ -1017,12 +1048,15 @@ def _pitcher_ladders_payload(d: str, prop_value: Any, sort_value: Any) -> Dict[s
 
     if not rows:
         payload["error"] = "pitcher_ladders_missing"
+        if selected_game:
+            payload["error"] = "pitcher_ladders_game_missing"
         if selected_pitcher:
             payload["error"] = "pitcher_ladders_pitcher_missing"
         payload["summary"] = {
             "games": int(len(sim_files)),
             "starters": 0,
             "simCounts": [],
+            "availableGames": int(len(payload.get("gameOptions") or [])),
             "availableStarters": int(len(payload.get("pitcherOptions") or [])),
         }
         return payload
@@ -1033,6 +1067,7 @@ def _pitcher_ladders_payload(d: str, prop_value: Any, sort_value: Any) -> Dict[s
         "games": int(len(sim_files)),
         "starters": int(len(rows)),
         "simCounts": sorted({int(row.get("simCount") or 0) for row in rows if int(row.get("simCount") or 0) > 0}),
+        "availableGames": int(len(payload.get("gameOptions") or [])),
         "availableStarters": int(len(payload.get("pitcherOptions") or [])),
     }
     return payload
@@ -1040,6 +1075,7 @@ def _pitcher_ladders_payload(d: str, prop_value: Any, sort_value: Any) -> Dict[s
 
 def _hitter_ladders_payload(d: str, prop_value: Any) -> Dict[str, Any]:
     prop = _normalize_hitter_ladder_prop(prop_value)
+    selected_game = _normalize_game_selector(request.args.get("game"))
     selected_team = _normalize_hitter_team_selector(request.args.get("team"))
     selected_hitter = _normalize_hitter_selector(request.args.get("hitter"))
     sort_key = _normalize_hitter_ladder_sort(request.args.get("sort"))
@@ -1055,8 +1091,10 @@ def _hitter_ladders_payload(d: str, prop_value: Any) -> Dict[str, Any]:
         "propLabel": str(prop_cfg.get("label") or prop.title()),
         "propUnit": str(prop_cfg.get("unit") or ""),
         "propOptions": _hitter_ladder_prop_options(),
+        "selectedGame": selected_game,
         "selectedTeam": selected_team,
         "selectedHitter": selected_hitter,
+        "gameOptions": [],
         "teamOptions": [],
         "selectedSort": sort_key,
         "hitterOptions": [],
@@ -1330,6 +1368,29 @@ def _hitter_ladders_payload(d: str, prop_value: Any) -> Dict[str, Any]:
             batter["ladderShape"] = "threshold"
             rows.append(batter)
 
+    payload["gameOptions"] = [
+        {
+            "value": str(int(row.get("gamePk") or 0)),
+            "label": str(row.get("matchup") or f"Game {int(row.get('gamePk') or 0)}"),
+            "gamePk": int(row.get("gamePk") or 0),
+            "matchup": str(row.get("matchup") or ""),
+        }
+        for row in sorted(
+            {
+                int(row.get("gamePk") or 0): {
+                    "gamePk": int(row.get("gamePk") or 0),
+                    "matchup": str(row.get("matchup") or ""),
+                }
+                for row in rows
+                if _safe_int(row.get("gamePk")) is not None
+            }.values(),
+            key=lambda item: (str(item.get("matchup") or ""), int(item.get("gamePk") or 0)),
+        )
+    ]
+
+    if selected_game:
+        rows = [row for row in rows if str(int(row.get("gamePk") or 0)) == selected_game]
+
     payload["teamOptions"] = [
         {
             "value": str(team_key),
@@ -1377,6 +1438,8 @@ def _hitter_ladders_payload(d: str, prop_value: Any) -> Dict[str, Any]:
 
     if not rows:
         payload["error"] = "hitter_ladders_missing"
+        if selected_game:
+            payload["error"] = "hitter_ladders_game_missing"
         if selected_team:
             payload["error"] = "hitter_ladders_team_missing"
         if selected_hitter:
@@ -1385,6 +1448,7 @@ def _hitter_ladders_payload(d: str, prop_value: Any) -> Dict[str, Any]:
             "games": int(len(sim_files)),
             "hitters": 0,
             "simCounts": [],
+            "availableGames": int(len(payload.get("gameOptions") or [])),
             "availableTeams": int(len(payload.get("teamOptions") or [])),
             "availableHitters": int(len(payload.get("hitterOptions") or [])),
             "topN": int(max(topn_limits)) if topn_limits else None,
@@ -1398,6 +1462,7 @@ def _hitter_ladders_payload(d: str, prop_value: Any) -> Dict[str, Any]:
         "games": int(len(sim_files)),
         "hitters": int(len(rows)),
         "simCounts": sorted({int(row.get("simCount") or 0) for row in rows if int(row.get("simCount") or 0) > 0}),
+        "availableGames": int(len(payload.get("gameOptions") or [])),
         "availableTeams": int(len(payload.get("teamOptions") or [])),
         "availableHitters": int(len(payload.get("hitterOptions") or [])),
         "topN": int(max(topn_limits)) if topn_limits else None,
@@ -3709,12 +3774,14 @@ def index() -> str:
 def pitcher_ladders_view() -> str:
     d = str(request.args.get("date") or "").strip() or _default_cards_date()
     prop = _normalize_pitcher_ladder_prop(request.args.get("prop"))
+    game = _normalize_game_selector(request.args.get("game"))
     pitcher = _normalize_pitcher_selector(request.args.get("pitcher"))
     sort = _normalize_pitcher_ladder_sort(request.args.get("sort"))
     return render_template(
         "pitcher_ladders.html",
         date=d,
         prop=prop,
+        game=game,
         pitcher=pitcher,
         sort=sort,
         prop_options=_pitcher_ladder_prop_options(),
@@ -3726,6 +3793,7 @@ def pitcher_ladders_view() -> str:
 def hitter_ladders_view() -> str:
     d = str(request.args.get("date") or "").strip() or _default_cards_date()
     prop = _normalize_hitter_ladder_prop(request.args.get("prop"))
+    game = _normalize_game_selector(request.args.get("game"))
     team = _normalize_hitter_team_selector(request.args.get("team"))
     hitter = _normalize_hitter_selector(request.args.get("hitter"))
     sort = _normalize_hitter_ladder_sort(request.args.get("sort"))
@@ -3733,6 +3801,7 @@ def hitter_ladders_view() -> str:
         "hitter_ladders.html",
         date=d,
         prop=prop,
+        game=game,
         team=team,
         hitter=hitter,
         sort=sort,

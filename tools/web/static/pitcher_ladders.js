@@ -10,6 +10,7 @@
   const state = {
     date: String(bootstrap.date || ""),
     prop: String(bootstrap.prop || "strikeouts"),
+    game: String(bootstrap.game || ""),
     pitcher: String(bootstrap.pitcher || ""),
     sort: String(bootstrap.sort || "team"),
   };
@@ -17,6 +18,7 @@
   const formEl = document.getElementById("ladderForm");
   const dateInputEl = document.getElementById("ladderDateInput");
   const propInputEl = document.getElementById("ladderPropInput");
+  const gameInputEl = document.getElementById("ladderGameInput");
   const pitcherInputEl = document.getElementById("ladderPitcherInput");
   const sortInputEl = document.getElementById("ladderSortInput");
   const headerMetaEl = document.getElementById("ladderHeaderMeta");
@@ -116,22 +118,39 @@
     `;
   }
 
-  function pageHref(dateValue, propValue, pitcherValue, sortValue) {
+  function pageHref(dateValue, propValue, gameValue, pitcherValue, sortValue) {
     const params = new URLSearchParams();
     if (dateValue) params.set("date", dateValue);
     if (propValue) params.set("prop", propValue);
+    if (gameValue) params.set("game", gameValue);
     if (pitcherValue) params.set("pitcher", pitcherValue);
     if (sortValue) params.set("sort", sortValue);
     return `/pitcher-ladders?${params.toString()}`;
   }
 
-  function apiHref(dateValue, propValue, pitcherValue, sortValue) {
+  function apiHref(dateValue, propValue, gameValue, pitcherValue, sortValue) {
     const params = new URLSearchParams();
     if (dateValue) params.set("date", dateValue);
     if (propValue) params.set("prop", propValue);
+    if (gameValue) params.set("game", gameValue);
     if (pitcherValue) params.set("pitcher", pitcherValue);
     if (sortValue) params.set("sort", sortValue);
     return `/api/pitcher-ladders?${params.toString()}`;
+  }
+
+  function renderGameSelector(payload) {
+    if (!gameInputEl) return;
+    const options = Array.isArray(payload.gameOptions) ? payload.gameOptions : [];
+    const currentValue = String(payload.selectedGame || state.game || "");
+    gameInputEl.innerHTML = [
+      '<option value="">All games</option>',
+      ...options.map((option) => {
+        const value = String(option.value || "");
+        const selected = value === currentValue ? ' selected' : '';
+        return `<option value="${escapeHtml(value)}"${selected}>${escapeHtml(option.label || value)}</option>`;
+      }),
+    ].join("");
+    gameInputEl.value = currentValue;
   }
 
   function renderPitcherSelector(payload) {
@@ -170,7 +189,7 @@
     const teamLogoUrl = selected.teamLogoUrl || "";
     const pitcherName = selected.pitcherName || selected.label || currentValue;
     const label = selected.label || pitcherName;
-    const clearHref = pageHref(state.date, state.prop, "", state.sort);
+    const clearHref = pageHref(state.date, state.prop, state.game, "", state.sort);
 
     selectedPitcherEl.style.display = "block";
     selectedPitcherEl.innerHTML = `
@@ -204,6 +223,10 @@
       <article class="ladder-stat">
         <div class="ladder-stat-label">Games</div>
         <div class="ladder-stat-value">${formatCount(summary.games)}</div>
+      </article>
+      <article class="ladder-stat">
+        <div class="ladder-stat-label">Available games</div>
+        <div class="ladder-stat-value">${formatCount(summary.availableGames)}</div>
       </article>
       <article class="ladder-stat">
         <div class="ladder-stat-label">Starters</div>
@@ -299,21 +322,23 @@
     if (sortInputEl) {
       sortInputEl.value = String(payload.selectedSort || state.sort || "team");
     }
+    renderGameSelector(payload);
     renderPitcherSelector(payload);
     renderSelectedPitcher(payload);
 
     const summary = payload.summary || {};
     const simCounts = Array.isArray(summary.simCounts) ? summary.simCounts : [];
     const sortLabel = String((Array.isArray(payload.sortOptions) ? payload.sortOptions : []).find((option) => String(option.value || "") === String(payload.selectedSort || state.sort || "team"))?.label || (payload.selectedSort || state.sort || "team"));
+    const gameLabel = String((Array.isArray(payload.gameOptions) ? payload.gameOptions : []).find((option) => String(option.value || "") === String(payload.selectedGame || state.game || ""))?.label || (payload.selectedGame || state.game || ""));
     headerMetaEl.textContent = payload.found
-      ? `${summary.starters || 0} starters across ${summary.games || 0} games. Sorted by ${sortLabel}. Sim counts: ${simCounts.length ? simCounts.join(", ") : "-"}.${state.pitcher ? ` Filtered to pitcher ${state.pitcher}.` : ""}`
+      ? `${summary.starters || 0} starters across ${summary.games || 0} games. Sorted by ${sortLabel}. Sim counts: ${simCounts.length ? simCounts.join(", ") : "-"}.${state.game ? ` Filtered to game ${gameLabel || state.game}.` : ""}${state.pitcher ? ` Filtered to pitcher ${state.pitcher}.` : ""}`
       : "No ladder data found for this selection.";
 
     sourceMetaEl.textContent = `Sim dir: ${payload.sourceDir || "-"} | Market file: ${payload.marketSource || "-"} | Default daily sims: ${payload.defaultSims || "-"}`;
 
     const nav = payload.nav || {};
-    prevDateLinkEl.href = pageHref(nav.prevDate || state.date, state.prop, state.pitcher, state.sort);
-    nextDateLinkEl.href = pageHref(nav.nextDate || state.date, state.prop, state.pitcher, state.sort);
+    prevDateLinkEl.href = pageHref(nav.prevDate || state.date, state.prop, state.game, state.pitcher, state.sort);
+    nextDateLinkEl.href = pageHref(nav.nextDate || state.date, state.prop, state.game, state.pitcher, state.sort);
     prevDateLinkEl.style.visibility = nav.prevDate ? "visible" : "hidden";
     nextDateLinkEl.style.visibility = nav.nextDate ? "visible" : "hidden";
 
@@ -328,12 +353,13 @@
   async function loadPayload() {
     dateInputEl.value = state.date;
     propInputEl.value = state.prop;
+    if (gameInputEl) gameInputEl.value = state.game;
     pitcherInputEl.value = state.pitcher;
     if (sortInputEl) sortInputEl.value = state.sort;
     gridEl.innerHTML = '<div class="cards-loading-state">Loading pitcher ladders...</div>';
     summaryEl.innerHTML = '<div class="cards-loading-state">Loading ladder summary...</div>';
 
-    const response = await fetch(apiHref(state.date, state.prop, state.pitcher, state.sort));
+    const response = await fetch(apiHref(state.date, state.prop, state.game, state.pitcher, state.sort));
     const payload = await response.json();
     renderPayload(payload);
   }
@@ -342,13 +368,18 @@
     event.preventDefault();
     state.date = String(dateInputEl.value || "");
     state.prop = String(propInputEl.value || "strikeouts");
+    state.game = String((gameInputEl && gameInputEl.value) || "");
     state.pitcher = String(pitcherInputEl.value || "");
     state.sort = String((sortInputEl && sortInputEl.value) || "team");
-    window.history.replaceState({}, "", pageHref(state.date, state.prop, state.pitcher, state.sort));
+    window.history.replaceState({}, "", pageHref(state.date, state.prop, state.game, state.pitcher, state.sort));
     await loadPayload();
   });
 
   propInputEl.addEventListener("change", () => {
+    state.game = "";
+    if (gameInputEl) gameInputEl.value = "";
+    state.pitcher = "";
+    if (pitcherInputEl) pitcherInputEl.value = "";
     if (formEl.requestSubmit) {
       formEl.requestSubmit();
       return;
@@ -363,6 +394,18 @@
     }
     formEl.dispatchEvent(new Event("submit", { cancelable: true }));
   });
+
+  if (gameInputEl) {
+    gameInputEl.addEventListener("change", () => {
+      state.pitcher = "";
+      if (pitcherInputEl) pitcherInputEl.value = "";
+      if (formEl.requestSubmit) {
+        formEl.requestSubmit();
+        return;
+      }
+      formEl.dispatchEvent(new Event("submit", { cancelable: true }));
+    });
+  }
 
   if (sortInputEl) {
     sortInputEl.addEventListener("change", () => {
