@@ -1,0 +1,36 @@
+name: MLB Pregame Odds Refresh
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: '5 * * * *'
+    - cron: '25 * * * *'
+    - cron: '45 * * * *'
+
+concurrency:
+  group: mlb-pregame-odds-refresh
+  cancel-in-progress: true
+
+env:
+  MLB_BETTING_BASE_URL: ${{ secrets['MLB_BETTING_BASE_URL'] }}
+  RENDER_URL: ${{ secrets['RENDER_URL'] }}
+  MLB_BETTING_CRON_TOKEN: ${{ secrets['MLB_BETTING_CRON_TOKEN'] }}
+  CRON_TOKEN: ${{ secrets['CRON_TOKEN'] }}
+
+jobs:
+  refresh-oddsapi-markets:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Validate secrets
+        run: |
+          test -n "${MLB_BETTING_BASE_URL}" || (echo 'Missing MLB_BETTING_BASE_URL or RENDER_URL secret' && exit 1)
+          test -n "${MLB_BETTING_CRON_TOKEN}" || (echo 'Missing MLB_BETTING_CRON_TOKEN or CRON_TOKEN secret' && exit 1)
+
+      - name: Ping Render cron surface
+        run: bash scripts/render_cron_call.sh /api/cron/ping
+
+      - name: Refresh current-day odds
+        run: bash scripts/render_cron_call.sh "/api/cron/refresh-oddsapi-markets"

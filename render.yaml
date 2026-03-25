@@ -6,6 +6,18 @@ services:
     autoDeploy: true
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn wsgi:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120
+    disk:
+      name: mlb-betting-v2-data
+      mountPath: /opt/render/project/data
+      sizeGB: 5
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
+      - key: MLB_BETTING_DATA_ROOT
+        value: /opt/render/project/data
+      - key: MLB_LIVE_LENS_DIR
+        value: /opt/render/project/data/live_lens
+      - key: MLB_CRON_TOKEN
+        sync: false
+      - key: ODDS_API_KEY
+        sync: false

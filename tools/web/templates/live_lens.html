@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MLB Live Lens — {{ date }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}" />
+  </head>
+  <body>
+    <div class="container">
+      <header class="header">
+        <div class="breadcrumbs">
+          <a href="/?date={{ date }}">← Back to cards</a>
+        </div>
+        <h1>MLB Live Lens — {{ date }}</h1>
+        <form class="date-form" method="get" action="/live-lens">
+          <label>
+            Date
+            <input type="date" name="date" value="{{ date }}" />
+          </label>
+          <button type="submit">Load</button>
+        </form>
+        <div id="liveLensMeta" class="status-line">Loading live lens…</div>
+      </header>
+
+      <section class="panel">
+        <div class="panel-title">Overview</div>
+        <pre id="liveLensOverview" class="pre"></pre>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">Games</div>
+        <div id="liveLensGames"></div>
+      </section>
+    </div>
+
+    <script>
+      window.MLBLiveLensBootstrap = {
+        date: {{ date|tojson }}
+      };
+    </script>
+    <script src="{{ url_for('static', filename='live_lens.js', v='20260326-live-lens') }}"></script>
+  </body>
+</html>

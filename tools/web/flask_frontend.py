@@ -4,6 +4,7 @@ from bisect import bisect_left
 import gzip
 import json
 import os
+import shutil
 import sys
 import time
 from collections import defaultdict
@@ -27,6 +28,7 @@ from sim_engine.data.statsapi import (
     fetch_schedule_for_date,
 )
 from sim_engine.market_pitcher_props import normalize_pitcher_name
+from tools.oddsapi.fetch_daily_oddsapi_markets import fetch_and_write_live_odds_for_date
 from tools.eval.settle_locked_policy_cards import _settle_card
 
 
@@ -38,7 +40,16 @@ app = Flask(
 
 
 _ROOT_DIR = Path(__file__).resolve().parents[2]
-_TRACKED_DAILY_SNAPSHOT_DIR = _ROOT_DIR / "data" / "daily" / "snapshots"
+_TRACKED_DATA_DIR = _ROOT_DIR / "data"
+_DATA_ROOT_ENV = str(os.environ.get("MLB_BETTING_DATA_ROOT") or "").strip()
+_DATA_DIR = (Path(_DATA_ROOT_ENV).resolve() if _DATA_ROOT_ENV else _TRACKED_DATA_DIR.resolve())
+_DAILY_DIR = _DATA_DIR / "daily"
+_MARKET_DIR = _DATA_DIR / "market" / "oddsapi"
+_LIVE_LENS_DIR = Path(
+    str(os.environ.get("MLB_LIVE_LENS_DIR") or os.environ.get("LIVE_LENS_DIR") or (_DATA_DIR / "live_lens")).strip()
+).resolve()
+_TRACKED_DAILY_SNAPSHOT_DIR = _TRACKED_DATA_DIR / "daily" / "snapshots"
+_CRON_TOKEN = str(os.environ.get("MLB_CRON_TOKEN") or os.environ.get("CRON_TOKEN") or "").strip()
 _DEMO_DATE = "2025-06-04"
 _CARDS_PRESEASON_DEFAULT_WINDOW_DAYS = 21
 _PITCHER_LADDER_PROPS: Dict[str, Dict[str, Any]] = {
@@ -217,6 +228,65 @@ def _date_slug(d: str) -> str:
     return str(d or "").strip().replace("-", "_")
 
 
+def _data_roots() -> List[Path]:
+    roots: List[Path] = []
+    for candidate in (_DATA_DIR, _TRACKED_DATA_DIR.resolve()):
+        resolved = candidate.resolve()
+        if resolved not in roots:
+            roots.append(resolved)
+    return roots
+
+
+def _ensure_dir(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _write_json_file(path: Path, payload: Any) -> None:
+    _ensure_dir(path.parent)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=False), encoding="utf-8")
+
+
+def _append_jsonl(path: Path, payload: Any) -> None:
+    _ensure_dir(path.parent)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, sort_keys=False) + "\n")
+
+
+def _daily_snapshot_dir(d: str) -> Path:
+    return _DAILY_DIR / "snapshots" / str(d)
+
+
+def _daily_sim_dir(d: str) -> Path:
+    return _DAILY_DIR / "sims" / str(d)
+
+
+def _cron_meta_dir() -> Path:
+    return _ensure_dir(_LIVE_LENS_DIR / "cron_meta")
+
+
+def _live_lens_log_path(d: str) -> Path:
+    return _LIVE_LENS_DIR / f"live_lens_{_date_slug(d)}.jsonl"
+
+
+def _live_lens_report_path(d: str) -> Path:
+    return _LIVE_LENS_DIR / f"live_lens_report_{_date_slug(d)}.json"
+
+
+def _require_cron_auth() -> Optional[Response]:
+    if not _CRON_TOKEN:
+        return None
+    auth_header = str(request.headers.get("Authorization") or "").strip()
+    supplied = ""
+    if auth_header.lower().startswith("bearer "):
+        supplied = auth_header[7:].strip()
+    if not supplied:
+        supplied = str(request.args.get("token") or request.headers.get("X-Cron-Token") or "").strip()
+    if supplied == _CRON_TOKEN:
+        return None
+    return jsonify({"ok": False, "error": "unauthorized"}), 401
+
+
 def _path_from_maybe_relative(value: Any) -> Optional[Path]:
     raw = str(value or "").strip()
     if not raw:
@@ -239,11 +309,12 @@ def _relative_path_str(path: Optional[Path]) -> Optional[str]:
 def _resolve_oddsapi_market_file(d: str, prefix: str) -> Optional[Path]:
     slug = _date_slug(d)
     filename = f"{prefix}_{slug}.json"
+    preferred: List[Path] = []
+    for data_root in _data_roots():
+        preferred.append(data_root / "daily" / "snapshots" / str(d) / filename)
+        preferred.append(data_root / "market" / "oddsapi" / filename)
     return _find_candidate_file(
-        preferred=[
-            _TRACKED_DAILY_SNAPSHOT_DIR / str(d) / filename,
-            _ROOT_DIR / "data" / "market" / "oddsapi" / filename,
-        ],
+        preferred=preferred,
         recursive_pattern=f"**/{filename}",
     )
 
@@ -258,17 +329,17 @@ def _find_candidate_file(*, preferred: List[Path], recursive_pattern: str) -> Op
         if p.exists() and p.is_file():
             return p
 
-    data_dir = _ROOT_DIR / "data"
-    try:
-        for p in sorted(data_dir.glob(recursive_pattern)):
-            key = str(p)
-            if key in seen:
-                continue
-            seen.add(key)
-            if p.exists() and p.is_file():
-                return p
-    except Exception:
-        return None
+    for data_dir in _data_roots():
+        try:
+            for p in sorted(data_dir.glob(recursive_pattern)):
+                key = str(p)
+                if key in seen:
+                    continue
+                seen.add(key)
+                if p.exists() and p.is_file():
+                    return p
+        except Exception:
+            continue
     return None
 
 
@@ -435,17 +506,19 @@ def _workflow_summary(ops_report_path: Optional[Path], ops_report_doc: Optional[
 
 def _load_cards_artifacts(d: str) -> Dict[str, Any]:
     slug = _date_slug(d)
-    data_dir = _ROOT_DIR / "data"
+    data_dir = _DATA_DIR
     canonical_daily_dir = data_dir / "daily"
     canonical_profile_bundle_path = canonical_daily_dir / f"daily_summary_{slug}_profile_bundle.json"
     canonical_locked_policy_path = canonical_daily_dir / f"daily_summary_{slug}_locked_policy.json"
     canonical_game_summary_path = canonical_daily_dir / f"daily_summary_{slug}.json"
     canonical_sim_dir = canonical_daily_dir / "sims" / str(d)
     canonical_snapshot_dir = canonical_daily_dir / "snapshots" / str(d)
+    tracked_daily_dir = _TRACKED_DATA_DIR / "daily"
 
     profile_bundle_path = _find_candidate_file(
         preferred=[
             canonical_profile_bundle_path,
+            tracked_daily_dir / f"daily_summary_{slug}_profile_bundle.json",
             data_dir / "_tmp_live_subcap_random_day" / f"daily_summary_{slug}_profile_bundle.json",
             data_dir / "_tmp_live_subcap_smoke" / f"daily_summary_{slug}_profile_bundle.json",
         ],
@@ -456,6 +529,7 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
     locked_policy_path = _find_candidate_file(
         preferred=[
             canonical_locked_policy_path,
+            tracked_daily_dir / f"daily_summary_{slug}_locked_policy.json",
             data_dir / "_tmp_live_subcap_random_day" / f"daily_summary_{slug}_locked_policy.json",
             data_dir / "_tmp_live_subcap_smoke" / f"daily_summary_{slug}_locked_policy.json",
             data_dir / f"daily_summary_{slug}_locked_policy.json",
@@ -469,8 +543,20 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
     locked_policy = _load_json_file(locked_policy_path)
 
     game_summary_path: Optional[Path] = canonical_game_summary_path if canonical_game_summary_path.exists() and canonical_game_summary_path.is_file() else None
+    if not game_summary_path:
+        tracked_game_summary_path = tracked_daily_dir / f"daily_summary_{slug}.json"
+        if tracked_game_summary_path.exists() and tracked_game_summary_path.is_file():
+            game_summary_path = tracked_game_summary_path
     sim_dir: Optional[Path] = canonical_sim_dir if canonical_sim_dir.exists() and canonical_sim_dir.is_dir() else None
+    if not sim_dir:
+        tracked_sim_dir = tracked_daily_dir / "sims" / str(d)
+        if tracked_sim_dir.exists() and tracked_sim_dir.is_dir():
+            sim_dir = tracked_sim_dir
     snapshot_dir: Optional[Path] = canonical_snapshot_dir if canonical_snapshot_dir.exists() and canonical_snapshot_dir.is_dir() else None
+    if not snapshot_dir:
+        tracked_snapshot_dir = tracked_daily_dir / "snapshots" / str(d)
+        if tracked_snapshot_dir.exists() and tracked_snapshot_dir.is_dir():
+            snapshot_dir = tracked_snapshot_dir
     for artifact in (locked_policy, profile_bundle):
         if not isinstance(artifact, dict):
             continue
@@ -3719,6 +3805,475 @@ def _plays_since(feed: Dict[str, Any], *, since_index: int) -> Tuple[int, List[D
 
     plays_out: List[Dict[str, Any]] = []
     new_index = since_index
+
+
+def _normalize_person_name(value: Any) -> str:
+    return normalize_pitcher_name(str(value or ""))
+
+
+def _lookup_boxscore_row(rows: Any, player_name: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(rows, list):
+        return None
+    target = _normalize_person_name(player_name)
+    if not target:
+        return None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if _normalize_person_name(row.get("name")) == target:
+            return row
+    return None
+
+
+def _prop_owner_name(reco: Dict[str, Any]) -> str:
+    return str(reco.get("player_name") or reco.get("pitcher_name") or "").strip()
+
+
+def _prop_side(card: Dict[str, Any], reco: Dict[str, Any]) -> Optional[str]:
+    explicit = str(reco.get("team_side") or "").strip().lower()
+    if explicit in {"away", "home"}:
+        return explicit
+    team_value = str(reco.get("team") or "").strip().lower()
+    away_team = card.get("away") or {}
+    home_team = card.get("home") or {}
+    away_values = {str(away_team.get("abbr") or "").strip().lower(), str(away_team.get("name") or "").strip().lower()}
+    home_values = {str(home_team.get("abbr") or "").strip().lower(), str(home_team.get("name") or "").strip().lower()}
+    if team_value and team_value in away_values:
+        return "away"
+    if team_value and team_value in home_values:
+        return "home"
+    return None
+
+
+def _parse_ip_to_outs(value: Any) -> Optional[int]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    parts = text.split(".", 1)
+    try:
+        whole = int(parts[0])
+        frac = int(parts[1] if len(parts) > 1 else 0)
+    except Exception:
+        return None
+    return int(whole * 3 + frac)
+
+
+def _live_stat_value(row: Optional[Dict[str, Any]], reco: Dict[str, Any]) -> Optional[float]:
+    if not isinstance(row, dict):
+        return None
+    market = str(reco.get("market") or "").strip().lower()
+    prop = str(reco.get("prop") or "").strip().lower()
+    if "home_runs" in market or "home_runs" in prop:
+        return _safe_float(row.get("HR"))
+    if "total_bases" in market or "total_bases" in prop:
+        return _safe_float(row.get("TB"))
+    if "rbis" in market or prop == "rbi":
+        return _safe_float(row.get("RBI"))
+    if "hitter_runs" in market or "runs_scored" in prop:
+        return _safe_float(row.get("R"))
+    if "hitter_hits" in market or prop.endswith("hits"):
+        return _safe_float(row.get("H"))
+    if prop == "outs":
+        outs = _safe_float(row.get("OUTS"))
+        if outs is not None:
+            return float(outs)
+        ip_outs = _parse_ip_to_outs(row.get("IP"))
+        return float(ip_outs) if ip_outs is not None else None
+    return None
+
+
+def _prop_result_state(reco: Dict[str, Any], actual_value: Optional[float], status_text: Any) -> str:
+    if actual_value is None:
+        return "live" if "live" in str(status_text or "").strip().lower() else "pending"
+    line = _safe_float(reco.get("market_line"))
+    selection = str(reco.get("selection") or "over").strip().lower()
+    if line is None:
+        return "pending"
+    if abs(float(actual_value) - float(line)) < 1e-9:
+        return "push"
+    did_win = float(actual_value) < float(line) if selection == "under" else float(actual_value) > float(line)
+    return "win" if did_win else "loss"
+
+
+def _live_matchup_text(snapshot: Optional[Dict[str, Any]]) -> str:
+    if not isinstance(snapshot, dict):
+        return ""
+    current = snapshot.get("current") or {}
+    inning = current.get("inning")
+    half = str(current.get("halfInning") or "").title()
+    batter = ((current.get("batter") or {}).get("fullName") or "")
+    pitcher = ((current.get("pitcher") or {}).get("fullName") or "")
+    pieces = []
+    if inning:
+        pieces.append(f"{half} {inning}".strip())
+    count = current.get("count") or {}
+    balls = _safe_int(count.get("balls"))
+    strikes = _safe_int(count.get("strikes"))
+    outs = _safe_int(count.get("outs"))
+    if balls is not None and strikes is not None and outs is not None:
+        pieces.append(f"{balls}-{strikes}, {outs} out")
+    if batter and pitcher:
+        pieces.append(f"{batter} vs {pitcher}")
+    return " | ".join(piece for piece in pieces if piece)
+
+
+def _load_live_lens_cards(d: str) -> List[Dict[str, Any]]:
+    artifacts = _load_cards_artifacts(d)
+    archive = _load_cards_archive_context(d)
+
+    if isinstance(artifacts.get("locked_policy"), dict):
+        recos_by_game = _recommendations_by_game(artifacts.get("locked_policy"))
+    elif isinstance(archive.get("card"), dict):
+        recos_by_game = _recommendations_by_game(archive.get("card"))
+    else:
+        recos_by_game = {}
+
+    if isinstance(artifacts.get("game_summary"), dict):
+        outputs_by_game = _game_outputs_by_game(artifacts.get("game_summary"))
+    elif isinstance(archive.get("report"), dict):
+        outputs_by_game = _season_report_outputs_by_game(archive.get("report"))
+    else:
+        outputs_by_game = {}
+
+    schedule_games: List[Dict[str, Any]] = []
+    try:
+        schedule_games = fetch_schedule_for_date(_client(), d) or []
+    except Exception:
+        schedule_games = []
+
+    return _cards_list_from_sources(
+        d=d,
+        schedule_games=schedule_games,
+        outputs_by_game=outputs_by_game,
+        recos_by_game=recos_by_game,
+    )
+
+
+def _load_live_lens_snapshot(game_pk: int, d: str) -> Optional[Dict[str, Any]]:
+    try:
+        use_archive = _is_historical_date(d)
+        feed = _load_game_feed_for_date(int(game_pk), d) if use_archive else None
+        if not isinstance(feed, dict) or not feed:
+            feed = fetch_game_feed_live(_client(), int(game_pk))
+        if not isinstance(feed, dict) or not feed:
+            return None
+        away_sp = _get_box_starting_pitcher_id(feed, "away")
+        home_sp = _get_box_starting_pitcher_id(feed, "home")
+        return {
+            "gamePk": int(game_pk),
+            "status": (feed.get("gameData") or {}).get("status") or {},
+            "current": _current_matchup(feed),
+            "teams": {
+                "away": {
+                    "starter": {"id": away_sp, "name": _player_name_from_box(feed, away_sp) if away_sp else ""},
+                    "totals": _team_totals(feed, "away"),
+                    "boxscore": {
+                        "batting": _boxscore_batting(feed, "away"),
+                        "pitching": _boxscore_pitching(feed, "away"),
+                    },
+                },
+                "home": {
+                    "starter": {"id": home_sp, "name": _player_name_from_box(feed, home_sp) if home_sp else ""},
+                    "totals": _team_totals(feed, "home"),
+                    "boxscore": {
+                        "batting": _boxscore_batting(feed, "home"),
+                        "pitching": _boxscore_pitching(feed, "home"),
+                    },
+                },
+            },
+        }
+    except Exception:
+        return None
+
+
+def _prop_lens_rows(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    status_text = ((snapshot or {}).get("status") or {}).get("abstractGameState") or ((card.get("status") or {}).get("abstract") or "")
+    rows: List[Dict[str, Any]] = []
+    actual_teams = ((snapshot or {}).get("teams") or {})
+    for key, tier in (("pitcherProps", "official"), ("hitterProps", "official"), ("extraPitcherProps", "playable"), ("extraHitterProps", "playable")):
+        for reco in card.get("markets", {}).get(key) or []:
+            if not isinstance(reco, dict):
+                continue
+            owner_name = _prop_owner_name(reco)
+            if not owner_name:
+                continue
+            side = _prop_side(card, reco)
+            is_pitcher = str(reco.get("market") or "") == "pitcher_props"
+            type_key = "pitching" if is_pitcher else "batting"
+            search_sets: List[Any] = []
+            if side in {"away", "home"}:
+                search_sets.append((((actual_teams.get(side) or {}).get("boxscore") or {}).get(type_key) or []))
+            else:
+                search_sets.append((((actual_teams.get("away") or {}).get("boxscore") or {}).get(type_key) or []))
+                search_sets.append((((actual_teams.get("home") or {}).get("boxscore") or {}).get(type_key) or []))
+            actual_row = None
+            for row_set in search_sets:
+                actual_row = _lookup_boxscore_row(row_set, owner_name)
+                if actual_row:
+                    break
+            actual_value = _live_stat_value(actual_row, reco)
+            market_line = _safe_float(reco.get("market_line"))
+            rows.append(
+                {
+                    "tier": tier,
+                    "market": reco.get("market"),
+                    "prop": reco.get("prop"),
+                    "playerName": owner_name,
+                    "teamSide": side,
+                    "selection": reco.get("selection"),
+                    "line": market_line,
+                    "actual": actual_value,
+                    "delta": (float(actual_value) - float(market_line)) if actual_value is not None and market_line is not None else None,
+                    "status": _prop_result_state(reco, actual_value, status_text),
+                    "edge": _safe_float(reco.get("edge")),
+                    "odds": _safe_int(reco.get("odds")),
+                    "modelProbOver": _safe_float(reco.get("model_prob_over")),
+                    "outsMean": _safe_float(reco.get("outs_mean")),
+                    "marketLabel": reco.get("market_label") or reco.get("prop") or reco.get("market"),
+                }
+            )
+    rows.sort(key=lambda row: (0 if row.get("tier") == "official" else 1, -(_safe_float(row.get("edge")) or -999.0), str(row.get("playerName") or "")))
+    return rows
+
+
+def _live_lens_payload(d: str, *, persist: bool = False) -> Dict[str, Any]:
+    cards = _load_live_lens_cards(d)
+    games_out: List[Dict[str, Any]] = []
+    counts = {
+        "games": 0,
+        "live": 0,
+        "final": 0,
+        "pregame": 0,
+        "props": 0,
+    }
+    for card in cards:
+        game_pk = _safe_int(card.get("gamePk"))
+        if not game_pk:
+            continue
+        snapshot = _load_live_lens_snapshot(int(game_pk), d)
+        status = ((snapshot or {}).get("status") or {})
+        status_abstract = str(status.get("abstractGameState") or ((card.get("status") or {}).get("abstract") or ""))
+        prop_rows = _prop_lens_rows(card, snapshot)
+        if status_abstract.lower() == "live":
+            counts["live"] += 1
+        elif status_abstract.lower() == "final":
+            counts["final"] += 1
+        else:
+            counts["pregame"] += 1
+        counts["games"] += 1
+        counts["props"] += len(prop_rows)
+        away_totals = ((((snapshot or {}).get("teams") or {}).get("away") or {}).get("totals") or {})
+        home_totals = ((((snapshot or {}).get("teams") or {}).get("home") or {}).get("totals") or {})
+        games_out.append(
+            {
+                "gamePk": int(game_pk),
+                "status": {
+                    "abstract": status_abstract,
+                    "detailed": str(status.get("detailedState") or ((card.get("status") or {}).get("detailed") or "")),
+                },
+                "startTime": card.get("startTime"),
+                "matchup": {
+                    "away": card.get("away") or {},
+                    "home": card.get("home") or {},
+                    "score": {
+                        "away": _safe_int(away_totals.get("R")),
+                        "home": _safe_int(home_totals.get("R")),
+                    },
+                    "liveText": _live_matchup_text(snapshot),
+                },
+                "predictions": card.get("predictions"),
+                "gameMarkets": {
+                    "totals": ((card.get("markets") or {}).get("totals")),
+                    "ml": ((card.get("markets") or {}).get("ml")),
+                },
+                "props": prop_rows,
+                "snapshotAvailable": bool(snapshot),
+            }
+        )
+
+    payload = {
+        "date": str(d),
+        "generatedAt": datetime.utcnow().isoformat() + "Z",
+        "dataRoot": _relative_path_str(_DATA_DIR),
+        "liveLensDir": _relative_path_str(_LIVE_LENS_DIR),
+        "counts": counts,
+        "games": games_out,
+    }
+
+    if persist:
+        log_entry = {
+            "recordedAt": payload.get("generatedAt"),
+            "date": payload.get("date"),
+            "counts": counts,
+            "games": [
+                {
+                    "gamePk": game.get("gamePk"),
+                    "status": ((game.get("status") or {}).get("abstract")),
+                    "score": ((game.get("matchup") or {}).get("score")),
+                    "liveText": ((game.get("matchup") or {}).get("liveText")),
+                    "propCount": len(game.get("props") or []),
+                    "topProps": (game.get("props") or [])[:5],
+                }
+                for game in games_out
+            ],
+        }
+        _append_jsonl(_live_lens_log_path(d), log_entry)
+        _write_json_file(_live_lens_report_path(d), payload)
+
+    return payload
+
+
+def _refresh_oddsapi_markets(d: str, *, overwrite: bool = True) -> Dict[str, Any]:
+    result = fetch_and_write_live_odds_for_date(
+        d,
+        out_dir=_MARKET_DIR,
+        overwrite=overwrite,
+    )
+    snapshot_dir = _daily_snapshot_dir(d)
+    copied: Dict[str, str] = {}
+    _ensure_dir(snapshot_dir)
+    for key in ("game_lines_path", "pitcher_props_path", "hitter_props_path"):
+        source_path = Path(str(result.get(key) or "")).resolve() if result.get(key) else None
+        if not source_path or not source_path.exists() or not source_path.is_file():
+            continue
+        destination = snapshot_dir / source_path.name
+        shutil.copy2(source_path, destination)
+        copied[source_path.name] = _relative_path_str(destination) or str(destination)
+    meta = {
+        "recordedAt": datetime.utcnow().isoformat() + "Z",
+        "date": str(d),
+        "overwrite": bool(overwrite),
+        "result": result,
+        "copied": copied,
+    }
+    _write_json_file(_cron_meta_dir() / "latest_refresh_oddsapi.json", meta)
+    return {
+        "ok": True,
+        "date": str(d),
+        "marketDir": _relative_path_str(_MARKET_DIR),
+        "snapshotDir": _relative_path_str(snapshot_dir),
+        "result": result,
+        "copied": copied,
+    }
+
+
+def _live_lens_reports_payload(d: str) -> Dict[str, Any]:
+    log_path = _live_lens_log_path(d)
+    latest_report = _load_json_file(_live_lens_report_path(d)) or {}
+    entries = 0
+    latest_entry: Optional[Dict[str, Any]] = None
+    if log_path.exists() and log_path.is_file():
+        try:
+            with log_path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    text = str(line).strip()
+                    if not text:
+                        continue
+                    entries += 1
+                    try:
+                        latest_entry = json.loads(text)
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+    return {
+        "ok": True,
+        "date": str(d),
+        "logPath": _relative_path_str(log_path),
+        "reportPath": _relative_path_str(_live_lens_report_path(d)),
+        "entries": int(entries),
+        "latestEntry": latest_entry,
+        "latestReport": latest_report,
+    }
+
+
+@app.get("/live-lens")
+def live_lens_view() -> str:
+    d = str(request.args.get("date") or "").strip() or _default_cards_date()
+    return render_template("live_lens.html", date=d)
+
+
+@app.get("/api/live-lens")
+def api_live_lens() -> Response:
+    d = str(request.args.get("date") or "").strip() or _default_cards_date()
+    persist = str(request.args.get("persist") or "off").strip().lower() == "on"
+    return jsonify(_live_lens_payload(d, persist=persist))
+
+
+@app.get("/api/cron/ping")
+def api_cron_ping() -> Response:
+    auth_error = _require_cron_auth()
+    if auth_error is not None:
+        return auth_error
+    return jsonify(
+        {
+            "ok": True,
+            "service": "mlb-betting-v2",
+            "time": datetime.utcnow().isoformat() + "Z",
+            "dataRoot": _relative_path_str(_DATA_DIR),
+            "liveLensDir": _relative_path_str(_LIVE_LENS_DIR),
+        }
+    )
+
+
+@app.get("/api/cron/config")
+def api_cron_config() -> Response:
+    auth_error = _require_cron_auth()
+    if auth_error is not None:
+        return auth_error
+    return jsonify(
+        {
+            "ok": True,
+            "cronTokenConfigured": bool(_CRON_TOKEN),
+            "dataRoot": _relative_path_str(_DATA_DIR),
+            "marketDir": _relative_path_str(_MARKET_DIR),
+            "dailyDir": _relative_path_str(_DAILY_DIR),
+            "liveLensDir": _relative_path_str(_LIVE_LENS_DIR),
+        }
+    )
+
+
+@app.get("/api/cron/refresh-oddsapi-markets")
+def api_cron_refresh_oddsapi_markets() -> Response:
+    auth_error = _require_cron_auth()
+    if auth_error is not None:
+        return auth_error
+    d = str(request.args.get("date") or "").strip() or _today_iso()
+    overwrite = str(request.args.get("overwrite") or "on").strip().lower() != "off"
+    try:
+        return jsonify(_refresh_oddsapi_markets(d, overwrite=overwrite))
+    except Exception as exc:
+        return jsonify({"ok": False, "date": d, "error": f"{type(exc).__name__}: {exc}"}), 500
+
+
+@app.get("/api/cron/live-lens-tick")
+def api_cron_live_lens_tick() -> Response:
+    auth_error = _require_cron_auth()
+    if auth_error is not None:
+        return auth_error
+    d = str(request.args.get("date") or "").strip() or _today_iso()
+    try:
+        payload = _live_lens_payload(d, persist=True)
+        meta = {
+            "recordedAt": datetime.utcnow().isoformat() + "Z",
+            "date": str(d),
+            "counts": payload.get("counts"),
+            "reportPath": _relative_path_str(_live_lens_report_path(d)),
+            "logPath": _relative_path_str(_live_lens_log_path(d)),
+        }
+        _write_json_file(_cron_meta_dir() / "latest_live_lens_tick.json", meta)
+        return jsonify({"ok": True, "date": d, "counts": payload.get("counts"), "report": meta})
+    except Exception as exc:
+        return jsonify({"ok": False, "date": d, "error": f"{type(exc).__name__}: {exc}"}), 500
+
+
+@app.get("/api/cron/live-lens-reports")
+def api_cron_live_lens_reports() -> Response:
+    auth_error = _require_cron_auth()
+    if auth_error is not None:
+        return auth_error
+    d = str(request.args.get("date") or "").strip() or _today_iso()
+    return jsonify(_live_lens_reports_payload(d))
     for i in range(max(0, since_index), len(all_plays)):
         p = all_plays[i]
         if not isinstance(p, dict):
