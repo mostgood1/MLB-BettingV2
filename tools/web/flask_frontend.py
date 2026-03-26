@@ -6,6 +6,7 @@ import json
 import math
 import os
 import shutil
+import subprocess
 import sys
 import time
 from collections import defaultdict
@@ -30,6 +31,8 @@ from sim_engine.data.statsapi import (
     fetch_schedule_for_date,
 )
 from sim_engine.market_pitcher_props import market_side_probabilities, normalize_pitcher_name
+from tools.eval.build_season_eval_manifest import build_manifest as build_season_eval_manifest
+from tools.eval.build_season_eval_manifest import write_manifest_artifacts as write_season_eval_manifest_artifacts
 from tools.oddsapi.fetch_daily_oddsapi_markets import fetch_and_write_live_odds_for_date
 from tools.eval.settle_locked_policy_cards import _settle_card
 
@@ -5507,6 +5510,90 @@ def _live_lens_reports_payload(d: str) -> Dict[str, Any]:
     }
 
 
+def _publish_season_manifests(
+    *,
+    season: int,
+    batch_dir: Path,
+    betting_profile: str,
+    season_dir: Path,
+) -> Dict[str, Any]:
+    _ensure_dir(season_dir)
+
+    report_files = sorted(batch_dir.glob("sim_vs_actual_*.json")) if batch_dir.exists() and batch_dir.is_dir() else []
+    if not report_files:
+        raise FileNotFoundError(f"No sim_vs_actual_*.json reports found under: {batch_dir}")
+
+    season_manifest = build_season_eval_manifest(
+        season=int(season),
+        batch_dir=batch_dir,
+        title=f"MLB {int(season)} Rolling Season Eval",
+        game_types="R",
+    )
+    season_manifest_path, season_recap_path = write_season_eval_manifest_artifacts(
+        season_manifest,
+        season=int(season),
+        out=str(season_dir / "season_eval_manifest.json"),
+        recap_md=str(season_dir / "season_eval_recap.md"),
+    )
+
+    normalized_profile = str(betting_profile or "retuned").strip().lower()
+    if normalized_profile not in ("baseline", "retuned"):
+        normalized_profile = "retuned"
+    betting_manifest_path = season_dir / (
+        "season_betting_cards_retuned_manifest.json"
+        if normalized_profile == "retuned"
+        else "season_betting_cards_manifest.json"
+    )
+    betting_recap_path = season_dir / (
+        "season_betting_cards_retuned_recap.md"
+        if normalized_profile == "retuned"
+        else "season_betting_cards_recap.md"
+    )
+    betting_cards_dir = season_dir / (
+        "locked_cards_retuned"
+        if normalized_profile == "retuned"
+        else "locked_cards"
+    )
+    cmd = [
+        str(Path(sys.executable).resolve()),
+        str((_ROOT / "tools" / "eval" / "build_season_betting_cards_manifest.py").resolve()),
+        "--season",
+        str(int(season)),
+        "--batch-dir",
+        str(batch_dir),
+        "--out",
+        str(betting_manifest_path),
+        "--recap-md",
+        str(betting_recap_path),
+        "--cards-dir",
+        str(betting_cards_dir),
+        "--title",
+        f"MLB {int(season)} Betting Card Recap",
+    ]
+    betting_rc = subprocess.run(cmd, check=False, capture_output=True, text=True)
+
+    return {
+        "ok": betting_rc.returncode == 0,
+        "season": int(season),
+        "batch_dir": _relative_path_str(batch_dir),
+        "season_dir": _relative_path_str(season_dir),
+        "report_count": int(len(report_files)),
+        "betting_profile": normalized_profile,
+        "season_eval_manifest": _relative_path_str(season_manifest_path),
+        "season_eval_recap": _relative_path_str(season_recap_path),
+        "season_eval_status": str((season_manifest.get("meta") or {}).get("status") or "unknown"),
+        "season_eval_partial": bool((season_manifest.get("meta") or {}).get("partial")),
+        "season_eval_days": int((season_manifest.get("overview") or {}).get("days") or 0),
+        "season_betting_manifest": _relative_path_str(betting_manifest_path),
+        "season_betting_recap": _relative_path_str(betting_recap_path),
+        "season_betting_cards_dir": _relative_path_str(betting_cards_dir),
+        "season_betting_exit_code": int(betting_rc.returncode),
+        "season_betting_stdout": str((betting_rc.stdout or "").strip()),
+        "season_betting_stderr": str((betting_rc.stderr or "").strip()),
+        "season_betting_manifest_exists": bool(betting_manifest_path.exists()),
+    }
+
+
 @app.get("/live-lens")
 def live_lens_view() -> str:
     d = str(request.args.get("date") or "").strip() or _default_cards_date()
@@ -5549,6 +5636,7 @@ def api_cron_config() -> Response:
             "marketDir": _relative_path_str(_MARKET_DIR),
             "dailyDir": _relative_path_str(_DAILY_DIR),
             "liveLensDir": _relative_path_str(_LIVE_LENS_DIR),
+            "seasonRepublishEndpoint": "/api/cron/republish-season?season=YYYY&profile=retuned",
         }
     )
 
@@ -5594,6 +5682,49 @@ def api_cron_live_lens_reports() -> Response:
         return auth_error
     d = str(request.args.get("date") or "").strip() or _today_iso()
     return jsonify(_live_lens_reports_payload(d))
+
+
+@app.get("/api/cron/republish-season")
+def api_cron_republish_season() -> Response:
+    auth_error = _require_cron_auth()
+    if auth_error is not None:
+        return auth_error
+
+    season = _safe_int(request.args.get("season")) or _season_from_date_str(_today_iso()) or _local_today().year
+    profile = str(request.args.get("profile") or "retuned").strip().lower() or "retuned"
+    batch_dir_raw = str(request.args.get("batchDir") or "").strip()
+    season_dir_raw = str(request.args.get("seasonDir") or "").strip()
+    batch_dir = _path_from_maybe_relative(batch_dir_raw) if batch_dir_raw else (_DATA_DIR / "eval" / "batches" / f"season_{int(season)}_ui_daily_live")
+    season_dir = _path_from_maybe_relative(season_dir_raw) if season_dir_raw else (_DATA_DIR / "eval" / "seasons" / str(int(season)))
+
+    try:
+        payload = _publish_season_manifests(
+            season=int(season),
+            batch_dir=batch_dir,
+            betting_profile=profile,
+            season_dir=season_dir,
+        )
+    except FileNotFoundError as exc:
+        return jsonify({
+            "ok": False,
+            "season": int(season),
+            "profile": profile,
+            "batch_dir": _relative_path_str(batch_dir),
+            "season_dir": _relative_path_str(season_dir),
+            "error": f"{type(exc).__name__}: {exc}",
+        }), 404
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "season": int(season),
+            "profile": profile,
+            "batch_dir": _relative_path_str(batch_dir),
+            "season_dir": _relative_path_str(season_dir),
+            "error": f"{type(exc).__name__}: {exc}",
+        }), 500
+
+    status_code = 200 if bool(payload.get("ok")) else 500
+    return jsonify(payload), status_code
     for i in range(max(0, since_index), len(all_plays)):
         p = all_plays[i]
         if not isinstance(p, dict):
