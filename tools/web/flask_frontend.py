@@ -15,7 +15,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, Generator, List, Optional, Tuple
+from typing import Any, Dict, Generator, List, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
 
 from flask import Flask, Response, abort, jsonify, render_template, request
@@ -2615,6 +2615,232 @@ def _betting_selected_counts_with_defaults(counts: Any) -> Dict[str, int]:
     if out["combined"] <= 0:
         out["combined"] = int(out["totals"] + out["ml"] + out["pitcher_props"] + out["hitter_props"])
     return out
+
+
+def _blank_settled_summary() -> Dict[str, Any]:
+    return {
+        "n": 0,
+        "wins": 0,
+        "losses": 0,
+        "stake_u": 0.0,
+        "profit_u": 0.0,
+        "roi": None,
+    }
+
+
+def _merge_settled_summary_blocks(blocks: Sequence[Any]) -> Dict[str, Any]:
+    total_n = 0
+    total_wins = 0
+    total_losses = 0
+    total_stake = 0.0
+    total_profit = 0.0
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        total_n += int(block.get("n") or 0)
+        total_wins += int(block.get("wins") or 0)
+        total_losses += int(block.get("losses") or 0)
+        total_stake += float(block.get("stake_u") or 0.0)
+        total_profit += float(block.get("profit_u") or 0.0)
+    return {
+        "n": int(total_n),
+        "wins": int(total_wins),
+        "losses": int(total_losses),
+        "stake_u": round(float(total_stake), 4),
+        "profit_u": round(float(total_profit), 4),
+        "roi": (round(float(total_profit) / float(total_stake), 4) if float(total_stake) > 0.0 else None),
+    }
+
+
+def _merge_settled_results_blocks(blocks: Sequence[Any]) -> Dict[str, Any]:
+    by_market: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        for market_name, summary in block.items():
+            if isinstance(summary, dict):
+                by_market[str(market_name)].append(summary)
+
+    out: Dict[str, Any] = {}
+    for market_name, summaries in sorted(by_market.items()):
+        out[str(market_name)] = _merge_settled_summary_blocks(summaries)
+    if "combined" not in out:
+        out["combined"] = _blank_settled_summary()
+    return out
+
+
+def _season_betting_month_label(month_key: str) -> str:
+    try:
+        return datetime.strptime(str(month_key), "%Y-%m").strftime("%b %Y")
+    except Exception:
+        return str(month_key)
+
+
+def _median_float(values: Sequence[float]) -> Optional[float]:
+    if not values:
+        return None
+    ordered = sorted(float(value) for value in values)
+    size = len(ordered)
+    midpoint = size // 2
+    if (size % 2) == 1:
+        return float(ordered[midpoint])
+    return float((ordered[midpoint - 1] + ordered[midpoint]) / 2.0)
+
+
+def _season_betting_daily_stats(day_rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    profits = [float(((row.get("results") or {}).get("combined") or {}).get("profit_u") or 0.0) for row in day_rows]
+    cards_with_bets = [row for row in day_rows if int((((row.get("results") or {}).get("combined") or {}).get("n") or 0)) > 0]
+    best_day = max(
+        day_rows,
+        key=lambda row: float((((row.get("results") or {}).get("combined") or {}).get("profit_u") or 0.0)),
+        default=None,
+    )
+    worst_day = min(
+        day_rows,
+        key=lambda row: float((((row.get("results") or {}).get("combined") or {}).get("profit_u") or 0.0)),
+        default=None,
+    )
+    mean_u = (round(float(sum(profits) / len(profits)), 4) if profits else None)
+    median_u = _median_float(profits)
+    if profits:
+        mean_raw = float(sum(profits) / len(profits))
+        variance = sum((float(value) - mean_raw) ** 2 for value in profits) / len(profits)
+        std_u = round(float(math.sqrt(variance)), 4)
+    else:
+        std_u = None
+    return {
+        "cards": int(len(day_rows)),
+        "cards_with_bets": int(len(cards_with_bets)),
+        "cards_without_bets": int(len(day_rows) - len(cards_with_bets)),
+        "positive_days": int(sum(1 for value in profits if value > 0.0)),
+        "negative_days": int(sum(1 for value in profits if value < 0.0)),
+        "flat_days": int(sum(1 for value in profits if abs(value) <= 1e-12)),
+        "mean_u": mean_u,
+        "median_u": (round(float(median_u), 4) if median_u is not None else None),
+        "std_u": std_u,
+        "best_day": (
+            {
+                "date": str(best_day.get("date") or ""),
+                "profit_u": round(float((((best_day.get("results") or {}).get("combined") or {}).get("profit_u") or 0.0)), 4),
+            }
+            if isinstance(best_day, dict)
+            else {"date": None, "profit_u": None}
+        ),
+        "worst_day": (
+            {
+                "date": str(worst_day.get("date") or ""),
+                "profit_u": round(float((((worst_day.get("results") or {}).get("combined") or {}).get("profit_u") or 0.0)), 4),
+            }
+            if isinstance(worst_day, dict)
+            else {"date": None, "profit_u": None}
+        ),
+    }
+
+
+def _season_betting_aggregate_selected_counts(day_rows: Sequence[Dict[str, Any]]) -> Dict[str, int]:
+    totals: Dict[str, int] = {key: 0 for key in _BETTING_COUNT_KEYS}
+    for row in day_rows:
+        counts = _betting_selected_counts_with_defaults(row.get("selected_counts") or {})
+        for key in totals:
+            totals[key] += int(counts.get(key) or 0)
+    return totals
+
+
+def _rebuild_season_betting_manifest_payload(
+    season: int,
+    profile_name: str,
+    manifest_path: Path,
+    manifest: Dict[str, Any],
+    available_profiles: Sequence[str],
+) -> Dict[str, Any]:
+    days_out: List[Dict[str, Any]] = []
+    corrected_days: List[Dict[str, Any]] = []
+    for raw_row in manifest.get("days") or []:
+        if not isinstance(raw_row, dict):
+            continue
+        day_row = dict(raw_row)
+        date_str = str(day_row.get("date") or "").strip()
+        if not date_str:
+            days_out.append(day_row)
+            continue
+        day_payload = _season_betting_day_payload(int(season), date_str, profile_name)
+        if not day_payload.get("found"):
+            day_row["selected_counts"] = _betting_selected_counts_with_defaults(day_row.get("selected_counts") or {})
+            day_row["results"] = _merge_settled_results_blocks([day_row.get("results") or {}])
+            combined = (day_row.get("results") or {}).get("combined") or {}
+            day_row["profit_u"] = round(float(combined.get("profit_u") or day_row.get("profit_u") or 0.0), 4)
+            day_row["roi"] = combined.get("roi")
+            day_row["settled_n"] = int(combined.get("n") or day_row.get("settled_n") or 0)
+            day_row["unresolved_n"] = int(day_row.get("unresolved_n") or 0)
+            day_row.setdefault("month", date_str[:7])
+            days_out.append(day_row)
+            continue
+
+        corrected_results = _merge_settled_results_blocks([day_payload.get("results") or {}])
+        corrected_combined = corrected_results.get("combined") or _blank_settled_summary()
+        day_row["selected_counts"] = _betting_selected_counts_with_defaults(day_payload.get("selected_counts") or {})
+        day_row["results"] = corrected_results
+        day_row["profit_u"] = round(float(corrected_combined.get("profit_u") or 0.0), 4)
+        day_row["roi"] = corrected_combined.get("roi")
+        day_row["settled_n"] = int(corrected_combined.get("n") or 0)
+        summary_block = day_payload.get("summary") if isinstance(day_payload.get("summary"), dict) else {}
+        day_row["unresolved_n"] = int(summary_block.get("unresolved_n") or day_row.get("unresolved_n") or 0)
+        day_row["card_path"] = day_payload.get("card_source") or day_row.get("card_path")
+        day_row["source_kind"] = day_payload.get("source_kind") or day_row.get("source_kind")
+        day_row.setdefault("month", date_str[:7])
+        corrected_days.append(day_row)
+        days_out.append(day_row)
+
+    corrected_results = _merge_settled_results_blocks([row.get("results") or {} for row in corrected_days])
+    summary_selected_counts = _season_betting_aggregate_selected_counts(corrected_days)
+    summary_daily = _season_betting_daily_stats(corrected_days)
+
+    month_buckets: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for day_row in corrected_days:
+        month_buckets[str(day_row.get("month") or "")].append(day_row)
+
+    months_out: List[Dict[str, Any]] = []
+    for month_key in sorted(month_buckets):
+        month_days = list(month_buckets[month_key])
+        month_results = _merge_settled_results_blocks([row.get("results") or {} for row in month_days])
+        months_out.append(
+            {
+                "month": str(month_key),
+                "label": _season_betting_month_label(str(month_key)),
+                "selected_counts": _season_betting_aggregate_selected_counts(month_days),
+                "results": month_results,
+                "daily": _season_betting_daily_stats(month_days),
+            }
+        )
+
+    payload = dict(manifest)
+    meta = dict(payload.get("meta") or {})
+    sources = dict(meta.get("sources") or {})
+    sources["manifest"] = _relative_path_str(manifest_path)
+    meta["sources"] = sources
+    payload["meta"] = meta
+    payload["summary"] = {
+        **dict(payload.get("summary") or {}),
+        "cards": int(len(corrected_days)),
+        "cards_processed": int(len(corrected_days)),
+        "selected_counts": summary_selected_counts,
+        "settled_recommendations": int((corrected_results.get("combined") or {}).get("n") or 0),
+        "unresolved_recommendations": int(sum(int(row.get("unresolved_n") or 0) for row in corrected_days)),
+        "results": corrected_results,
+        "daily": summary_daily,
+        "combined": corrected_results.get("combined") or _blank_settled_summary(),
+        "market_results": {
+            key: value
+            for key, value in corrected_results.items()
+            if key not in {"combined", "hitter_props"}
+        },
+    }
+    payload["months"] = months_out
+    payload["days"] = days_out
+    payload["profile"] = profile_name
+    payload["available_profiles"] = list(available_profiles)
+    payload["found"] = True
+    return payload
 
 
 def _settlement_player_key(value: Any) -> str:
@@ -5512,6 +5738,34 @@ def _live_lens_reports_payload(d: str) -> Dict[str, Any]:
     }
 
 
+def _season_live_lens_payload(season: int, d: str) -> Dict[str, Any]:
+    date_str = str(d or "").strip() or _default_cards_date()
+    payload: Dict[str, Any] = {
+        "season": int(season),
+        "date": date_str,
+        "found": False,
+    }
+    date_season = _season_from_date_str(date_str)
+    if date_season is not None and int(date_season) != int(season):
+        payload["error"] = "season_live_lens_date_mismatch"
+        payload["detail"] = f"Date {date_str} belongs to season {date_season}, not {int(season)}"
+        return payload
+
+    live_payload = _live_lens_payload(date_str, persist=False)
+    counts = dict(live_payload.get("counts") or {})
+    live_payload.update(
+        {
+            "season": int(season),
+            "date": date_str,
+            "found": bool(int(counts.get("games") or 0) > 0),
+            "isHistorical": bool(_is_historical_date(date_str)),
+            "hasLiveGames": bool(int(counts.get("live") or 0) > 0),
+            "hasTrackedProps": bool(int(counts.get("props") or 0) > 0),
+        }
+    )
+    return live_payload
+
+
 def _publish_season_manifests(
     *,
     season: int,
@@ -5706,7 +5960,33 @@ def _rebuild_season_day_report(
 @app.get("/live-lens")
 def live_lens_view() -> str:
     d = str(request.args.get("date") or "").strip() or _default_cards_date()
-    return render_template("live_lens.html", date=d)
+    return render_template(
+        "live_lens.html",
+        date=d,
+        season=None,
+        api_path="/api/live-lens",
+        form_action="/live-lens",
+        back_href=f"/?date={d}",
+        back_label="Back to cards",
+        page_title=f"MLB Live Lens - {d}",
+        page_heading=f"MLB Live Lens - {d}",
+    )
+
+
+@app.get("/season/<int:season>/live-lens")
+def season_live_lens_view(season: int) -> str:
+    d = str(request.args.get("date") or "").strip() or _default_cards_date()
+    return render_template(
+        "live_lens.html",
+        date=d,
+        season=int(season),
+        api_path=f"/api/season/{int(season)}/live-lens",
+        form_action=f"/season/{int(season)}/live-lens",
+        back_href=f"/season/{int(season)}?date={d}",
+        back_label=f"Back to season {int(season)}",
+        page_title=f"MLB {int(season)} Live Lens - {d}",
+        page_heading=f"MLB {int(season)} Live Lens - {d}",
+    )
 
 
 @app.get("/api/live-lens")
@@ -5714,6 +5994,16 @@ def api_live_lens() -> Response:
     d = str(request.args.get("date") or "").strip() or _default_cards_date()
     persist = str(request.args.get("persist") or "off").strip().lower() == "on"
     return jsonify(_live_lens_payload(d, persist=persist))
+
+
+@app.get("/api/season/<int:season>/live-lens")
+def api_season_live_lens(season: int) -> Response:
+    d = str(request.args.get("date") or "").strip() or _default_cards_date()
+    payload = _season_live_lens_payload(int(season), d)
+    if payload.get("found"):
+        return jsonify(payload)
+    status_code = 400 if payload.get("error") == "season_live_lens_date_mismatch" else 404
+    return jsonify(payload), status_code
 
 
 @app.get("/api/cron/ping")
@@ -6128,15 +6418,13 @@ def api_season_betting_cards(season: int) -> Response:
             }
         ), 404
 
-    payload = dict(manifest)
-    meta = dict(payload.get("meta") or {})
-    sources = dict(meta.get("sources") or {})
-    sources["manifest"] = _relative_path_str(manifest_path)
-    meta["sources"] = sources
-    payload["meta"] = meta
-    payload["profile"] = profile_name
-    payload["available_profiles"] = available_profiles
-    payload["found"] = True
+    payload = _rebuild_season_betting_manifest_payload(
+        int(season),
+        profile_name,
+        manifest_path,
+        manifest,
+        available_profiles,
+    )
     return jsonify(payload)
 
 

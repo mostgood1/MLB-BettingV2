@@ -2,11 +2,18 @@
   const bootstrap = window.MLBLiveLensBootstrap || {};
   const state = {
     date: String(bootstrap.date || ""),
+    season: Number(bootstrap.season || 0),
+    apiPath: String(bootstrap.apiPath || "/api/live-lens"),
+    manifest: null,
+    monthFilter: "all",
   };
 
   const metaNode = document.getElementById("liveLensMeta");
   const overviewNode = document.getElementById("liveLensOverview");
   const gamesNode = document.getElementById("liveLensGames");
+  const monthsNode = document.getElementById("liveLensMonths");
+  const daysNode = document.getElementById("liveLensDays");
+  const dateInputNode = document.querySelector('input[name="date"]');
 
   function escapeHtml(value) {
     return String(value == null ? "" : value)
@@ -68,6 +75,122 @@
 
   function renderMetric(label, value) {
     return `<div style="display:flex;justify-content:space-between;gap:12px;"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`;
+  }
+
+  function updateUrl(dateStr) {
+    const url = new URL(window.location.href);
+    if (dateStr) url.searchParams.set("date", dateStr);
+    else url.searchParams.delete("date");
+    window.history.replaceState({}, "", url.toString());
+  }
+
+  function monthLabel(monthKey) {
+    const dt = new Date(`${monthKey}-01T12:00:00`);
+    if (Number.isNaN(dt.getTime())) return monthKey;
+    return dt.toLocaleDateString(undefined, { month: "short", year: "numeric" });
+  }
+
+  function formatDateLong(dateStr) {
+    const dt = new Date(`${dateStr}T12:00:00`);
+    if (Number.isNaN(dt.getTime())) return dateStr;
+    return dt.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+  }
+
+  function filteredDays() {
+    const allDays = Array.isArray(state.manifest?.days) ? state.manifest.days : [];
+    if (state.monthFilter === "all") return allDays;
+    return allDays.filter((row) => String(row?.month || "") === state.monthFilter);
+  }
+
+  function renderMonths() {
+    if (!monthsNode || !state.season) return;
+    const allDays = Array.isArray(state.manifest?.days) ? state.manifest.days : [];
+    const months = Array.isArray(state.manifest?.months) ? state.manifest.months : [];
+    const options = [{ key: "all", label: `All ${allDays.length}` }].concat(
+      months.map((row) => ({
+        key: String(row?.month || ""),
+        label: `${monthLabel(String(row?.month || ""))} ${row?.days ?? 0}`,
+      }))
+    );
+    monthsNode.innerHTML = options.map((option) => `
+      <button
+        type="button"
+        class="cards-filter-pill ${option.key === state.monthFilter ? "is-active" : ""}"
+        data-live-lens-month="${escapeHtml(option.key)}"
+      >
+        ${escapeHtml(option.label)}
+      </button>`).join("");
+  }
+
+  function renderDaysRail() {
+    if (!daysNode || !state.season) return;
+    const days = filteredDays();
+    if (!days.length) {
+      daysNode.innerHTML = '<div class="season-empty-copy">No season dates match the current month filter.</div>';
+      return;
+    }
+    daysNode.innerHTML = days.map((day) => {
+      const dateStr = String(day?.date || "");
+      const isActive = dateStr === state.date;
+      return `
+        <article class="season-day-entry">
+          <button
+            type="button"
+            class="season-day-button ${isActive ? "is-active" : ""}"
+            data-live-lens-date="${escapeHtml(dateStr)}"
+          >
+            <div class="season-day-row">
+              <div class="season-day-primary">${escapeHtml(dateStr)}</div>
+              <span class="cards-chip">${escapeHtml(String(day?.games || 0))} games</span>
+            </div>
+            <div class="season-day-secondary">${escapeHtml(formatDateLong(dateStr))}</div>
+          </button>
+        </article>`;
+    }).join("");
+  }
+
+  async function loadSeasonManifest() {
+    if (!state.season) return;
+    const response = await fetch(`/api/season/${encodeURIComponent(state.season)}`, { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    state.manifest = await response.json();
+    const days = Array.isArray(state.manifest?.days) ? state.manifest.days : [];
+    if (!days.length) {
+      renderMonths();
+      renderDaysRail();
+      return;
+    }
+    const hasSelected = days.some((row) => String(row?.date || "") === state.date);
+    if (!state.date || !hasSelected) {
+      state.date = String(days[days.length - 1]?.date || "");
+      updateUrl(state.date);
+      if (dateInputNode) dateInputNode.value = state.date;
+    }
+    renderMonths();
+    renderDaysRail();
+  }
+
+  async function activateDate(dateStr) {
+    const nextDate = String(dateStr || "");
+    if (!nextDate || nextDate === state.date) return;
+    state.date = nextDate;
+    updateUrl(state.date);
+    if (dateInputNode) dateInputNode.value = state.date;
+    renderDaysRail();
+    await load();
+  }
+
+  function setMonthFilter(monthKey) {
+    state.monthFilter = monthKey || "all";
+    renderMonths();
+    renderDaysRail();
+    const visible = filteredDays();
+    if (!visible.length) return;
+    if (!visible.some((row) => String(row?.date || "") === state.date)) {
+      activateDate(String(visible[visible.length - 1]?.date || ""));
+    }
   }
 
   function renderLensCard(lens) {
@@ -177,7 +300,7 @@
 
   async function load() {
     try {
-      const response = await fetch(`/api/live-lens?date=${encodeURIComponent(state.date)}`);
+      const response = await fetch(`${state.apiPath}?date=${encodeURIComponent(state.date)}`);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const payload = await response.json();
       const counts = payload?.counts || {};
@@ -200,5 +323,28 @@
     }
   }
 
-  load();
+  if (monthsNode) {
+    monthsNode.addEventListener("click", function (event) {
+      const button = event.target.closest("[data-live-lens-month]");
+      if (!button || !monthsNode.contains(button)) return;
+      event.preventDefault();
+      setMonthFilter(button.getAttribute("data-live-lens-month") || "all");
+    });
+  }
+
+  if (daysNode) {
+    daysNode.addEventListener("click", function (event) {
+      const button = event.target.closest("[data-live-lens-date]");
+      if (!button || !daysNode.contains(button)) return;
+      event.preventDefault();
+      activateDate(button.getAttribute("data-live-lens-date") || "");
+    });
+  }
+
+  (async function init() {
+    if (state.season) {
+      await loadSeasonManifest();
+    }
+    await load();
+  })();
 })();

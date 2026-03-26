@@ -11,6 +11,7 @@
     },
     bettingProfile: "retuned",
     day: null,
+    liveLens: null,
     dayPicksMode: "props",
   };
 
@@ -101,6 +102,7 @@
     dayActions: document.getElementById("seasonDayActions"),
     dayMetrics: document.getElementById("seasonDayMetrics"),
     dayPicks: document.getElementById("seasonDayPicks"),
+    liveLens: document.getElementById("seasonLiveLens"),
     games: document.getElementById("seasonGames"),
   };
 
@@ -1326,6 +1328,211 @@
     `;
   }
 
+  function seasonLiveLensPageUrl(dateStr) {
+    const targetDate = String(dateStr || state.selectedDate || "");
+    return `/season/${encodeURIComponent(state.season)}/live-lens?date=${encodeURIComponent(targetDate)}`;
+  }
+
+  function seasonLiveLensApiUrl(dateStr) {
+    const targetDate = String(dateStr || state.selectedDate || "");
+    return `/api/season/${encodeURIComponent(state.season)}/live-lens?date=${encodeURIComponent(targetDate)}`;
+  }
+
+  function liveLensPropLabel(prop) {
+    return String(prop?.marketLabel || prop?.prop || prop?.market || "Prop").replace(/_/g, " ");
+  }
+
+  function liveLensStatusTone(status) {
+    const token = String(status || "").toLowerCase();
+    if (token === "win") return "is-win";
+    if (token === "loss") return "is-loss";
+    return "is-pending";
+  }
+
+  function liveLensTierTone(tier) {
+    return String(tier || "").toLowerCase() === "playable" ? "is-playable" : "";
+  }
+
+  function liveLensPickSummary(label, market, kind) {
+    if (!market || !market.pick) return `${label} -`;
+    const pickText = String(market.pick || "").toUpperCase();
+    if (kind === "moneyline") {
+      return `${label} ${pickText} ${formatSignedPercentPoints(market.edge, 1)}`;
+    }
+    if (kind === "spread") {
+      return `${label} ${pickText} ${formatSigned(market.edge, 2)}`;
+    }
+    return `${label} ${pickText} ${formatSigned(market.edge, 2)}`;
+  }
+
+  function liveLensLaneMarkup(game) {
+    const rows = Array.isArray(game?.gameLens) ? game.gameLens : [];
+    if (!rows.length) return '<div class="season-empty-copy">No live game-lens rows available for this matchup.</div>';
+    return `
+      <div class="season-live-lens-lanes">
+        ${rows.map((row) => {
+          const moneyline = row?.markets?.moneyline || {};
+          const spread = row?.markets?.spread || {};
+          const total = row?.markets?.total || {};
+          const pillClass = row?.closed ? 'season-day-pill is-empty' : (String(row?.key || '') === 'live' ? 'season-day-pill is-official' : 'season-day-pill');
+          const summary = [
+            liveLensPickSummary('ML', moneyline, 'moneyline'),
+            liveLensPickSummary('Spread', spread, 'spread'),
+            liveLensPickSummary('Total', total, 'total'),
+          ].join(' | ');
+          return `<span class="${pillClass}">${escapeHtml(`${String(row?.label || 'Lane')}: ${summary}`)}</span>`;
+        }).join('')}
+      </div>`;
+  }
+
+  function liveLensPropsTable(game) {
+    const props = Array.isArray(game?.props) ? game.props : [];
+    if (!props.length) {
+      return '<div class="season-empty-copy">No tracked live-lens props for this matchup.</div>';
+    }
+    return `
+      <div class="season-calibration-table-wrap">
+        <table class="season-calibration-table season-live-lens-table">
+          <thead>
+            <tr>
+              <th>Player</th>
+              <th>Prop</th>
+              <th>Tier</th>
+              <th>Pick</th>
+              <th>Live proj</th>
+              <th>Live edge</th>
+              <th>Pregame edge</th>
+              <th>Odds</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${props.map((prop) => `
+              <tr>
+                <td>
+                  <div class="season-betting-cell-main">${escapeHtml(prop.playerName || '-')}</div>
+                  <div class="season-betting-cell-sub">${escapeHtml(String(prop.teamSide || '').toUpperCase() || 'Team')}</div>
+                </td>
+                <td>${escapeHtml(liveLensPropLabel(prop))}</td>
+                <td><span class="season-ticket-pill ${liveLensTierTone(prop.tier)}">${escapeHtml(String(prop.tier || 'official'))}</span></td>
+                <td>${escapeHtml(`${String(prop.selection || '').toUpperCase()} ${formatLine(prop.line)}`)}</td>
+                <td>${escapeHtml(formatLine(prop.liveProjection))}</td>
+                <td>${escapeHtml(formatSigned(prop.liveEdge, 2))}</td>
+                <td>${escapeHtml(formatSignedPercentPoints(prop.edge, 1))}</td>
+                <td>${escapeHtml(formatOdds(prop.odds))}</td>
+                <td><span class="season-ticket-pill ${liveLensStatusTone(prop.status)}">${escapeHtml(String(prop.status || 'pending'))}</span></td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>`;
+  }
+
+  function renderLiveLensPanel() {
+    if (!root.liveLens) return;
+    const selectedDate = String(state.selectedDate || "");
+    const pageUrl = seasonLiveLensPageUrl(selectedDate);
+    if (!selectedDate) {
+      root.liveLens.innerHTML = '<div class="season-empty-copy">Pick a date to inspect season live-lens recommendations.</div>';
+      return;
+    }
+
+    const payload = state.liveLens;
+    if (!payload || !payload.found) {
+      root.liveLens.innerHTML = `
+        <div class="season-panel-head">
+          <div>
+            <div class="season-kicker">Live board</div>
+            <div class="season-panel-title">Live lens recos</div>
+          </div>
+          <a class="cards-nav-pill" href="${escapeHtml(pageUrl)}">Open full live lens</a>
+        </div>
+        <div class="season-empty-copy">No live-lens slate was available for ${escapeHtml(selectedDate)}.</div>`;
+      return;
+    }
+
+    const counts = payload.counts || {};
+    const games = Array.isArray(payload.games) ? payload.games : [];
+    const allProps = games.flatMap((game) => (Array.isArray(game?.props) ? game.props : []));
+    const officialProps = allProps.filter((prop) => String(prop?.tier || '').toLowerCase() !== 'playable').length;
+    const playableProps = allProps.filter((prop) => String(prop?.tier || '').toLowerCase() === 'playable').length;
+
+    root.liveLens.innerHTML = `
+      <div class="season-panel-head">
+        <div>
+          <div class="season-kicker">Live board</div>
+          <div class="season-panel-title">Live lens recos</div>
+        </div>
+        <a class="cards-nav-pill" href="${escapeHtml(pageUrl)}">Open full live lens</a>
+      </div>
+      <div class="season-inline-note">Intraday live-lens recommendations and live projections for ${escapeHtml(selectedDate)}. This is separate from the season locked-policy recon.</div>
+      <section class="season-summary-grid season-live-lens-summary">
+        ${metricCard('Games', formatNumber(counts.games, 0), `Live ${formatNumber(counts.live, 0)} | Final ${formatNumber(counts.final, 0)} | Pregame ${formatNumber(counts.pregame, 0)}`)}
+        ${metricCard('Tracked props', formatNumber(counts.props, 0), `${formatNumber(officialProps, 0)} official | ${formatNumber(playableProps, 0)} playable`)}
+        ${metricCard('Live games', formatNumber(counts.live, 0), payload.hasLiveGames ? 'At least one game is currently live' : 'No active live games in this slate')}
+        ${metricCard('Historical mode', payload.isHistorical ? 'Archive' : 'Live feed', payload.isHistorical ? 'Using archived feed snapshots where available' : 'Using current feed and snapshots')}
+      </section>
+      <div class="season-live-lens-games">
+        ${games.map((game) => {
+          const away = game?.matchup?.away || {};
+          const home = game?.matchup?.home || {};
+          const score = game?.matchup?.score || {};
+          const liveText = String(game?.matchup?.liveText || '').trim();
+          const status = game?.status || {};
+          return `
+            <section class="season-breakdown-card season-live-lens-game-card">
+              <div class="season-panel-head">
+                <div>
+                  <div class="season-breakdown-title">${escapeHtml(String(away.abbr || away.name || 'Away'))} at ${escapeHtml(String(home.abbr || home.name || 'Home'))}</div>
+                  <div class="season-inline-note">${escapeHtml(String(status.abstract || 'Scheduled'))} | ${escapeHtml(String(status.detailed || game.startTime || ''))}</div>
+                </div>
+                <div class="season-day-badges">
+                  <span class="season-day-pill is-official">${escapeHtml(`${String(score.away ?? '-')} - ${String(score.home ?? '-')}`)}</span>
+                  ${liveText ? `<span class="season-day-pill">${escapeHtml(liveText)}</span>` : ''}
+                  <span class="season-day-pill is-playable">${escapeHtml(`${formatNumber((Array.isArray(game?.props) ? game.props.length : 0), 0)} props`)}</span>
+                </div>
+              </div>
+              ${liveLensLaneMarkup(game)}
+              ${liveLensPropsTable(game)}
+            </section>`;
+        }).join('')}
+      </div>`;
+  }
+
+  async function loadLiveLens(dateStr) {
+    if (!root.liveLens) return;
+    const targetDate = String(dateStr || state.selectedDate || '');
+    if (!targetDate) {
+      state.liveLens = null;
+      renderLiveLensPanel();
+      return;
+    }
+    root.liveLens.innerHTML = '<div class="cards-loading-state">Loading live lens...</div>';
+    try {
+      const response = await fetch(seasonLiveLensApiUrl(targetDate), { cache: 'no-store' });
+      if (response.status === 404) {
+        state.liveLens = { found: false, date: targetDate };
+        renderLiveLensPanel();
+        return;
+      }
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      state.liveLens = await response.json();
+      renderLiveLensPanel();
+    } catch (error) {
+      const message = error && error.message ? error.message : 'Unknown error';
+      root.liveLens.innerHTML = `
+        <div class="season-panel-head">
+          <div>
+            <div class="season-kicker">Live board</div>
+            <div class="season-panel-title">Live lens recos</div>
+          </div>
+          <a class="cards-nav-pill" href="${escapeHtml(seasonLiveLensPageUrl(targetDate))}">Open full live lens</a>
+        </div>
+        <div class="cards-empty-state season-error">Failed to load live-lens recos.<div class="season-inline-note">${escapeHtml(message)}</div></div>`;
+    }
+  }
+
   function bettingSelectionLabel(reco, awayAbbr, homeAbbr) {
     const market = String(reco?.market || "").toLowerCase();
     const selection = String(reco?.selection || "").toLowerCase();
@@ -1542,6 +1749,9 @@
     const bettingCounts = bettingSelectedCounts(betting.selected_counts || {});
     const bettingProfile = betting.found ? bettingProfileLabel(betting.profile) : null;
     const hasLegacyCardsPage = Boolean(state.day.cards_available);
+    const liveLensLink = state.selectedDate
+      ? `<a class="cards-nav-pill" href="${escapeHtml(seasonLiveLensPageUrl(state.selectedDate))}">Open live lens</a>`
+      : "";
     const pickGroups = dayPickGroups();
     const activePicksMode = normalizedDayPicksMode(pickGroups);
     state.dayPicksMode = activePicksMode;
@@ -1554,11 +1764,11 @@
       bettingProfile ? `${bettingProfile} official ${formatUnits(bettingCombined.profit_u, 2)}` : "No betting card detail",
     ].join(" | ");
     if (hasLegacyCardsPage) {
-      root.dayActions.innerHTML = `<a class="cards-nav-pill" href="${escapeHtml(state.day.cards_url)}">Open daily cards</a>`;
+      root.dayActions.innerHTML = `${liveLensLink}<a class="cards-nav-pill" href="${escapeHtml(state.day.cards_url)}">Open daily cards</a>`;
     } else if (betting.found) {
-      root.dayActions.innerHTML = '<span class="season-inline-note">Season betting card is merged into the matchup cards below. No legacy daily cards page was published for this date.</span>';
+      root.dayActions.innerHTML = `${liveLensLink}<span class="season-inline-note">Season betting card is merged into the matchup cards below. No legacy daily cards page was published for this date.</span>`;
     } else {
-      root.dayActions.innerHTML = '<span class="season-inline-note is-muted">No daily card artifacts for this date.</span>';
+      root.dayActions.innerHTML = `${liveLensLink}<span class="season-inline-note is-muted">No daily card artifacts for this date.</span>`;
     }
     const metrics = [
       metricCard("Games", String((aggregate.full || {}).games ?? state.day.games?.length ?? "-"), `Skipped ${meta.skipped_games ?? 0}`),
@@ -1676,15 +1886,20 @@
     if (root.dayTitle) root.dayTitle.textContent = formatDateLong(state.selectedDate);
     if (root.dayMeta) root.dayMeta.textContent = "Loading day report...";
     if (root.dayPicks) root.dayPicks.innerHTML = '<div class="cards-loading-state">Loading day picks...</div>';
+    if (root.liveLens) root.liveLens.innerHTML = '<div class="cards-loading-state">Loading live lens...</div>';
     if (root.games) root.games.innerHTML = '<div class="cards-loading-state">Loading games...</div>';
     try {
       state.day = await fetchJson(`/api/season/${encodeURIComponent(state.season)}/day/${encodeURIComponent(state.selectedDate)}?profile=${encodeURIComponent(state.bettingProfile)}`);
       renderDay();
+      await loadLiveLens(state.selectedDate);
     } catch (error) {
       const message = error && error.message ? error.message : "Unknown error";
       if (root.dayMeta) root.dayMeta.textContent = `Failed to load ${state.selectedDate}.`;
       if (root.dayPicks) {
         root.dayPicks.innerHTML = `<div class="cards-empty-state season-error">Failed to load day picks.<div class="season-inline-note">${escapeHtml(message)}</div></div>`;
+      }
+      if (root.liveLens) {
+        root.liveLens.innerHTML = `<div class="cards-empty-state season-error">Failed to load live lens.<div class="season-inline-note">${escapeHtml(message)}</div></div>`;
       }
       if (root.games) {
         root.games.innerHTML = `<div class="cards-empty-state season-error">Failed to load day report.<div class="season-inline-note">${escapeHtml(message)}</div></div>`;
@@ -1718,6 +1933,7 @@
         await bettingCardsPromise;
         if (root.days) root.days.innerHTML = '<div class="season-empty-copy">No day reports were published for this season manifest.</div>';
         if (root.dayPicks) root.dayPicks.innerHTML = '<div class="season-empty-copy">No day picks recap is available.</div>';
+        if (root.liveLens) root.liveLens.innerHTML = '<div class="season-empty-copy">No live-lens slate is available because the season manifest has no published days.</div>';
         if (root.games) root.games.innerHTML = '<div class="season-empty-copy">No game reports available.</div>';
         return;
       }
@@ -1738,6 +1954,9 @@
       }
       if (root.games) {
         root.games.innerHTML = '<div class="season-empty-copy">Publish a season manifest before opening this page.</div>';
+      }
+      if (root.liveLens) {
+        root.liveLens.innerHTML = '<div class="season-empty-copy">Publish a season manifest before opening the season live-lens board.</div>';
       }
     }
   }
