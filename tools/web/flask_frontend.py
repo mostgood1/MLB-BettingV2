@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from bisect import bisect_left
+from contextlib import redirect_stderr, redirect_stdout
 import gzip
+import io
 import json
 import math
 import os
@@ -5602,51 +5604,90 @@ def _rebuild_season_day_report(
     workers: int,
     spring_mode: bool,
 ) -> Dict[str, Any]:
-    from argparse import Namespace
-    from tools.daily_update import _build_prior_eval_command
+    from tools.eval import eval_sim_day_vs_actual as eval_sim_day_vs_actual_mod
 
     batch_dir = _DATA_DIR / "eval" / "batches" / f"season_{int(season)}_ui_daily_live"
     out_path = batch_dir / f"sim_vs_actual_{str(date_str)}.json"
     _ensure_dir(batch_dir)
 
-    args = Namespace(
-        spring_mode=bool(spring_mode),
-        stats_season=(int(season) - 1 if bool(spring_mode) else int(season)),
-        use_roster_artifacts="on",
-        write_roster_artifacts="on",
-        sims=int(sims),
-        prior_eval_sims=int(sims),
-        bvp_hr="off",
-        bvp_days_back=365,
-        bvp_min_pa=10,
-        bvp_shrink_pa=50.0,
-        bvp_clamp_lo=0.80,
-        bvp_clamp_hi=1.25,
-        hitter_hr_topn=0,
-        hitter_props_topn=24,
-        seed=1337,
-        workers=max(1, int(workers)),
-        prior_eval_prop_lines_source="auto",
-        cache_ttl_hours=24,
-        umpire_shrink=0.75,
-        pitch_model_overrides="",
-        manager_pitching="v2",
-        manager_pitching_overrides="",
-        pitcher_rate_sampling="on",
-        bip_baserunning="on",
-    )
     lineups_last_known_path = _DAILY_DIR / "lineups_last_known_by_team.json"
-    cmd = _build_prior_eval_command(
-        args=args,
-        prior_date=str(date_str),
-        prior_season=int(season),
-        out_path=out_path,
-        daily_snapshots_root=(_DAILY_DIR / "snapshots"),
-        lineups_last_known_path=(lineups_last_known_path if lineups_last_known_path.exists() else None),
-    )
-    result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+    argv = [
+        "eval_sim_day_vs_actual.py",
+        "--date",
+        str(date_str),
+        "--season",
+        str(int(season)),
+        "--spring-mode",
+        ("on" if bool(spring_mode) else "off"),
+        "--stats-season",
+        str(int(season) - 1 if bool(spring_mode) else int(season)),
+        "--use-daily-snapshots",
+        "on",
+        "--daily-snapshots-root",
+        str(_DAILY_DIR / "snapshots"),
+        "--use-roster-artifacts",
+        "on",
+        "--write-roster-artifacts",
+        "on",
+        "--sims-per-game",
+        str(int(sims)),
+        "--bvp-hr",
+        "off",
+        "--bvp-days-back",
+        "365",
+        "--bvp-min-pa",
+        "10",
+        "--bvp-shrink-pa",
+        "50.0",
+        "--bvp-clamp-lo",
+        "0.8",
+        "--bvp-clamp-hi",
+        "1.25",
+        "--hitter-hr-topn",
+        "0",
+        "--hitter-props-topn",
+        "24",
+        "--seed",
+        "1337",
+        "--jobs",
+        str(max(1, int(workers))),
+        "--use-raw",
+        "on",
+        "--write-missing-raw",
+        "on",
+        "--prop-lines-source",
+        "auto",
+        "--cache-ttl-hours",
+        "24",
+        "--umpire-shrink",
+        "0.75",
+        "--pitch-model-overrides",
+        "",
+        "--manager-pitching",
+        "v2",
+        "--manager-pitching-overrides",
+        "",
+        "--pitcher-rate-sampling",
+        "on",
+        "--bip-baserunning",
+        "on",
+        "--out",
+        str(out_path),
+    ]
+    if lineups_last_known_path.exists():
+        argv.extend(["--lineups-last-known", str(lineups_last_known_path)])
+
+    original_argv = list(sys.argv)
+    stdout_buffer = io.StringIO()
+    stderr_buffer = io.StringIO()
+    try:
+        sys.argv = list(argv)
+        with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
+            exit_code = int(eval_sim_day_vs_actual_mod.main())
+    finally:
+        sys.argv = original_argv
     return {
-        "ok": result.returncode == 0 and out_path.exists(),
+        "ok": int(exit_code) == 0 and out_path.exists(),
         "season": int(season),
         "date": str(date_str),
         "batch_dir": _relative_path_str(batch_dir),
@@ -5654,10 +5695,10 @@ def _rebuild_season_day_report(
         "sims": int(sims),
         "workers": max(1, int(workers)),
         "spring_mode": bool(spring_mode),
-        "command": [str(part) for part in cmd],
-        "exit_code": int(result.returncode),
-        "stdout": str((result.stdout or "").strip()),
-        "stderr": str((result.stderr or "").strip()),
+        "command": [str(part) for part in argv],
+        "exit_code": int(exit_code),
+        "stdout": str(stdout_buffer.getvalue().strip()),
+        "stderr": str(stderr_buffer.getvalue().strip()),
         "report_exists": bool(out_path.exists()),
     }
 
