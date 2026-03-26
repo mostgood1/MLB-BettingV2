@@ -306,7 +306,7 @@
         sim: null,
         activeTab: "overview",
         selectedPropKey: initialProp ? propKey(initialProp) : null,
-        propFilters: { side: "all", type: "all" },
+        propFilters: { board: "auto", side: "all", type: "all" },
       });
     }
     return state.details.get(gamePk);
@@ -634,16 +634,33 @@
       </button>`;
   }
 
-  function renderPropFilterControls(rows, detail) {
-    const filters = detail?.propFilters || { side: "all", type: "all" };
+  function renderPropFilterControls(rows, detail, options = {}) {
+    const filters = detail?.propFilters || { board: "auto", side: "all", type: "all" };
     const sideBaseRows = rows.filter((row) => filters.type === "all" || propTypeInfo(row).key === filters.type);
     const typeBaseRows = rows.filter((row) => filters.side === "all" || propSelectionKey(row) === filters.side);
     const sideCounts = propSideCounts(sideBaseRows);
     const typeCounts = propTypeCounts(typeBaseRows);
     const typeOptions = propTypeOptions(rows);
+    const boardOptions = Array.isArray(options?.boardOptions) ? options.boardOptions : [];
 
     return `
       <div class="cards-prop-filter-shell">
+        ${boardOptions.length ? `
+          <div class="cards-prop-filter-group">
+            <div class="cards-section-label">Board</div>
+            <div class="cards-prop-filter-pills">
+              ${boardOptions
+                .map((option) => propFilterPillMarkup({
+                  kind: "board",
+                  value: option.value,
+                  label: option.label,
+                  count: option.count,
+                  active: filters.board === option.value,
+                  disabled: option.count === 0 && filters.board !== option.value,
+                }))
+                .join("")}
+            </div>
+          </div>` : ""}
         <div class="cards-prop-filter-group">
           <div class="cards-section-label">Side</div>
           <div class="cards-prop-filter-pills">
@@ -876,7 +893,7 @@
     if (pitcherTop) {
       items.push(`
         <li>
-          <button type="button" class="cards-callout cards-callout-button" data-tab-target="props" data-prop-key="${escapeHtml(propKey(pitcherTop))}">
+          <button type="button" class="cards-callout cards-callout-button" data-tab-target="props" data-prop-key="${escapeHtml(propKey(pitcherTop))}" data-prop-board="pregame">
             <strong>Pitcher</strong>
             <span class="cards-callout-copy">${escapeHtml(pitcherTop.pitcher_name || "Pitcher")} ${escapeHtml(marketLabelLong(pitcherTop))} | ${escapeHtml(formatOdds(pitcherTop.odds))}</span>
           </button>
@@ -885,7 +902,7 @@
     if (hitterTop) {
       items.push(`
         <li>
-          <button type="button" class="cards-callout cards-callout-button" data-tab-target="props" data-prop-key="${escapeHtml(propKey(hitterTop))}">
+          <button type="button" class="cards-callout cards-callout-button" data-tab-target="props" data-prop-key="${escapeHtml(propKey(hitterTop))}" data-prop-board="pregame">
             <strong>Top hitter</strong>
             <span class="cards-callout-copy">${escapeHtml(hitterTop.player_name || "Player")} ${escapeHtml(marketLabelLong(hitterTop))} | ${escapeHtml(formatOdds(hitterTop.odds))}</span>
           </button>
@@ -1061,6 +1078,10 @@
       const propButton = event.target.closest("[data-prop-key]");
       if (propButton && node.contains(propButton)) {
         event.preventDefault();
+        const boardValue = propButton.getAttribute("data-prop-board");
+        if (boardValue) {
+          setPropFilter(card, "board", boardValue);
+        }
         selectProp(card, propButton.getAttribute("data-prop-key"));
         activateTab(node, "props");
       }
@@ -1435,12 +1456,13 @@
     if (!rows.length) return '<div class="cards-empty-copy">No rows.</div>';
     const buttonTierClass = tier === "candidate" ? "is-candidate" : (tier === "live" ? "is-live" : "is-official");
     const tierLabel = tier === "candidate" ? "Playable" : (tier === "live" ? "Live" : "Official");
+    const boardValue = tier === "live" ? "live" : "pregame";
     return `<div class="cards-prop-list">${rows
       .map((row) => {
         const key = propKey(row);
         const isActive = key === selectedKey;
         return `
-          <button type="button" class="cards-prop-button ${buttonTierClass} ${isActive ? "is-active" : ""}" data-prop-key="${escapeHtml(key)}">
+          <button type="button" class="cards-prop-button ${buttonTierClass} ${isActive ? "is-active" : ""}" data-prop-key="${escapeHtml(key)}" data-prop-board="${escapeHtml(boardValue)}">
             ${escapeHtml(propOwnerName(row) || "Player")} ${escapeHtml(marketLabelLong(row))}
             <small>${escapeHtml(`${tierLabel} | ${formatOdds(row?.odds)} | ${formatPropEdge(row)}`)}</small>
           </button>`;
@@ -1449,9 +1471,9 @@
   }
 
   function setPropFilter(card, kind, value) {
-    if (kind !== "side" && kind !== "type") return;
+    if (kind !== "board" && kind !== "side" && kind !== "type") return;
     const detail = ensureDetail(card);
-    detail.propFilters = detail.propFilters || { side: "all", type: "all" };
+    detail.propFilters = detail.propFilters || { board: "auto", side: "all", type: "all" };
     detail.propFilters[kind] = value || "all";
     const node = state.cardNodes.get(Number(card.gamePk));
     if (node) renderPropSections(card, node);
@@ -1459,7 +1481,7 @@
 
   function renderPropSections(card, node) {
     const detail = ensureDetail(card);
-    const filters = detail.propFilters || { side: "all", type: "all" };
+    const filters = detail.propFilters || { board: "auto", side: "all", type: "all" };
     const groupsNode = node.querySelector('[data-role="prop-groups"]');
     const lensNode = node.querySelector('[data-role="prop-lens"]');
     const filtersNode = node.querySelector('[data-role="prop-filters"]');
@@ -1467,11 +1489,29 @@
     if (!groupsNode || !lensNode || !filtersNode || !summaryChip) return;
 
     const currentLiveRows = livePropRows(detail);
+    const pitcherRows = marketRows(card, "pitcherProps");
+    const hitterRows = marketRows(card, "hitterProps");
+    const extraPitcherRows = extraMarketRows(card, "extraPitcherProps");
+    const extraHitterRows = extraMarketRows(card, "extraHitterProps");
+    const officialCount = pitcherRows.length + hitterRows.length;
+    const extraCount = extraPitcherRows.length + extraHitterRows.length;
+    const hasPregameRows = (officialCount + extraCount) > 0;
+    const liveBoardAvailable = hasLivePropPayload(detail);
+    const effectiveBoard = filters.board === "auto"
+      ? (liveBoardAvailable ? "live" : "pregame")
+      : filters.board;
+    if (filters.board === "auto") {
+      detail.propFilters.board = effectiveBoard;
+    }
+    const boardOptions = [
+      { value: "live", label: "Live", count: currentLiveRows.length },
+      { value: "pregame", label: "Pregame", count: officialCount + extraCount },
+    ].filter((option) => option.count > 0 || option.value === effectiveBoard);
+
     if (hasLivePropPayload(detail)) {
-      const pitcherRows = marketRows(card, "pitcherProps");
-      const hitterRows = marketRows(card, "hitterProps");
-      const extraPitcherRows = extraMarketRows(card, "extraPitcherProps");
-      const extraHitterRows = extraMarketRows(card, "extraHitterProps");
+      if (effectiveBoard === "pregame" && hasPregameRows) {
+        filtersNode.innerHTML = renderPropFilterControls(allPropRows(card), detail, { boardOptions });
+      } else {
       const filteredPitcherRows = filteredPropRows(pitcherRows, filters);
       const filteredHitterRows = filteredPropRows(hitterRows, filters);
       const filteredExtraPitcherRows = filteredPropRows(extraPitcherRows, filters);
@@ -1480,7 +1520,7 @@
       const filteredExtraCount = filteredExtraPitcherRows.length + filteredExtraHitterRows.length;
       const filteredLiveRows = filteredPropRows(currentLiveRows, filters);
       const filtersApplied = filters.side !== "all" || filters.type !== "all";
-      filtersNode.innerHTML = renderPropFilterControls(currentLiveRows.length ? currentLiveRows : allPropRows(card), detail);
+      filtersNode.innerHTML = renderPropFilterControls(currentLiveRows.length ? currentLiveRows : allPropRows(card), detail, { boardOptions });
       summaryChip.textContent = filtersApplied
         ? ((filteredLiveRows.length || filteredOfficialCount || filteredExtraCount)
           ? `${filteredLiveRows.length} live · ${filteredOfficialCount} official${filteredExtraCount ? ` · +${filteredExtraCount}` : ""}`
@@ -1632,14 +1672,9 @@
           </div>
         </div>`;
       return;
+      }
     }
 
-    const pitcherRows = marketRows(card, "pitcherProps");
-    const hitterRows = marketRows(card, "hitterProps");
-    const extraPitcherRows = extraMarketRows(card, "extraPitcherProps");
-    const extraHitterRows = extraMarketRows(card, "extraHitterProps");
-    const officialCount = pitcherRows.length + hitterRows.length;
-    const extraCount = extraPitcherRows.length + extraHitterRows.length;
     const filteredPitcherRows = filteredPropRows(pitcherRows, filters);
     const filteredHitterRows = filteredPropRows(hitterRows, filters);
     const filteredExtraPitcherRows = filteredPropRows(extraPitcherRows, filters);
@@ -1652,7 +1687,7 @@
       .concat(filteredExtraHitterRows);
     const filtersApplied = filters.side !== "all" || filters.type !== "all";
 
-    filtersNode.innerHTML = officialCount || extraCount ? renderPropFilterControls(allPropRows(card), detail) : "";
+    filtersNode.innerHTML = officialCount || extraCount ? renderPropFilterControls(allPropRows(card), detail, { boardOptions }) : "";
     summaryChip.textContent = filtersApplied
       ? (filteredOfficialCount || filteredExtraCount ? propCountBadge(filteredOfficialCount, filteredExtraCount) : "No matches")
       : propCountBadge(officialCount, extraCount);
