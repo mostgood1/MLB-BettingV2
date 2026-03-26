@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from flask import Flask, Response, abort, jsonify, render_template, request
 
@@ -51,6 +52,11 @@ _LIVE_LENS_DIR = Path(
 ).resolve()
 _TRACKED_DAILY_SNAPSHOT_DIR = _TRACKED_DATA_DIR / "daily" / "snapshots"
 _CRON_TOKEN = str(os.environ.get("MLB_CRON_TOKEN") or os.environ.get("CRON_TOKEN") or "").strip()
+_USER_TIMEZONE_NAME = str(os.environ.get("MLB_USER_TIMEZONE") or "America/Chicago").strip() or "America/Chicago"
+try:
+    _USER_TIMEZONE = ZoneInfo(_USER_TIMEZONE_NAME)
+except Exception:
+    _USER_TIMEZONE = ZoneInfo("America/Chicago")
 _DEMO_DATE = "2025-06-04"
 _CARDS_PRESEASON_DEFAULT_WINDOW_DAYS = 21
 _LIVE_PROP_MARKET_MAX_AGE_SECONDS = 60
@@ -255,6 +261,19 @@ def _append_jsonl(path: Path, payload: Any) -> None:
         handle.write(json.dumps(payload, sort_keys=False) + "\n")
 
 
+def _local_now() -> datetime:
+    return datetime.now(_USER_TIMEZONE)
+
+
+def _local_today() -> date:
+    return _local_now().date()
+
+
+def _local_timestamp_text(value: Optional[datetime] = None) -> str:
+    stamp = value.astimezone(_USER_TIMEZONE) if isinstance(value, datetime) else _local_now()
+    return stamp.isoformat(timespec="seconds")
+
+
 def _daily_snapshot_dir(d: str) -> Path:
     return _DAILY_DIR / "snapshots" / str(d)
 
@@ -287,7 +306,7 @@ def _archive_oddsapi_refresh_outputs(d: str, result: Dict[str, Any], *, recorded
         files[key] = _relative_path_str(destination) or str(destination)
 
     archive_meta = {
-        "recordedAt": recorded_at.isoformat() + "Z",
+        "recordedAt": _local_timestamp_text(recorded_at),
         "date": str(d),
         "dataRoot": _relative_path_str(_DATA_DIR),
         "marketDir": _relative_path_str(_MARKET_DIR),
@@ -369,8 +388,8 @@ def _enrich_live_prop_rows_with_registry(rows: List[Dict[str, Any]], d: str, *, 
     if not rows:
         return []
 
-    stamp = recorded_at or datetime.utcnow()
-    stamp_text = stamp.isoformat() + "Z"
+    stamp = recorded_at.astimezone(_USER_TIMEZONE) if isinstance(recorded_at, datetime) else _local_now()
+    stamp_text = _local_timestamp_text(stamp)
     registry = _load_live_prop_registry(d)
     entries = registry.get("entries") if isinstance(registry.get("entries"), dict) else {}
     changed = False
@@ -2224,7 +2243,7 @@ def _is_historical_date(date_str: str) -> bool:
     if not text:
         return False
     try:
-        return date.fromisoformat(text) < date.today()
+        return date.fromisoformat(text) < _local_today()
     except Exception:
         return False
 
@@ -3630,7 +3649,7 @@ class TeamMini:
 
 
 def _today_iso() -> str:
-    return date.today().isoformat()
+    return _local_today().isoformat()
 
 
 def _mlb_logo_url(team_id: int) -> str:
@@ -5067,7 +5086,7 @@ def _live_lens_payload(d: str, *, persist: bool = False) -> Dict[str, Any]:
 
     payload = {
         "date": str(d),
-        "generatedAt": datetime.utcnow().isoformat() + "Z",
+        "generatedAt": _local_timestamp_text(),
         "dataRoot": _relative_path_str(_DATA_DIR),
         "liveLensDir": _relative_path_str(_LIVE_LENS_DIR),
         "counts": counts,
@@ -5098,7 +5117,7 @@ def _live_lens_payload(d: str, *, persist: bool = False) -> Dict[str, Any]:
 
 
 def _refresh_oddsapi_markets(d: str, *, overwrite: bool = True) -> Dict[str, Any]:
-    recorded_at = datetime.utcnow()
+    recorded_at = _local_now()
     result = fetch_and_write_live_odds_for_date(
         d,
         out_dir=_MARKET_DIR,
@@ -5116,7 +5135,7 @@ def _refresh_oddsapi_markets(d: str, *, overwrite: bool = True) -> Dict[str, Any
         copied[source_path.name] = _relative_path_str(destination) or str(destination)
     archived = _archive_oddsapi_refresh_outputs(d, result, recorded_at=recorded_at)
     meta = {
-        "recordedAt": recorded_at.isoformat() + "Z",
+        "recordedAt": _local_timestamp_text(recorded_at),
         "date": str(d),
         "overwrite": bool(overwrite),
         "result": result,
@@ -5187,7 +5206,7 @@ def api_cron_ping() -> Response:
         {
             "ok": True,
             "service": "mlb-betting-v2",
-            "time": datetime.utcnow().isoformat() + "Z",
+            "time": _local_timestamp_text(),
             "dataRoot": _relative_path_str(_DATA_DIR),
             "liveLensDir": _relative_path_str(_LIVE_LENS_DIR),
         }
@@ -5233,7 +5252,7 @@ def api_cron_live_lens_tick() -> Response:
     try:
         payload = _live_lens_payload(d, persist=True)
         meta = {
-            "recordedAt": datetime.utcnow().isoformat() + "Z",
+            "recordedAt": _local_timestamp_text(),
             "date": str(d),
             "counts": payload.get("counts"),
             "reportPath": _relative_path_str(_live_lens_report_path(d)),
@@ -5641,7 +5660,7 @@ def api_game_snapshot(game_pk: int) -> Response:
         "date": d or None,
         "archived": bool(use_archive),
         "streamAvailable": bool(not use_archive and d == _today_iso()),
-        "generatedAt": datetime.utcnow().isoformat() + "Z",
+        "generatedAt": _local_timestamp_text(),
         "status": (feed.get("gameData") or {}).get("status") or {},
         "current": _current_matchup(feed),
         "teams": {
