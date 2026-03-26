@@ -4042,6 +4042,14 @@ def _selection_live_edge(selection: str, live_projection: Optional[float], line:
     return None
 
 
+def _live_prop_market_resolved(actual_value: Optional[float], market_line: Optional[float]) -> bool:
+    actual = _safe_float(actual_value)
+    line = _safe_float(market_line)
+    if actual is None or line is None:
+        return False
+    return float(actual) > float(line) + 1e-9
+
+
 def _select_live_prop_side(
     *,
     model_prob_over: Optional[float],
@@ -4148,6 +4156,8 @@ def _current_live_prop_rows(card: Dict[str, Any], snapshot: Optional[Dict[str, A
                 model_mean = _safe_float(model_row.get(str(cfg.get("mean_key"))))
                 model_prob_over = _prob_over_line_from_dist(model_row.get(str(cfg.get("dist_key"))) or {}, float(line_value))
                 actual_value = _live_stat_value(actual_row, {"market": "pitcher_props", "prop": prop_key})
+                if _live_prop_market_resolved(actual_value, line_value):
+                    continue
                 live_projection = _project_live_value(actual_value, model_mean, progress_fraction)
                 side_pick = _select_live_prop_side(
                     model_prob_over=model_prob_over,
@@ -4212,6 +4222,8 @@ def _current_live_prop_rows(card: Dict[str, Any], snapshot: Optional[Dict[str, A
                 model_mean = _safe_float(model_row.get(str(cfg.get("mean_key"))))
                 model_prob_over = _prob_over_line_from_dist(model_row.get(str(cfg.get("dist_key"))) or {}, float(line_value))
                 actual_value = _live_stat_value(actual_row, {"market": market_name, "prop": prop_key})
+                if _live_prop_market_resolved(actual_value, line_value):
+                    continue
                 live_projection = _project_live_value(actual_value, model_mean, progress_fraction)
                 side_pick = _select_live_prop_side(
                     model_prob_over=model_prob_over,

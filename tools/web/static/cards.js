@@ -96,6 +96,13 @@
     return (Array.isArray(rows) ? rows : []).filter((row) => propOddsAllowed(row, maxFavoriteOdds));
   }
 
+  function isResolvedLiveProp(row) {
+    const actual = toNumber(row?.actual ?? row?.actual_value);
+    const line = toNumber(row?.market_line);
+    if (actual == null || line == null) return false;
+    return actual > line + 1e-9;
+  }
+
   function americanOddsImpliedProb(value) {
     const text = String(value || "").trim();
     if (!text) return null;
@@ -196,7 +203,11 @@
   }
 
   function livePropRows(detail) {
-    return filterPropRowsByOdds(Array.isArray(detail?.sim?.livePropRows) ? detail.sim.livePropRows : []);
+    return filterPropRowsByOdds(Array.isArray(detail?.sim?.livePropRows) ? detail.sim.livePropRows : []).filter((row) => !isResolvedLiveProp(row));
+  }
+
+  function hasLivePropPayload(detail) {
+    return Array.isArray(detail?.sim?.livePropRows);
   }
 
   function hasAnyProps(card) {
@@ -1334,8 +1345,9 @@
   }
 
   function renderPropOverviewLens(card, detail) {
+    const livePayloadAvailable = hasLivePropPayload(detail);
     const liveRows = livePropRows(detail);
-    const overviewRows = liveRows.length ? liveRows : officialPropRows(card).concat(extraPropRows(card));
+    const overviewRows = livePayloadAvailable ? liveRows : officialPropRows(card).concat(extraPropRows(card));
     const rankedRows = overviewRows
       .map((reco) => ({ reco, state: propLensState(card, detail, reco) }))
       .filter((entry) => entry.state && entry.state.reco)
@@ -1365,7 +1377,9 @@
     });
 
     if (!items.length) {
-      return '<div class="cards-empty-copy">No tracked player props for live lens.</div>';
+      return livePayloadAvailable
+        ? '<div class="cards-empty-copy">No unresolved live prop opportunities remain for this game.</div>'
+        : '<div class="cards-empty-copy">No tracked player props for live lens.</div>';
     }
 
     return `
@@ -1435,7 +1449,7 @@
     if (!groupsNode || !lensNode || !filtersNode || !summaryChip) return;
 
     const currentLiveRows = livePropRows(detail);
-    if (currentLiveRows.length) {
+    if (hasLivePropPayload(detail)) {
       const filteredLiveRows = filteredPropRows(currentLiveRows, filters);
       const filtersApplied = filters.side !== "all" || filters.type !== "all";
       filtersNode.innerHTML = renderPropFilterControls(currentLiveRows, detail);
@@ -1444,16 +1458,18 @@
         : `${currentLiveRows.length} live opps`;
 
       if (!filteredLiveRows.length) {
-        groupsNode.innerHTML = '<div class="cards-empty-copy">No live prop opportunities match the current side and prop-type filters.</div>';
+        groupsNode.innerHTML = currentLiveRows.length
+          ? '<div class="cards-empty-copy">No live prop opportunities match the current side and prop-type filters.</div>'
+          : '<div class="cards-empty-copy">No unresolved live prop opportunities remain for this game.</div>';
         lensNode.innerHTML = `
           <div class="cards-lens-head">
             <div>
               <div class="cards-lens-label">Prop lens</div>
-              <div class="cards-lens-main">No filtered live prop selected</div>
+              <div class="cards-lens-main">No live prop selected</div>
             </div>
-            <span class="cards-lens-badge is-live">Refine filters</span>
+            <span class="cards-lens-badge is-live">Live</span>
           </div>
-          <div class="cards-callout-copy">No current live prop opportunities matched the active filters for this game.</div>`;
+          <div class="cards-callout-copy">${escapeHtml(currentLiveRows.length ? 'No current live prop opportunities matched the active filters for this game.' : 'All current live prop opportunities for this game are already decided and were removed from the board.')}</div>`;
         return;
       }
 
