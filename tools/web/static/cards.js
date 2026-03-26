@@ -216,7 +216,9 @@
   }
 
   function livePropRows(detail) {
-    return filterPropRowsByOdds(Array.isArray(detail?.sim?.livePropRows) ? detail.sim.livePropRows : []).filter((row) => !isResolvedLiveProp(row));
+    const rows = filterPropRowsByOdds(Array.isArray(detail?.sim?.livePropRows) ? detail.sim.livePropRows : []);
+    const isFinal = gameProgress(detail?.snapshot, null).isFinal;
+    return isFinal ? rows : rows.filter((row) => !isResolvedLiveProp(row));
   }
 
   function hasLivePropPayload(detail) {
@@ -774,7 +776,8 @@
   }
 
   function propTierLabel(row) {
-    if (row?.recommendation_tier === "live" || row?.source === "current_market") return "Live opportunity";
+    if (row?.archived_for_reconciliation) return "Live reconciliation";
+    if (row?.recommendation_tier === "live" || row?.source === "current_market" || row?.source === "live_registry") return "Live opportunity";
     return row?.recommendation_tier === "candidate" ? "Playable prop" : "Official pick";
   }
 

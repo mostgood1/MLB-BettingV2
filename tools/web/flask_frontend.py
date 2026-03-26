@@ -4253,9 +4253,130 @@ def _sim_prop_models(sim_context: Optional[Dict[str, Any]], kind: str) -> Dict[s
     return out if isinstance(out, dict) else {}
 
 
+def _live_prop_market_label(market: str, prop: str) -> str:
+    market_text = str(market or "").strip().lower()
+    prop_text = str(prop or "").strip().lower()
+    if market_text == "pitcher_props":
+        cfg = _PITCHER_LADDER_PROPS.get(prop_text) or {}
+        return str(cfg.get("label") or market or "Pitcher prop")
+    cfg = _HITTER_LADDER_PROPS.get(prop_text) or {}
+    return str(cfg.get("label") or market or "Hitter prop")
+
+
+def _final_live_prop_rows_from_registry(
+    card: Dict[str, Any],
+    snapshot: Optional[Dict[str, Any]],
+    d: str,
+) -> List[Dict[str, Any]]:
+    game_pk = _safe_int(card.get("gamePk"))
+    if game_pk is None:
+        return []
+
+    registry = _load_live_prop_registry(d)
+    entries = registry.get("entries") if isinstance(registry.get("entries"), dict) else {}
+    if not entries:
+        return []
+
+    actual_teams = ((snapshot or {}).get("teams") or {})
+    rows: List[Dict[str, Any]] = []
+    for entry in entries.values():
+        if not isinstance(entry, dict):
+            continue
+        if _safe_int(entry.get("gamePk")) != game_pk:
+            continue
+
+        owner = str(entry.get("owner") or "").strip()
+        market = str(entry.get("market") or "").strip().lower()
+        prop = str(entry.get("prop") or "").strip().lower()
+        selection = str(entry.get("selection") or "").strip().lower()
+        market_line = _safe_float(entry.get("marketLine"))
+        if not owner or not market or not prop or not selection or market_line is None:
+            continue
+
+        first_snapshot = entry.get("firstSeenSnapshot") if isinstance(entry.get("firstSeenSnapshot"), dict) else {}
+        last_snapshot = entry.get("lastSeenSnapshot") if isinstance(entry.get("lastSeenSnapshot"), dict) else {}
+        row_type = "pitching" if market == "pitcher_props" else "batting"
+        actual_row = None
+        team_side = None
+        for candidate_side in ("away", "home"):
+            candidate_row = _lookup_boxscore_row((((actual_teams.get(candidate_side) or {}).get("boxscore") or {}).get(row_type) or []), owner)
+            if candidate_row:
+                actual_row = candidate_row
+                team_side = candidate_side
+                break
+
+        live_edge = _safe_float(first_snapshot.get("liveEdge"))
+        actual_value = _live_stat_value(actual_row, {"market": market, "prop": prop})
+        team_info = (card.get(team_side) or {}) if team_side in {"away", "home"} else {}
+        item: Dict[str, Any] = {
+            "recommendation_tier": "live",
+            "source": "live_registry",
+            "market": market,
+            "market_label": _live_prop_market_label(market, prop),
+            "prop": prop,
+            "selection": selection,
+            "market_line": float(market_line),
+            "odds": _safe_int(first_snapshot.get("odds")),
+            "over_odds": None,
+            "under_odds": None,
+            "model_prob_over": None,
+            "market_prob_over": None,
+            "market_prob_under": None,
+            "market_prob_mode": "archived_first_seen",
+            "selected_side_market_prob": None,
+            "edge": live_edge,
+            "live_edge": live_edge,
+            "projection_gap": abs(float(live_edge)) if live_edge is not None else None,
+            "model_mean": _safe_float(first_snapshot.get("modelMean")),
+            "actual": actual_value if actual_value is not None else _safe_float(last_snapshot.get("actual")),
+            "actual_value": actual_value if actual_value is not None else _safe_float(last_snapshot.get("actual")),
+            "live_projection": _safe_float(first_snapshot.get("liveProjection")),
+            "first_seen_at": entry.get("firstSeenAt"),
+            "last_seen_at": entry.get("lastSeenAt"),
+            "first_seen_odds": _safe_int(first_snapshot.get("odds")),
+            "first_seen_line": _safe_float(first_snapshot.get("marketLine")),
+            "first_seen_live_projection": _safe_float(first_snapshot.get("liveProjection")),
+            "first_seen_live_edge": live_edge,
+            "first_seen_actual": _safe_float(first_snapshot.get("actual")),
+            "seen_count": _safe_int(entry.get("seenCount")),
+            "game_pk": int(game_pk),
+            "archived_for_reconciliation": True,
+        }
+        if market == "pitcher_props":
+            item["pitcher_name"] = owner
+            item["outs_mean"] = _safe_float(first_snapshot.get("modelMean")) if prop == "outs" else None
+        else:
+            item["player_name"] = owner
+        if team_side:
+            item["team_side"] = team_side
+        if team_info:
+            item["team"] = team_info.get("abbr") or team_info.get("name")
+        rows.append(item)
+
+    rows.sort(
+        key=lambda row: (
+            -float(_safe_float(row.get("live_edge")) or -999.0),
+            str(row.get("first_seen_at") or ""),
+            str(_prop_owner_name(row) or ""),
+            str(row.get("market") or ""),
+        )
+    )
+    out: List[Dict[str, Any]] = []
+    for idx, row in enumerate(rows, start=1):
+        item = dict(row)
+        item["rank"] = int(idx)
+        out.append(item)
+    return out
+
+
 def _current_live_prop_rows(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], sim_context: Optional[Dict[str, Any]], d: str) -> List[Dict[str, Any]]:
     if not isinstance(snapshot, dict) or not isinstance(sim_context, dict) or not sim_context.get("found"):
         return []
+
+    status = (snapshot or {}).get("status") or {}
+    abstract = str(status.get("abstractGameState") or ((card or {}).get("status") or {}).get("abstract") or "").strip().lower()
+    if abstract == "final":
+        return _final_live_prop_rows_from_registry(card, snapshot, d)
 
     _maybe_refresh_live_oddsapi_markets(d)
 
@@ -5309,7 +5430,7 @@ def _format_start_time_local(game_date_iso: str) -> str:
         if s.endswith("Z"):
             s = s[:-1] + "+00:00"
         dt = datetime.fromisoformat(s)
-        dt_local = dt.astimezone()
+        dt_local = dt.astimezone(_USER_TIMEZONE)
         # Windows-friendly: strip leading zero manually.
         return dt_local.strftime("%I:%M %p").lstrip("0")
     except Exception:
