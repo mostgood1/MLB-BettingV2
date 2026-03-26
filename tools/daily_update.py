@@ -1026,6 +1026,107 @@ def _publish_live_season_manifests(
     }
 
 
+def _git_run(repo_root: Path, args: List[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", "-C", str(repo_root), *[str(part) for part in args]],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _git_current_change_set(repo_root: Path) -> set[str]:
+    paths: set[str] = set()
+    commands = (
+        ["diff", "--name-only", "--relative"],
+        ["diff", "--cached", "--name-only", "--relative"],
+        ["ls-files", "--others", "--exclude-standard"],
+    )
+    for cmd in commands:
+        result = _git_run(repo_root, list(cmd))
+        if result.returncode != 0:
+            raise RuntimeError((result.stderr or result.stdout or "git command failed").strip())
+        for raw_line in str(result.stdout or "").splitlines():
+            line = raw_line.strip().replace("\\", "/")
+            if line:
+                paths.add(line)
+    return paths
+
+
+def _git_current_branch(repo_root: Path) -> str:
+    result = _git_run(repo_root, ["rev-parse", "--abbrev-ref", "HEAD"])
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or "git branch lookup failed").strip())
+    branch = str(result.stdout or "").strip()
+    if not branch:
+        raise RuntimeError("git branch lookup returned empty branch name")
+    return branch
+
+
+def _maybe_git_push_daily_update(
+    *,
+    repo_root: Path,
+    date_str: str,
+    workflow: str,
+    preexisting_changes: Optional[set[str]],
+    enabled: bool,
+    remote: str,
+    branch: str,
+    commit_message: str,
+) -> Dict[str, Any]:
+    if not enabled:
+        return {"status": "skipped", "reason": "git_push=off"}
+
+    before = set(preexisting_changes or set())
+    after = _git_current_change_set(repo_root)
+    candidate_paths = sorted(path for path in after if path not in before)
+    if not candidate_paths:
+        return {
+            "status": "skipped",
+            "reason": "no new repository changes to commit",
+            "preexisting_change_count": int(len(before)),
+        }
+
+    add_result = _git_run(repo_root, ["add", "-A", "--", *candidate_paths])
+    if add_result.returncode != 0:
+        raise RuntimeError((add_result.stderr or add_result.stdout or "git add failed").strip())
+
+    staged_result = _git_run(repo_root, ["diff", "--cached", "--name-only", "--relative"])
+    if staged_result.returncode != 0:
+        raise RuntimeError((staged_result.stderr or staged_result.stdout or "git staged diff failed").strip())
+    staged_paths = [line.strip().replace("\\", "/") for line in str(staged_result.stdout or "").splitlines() if line.strip()]
+    if not staged_paths:
+        return {
+            "status": "skipped",
+            "reason": "git add produced no staged changes",
+            "candidate_paths": candidate_paths,
+        }
+
+    normalized_message = str(commit_message or "").format(date=str(date_str), workflow=str(workflow or "core")).strip()
+    if not normalized_message:
+        normalized_message = f"Daily update {date_str}"
+    commit_result = _git_run(repo_root, ["commit", "-m", normalized_message])
+    if commit_result.returncode != 0:
+        raise RuntimeError((commit_result.stderr or commit_result.stdout or "git commit failed").strip())
+
+    push_branch = str(branch or "").strip() or _git_current_branch(repo_root)
+    push_result = _git_run(repo_root, ["push", str(remote), push_branch])
+    if push_result.returncode != 0:
+        raise RuntimeError((push_result.stderr or push_result.stdout or "git push failed").strip())
+
+    head_result = _git_run(repo_root, ["rev-parse", "HEAD"])
+    commit_sha = str(head_result.stdout or "").strip() if head_result.returncode == 0 else ""
+    return {
+        "status": "ok",
+        "remote": str(remote),
+        "branch": str(push_branch),
+        "commit_message": normalized_message,
+        "commit_sha": commit_sha,
+        "committed_paths": staged_paths,
+        "preexisting_change_count": int(len(before)),
+    }
+
+
 def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> int:
     game_out = _resolve_path_arg(str(getattr(args, "out", "") or ""), default=(_ROOT / "data" / "daily"))
     default_pitcher_out, default_hitter_out = _default_ui_profile_out_dirs(game_out)
@@ -1096,6 +1197,24 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
         "warnings": [],
         "errors": [],
     }
+    git_push_enabled = str(getattr(args, "git_push", "off") or "off") == "on"
+    git_push_stage: Dict[str, Any] = {
+        "requested": bool(git_push_enabled),
+        "remote": str(getattr(args, "git_push_remote", "origin") or "origin"),
+        "branch": str(getattr(args, "git_push_branch", "") or ""),
+    }
+    preexisting_changes: Optional[set[str]] = None
+    if git_push_enabled:
+        try:
+            preexisting_changes = _git_current_change_set(_ROOT)
+            git_push_stage["preexisting_change_count"] = int(len(preexisting_changes))
+        except Exception as exc:
+            git_push_stage["requested"] = False
+            git_push_stage["status"] = "warning"
+            git_push_stage["error"] = f"{type(exc).__name__}: {exc}"
+            report["warnings"].append(f"git push disabled: {type(exc).__name__}: {exc}")
+            git_push_enabled = False
+    report["git_push"] = git_push_stage
 
     refresh_stage: Dict[str, Any]
     if str(getattr(args, "refresh_prior_feed_live", "on") or "on") == "on":
@@ -1368,6 +1487,10 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
             "--current-oddsapi-regions",
             "--current-oddsapi-bookmakers",
             "--current-oddsapi-hitter-markets",
+            "--git-push",
+            "--git-push-remote",
+            "--git-push-branch",
+            "--git-commit-message",
         ),
         flags_no_values=(),
     )
@@ -1473,6 +1596,34 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
     _ensure_dir(ops_report_path.parent)
     _write_json(ops_report_path, report)
     print(f"[ui-daily] Wrote ops report: {ops_report_path}")
+
+    if git_push_enabled and str(report.get("status") or "") != "error":
+        print(f"[ui-daily] Committing and pushing workflow outputs for {args.date}...")
+        try:
+            git_push_result = _maybe_git_push_daily_update(
+                repo_root=_ROOT,
+                date_str=str(args.date),
+                workflow="ui-daily",
+                preexisting_changes=preexisting_changes,
+                enabled=True,
+                remote=str(getattr(args, "git_push_remote", "origin") or "origin"),
+                branch=str(getattr(args, "git_push_branch", "") or ""),
+                commit_message=str(getattr(args, "git_commit_message", "Daily update {date}") or "Daily update {date}"),
+            )
+            report["git_push"].update(git_push_result)
+            print(
+                f"[ui-daily] Git push status: {str(git_push_result.get('status') or 'unknown')}"
+                + (f" ({git_push_result.get('commit_sha')})" if git_push_result.get("commit_sha") else "")
+            )
+        except Exception as exc:
+            report["git_push"].update({
+                "status": "error",
+                "error": f"{type(exc).__name__}: {exc}",
+            })
+            report["errors"].append(f"git push failed: {type(exc).__name__}: {exc}")
+            report["status"] = "error"
+            _write_json(ops_report_path, report)
+            return 1
 
     if str(report.get("status") or "") == "error":
         return int((report.get("stages") or {}).get("current_day_multi_profile", {}).get("exit_code") or 1)
@@ -2510,6 +2661,27 @@ def main() -> int:
         "--current-oddsapi-hitter-markets",
         default="",
         help="Optional comma-separated hitter market keys for the current-day OddsAPI fetch during --workflow ui-daily.",
+    )
+    ap.add_argument(
+        "--git-push",
+        choices=["on", "off"],
+        default="off",
+        help="If on, auto-commit and push new repository changes produced by --workflow ui-daily after a successful run.",
+    )
+    ap.add_argument(
+        "--git-push-remote",
+        default="origin",
+        help="Remote name used when --git-push on (default: origin).",
+    )
+    ap.add_argument(
+        "--git-push-branch",
+        default="",
+        help="Optional branch used when --git-push on (default: current git branch).",
+    )
+    ap.add_argument(
+        "--git-commit-message",
+        default="Daily update {date}",
+        help="Commit message template used when --git-push on. Supports {date} and {workflow} placeholders.",
     )
     ap.add_argument(
         "--prior-eval-sims",
