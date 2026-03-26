@@ -5594,6 +5594,74 @@ def _publish_season_manifests(
     }
 
 
+def _rebuild_season_day_report(
+    *,
+    season: int,
+    date_str: str,
+    sims: int,
+    workers: int,
+    spring_mode: bool,
+) -> Dict[str, Any]:
+    from argparse import Namespace
+    from tools.daily_update import _build_prior_eval_command
+
+    batch_dir = _DATA_DIR / "eval" / "batches" / f"season_{int(season)}_ui_daily_live"
+    out_path = batch_dir / f"sim_vs_actual_{str(date_str)}.json"
+    _ensure_dir(batch_dir)
+
+    args = Namespace(
+        spring_mode=bool(spring_mode),
+        stats_season=(int(season) - 1 if bool(spring_mode) else int(season)),
+        use_roster_artifacts="on",
+        write_roster_artifacts="on",
+        sims=int(sims),
+        prior_eval_sims=int(sims),
+        bvp_hr="off",
+        bvp_days_back=365,
+        bvp_min_pa=10,
+        bvp_shrink_pa=50.0,
+        bvp_clamp_lo=0.80,
+        bvp_clamp_hi=1.25,
+        hitter_hr_topn=0,
+        hitter_props_topn=24,
+        seed=1337,
+        workers=max(1, int(workers)),
+        prior_eval_prop_lines_source="auto",
+        cache_ttl_hours=24,
+        umpire_shrink=0.75,
+        pitch_model_overrides="",
+        manager_pitching="v2",
+        manager_pitching_overrides="",
+        pitcher_rate_sampling="on",
+        bip_baserunning="on",
+    )
+    lineups_last_known_path = _DAILY_DIR / "lineups_last_known_by_team.json"
+    cmd = _build_prior_eval_command(
+        args=args,
+        prior_date=str(date_str),
+        prior_season=int(season),
+        out_path=out_path,
+        daily_snapshots_root=(_DAILY_DIR / "snapshots"),
+        lineups_last_known_path=(lineups_last_known_path if lineups_last_known_path.exists() else None),
+    )
+    result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+    return {
+        "ok": result.returncode == 0 and out_path.exists(),
+        "season": int(season),
+        "date": str(date_str),
+        "batch_dir": _relative_path_str(batch_dir),
+        "report_path": _relative_path_str(out_path),
+        "sims": int(sims),
+        "workers": max(1, int(workers)),
+        "spring_mode": bool(spring_mode),
+        "command": [str(part) for part in cmd],
+        "exit_code": int(result.returncode),
+        "stdout": str((result.stdout or "").strip()),
+        "stderr": str((result.stderr or "").strip()),
+        "report_exists": bool(out_path.exists()),
+    }
+
+
 @app.get("/live-lens")
 def live_lens_view() -> str:
     d = str(request.args.get("date") or "").strip() or _default_cards_date()
@@ -5636,6 +5704,7 @@ def api_cron_config() -> Response:
             "marketDir": _relative_path_str(_MARKET_DIR),
             "dailyDir": _relative_path_str(_DAILY_DIR),
             "liveLensDir": _relative_path_str(_LIVE_LENS_DIR),
+            "seasonRebuildEndpoint": "/api/cron/rebuild-season-report?season=YYYY&date=YYYY-MM-DD",
             "seasonRepublishEndpoint": "/api/cron/republish-season?season=YYYY&profile=retuned",
         }
     )
@@ -5725,6 +5794,58 @@ def api_cron_republish_season() -> Response:
 
     status_code = 200 if bool(payload.get("ok")) else 500
     return jsonify(payload), status_code
+
+
+@app.get("/api/cron/rebuild-season-report")
+def api_cron_rebuild_season_report() -> Response:
+    auth_error = _require_cron_auth()
+    if auth_error is not None:
+        return auth_error
+
+    season = _safe_int(request.args.get("season")) or _season_from_date_str(_today_iso()) or _local_today().year
+    date_str = str(request.args.get("date") or "").strip()
+    if not date_str:
+        return jsonify({"ok": False, "error": "missing_date", "season": int(season)}), 400
+    sims = _safe_int(request.args.get("sims")) or 1000
+    workers = _safe_int(request.args.get("workers")) or 4
+    spring_mode = str(request.args.get("springMode") or "on").strip().lower() != "off"
+    profile = str(request.args.get("profile") or "retuned").strip().lower() or "retuned"
+    publish_after = str(request.args.get("publish") or "on").strip().lower() != "off"
+
+    try:
+        rebuild_payload = _rebuild_season_day_report(
+            season=int(season),
+            date_str=str(date_str),
+            sims=int(sims),
+            workers=int(workers),
+            spring_mode=bool(spring_mode),
+        )
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "season": int(season),
+            "date": str(date_str),
+            "error": f"{type(exc).__name__}: {exc}",
+        }), 500
+
+    if not bool(rebuild_payload.get("ok")):
+        return jsonify(rebuild_payload), 500
+
+    payload: Dict[str, Any] = {"ok": True, "rebuild": rebuild_payload}
+    if publish_after:
+        try:
+            payload["republish"] = _publish_season_manifests(
+                season=int(season),
+                batch_dir=_DATA_DIR / "eval" / "batches" / f"season_{int(season)}_ui_daily_live",
+                betting_profile=profile,
+                season_dir=_DATA_DIR / "eval" / "seasons" / str(int(season)),
+            )
+            payload["ok"] = bool((payload.get("republish") or {}).get("ok"))
+        except Exception as exc:
+            payload["ok"] = False
+            payload["republish_error"] = f"{type(exc).__name__}: {exc}"
+            return jsonify(payload), 500
+    return jsonify(payload), 200
     for i in range(max(0, since_index), len(all_plays)):
         p = all_plays[i]
         if not isinstance(p, dict):

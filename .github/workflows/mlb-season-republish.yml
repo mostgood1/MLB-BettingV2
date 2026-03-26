@@ -3,6 +3,10 @@ name: MLB Season Republish
 on:
   workflow_dispatch:
     inputs:
+      rebuild_date:
+        description: Optional single date to rebuild before republishing
+        required: false
+        default: ""
       season:
         description: Season to republish
         required: true
@@ -36,6 +40,10 @@ jobs:
 
       - name: Ping Render cron surface
         run: bash scripts/render_cron_call.sh /api/cron/ping
+
+      - name: Rebuild season day report
+        if: ${{ inputs.rebuild_date != '' }}
+        run: bash scripts/render_cron_call.sh "/api/cron/rebuild-season-report?season=${{ inputs.season }}&date=${{ inputs.rebuild_date }}&profile=${{ inputs.profile }}"
 
       - name: Republish rolling season manifests
         run: bash scripts/render_cron_call.sh "/api/cron/republish-season?season=${{ inputs.season }}&profile=${{ inputs.profile }}"
