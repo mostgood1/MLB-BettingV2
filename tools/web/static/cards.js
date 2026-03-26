@@ -9,7 +9,11 @@
     stripNodes: new Map(),
     details: new Map(),
     livePollers: new Map(),
+    autoRefreshHandle: null,
+    loadingCards: false,
   };
+
+  const AUTO_REFRESH_MS = 15000;
 
   const root = {
     headerMeta: document.getElementById("cardsHeaderMeta"),
@@ -76,6 +80,46 @@
     return text || "-";
   }
 
+  function normalizedAmericanOdds(value) {
+    const num = Number(value);
+    return Number.isFinite(num) ? Math.round(num) : null;
+  }
+
+  function propOddsAllowed(reco, maxFavoriteOdds = -200) {
+    const odds = normalizedAmericanOdds(reco?.odds);
+    if (odds == null) return true;
+    if (odds >= 0) return true;
+    return odds >= maxFavoriteOdds;
+  }
+
+  function filterPropRowsByOdds(rows, maxFavoriteOdds = -200) {
+    return (Array.isArray(rows) ? rows : []).filter((row) => propOddsAllowed(row, maxFavoriteOdds));
+  }
+
+  function americanOddsImpliedProb(value) {
+    const text = String(value || "").trim();
+    if (!text) return null;
+    const odds = Number(text);
+    if (!Number.isFinite(odds) || odds === 0) return null;
+    if (odds > 0) return 100 / (odds + 100);
+    return Math.abs(odds) / (Math.abs(odds) + 100);
+  }
+
+  function normalizeTwoWay(firstProb, secondProb) {
+    const first = toNumber(firstProb);
+    const second = toNumber(secondProb);
+    if (first == null || second == null) return { first: null, second: null };
+    const denom = first + second;
+    if (!(denom > 0)) return { first: null, second: null };
+    return { first: first / denom, second: second / denom };
+  }
+
+  function logisticWinProb(homeMargin) {
+    const margin = toNumber(homeMargin);
+    if (margin == null) return null;
+    return 1 / (1 + Math.exp(-0.65 * margin));
+  }
+
   function shiftIsoDate(value, days) {
     const text = String(value || "").trim();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return "";
@@ -119,6 +163,10 @@
     return Array.isArray(card?.markets?.[key]) ? card.markets[key] : [];
   }
 
+  function trackedGameLines(card) {
+    return card?.trackedGameLines && typeof card.trackedGameLines === "object" ? card.trackedGameLines : {};
+  }
+
   function extraMarketRows(card, key) {
     return Array.isArray(card?.markets?.[key]) ? card.markets[key] : [];
   }
@@ -130,21 +178,25 @@
   }
 
   function officialPropRows(card) {
-    return marketRows(card, "pitcherProps")
-      .concat(marketRows(card, "hitterProps"))
+    return filterPropRowsByOdds(marketRows(card, "pitcherProps")
+      .concat(marketRows(card, "hitterProps")))
       .slice()
       .sort(propSortCompare);
   }
 
   function extraPropRows(card) {
-    return extraMarketRows(card, "extraPitcherProps")
-      .concat(extraMarketRows(card, "extraHitterProps"))
+    return filterPropRowsByOdds(extraMarketRows(card, "extraPitcherProps")
+      .concat(extraMarketRows(card, "extraHitterProps")))
       .slice()
       .sort(propSortCompare);
   }
 
   function allPropRows(card) {
     return officialPropRows(card).concat(extraPropRows(card));
+  }
+
+  function livePropRows(detail) {
+    return filterPropRowsByOdds(Array.isArray(detail?.sim?.livePropRows) ? detail.sim.livePropRows : []);
   }
 
   function hasAnyProps(card) {
@@ -228,6 +280,7 @@
       state.details.set(gamePk, {
         snapshot: null,
         sim: null,
+        activeTab: "overview",
         selectedPropKey: initialProp ? propKey(initialProp) : null,
         propFilters: { side: "all", type: "all" },
       });
@@ -254,8 +307,228 @@
     if (market.includes("rbis") || prop.includes("rbi")) return "RBI";
     if (market.includes("hitter_runs") || prop.includes("runs_scored")) return "Runs";
     if (market.includes("hitter_hits") || prop.endsWith("hits")) return "Hits";
+    if (prop === "strikeouts") return "K";
+    if (market.includes("earned_runs") || prop === "earned_runs") return "ER";
     if (prop === "outs") return "Outs";
     return String(reco?.market_label || reco?.market || "Prop");
+  }
+
+  function isLiveStatus(statusText) {
+    const text = String(statusText || "").trim().toLowerCase();
+    return text.includes("live") || text.includes("in progress") || text.includes("manager challenge");
+  }
+
+  function gameProgress(snapshot, card) {
+    const status = snapshot?.status || {};
+    const abstract = String(status.abstractGameState || card?.status?.abstract || "").trim().toLowerCase();
+    const detailed = String(status.detailedState || card?.status?.detailed || "").trim();
+    if (abstract === "final") {
+      return { fraction: 1, inning: 9, half: "final", outs: 3, label: detailed || "Final", isLive: false, isFinal: true };
+    }
+    if (!isLiveStatus(abstract)) {
+      return { fraction: 0, inning: null, half: null, outs: 0, label: detailed || "Pregame", isLive: false, isFinal: false };
+    }
+    const current = snapshot?.current || {};
+    const inning = Number(current?.inning) || 1;
+    const half = String(current?.halfInning || "").trim().toLowerCase();
+    const outsRaw = Number(current?.count?.outs ?? current?.outs ?? 0);
+    const outs = Math.max(0, Math.min(2, Number.isFinite(outsRaw) ? outsRaw : 0));
+    const outsRecorded = ((inning - 1) * 6) + (half === "bottom" ? 3 : 0) + outs;
+    return {
+      fraction: Math.max(0, Math.min(1, outsRecorded / 54)),
+      inning,
+      half,
+      outs,
+      label: half ? `${half.replace(/^./, (m) => m.toUpperCase())} ${inning}` : `Inning ${inning}`,
+      isLive: true,
+      isFinal: false,
+    };
+  }
+
+  function projectLiveValue(actualValue, modelMean, progressFraction) {
+    const actual = toNumber(actualValue) || 0;
+    const mean = toNumber(modelMean);
+    if (mean == null) return null;
+    const progress = Math.max(0, Math.min(1, Number(progressFraction || 0)));
+    const expectedToDate = mean * progress;
+    const remaining = Math.max(mean - expectedToDate, 0);
+    return Number((actual + remaining).toFixed(3));
+  }
+
+  function segmentProjection(config) {
+    const pregameAway = toNumber(config?.pregameAway);
+    const pregameHome = toNumber(config?.pregameHome);
+    if (pregameAway == null || pregameHome == null) {
+      return { away: null, home: null, total: null, homeMargin: null, closed: false };
+    }
+    const actualAway = toNumber(config?.actualAway) || 0;
+    const actualHome = toNumber(config?.actualHome) || 0;
+    const progressFraction = Math.max(0, Math.min(1, Number(config?.progressFraction || 0)));
+    const targetFraction = Math.max(0, Math.min(1, Number(config?.targetInnings || 9) / 9));
+    if (progressFraction > targetFraction + 1e-9) {
+      return { away: null, home: null, total: null, homeMargin: null, closed: true };
+    }
+    const awayTarget = pregameAway * targetFraction;
+    const homeTarget = pregameHome * targetFraction;
+    const expectedAwayToDate = Math.min(pregameAway * progressFraction, awayTarget);
+    const expectedHomeToDate = Math.min(pregameHome * progressFraction, homeTarget);
+    const away = actualAway + Math.max(awayTarget - expectedAwayToDate, 0);
+    const home = actualHome + Math.max(homeTarget - expectedHomeToDate, 0);
+    return {
+      away: Number(away.toFixed(2)),
+      home: Number(home.toFixed(2)),
+      total: Number((away + home).toFixed(2)),
+      homeMargin: Number((home - away).toFixed(2)),
+      closed: false,
+    };
+  }
+
+  function baselineHomeWinProb(card, key) {
+    const row = card?.predictions?.[key];
+    if (!row || typeof row !== "object") return null;
+    const away = toNumber(row.away_win_prob);
+    const home = toNumber(row.home_win_prob);
+    if (home == null) return null;
+    const normalized = normalizeTwoWay(home, away);
+    return normalized.first == null ? home : normalized.first;
+  }
+
+  function propModelMean(reco, simRow) {
+    const rowValue = statValue(simRow, reco);
+    if (rowValue != null) return rowValue;
+    return toNumber(reco?.outs_mean);
+  }
+
+  function buildGameLensRows(card, detail) {
+    const snapshot = detail?.snapshot || null;
+    const sim = detail?.sim || null;
+    const progress = gameProgress(snapshot, card);
+    const predictedAway = toNumber(sim?.predicted?.away);
+    const predictedHome = toNumber(sim?.predicted?.home);
+    const actualAway = toNumber(snapshot?.teams?.away?.totals?.R) || 0;
+    const actualHome = toNumber(snapshot?.teams?.home?.totals?.R) || 0;
+    const lines = trackedGameLines(card);
+    const h2h = lines.h2h || {};
+    const spreads = lines.spreads || {};
+    const totals = lines.totals || {};
+    const moneylineHomeOdds = h2h.home_odds || h2h.homeOdds || null;
+    const moneylineAwayOdds = h2h.away_odds || h2h.awayOdds || null;
+    const marketHomeProb = normalizeTwoWay(
+      americanOddsImpliedProb(moneylineHomeOdds),
+      americanOddsImpliedProb(moneylineAwayOdds)
+    ).first;
+    const segments = [
+      { key: "live", label: progress.label || "Live", innings: 9 },
+      { key: "first3", label: "F3", innings: 3 },
+      { key: "first5", label: "F5", innings: 5 },
+      { key: "first7", label: "F7", innings: 7 },
+      { key: "full", label: "Full", innings: 9 },
+    ];
+
+    return segments.map((segment) => {
+      const projection = segmentProjection({
+        pregameAway: predictedAway,
+        pregameHome: predictedHome,
+        actualAway,
+        actualHome,
+        progressFraction: progress.fraction,
+        targetInnings: segment.innings,
+      });
+      const modelHomeProb = logisticWinProb(projection.homeMargin);
+      const baselineProb = baselineHomeWinProb(card, segment.key);
+      const totalLine = toNumber(totals.line);
+      const totalEdge = projection.total == null || totalLine == null ? null : Number((projection.total - totalLine).toFixed(2));
+      const spreadHomeLine = toNumber(spreads.home_line ?? spreads.homeLine);
+      const spreadEdge = projection.homeMargin == null || spreadHomeLine == null ? null : Number((projection.homeMargin + spreadHomeLine).toFixed(2));
+      const homeDelta = modelHomeProb == null || marketHomeProb == null ? null : modelHomeProb - marketHomeProb;
+      const awayDelta = modelHomeProb == null || marketHomeProb == null ? null : (1 - modelHomeProb) - (1 - marketHomeProb);
+      let moneylinePick = null;
+      let moneylineEdge = null;
+      if (homeDelta != null && awayDelta != null) {
+        if (Math.abs(homeDelta) >= Math.abs(awayDelta) && homeDelta > 0) {
+          moneylinePick = "home";
+          moneylineEdge = Number(homeDelta.toFixed(3));
+        } else if (awayDelta > 0) {
+          moneylinePick = "away";
+          moneylineEdge = Number(awayDelta.toFixed(3));
+        }
+      }
+      return {
+        key: segment.key,
+        label: segment.label,
+        closed: !!projection.closed,
+        projection,
+        baselineHomeWinProb: baselineProb,
+        modelHomeWinProb: modelHomeProb,
+        markets: {
+          moneyline: {
+            pick: moneylinePick,
+            edge: moneylineEdge,
+            homeOdds: moneylineHomeOdds,
+            awayOdds: moneylineAwayOdds,
+            marketHomeProb,
+          },
+          spread: {
+            pick: spreadEdge == null ? null : (spreadEdge > 0 ? "home" : (spreadEdge < 0 ? "away" : null)),
+            edge: spreadEdge,
+            homeLine: spreadHomeLine,
+            homeOdds: spreads.home_odds || spreads.homeOdds || null,
+            awayOdds: spreads.away_odds || spreads.awayOdds || null,
+          },
+          total: {
+            pick: totalEdge == null ? null : (totalEdge > 0 ? "over" : (totalEdge < 0 ? "under" : null)),
+            edge: totalEdge,
+            line: totalLine,
+            overOdds: totals.over_odds || totals.overOdds || null,
+            underOdds: totals.under_odds || totals.underOdds || null,
+          },
+        },
+      };
+    });
+  }
+
+  function renderGameLens(card, detail) {
+    const rows = buildGameLensRows(card, detail);
+    if (!rows.length) return '<div class="cards-empty-copy">No live game lens available.</div>';
+    function pickSummary(label, pick, edge, kind) {
+      if (!pick || edge == null) return `${label}: -`;
+      if (kind === "moneyline") return `${label}: ${String(pick).toUpperCase()} ${formatSigned(edge * 100, 1)} pts`;
+      return `${label}: ${String(pick).toUpperCase()} ${formatSigned(edge, 2)}`;
+    }
+    return rows.map((row) => {
+      const projectionLine = row.closed || row.projection.total == null
+        ? 'Segment closed'
+        : `${card?.away?.abbr || 'Away'} ${formatLine(row.projection.away)} - ${card?.home?.abbr || 'Home'} ${formatLine(row.projection.home)} | Total ${formatLine(row.projection.total)}`;
+      const ml = row.markets.moneyline;
+      const spread = row.markets.spread;
+      const total = row.markets.total;
+      const marketLine = [
+        total.line != null ? `Total ${formatLine(total.line)}` : null,
+        spread.homeLine != null ? `Home ${formatSigned(spread.homeLine, 1)}` : null,
+        ml.homeOdds || ml.awayOdds ? `${card?.away?.abbr || 'Away'} ${formatOdds(ml.awayOdds)} / ${card?.home?.abbr || 'Home'} ${formatOdds(ml.homeOdds)}` : null,
+      ].filter(Boolean).join(' | ');
+      return `
+        <div class="cards-live-lens-card ${row.closed ? 'is-closed' : ''}">
+          <div class="cards-live-lens-head">
+            <div class="cards-live-lens-title-block">
+              <strong>${escapeHtml(row.label)}</strong>
+              <div class="cards-live-lens-subtitle">${escapeHtml(projectionLine)}</div>
+            </div>
+            <span class="cards-chip ${row.closed ? 'is-candidate' : ''}">${escapeHtml(row.closed ? 'Closed' : 'Projection')}</span>
+          </div>
+          <div class="cards-live-lens-summary-row">
+            <div class="cards-data-pair"><span>Home win</span><strong>${escapeHtml(formatPercent(row.modelHomeWinProb, 1))}</strong></div>
+            <div class="cards-data-pair"><span>Baseline</span><strong>${escapeHtml(formatPercent(row.baselineHomeWinProb, 1))}</strong></div>
+          </div>
+          <div class="cards-live-lens-picks">
+            <div class="cards-live-lens-pick">${escapeHtml(pickSummary('ML', ml.pick, ml.edge, 'moneyline'))}</div>
+            <div class="cards-live-lens-pick">${escapeHtml(pickSummary('Spread', spread.pick, spread.edge, 'spread'))}</div>
+            <div class="cards-live-lens-pick">${escapeHtml(pickSummary('Total', total.pick, total.edge, 'total'))}</div>
+          </div>
+          <div class="cards-live-lens-market">${escapeHtml(marketLine || 'No tracked market line')}</div>
+          ${row.closed || row.projection.homeMargin == null ? '' : `<div class="cards-live-lens-margin">${escapeHtml(`Projected margin: ${formatSigned(row.projection.homeMargin, 2)}`)}</div>`}
+        </div>`;
+    }).join('');
   }
 
   const PROP_TYPE_ORDER = ["outs", "hits", "runs", "rbi", "tb", "hr"];
@@ -337,8 +610,7 @@
       </button>`;
   }
 
-  function renderPropFilterControls(card, detail) {
-    const rows = allPropRows(card);
+  function renderPropFilterControls(rows, detail) {
     const filters = detail?.propFilters || { side: "all", type: "all" };
     const sideBaseRows = rows.filter((row) => filters.type === "all" || propTypeInfo(row).key === filters.type);
     const typeBaseRows = rows.filter((row) => filters.side === "all" || propSelectionKey(row) === filters.side);
@@ -461,16 +733,17 @@
   }
 
   function propTierLabel(row) {
+    if (row?.recommendation_tier === "live" || row?.source === "current_market") return "Live opportunity";
     return row?.recommendation_tier === "candidate" ? "Playable prop" : "Official pick";
   }
 
   function marketTiles(card) {
     const totals = card?.markets?.totals || null;
     const ml = card?.markets?.ml || null;
-    const pitcherRows = marketRows(card, "pitcherProps");
-    const pitcherExtraRows = extraMarketRows(card, "extraPitcherProps");
-    const hitterRows = marketRows(card, "hitterProps");
-    const hitterExtraRows = extraMarketRows(card, "extraHitterProps");
+    const pitcherRows = filterPropRowsByOdds(marketRows(card, "pitcherProps"));
+    const pitcherExtraRows = filterPropRowsByOdds(extraMarketRows(card, "extraPitcherProps"));
+    const hitterRows = filterPropRowsByOdds(marketRows(card, "hitterProps"));
+    const hitterExtraRows = filterPropRowsByOdds(extraMarketRows(card, "extraHitterProps"));
 
     const totalsTile = totals
       ? tileMarkup({
@@ -556,8 +829,8 @@
   function calloutMarkup(card) {
     const totals = card?.markets?.totals || null;
     const ml = card?.markets?.ml || null;
-    const pitcherTop = marketRows(card, "pitcherProps")[0] || null;
-    const hitterTop = marketRows(card, "hitterProps")[0] || null;
+    const pitcherTop = filterPropRowsByOdds(marketRows(card, "pitcherProps"))[0] || null;
+    const hitterTop = filterPropRowsByOdds(marketRows(card, "hitterProps"))[0] || null;
     const extraCount = extraPropRows(card).length;
     const items = [];
 
@@ -608,7 +881,7 @@
   }
 
   function createCardNode(card) {
-    ensureDetail(card);
+    const detail = ensureDetail(card);
     const officialPropCount = officialPropRows(card).length;
     const extraPropCount = extraPropRows(card).length;
     const article = document.createElement("article");
@@ -665,6 +938,7 @@
               <div class="cards-table-title"><strong>Game lens</strong></div>
               <span class="cards-overview-badge">${escapeHtml(card.gameType || "MLB")}</span>
             </div>
+            <div class="cards-live-lens-grid" data-role="game-lens"></div>
             <div class="cards-prob-grid">${probabilityRows(card)}</div>
             <div class="cards-mini-metrics">
               <div class="cards-mini-metric">
@@ -689,6 +963,7 @@
               <span class="cards-chip">${escapeHtml(marketCountSummary(card))}</span>
             </div>
             <ul class="cards-callout-list">${calloutMarkup(card)}</ul>
+            <div data-role="prop-overview-lens"></div>
           </div>
         </div>
       </section>
@@ -735,6 +1010,7 @@
 
     attachCardEvents(article, card);
     renderPropSections(card, article);
+    activateTab(article, detail?.activeTab || "overview");
     return article;
   }
 
@@ -773,6 +1049,10 @@
   }
 
   function activateTab(node, panelId) {
+    const gamePk = Number(node?.dataset?.gamePk || 0);
+    if (gamePk && state.details.has(gamePk)) {
+      state.details.get(gamePk).activeTab = panelId;
+    }
     node.querySelectorAll(".cards-tab").forEach((button) => {
       button.classList.toggle("is-active", button.getAttribute("data-tab-target") === panelId);
     });
@@ -995,15 +1275,18 @@
     if (market.includes("rbis") || prop.includes("rbi")) return toNumber(row?.RBI);
     if (market.includes("hitter_runs") || prop.includes("runs_scored")) return toNumber(row?.R);
     if (market.includes("hitter_hits") || prop.endsWith("hits")) return toNumber(row?.H);
+    if (prop === "strikeouts") return toNumber(row?.SO);
+    if (market.includes("earned_runs") || prop === "earned_runs") return toNumber(row?.ER);
     if (prop === "outs") return toNumber(row?.OUTS) ?? parseIpToOuts(row?.IP);
     return null;
   }
 
   function propResultBadge(reco, actualValue, statusText) {
     if (actualValue == null) {
-      const liveish = String(statusText || "").toLowerCase().includes("live");
+      const liveish = isLiveStatus(statusText);
       return { label: liveish ? "Live" : "Pending", className: "is-live" };
     }
+    if (isLiveStatus(statusText)) return { label: "Live", className: "is-live" };
     const line = toNumber(reco?.market_line);
     const selection = String(reco?.selection || "over").toLowerCase();
     if (line == null) return { label: "Pending", className: "is-live" };
@@ -1013,10 +1296,113 @@
     return { label: didWin ? "Win" : "Loss", className: didWin ? "" : "is-loss" };
   }
 
+  function propLensState(card, detail, reco) {
+    if (!reco) return null;
+    const rows = playerRows(card, detail, reco);
+    const isLiveOpportunity = String(reco?.recommendation_tier || "").toLowerCase() === "live" || String(reco?.source || "") === "current_market";
+    const backendActual = reco?.actual != null ? reco.actual : reco?.actual_value;
+    const actualValue = isLiveOpportunity && backendActual != null ? toNumber(backendActual) : statValue(rows.actualRow, reco);
+    const simValue = statValue(rows.simRow, reco);
+    const modelMean = isLiveOpportunity && reco?.model_mean != null ? toNumber(reco.model_mean) : propModelMean(reco, rows.simRow);
+    const progress = gameProgress(detail?.snapshot, card);
+    const liveProjection = isLiveOpportunity && reco?.live_projection != null
+      ? toNumber(reco.live_projection)
+      : projectLiveValue(actualValue, modelMean, progress.fraction);
+    const line = toNumber(reco?.market_line);
+    const selection = String(reco?.selection || "").toLowerCase();
+    let liveEdge = null;
+    if (isLiveOpportunity && reco?.live_edge != null) {
+      liveEdge = toNumber(reco.live_edge);
+    } else if (liveProjection != null && line != null) {
+      if (selection === "under") liveEdge = Number((line - liveProjection).toFixed(2));
+      else if (selection === "over") liveEdge = Number((liveProjection - line).toFixed(2));
+      else liveEdge = Number((liveProjection - line).toFixed(2));
+    }
+    const badge = propResultBadge(reco, actualValue, detail?.snapshot?.status?.abstractGameState || card?.status?.abstract);
+    return {
+      reco,
+      rows,
+      actualValue,
+      simValue,
+      modelMean,
+      liveProjection,
+      liveEdge,
+      badge,
+      tierLabel: propTierLabel(reco),
+      lineLabel: `${String(reco?.selection || "over").replace(/^./, (m) => m.toUpperCase())} ${formatLine(reco?.market_line)}`,
+    };
+  }
+
+  function renderPropOverviewLens(card, detail) {
+    const liveRows = livePropRows(detail);
+    const overviewRows = liveRows.length ? liveRows : officialPropRows(card).concat(extraPropRows(card));
+    const rankedRows = overviewRows
+      .map((reco) => ({ reco, state: propLensState(card, detail, reco) }))
+      .filter((entry) => entry.state && entry.state.reco)
+      .sort((left, right) => {
+        if (liveRows.length) {
+          const leftLive = Math.abs(toNumber(left.state.liveEdge) || 0);
+          const rightLive = Math.abs(toNumber(right.state.liveEdge) || 0);
+          if (leftLive !== rightLive) return rightLive - leftLive;
+        }
+        const leftOfficial = left.state.tierLabel === "Official pick" ? 0 : 1;
+        const rightOfficial = right.state.tierLabel === "Official pick" ? 0 : 1;
+        if (leftOfficial !== rightOfficial) return leftOfficial - rightOfficial;
+        const leftLive = Math.abs(toNumber(left.state.liveEdge) || 0);
+        const rightLive = Math.abs(toNumber(right.state.liveEdge) || 0);
+        if (leftLive !== rightLive) return rightLive - leftLive;
+        const leftEdge = Math.abs(toNumber(left.reco?.edge) || 0);
+        const rightEdge = Math.abs(toNumber(right.reco?.edge) || 0);
+        if (leftEdge !== rightEdge) return rightEdge - leftEdge;
+        return String(propOwnerName(left.reco) || "").localeCompare(String(propOwnerName(right.reco) || ""));
+      })
+      .slice(0, 6);
+
+    const items = rankedRows.map((entry) => {
+      const reco = entry.reco;
+      const label = String(reco?.market || "") === "pitcher_props" ? "Pitcher live lens" : "Hitter live lens";
+      return { label, state: entry.state };
+    });
+
+    if (!items.length) {
+      return '<div class="cards-empty-copy">No tracked player props for live lens.</div>';
+    }
+
+    return `
+      <div class="cards-prop-overview-grid">
+        ${items.map((entry) => {
+          const stateObj = entry.state;
+          const reco = stateObj.reco;
+          const liveEdgeClass = stateObj.liveEdge == null ? "" : (stateObj.liveEdge >= 0 ? "is-positive" : "is-negative");
+          return `
+            <div class="cards-prop-overview-card">
+              <div class="cards-lens-head">
+                <div>
+                  <div class="cards-lens-label">${escapeHtml(entry.label)}</div>
+                  <div class="cards-lens-main">${escapeHtml(propOwnerName(reco))}</div>
+                  <div class="cards-subcopy">${escapeHtml(marketLabelLong(reco))}</div>
+                </div>
+                <span class="cards-lens-badge ${escapeHtml(stateObj.badge.className)}">${escapeHtml(stateObj.badge.label)}</span>
+              </div>
+              <div class="cards-prop-overview-metrics">
+                <div class="cards-data-pair"><span>Actual</span><strong>${escapeHtml(stateObj.actualValue == null ? '-' : formatLine(stateObj.actualValue))}</strong></div>
+                <div class="cards-data-pair"><span>Live proj</span><strong>${escapeHtml(stateObj.liveProjection == null ? '-' : formatLine(stateObj.liveProjection))}</strong></div>
+                <div class="cards-data-pair"><span>Line</span><strong>${escapeHtml(stateObj.lineLabel)}</strong></div>
+                <div class="cards-data-pair ${liveEdgeClass}"><span>Live edge</span><strong>${escapeHtml(stateObj.liveEdge == null ? '-' : formatSigned(stateObj.liveEdge, 2))}</strong></div>
+              </div>
+              <div class="cards-prop-overview-foot">
+                <span>${escapeHtml(stateObj.modelMean == null ? 'Model mean -' : `Model mean ${formatLine(stateObj.modelMean)}`)}</span>
+                <span>${escapeHtml(`${stateObj.tierLabel} | ${formatOdds(reco?.odds)}`)}</span>
+              </div>
+            </div>`;
+        }).join('')}
+      </div>`;
+  }
+
   function propButtonMarkup(rows, selectedKey, tier) {
     if (!rows.length) return '<div class="cards-empty-copy">No rows.</div>';
-    const buttonTierClass = tier === "candidate" ? "is-candidate" : "is-official";
-    const tierLabel = tier === "candidate" ? "Playable" : "Official";
+    const buttonTierClass = tier === "candidate" ? "is-candidate" : (tier === "live" ? "is-live" : "is-official");
+    const tierLabel = tier === "candidate" ? "Playable" : (tier === "live" ? "Live" : "Official");
     return `<div class="cards-prop-list">${rows
       .map((row) => {
         const key = propKey(row);
@@ -1048,6 +1434,111 @@
     const summaryChip = node.querySelector('[data-role="prop-summary-chip"]');
     if (!groupsNode || !lensNode || !filtersNode || !summaryChip) return;
 
+    const currentLiveRows = livePropRows(detail);
+    if (currentLiveRows.length) {
+      const filteredLiveRows = filteredPropRows(currentLiveRows, filters);
+      const filtersApplied = filters.side !== "all" || filters.type !== "all";
+      filtersNode.innerHTML = renderPropFilterControls(currentLiveRows, detail);
+      summaryChip.textContent = filtersApplied
+        ? (filteredLiveRows.length ? `${filteredLiveRows.length} live opps` : "No matches")
+        : `${currentLiveRows.length} live opps`;
+
+      if (!filteredLiveRows.length) {
+        groupsNode.innerHTML = '<div class="cards-empty-copy">No live prop opportunities match the current side and prop-type filters.</div>';
+        lensNode.innerHTML = `
+          <div class="cards-lens-head">
+            <div>
+              <div class="cards-lens-label">Prop lens</div>
+              <div class="cards-lens-main">No filtered live prop selected</div>
+            </div>
+            <span class="cards-lens-badge is-live">Refine filters</span>
+          </div>
+          <div class="cards-callout-copy">No current live prop opportunities matched the active filters for this game.</div>`;
+        return;
+      }
+
+      let selected = filteredLiveRows.find((row) => propKey(row) === detail.selectedPropKey) || filteredLiveRows[0] || null;
+      const selectedKey = selected ? propKey(selected) : detail.selectedPropKey;
+      if (selected) detail.selectedPropKey = selectedKey;
+
+      groupsNode.innerHTML = `
+        <div class="cards-prop-group">
+          <div class="cards-box-head">
+            <div class="cards-table-title"><strong>Live opportunities</strong></div>
+            <span class="cards-chip is-live">${escapeHtml(String(filteredLiveRows.length))} plays</span>
+          </div>
+          <div class="cards-callout-copy">Current market odds ranked by live projection first, then model-vs-market edge.</div>
+          ${propButtonMarkup(filteredLiveRows, selectedKey, "live")}
+        </div>`;
+
+      const stateObj = propLensState(card, detail, selected);
+      const rows = stateObj.rows;
+      const actualValue = stateObj.actualValue;
+      const simValue = stateObj.simValue;
+      const modelMean = stateObj.modelMean;
+      const liveProjection = stateObj.liveProjection;
+      const liveEdge = stateObj.liveEdge;
+      const badge = stateObj.badge;
+
+      const actualLabel = actualValue == null ? "-" : `${actualValue} ${metricLabel(selected)}`;
+      const simLabel = simValue == null ? "-" : `${simValue} ${metricLabel(selected)}`;
+      const lineLabel = `${String(selected?.selection || "over").replace(/^./, (m) => m.toUpperCase())} ${formatLine(selected?.market_line)}`;
+      const tierLabel = stateObj.tierLabel;
+
+      const detailPairs = [
+        { label: "Tier", value: tierLabel },
+        { label: "Actual", value: actualLabel },
+        { label: "Sim row", value: simLabel },
+        { label: "Model mean", value: modelMean == null ? "-" : `${formatLine(modelMean)} ${metricLabel(selected)}` },
+        { label: "Live proj", value: liveProjection == null ? "-" : `${formatLine(liveProjection)} ${metricLabel(selected)}` },
+        { label: "Line", value: lineLabel },
+        { label: "Live edge", value: liveEdge == null ? "-" : formatSigned(liveEdge, 2) },
+        { label: "Odds", value: formatOdds(selected?.odds) },
+        { label: "Edge", value: formatPropEdge(selected) },
+        {
+          label: "Model",
+          value: selected?.outs_mean != null
+            ? `${formatLine(selected.outs_mean)} outs mean`
+            : `${formatPercent(selected?.model_prob_over, 1)} over`,
+        },
+      ];
+
+      const actualColumns = rows.isPitcher ? ACTUAL_PITCHING_COLUMNS : ACTUAL_BATTING_COLUMNS;
+      const simColumns = rows.isPitcher ? simPitchingColumns(detail.sim) : simBattingColumns(detail.sim);
+
+      lensNode.innerHTML = `
+        <div class="cards-lens-head">
+          <div>
+            <div class="cards-lens-label">Prop lens</div>
+            <div class="cards-lens-main">${escapeHtml(propOwnerName(selected))} - ${escapeHtml(marketLabelLong(selected))}</div>
+            <div class="cards-subcopy">${escapeHtml(tierLabel)} | ${escapeHtml(card?.away?.abbr || "Away")} at ${escapeHtml(card?.home?.abbr || "Home")}</div>
+          </div>
+          <span class="cards-lens-badge ${escapeHtml(badge.className)}">${escapeHtml(badge.label)}</span>
+        </div>
+
+        <div class="cards-detail-grid">
+          ${detailPairs
+            .map((pair) => `
+              <div class="cards-data-pair">
+                <span>${escapeHtml(pair.label)}</span>
+                <strong>${escapeHtml(pair.value)}</strong>
+              </div>`)
+            .join("")}
+        </div>
+
+        <div class="cards-box-grid">
+          <div class="cards-panel-card cards-prop-stack">
+            <div class="cards-table-head"><div class="cards-table-title">Live / final player row</div></div>
+            ${rows.actualRow ? renderTableHtml(actualColumns, [rows.actualRow]) : '<div class="cards-empty-copy">No actual boxscore row matched this player yet.</div>'}
+          </div>
+          <div class="cards-panel-card cards-prop-stack">
+            <div class="cards-table-head"><div class="cards-table-title">Sim player row</div></div>
+            ${rows.simRow ? renderTableHtml(simColumns, [rows.simRow]) : '<div class="cards-empty-copy">No sim row matched this player.</div>'}
+          </div>
+        </div>`;
+      return;
+    }
+
     const pitcherRows = marketRows(card, "pitcherProps");
     const hitterRows = marketRows(card, "hitterProps");
     const extraPitcherRows = extraMarketRows(card, "extraPitcherProps");
@@ -1066,7 +1557,7 @@
       .concat(filteredExtraHitterRows);
     const filtersApplied = filters.side !== "all" || filters.type !== "all";
 
-    filtersNode.innerHTML = officialCount || extraCount ? renderPropFilterControls(card, detail) : "";
+    filtersNode.innerHTML = officialCount || extraCount ? renderPropFilterControls(allPropRows(card), detail) : "";
     summaryChip.textContent = filtersApplied
       ? (filteredOfficialCount || filteredExtraCount ? propCountBadge(filteredOfficialCount, filteredExtraCount) : "No matches")
       : propCountBadge(officialCount, extraCount);
@@ -1159,21 +1650,28 @@
       return;
     }
 
-    const rows = playerRows(card, detail, selected);
-    const actualValue = statValue(rows.actualRow, selected);
-    const simValue = statValue(rows.simRow, selected);
-    const badge = propResultBadge(selected, actualValue, detail?.snapshot?.status?.abstractGameState || card?.status?.abstract);
+    const stateObj = propLensState(card, detail, selected);
+    const rows = stateObj.rows;
+    const actualValue = stateObj.actualValue;
+    const simValue = stateObj.simValue;
+    const modelMean = stateObj.modelMean;
+    const liveProjection = stateObj.liveProjection;
+    const liveEdge = stateObj.liveEdge;
+    const badge = stateObj.badge;
 
     const actualLabel = actualValue == null ? "-" : `${actualValue} ${metricLabel(selected)}`;
     const simLabel = simValue == null ? "-" : `${simValue} ${metricLabel(selected)}`;
     const lineLabel = `${String(selected?.selection || "over").replace(/^./, (m) => m.toUpperCase())} ${formatLine(selected?.market_line)}`;
-    const tierLabel = propTierLabel(selected);
+    const tierLabel = stateObj.tierLabel;
 
     const detailPairs = [
       { label: "Tier", value: tierLabel },
       { label: "Actual", value: actualLabel },
-      { label: "Sim", value: simLabel },
+      { label: "Sim row", value: simLabel },
+      { label: "Model mean", value: modelMean == null ? "-" : `${formatLine(modelMean)} ${metricLabel(selected)}` },
+      { label: "Live proj", value: liveProjection == null ? "-" : `${formatLine(liveProjection)} ${metricLabel(selected)}` },
       { label: "Line", value: lineLabel },
+      { label: "Live edge", value: liveEdge == null ? "-" : formatSigned(liveEdge, 2) },
       { label: "Odds", value: formatOdds(selected?.odds) },
       { label: "Edge", value: formatPropEdge(selected) },
       {
@@ -1533,6 +2031,8 @@
     const homeScore = node.querySelector('[data-role="home-score"]');
     const liveLine = node.querySelector('[data-role="live-line"]');
     const simLine = node.querySelector('[data-role="sim-line"]');
+    const gameLens = node.querySelector('[data-role="game-lens"]');
+    const propOverviewLens = node.querySelector('[data-role="prop-overview-lens"]');
     const snapshot = detail.snapshot;
     const sim = detail.sim;
 
@@ -1546,6 +2046,8 @@
     if (homeScore) homeScore.textContent = snapshot?.teams?.home?.totals?.R ?? "-";
     if (liveLine) liveLine.textContent = liveSummary(snapshot, card);
     if (simLine) simLine.textContent = simSummary(sim, card);
+    if (gameLens) gameLens.innerHTML = renderGameLens(card, detail);
+    if (propOverviewLens) propOverviewLens.innerHTML = renderPropOverviewLens(card, detail);
 
     renderActualBox(card, detail, node);
     renderSimBox(card, detail, node);
@@ -1561,22 +2063,47 @@
     );
   }
 
-  async function loadCards() {
-    if (root.grid) root.grid.innerHTML = '<div class="cards-loading-state">Loading cards...</div>';
-    if (root.scoreboard) root.scoreboard.innerHTML = '<div class="cards-loading-strip">Loading scoreboard...</div>';
+  function sameSlate(nextCards, currentCards) {
+    const left = Array.isArray(currentCards) ? currentCards : [];
+    const right = Array.isArray(nextCards) ? nextCards : [];
+    if (left.length !== right.length) return false;
+    for (let index = 0; index < left.length; index += 1) {
+      if (Number(left[index]?.gamePk) !== Number(right[index]?.gamePk)) return false;
+    }
+    return true;
+  }
+
+  async function loadCards(options = {}) {
+    const silent = !!options.silent;
+    if (state.loadingCards) return;
+    state.loadingCards = true;
+    if (!silent) {
+      if (root.grid) root.grid.innerHTML = '<div class="cards-loading-state">Loading cards...</div>';
+      if (root.scoreboard) root.scoreboard.innerHTML = '<div class="cards-loading-strip">Loading scoreboard...</div>';
+    }
 
     try {
       const payload = await fetchJson(`/api/cards?date=${encodeURIComponent(state.date)}`);
-      state.payload = payload || {};
-      state.date = String(payload?.date || state.date || "");
-      state.cards = Array.isArray(payload?.cards) ? payload.cards : [];
+      const nextPayload = payload || {};
+      const nextDate = String(nextPayload?.date || state.date || "");
+      const nextCards = Array.isArray(nextPayload?.cards) ? nextPayload.cards : [];
+      const slateUnchanged = sameSlate(nextCards, state.cards);
+
+      state.payload = nextPayload;
+      state.date = nextDate;
+      state.cards = nextCards;
 
       updateDateControls();
       renderHeaderMeta();
       renderSourceMeta();
       renderFilters();
-      renderScoreboard();
-      renderCards();
+
+      if (!silent || !slateUnchanged) {
+        renderScoreboard();
+        renderCards();
+      } else {
+        applyFilter();
+      }
 
       if (!state.cards.length && root.grid) {
         root.grid.innerHTML = `<div class="cards-empty-state">No games available for ${escapeHtml(state.date)}.</div>`;
@@ -1598,7 +2125,18 @@
       if (root.scoreboard) {
         root.scoreboard.innerHTML = `<div class="cards-loading-strip">Failed to load scoreboard.</div>`;
       }
+    } finally {
+      state.loadingCards = false;
     }
+  }
+
+  function installAutoRefresh() {
+    if (state.autoRefreshHandle) {
+      window.clearInterval(state.autoRefreshHandle);
+    }
+    state.autoRefreshHandle = window.setInterval(() => {
+      loadCards({ silent: true });
+    }, AUTO_REFRESH_MS);
   }
 
   function installErrorHandlers() {
@@ -1620,5 +2158,6 @@
 
   installErrorHandlers();
   updateDateControls();
-  loadCards();
+  installAutoRefresh();
+  loadCards({ silent: false });
 })();

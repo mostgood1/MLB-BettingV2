@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>MLB Game Cards — {{ date }}</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='cards.css', v='20260318-compact-rhe') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='cards.css', v='20260326-live-in-cards') }}" />
   </head>
   <body class="cards-body">
     <div class="cards-shell">
@@ -25,7 +25,6 @@
           <input id="cardsDateInput" type="date" name="date" value="{{ date }}" aria-label="Slate date" />
           <button type="submit">Load</button>
           <a class="cards-nav-pill" id="cardsNextDateLink" href="/?date={{ date }}" rel="next">Next</a>
-          <a class="cards-nav-pill" href="/live-lens?date={{ date }}">Live lens</a>
           <a class="cards-nav-pill" href="/pitcher-ladders?date={{ date }}">Pitcher ladders</a>
           <a class="cards-nav-pill" href="/hitter-ladders?date={{ date }}">Hitter ladders</a>
           <a class="cards-nav-pill" href="/season/{{ date[:4] }}">Season review</a>
@@ -52,6 +51,6 @@
         date: {{ date|tojson }},
       };
     </script>
-    <script src="{{ url_for('static', filename='cards.js', v='20260318-compact-rhe') }}"></script>
+    <script src="{{ url_for('static', filename='cards.js', v='20260326-live-in-cards') }}"></script>
   </body>
 </html>

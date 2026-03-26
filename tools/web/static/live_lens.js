@@ -25,7 +25,8 @@
   function formatLine(value) {
     const num = toNumber(value);
     if (num == null) return "-";
-    return Number.isInteger(num) ? String(num) : num.toFixed(1);
+    if (Math.abs(num) >= 10 || Number.isInteger(num)) return String(Number(num.toFixed(1)));
+    return num.toFixed(2).replace(/\.00$/, ".0");
   }
 
   function formatOdds(value) {
@@ -38,6 +39,17 @@
     const num = toNumber(value);
     if (num == null) return "-";
     return `${(num * 100).toFixed(1)}%`;
+  }
+
+  function formatSigned(value, digits = 2) {
+    const num = toNumber(value);
+    if (num == null) return "-";
+    const rounded = Number(num.toFixed(digits));
+    return rounded > 0 ? `+${rounded}` : String(rounded);
+  }
+
+  function pickTone(value) {
+    return toNumber(value) != null && Math.abs(Number(value)) > 0 ? "#005f73" : "#6c757d";
   }
 
   function propLabel(prop) {
@@ -54,6 +66,50 @@
     return "#6c757d";
   }
 
+  function renderMetric(label, value) {
+    return `<div style="display:flex;justify-content:space-between;gap:12px;"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`;
+  }
+
+  function renderLensCard(lens) {
+    const projection = lens?.projection || {};
+    const moneyline = lens?.markets?.moneyline || {};
+    const spread = lens?.markets?.spread || {};
+    const total = lens?.markets?.total || {};
+    const marketProb = formatPercent(moneyline.marketHomeProb);
+    const modelProb = formatPercent(lens?.modelHomeWinProb);
+    const baselineProb = formatPercent(lens?.baselineHomeWinProb);
+    const projectionLine = projection.closed
+      ? "Segment closed"
+      : `${formatLine(projection.away)} - ${formatLine(projection.home)} | Total ${formatLine(projection.total)} | Home margin ${formatSigned(projection.homeMargin)}`;
+    return `
+      <div style="border:1px solid #d7dce1;border-radius:14px;padding:14px;background:#fff;min-width:220px;flex:1 1 220px;">
+        <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;">
+          <div style="font-weight:700;">${escapeHtml(String(lens?.label || "Segment"))}</div>
+          <span style="display:inline-block;padding:2px 8px;border-radius:999px;background:${lens?.closed ? "#6c757d" : "#005f73"};color:#fff;">${escapeHtml(lens?.closed ? "Closed" : String(lens?.source || "live"))}</span>
+        </div>
+        <div class="status-line" style="margin-top:6px;">${escapeHtml(projectionLine)}</div>
+        <div style="display:grid;gap:6px;margin-top:12px;">
+          ${renderMetric("Home win", modelProb)}
+          ${renderMetric("Baseline", baselineProb)}
+          ${renderMetric("Market", marketProb)}
+          ${renderMetric("ML", moneyline.pick ? `${String(moneyline.pick).toUpperCase()} ${formatPercent(moneyline.edge)}` : "-" )}
+          ${renderMetric("Spread", spread.pick ? `${String(spread.pick).toUpperCase()} ${formatSigned(spread.homeLine, 1)} (${formatSigned(spread.edge)})` : "-" )}
+          ${renderMetric("Total", total.pick ? `${String(total.pick).toUpperCase()} ${formatLine(total.line)} (${formatSigned(total.edge)})` : "-" )}
+        </div>
+      </div>`;
+  }
+
+  function renderGameLens(game) {
+    const lensRows = Array.isArray(game?.gameLens) ? game.gameLens : [];
+    if (!lensRows.length) {
+      return '<div class="empty">No live game lens available.</div>';
+    }
+    return `
+      <div style="display:flex;flex-wrap:wrap;gap:12px;margin:14px 0 18px;">
+        ${lensRows.map((lens) => renderLensCard(lens)).join("")}
+      </div>`;
+  }
+
   function renderPropTable(props) {
     if (!Array.isArray(props) || !props.length) {
       return '<div class="empty">No tracked player props for this game.</div>';
@@ -68,8 +124,10 @@
             <th>Side</th>
             <th>Line</th>
             <th>Actual</th>
-            <th>Delta</th>
-            <th>Edge</th>
+            <th>Projection</th>
+            <th>Model</th>
+            <th>Live Edge</th>
+            <th>Pregame Edge</th>
             <th>Odds</th>
             <th>Status</th>
           </tr>
@@ -83,7 +141,9 @@
               <td>${escapeHtml(String(prop.selection || ""))}</td>
               <td>${escapeHtml(formatLine(prop.line))}</td>
               <td>${escapeHtml(formatLine(prop.actual))}</td>
-              <td>${escapeHtml(formatLine(prop.delta))}</td>
+              <td style="color:${pickTone(prop.liveEdge)};font-weight:600;">${escapeHtml(formatLine(prop.liveProjection))}</td>
+              <td>${escapeHtml(formatLine(prop.modelMean))}</td>
+              <td style="color:${pickTone(prop.liveEdge)};font-weight:600;">${escapeHtml(formatSigned(prop.liveEdge))}</td>
               <td>${escapeHtml(formatPercent(prop.edge))}</td>
               <td>${escapeHtml(formatOdds(prop.odds))}</td>
               <td><span style="display:inline-block;padding:2px 8px;border-radius:999px;background:${badgeTone(prop.status)};color:#fff;">${escapeHtml(String(prop.status || "pending"))}</span></td>
@@ -109,6 +169,7 @@
           <div class="panel-title">${escapeHtml(String(away.abbr || away.name || "Away"))} at ${escapeHtml(String(home.abbr || home.name || "Home"))}</div>
           <div class="status-line">${escapeHtml(String(status.abstract || ""))} — ${escapeHtml(String(status.detailed || game.startTime || ""))}</div>
           <div class="status-line">Score: ${escapeHtml(String(score.away ?? "-"))} - ${escapeHtml(String(score.home ?? "-"))}${liveText ? ` | ${escapeHtml(liveText)}` : ""}</div>
+          ${renderGameLens(game)}
           ${renderPropTable(game.props)}
         </section>`;
     }).join("");

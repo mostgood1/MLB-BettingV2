@@ -43,9 +43,12 @@ DEFAULT_LOCK_POLICY: Dict[str, Any] = {
     "ml_edge_min": 0.01,
     "hitter_edge_min": 0.0,
     "hitter_edge_min_by_market": dict(DEFAULT_HITTER_EDGE_MIN_BY_MARKET),
+    "hitter_max_favorite_odds": -200,
+    "hitter_hr_under_0_5_max_favorite_odds": -200,
     "pitcher_market": "outs",
     "pitcher_side": "over",
     "pitcher_edge_min": 0.01,
+    "pitcher_max_favorite_odds": -200,
 }
 
 DEFAULT_STANDARD_STAKE_U = 1.0
@@ -728,6 +731,49 @@ def _select_market_side(
     return best
 
 
+def _normalize_american_odds(value: Any) -> Optional[int]:
+    try:
+        if value is None:
+            return None
+        return int(round(float(value)))
+    except Exception:
+        return None
+
+
+def _favorite_price_exceeds_limit(odds: Any, limit: Any) -> bool:
+    odds_value = _normalize_american_odds(odds)
+    limit_value = _normalize_american_odds(limit)
+    if odds_value is None or limit_value is None:
+        return False
+    if odds_value >= 0 or limit_value >= 0:
+        return False
+    return odds_value < limit_value
+
+
+def _hitter_price_allowed(
+    policy: Optional[Dict[str, Any]],
+    *,
+    market_name: str,
+    selection: str,
+    market_line: float,
+    odds: Any,
+) -> bool:
+    if _favorite_price_exceeds_limit(odds, (policy or {}).get("hitter_max_favorite_odds")):
+        return False
+    if (
+        str(market_name) == "hitter_home_runs"
+        and str(selection) == "under"
+        and _line_matches(market_line, 0.5)
+        and _favorite_price_exceeds_limit(odds, (policy or {}).get("hitter_hr_under_0_5_max_favorite_odds"))
+    ):
+        return False
+    return True
+
+
+def _pitcher_price_allowed(policy: Optional[Dict[str, Any]], *, odds: Any) -> bool:
+    return not _favorite_price_exceeds_limit(odds, (policy or {}).get("pitcher_max_favorite_odds"))
+
+
 def _collect_hitter_recommendations(sim_dir: Path, hitter_lines_path: Path, policy: Dict[str, Any]) -> List[Dict[str, Any]]:
     if not hitter_lines_path.exists():
         return []
@@ -764,6 +810,14 @@ def _collect_hitter_recommendations(sim_dir: Path, hitter_lines_path: Path, poli
                     _hitter_edge_min_for_market(policy, str(market_spec["market"])),
                 )
                 if side_pick is None:
+                    continue
+                if not _hitter_price_allowed(
+                    policy,
+                    market_name=str(market_spec["market"]),
+                    selection=str(side_pick.get("selection") or ""),
+                    market_line=float(line_value),
+                    odds=side_pick.get("odds"),
+                ):
                     continue
                 rows.append(
                     {
@@ -836,6 +890,8 @@ def _collect_pitcher_recommendations(
                 continue
             edge = float(p_over) - float(market_prob)
             if edge < float(policy["pitcher_edge_min"]):
+                continue
+            if not _pitcher_price_allowed(policy, odds=outs_market.get("over_odds")):
                 continue
             rows.append(
                 {
@@ -1151,6 +1207,10 @@ def _build_locked_policy_card(
     hitter_policy: Dict[str, Any] = {
         "side": "best_edge_side",
         "no_vig_edge_min": float(policy["hitter_edge_min"]),
+        "max_favorite_odds": _normalize_american_odds(policy.get("hitter_max_favorite_odds")),
+        "home_run_under_0_5_max_favorite_odds": _normalize_american_odds(
+            policy.get("hitter_hr_under_0_5_max_favorite_odds")
+        ),
         "selection_mode": hitter_selection_mode,
         "one_prop_per_player": True,
         "shared_cap_bucket": "hitter_props",
@@ -1201,6 +1261,7 @@ def _build_locked_policy_card(
                 "side": str(policy["pitcher_side"]),
                 "one_prop_per_player": True,
                 "calibrated_no_vig_edge_min": float(policy["pitcher_edge_min"]),
+                "max_favorite_odds": _normalize_american_odds(policy.get("pitcher_max_favorite_odds")),
             },
         },
         "cap_profile": cap_profile,
@@ -1221,6 +1282,7 @@ def _build_locked_policy_card(
             cap_note,
             hitter_cap_note,
             "Official player props are limited to one selected lane per player; additional qualified lanes remain available as playable candidates.",
+            "Prop price guardrails drop overly juiced favorites before official and other playable candidates are ranked.",
             "Totals, moneyline, and pitcher props are graded at 1.0u; hitter props are graded at 0.25u.",
         ],
         "profiles": profile_info,
@@ -1417,6 +1479,18 @@ def main() -> int:
         help="Base minimum no-vig edge for official hitter props.",
     )
     ap.add_argument(
+        "--official-hitter-max-favorite-odds",
+        type=int,
+        default=int(DEFAULT_LOCK_POLICY["hitter_max_favorite_odds"]),
+        help="Maximum allowed favorite price for official hitter props; more negative prices are discarded.",
+    )
+    ap.add_argument(
+        "--official-hitter-hr-under-0-5-max-favorite-odds",
+        type=int,
+        default=int(DEFAULT_LOCK_POLICY["hitter_hr_under_0_5_max_favorite_odds"]),
+        help="Maximum allowed favorite price for official hitter HR under 0.5 props; more negative prices are discarded.",
+    )
+    ap.add_argument(
         "--official-hitter-runs-edge-min",
         type=float,
         default=float(_hitter_edge_min_for_market(DEFAULT_LOCK_POLICY, "hitter_runs")),
@@ -1433,6 +1507,12 @@ def main() -> int:
         type=int,
         default=24,
         help="Force hitter HR top-N output high enough to build the official hitter card.",
+    )
+    ap.add_argument(
+        "--official-pitcher-max-favorite-odds",
+        type=int,
+        default=int(DEFAULT_LOCK_POLICY["pitcher_max_favorite_odds"]),
+        help="Maximum allowed favorite price for official pitcher props; more negative prices are discarded.",
     )
     ap.add_argument(
         "--official-hitter-props-topn",
@@ -1590,6 +1670,9 @@ def main() -> int:
         scalar_updates={
             "totals_diff_min": args.official_totals_diff_min,
             "hitter_edge_min": args.official_hitter_edge_min,
+            "hitter_max_favorite_odds": args.official_hitter_max_favorite_odds,
+            "hitter_hr_under_0_5_max_favorite_odds": args.official_hitter_hr_under_0_5_max_favorite_odds,
+            "pitcher_max_favorite_odds": args.official_pitcher_max_favorite_odds,
         },
         hitter_edge_updates={
             "hitter_runs": args.official_hitter_runs_edge_min,

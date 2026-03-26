@@ -3,6 +3,7 @@ from __future__ import annotations
 from bisect import bisect_left
 import gzip
 import json
+import math
 import os
 import shutil
 import sys
@@ -27,7 +28,7 @@ from sim_engine.data.statsapi import (
     fetch_schedule_date_buckets,
     fetch_schedule_for_date,
 )
-from sim_engine.market_pitcher_props import normalize_pitcher_name
+from sim_engine.market_pitcher_props import market_side_probabilities, normalize_pitcher_name
 from tools.oddsapi.fetch_daily_oddsapi_markets import fetch_and_write_live_odds_for_date
 from tools.eval.settle_locked_policy_cards import _settle_card
 
@@ -52,6 +53,7 @@ _TRACKED_DAILY_SNAPSHOT_DIR = _TRACKED_DATA_DIR / "daily" / "snapshots"
 _CRON_TOKEN = str(os.environ.get("MLB_CRON_TOKEN") or os.environ.get("CRON_TOKEN") or "").strip()
 _DEMO_DATE = "2025-06-04"
 _CARDS_PRESEASON_DEFAULT_WINDOW_DAYS = 21
+_LIVE_PROP_MARKET_MAX_AGE_SECONDS = 60
 _PITCHER_LADDER_PROPS: Dict[str, Dict[str, Any]] = {
     "strikeouts": {
         "label": "Strikeouts",
@@ -261,6 +263,47 @@ def _daily_sim_dir(d: str) -> Path:
     return _DAILY_DIR / "sims" / str(d)
 
 
+def _market_refresh_archive_root() -> Path:
+    return _ensure_dir(_MARKET_DIR / "refresh_history")
+
+
+def _market_refresh_archive_dir(d: str, recorded_at: datetime) -> Path:
+    stamp = recorded_at.strftime("%Y%m%dT%H%M%S_%fZ")
+    return _ensure_dir(_market_refresh_archive_root() / _date_slug(d) / stamp)
+
+
+def _archive_oddsapi_refresh_outputs(d: str, result: Dict[str, Any], *, recorded_at: datetime) -> Dict[str, Any]:
+    archive_dir = _market_refresh_archive_dir(d, recorded_at)
+    copied: Dict[str, str] = {}
+    files: Dict[str, str] = {}
+
+    for key in ("game_lines_path", "pitcher_props_path", "hitter_props_path"):
+        source_path = Path(str(result.get(key) or "")).resolve() if result.get(key) else None
+        if not source_path or not source_path.exists() or not source_path.is_file():
+            continue
+        destination = archive_dir / source_path.name
+        shutil.copy2(source_path, destination)
+        copied[source_path.name] = _relative_path_str(destination) or str(destination)
+        files[key] = _relative_path_str(destination) or str(destination)
+
+    archive_meta = {
+        "recordedAt": recorded_at.isoformat() + "Z",
+        "date": str(d),
+        "dataRoot": _relative_path_str(_DATA_DIR),
+        "marketDir": _relative_path_str(_MARKET_DIR),
+        "archiveDir": _relative_path_str(archive_dir),
+        "result": result,
+        "files": files,
+    }
+    _write_json_file(archive_dir / "refresh_meta.json", archive_meta)
+    _append_jsonl(_market_refresh_archive_root() / f"refresh_log_{_date_slug(d)}.jsonl", archive_meta)
+    return {
+        "archiveDir": _relative_path_str(archive_dir),
+        "files": files,
+        "copied": copied,
+    }
+
+
 def _cron_meta_dir() -> Path:
     return _ensure_dir(_LIVE_LENS_DIR / "cron_meta")
 
@@ -317,6 +360,38 @@ def _resolve_oddsapi_market_file(d: str, prefix: str) -> Optional[Path]:
         preferred=preferred,
         recursive_pattern=f"**/{filename}",
     )
+
+
+def _file_age_seconds(path: Optional[Path]) -> Optional[float]:
+    if not path or not path.exists() or not path.is_file():
+        return None
+    try:
+        return max(0.0, float(time.time()) - float(path.stat().st_mtime))
+    except Exception:
+        return None
+
+
+def _maybe_refresh_live_oddsapi_markets(d: str, *, max_age_seconds: int = _LIVE_PROP_MARKET_MAX_AGE_SECONDS) -> bool:
+    if str(d) != str(_today_iso()):
+        return False
+
+    pitcher_path = _resolve_oddsapi_market_file(d, "oddsapi_pitcher_props")
+    hitter_path = _resolve_oddsapi_market_file(d, "oddsapi_hitter_props")
+    game_lines_path = _resolve_oddsapi_market_file(d, "oddsapi_game_lines")
+    ages = [
+        _file_age_seconds(pitcher_path),
+        _file_age_seconds(hitter_path),
+        _file_age_seconds(game_lines_path),
+    ]
+    fresh = [age for age in ages if age is not None and float(age) <= float(max_age_seconds)]
+    if len(fresh) == 3:
+        return False
+
+    try:
+        _refresh_oddsapi_markets(d, overwrite=True)
+        return True
+    except Exception:
+        return False
 
 
 def _find_candidate_file(*, preferred: List[Path], recursive_pattern: str) -> Optional[Path]:
@@ -3873,6 +3948,10 @@ def _live_stat_value(row: Optional[Dict[str, Any]], reco: Dict[str, Any]) -> Opt
         return _safe_float(row.get("R"))
     if "hitter_hits" in market or prop.endswith("hits"):
         return _safe_float(row.get("H"))
+    if prop == "strikeouts":
+        return _safe_float(row.get("SO"))
+    if "earned_runs" in market or prop == "earned_runs":
+        return _safe_float(row.get("ER"))
     if prop == "outs":
         outs = _safe_float(row.get("OUTS"))
         if outs is not None:
@@ -3883,8 +3962,11 @@ def _live_stat_value(row: Optional[Dict[str, Any]], reco: Dict[str, Any]) -> Opt
 
 
 def _prop_result_state(reco: Dict[str, Any], actual_value: Optional[float], status_text: Any) -> str:
+    status_token = str(status_text or "").strip().lower()
     if actual_value is None:
-        return "live" if "live" in str(status_text or "").strip().lower() else "pending"
+        return "live" if status_token in {"live", "in progress", "manager challenge"} or "live" in status_token else "pending"
+    if status_token in {"live", "in progress", "manager challenge"} or "live" in status_token:
+        return "live"
     line = _safe_float(reco.get("market_line"))
     selection = str(reco.get("selection") or "over").strip().lower()
     if line is None:
@@ -3893,6 +3975,606 @@ def _prop_result_state(reco: Dict[str, Any], actual_value: Optional[float], stat
         return "push"
     did_win = float(actual_value) < float(line) if selection == "under" else float(actual_value) > float(line)
     return "win" if did_win else "loss"
+
+
+def _american_odds_implied_prob(value: Any) -> Optional[float]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        odds = int(text)
+    except Exception:
+        try:
+            odds = int(float(text))
+        except Exception:
+            return None
+    if odds == 0:
+        return None
+    if odds > 0:
+        return 100.0 / (float(odds) + 100.0)
+    return abs(float(odds)) / (abs(float(odds)) + 100.0)
+
+
+def _normalize_american_odds(value: Any) -> Optional[int]:
+    try:
+        if value is None:
+            return None
+        return int(round(float(value)))
+    except Exception:
+        return None
+
+
+def _prop_price_allowed(odds: Any, *, max_favorite_odds: int = -200) -> bool:
+    odds_value = _normalize_american_odds(odds)
+    if odds_value is None:
+        return True
+    if odds_value >= 0:
+        return True
+    return odds_value >= int(max_favorite_odds)
+
+
+def _prob_over_line_from_dist(dist: Dict[str, Any], line: float) -> Optional[float]:
+    total = 0
+    over = 0
+    for raw_bucket, raw_count in (dist or {}).items():
+        try:
+            bucket = float(raw_bucket)
+            count = int(raw_count)
+        except Exception:
+            continue
+        total += count
+        if float(bucket) > float(line):
+            over += count
+    if total <= 0:
+        return None
+    return float(over / float(total))
+
+
+def _selection_live_edge(selection: str, live_projection: Optional[float], line: Optional[float]) -> Optional[float]:
+    projection_value = _safe_float(live_projection)
+    line_value = _safe_float(line)
+    if projection_value is None or line_value is None:
+        return None
+    if str(selection) == "under":
+        return round(float(line_value) - float(projection_value), 3)
+    if str(selection) == "over":
+        return round(float(projection_value) - float(line_value), 3)
+    return None
+
+
+def _select_live_prop_side(
+    *,
+    model_prob_over: Optional[float],
+    live_projection: Optional[float],
+    line: Optional[float],
+    over_odds: Any,
+    under_odds: Any,
+) -> Optional[Dict[str, Any]]:
+    candidates: List[Dict[str, Any]] = []
+    line_value = _safe_float(line)
+    side_probs = market_side_probabilities(over_odds, under_odds)
+    market_prob_over = _safe_float(side_probs.get("over"))
+    market_prob_under = _safe_float(side_probs.get("under"))
+
+    for selection, odds in (("over", over_odds), ("under", under_odds)):
+        if _safe_int(odds) is None:
+            continue
+        if not _prop_price_allowed(odds, max_favorite_odds=-200):
+            continue
+        live_edge = _selection_live_edge(selection, live_projection, line_value)
+        projection_gap = abs(float(live_edge)) if live_edge is not None else None
+        market_edge = None
+        if model_prob_over is not None:
+            if selection == "over" and market_prob_over is not None:
+                market_edge = round(float(model_prob_over) - float(market_prob_over), 4)
+            elif selection == "under" and market_prob_under is not None:
+                market_edge = round((1.0 - float(model_prob_over)) - float(market_prob_under), 4)
+        score = live_edge if live_edge is not None else market_edge
+        if score is None or float(score) <= 0.0:
+            continue
+        candidates.append(
+            {
+                "selection": selection,
+                "odds": _safe_int(odds),
+                "liveEdge": live_edge,
+                "projectionGap": projection_gap,
+                "marketEdge": market_edge,
+                "marketProbOver": market_prob_over,
+                "marketProbUnder": market_prob_under,
+                "selectedSideMarketProb": market_prob_over if selection == "over" else market_prob_under,
+                "marketProbMode": str(side_probs.get("mode") or "unknown"),
+                "score": float(score),
+            }
+        )
+
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda item: (
+            float(item.get("liveEdge") or float("-inf")),
+            float(item.get("projectionGap") or float("-inf")),
+            float(item.get("marketEdge") or float("-inf")),
+            1 if item.get("selection") == "over" else 0,
+        ),
+    )
+
+
+def _sim_prop_models(sim_context: Optional[Dict[str, Any]], kind: str) -> Dict[str, Dict[str, Any]]:
+    out = ((sim_context or {}).get("propModels") or {}).get(kind) or {}
+    return out if isinstance(out, dict) else {}
+
+
+def _current_live_prop_rows(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], sim_context: Optional[Dict[str, Any]], d: str) -> List[Dict[str, Any]]:
+    if not isinstance(snapshot, dict) or not isinstance(sim_context, dict) or not sim_context.get("found"):
+        return []
+
+    _maybe_refresh_live_oddsapi_markets(d)
+
+    progress_fraction = float((_live_game_progress(snapshot, card).get("fraction") or 0.0))
+    actual_teams = ((snapshot or {}).get("teams") or {})
+    _, pitcher_market_lines = _load_pitcher_prop_market_lines(d)
+    _, hitter_market_lines = _load_hitter_prop_market_lines(d)
+    pitcher_models = _sim_prop_models(sim_context, "pitchers")
+    hitter_models = _sim_prop_models(sim_context, "hitters")
+    rows: List[Dict[str, Any]] = []
+
+    hitter_market_names = {
+        "hits": "hitter_hits",
+        "home_runs": "hitter_home_runs",
+        "total_bases": "hitter_total_bases",
+        "runs": "hitter_runs",
+        "rbi": "hitter_rbis",
+    }
+
+    for side in ("away", "home"):
+        starter_name = _first_text((((actual_teams.get(side) or {}).get("starter") or {}).get("name")))
+        starter_key = normalize_pitcher_name(starter_name)
+        model_entry = pitcher_models.get(starter_key) if starter_key else None
+        market_entry = pitcher_market_lines.get(starter_key) if starter_key else None
+        actual_row = _lookup_boxscore_row((((actual_teams.get(side) or {}).get("boxscore") or {}).get("pitching") or []), starter_name)
+        if isinstance(model_entry, dict) and isinstance(market_entry, dict):
+            for prop_key, cfg in _PITCHER_LADDER_PROPS.items():
+                market_key = cfg.get("market_key")
+                if not market_key:
+                    continue
+                market = market_entry.get(str(market_key))
+                if not isinstance(market, dict):
+                    continue
+                line_value = _safe_float(market.get("line"))
+                if line_value is None:
+                    continue
+                model_row = model_entry.get("model") or {}
+                model_mean = _safe_float(model_row.get(str(cfg.get("mean_key"))))
+                model_prob_over = _prob_over_line_from_dist(model_row.get(str(cfg.get("dist_key"))) or {}, float(line_value))
+                actual_value = _live_stat_value(actual_row, {"market": "pitcher_props", "prop": prop_key})
+                live_projection = _project_live_value(actual_value, model_mean, progress_fraction)
+                side_pick = _select_live_prop_side(
+                    model_prob_over=model_prob_over,
+                    live_projection=live_projection,
+                    line=float(line_value),
+                    over_odds=market.get("over_odds"),
+                    under_odds=market.get("under_odds"),
+                )
+                if side_pick is None:
+                    continue
+                rows.append(
+                    {
+                        "recommendation_tier": "live",
+                        "source": "current_market",
+                        "market": "pitcher_props",
+                        "market_label": cfg.get("label"),
+                        "prop": prop_key,
+                        "pitcher_name": starter_name,
+                        "team": model_entry.get("team"),
+                        "team_side": side,
+                        "selection": side_pick.get("selection"),
+                        "market_line": float(line_value),
+                        "odds": side_pick.get("odds"),
+                        "over_odds": _safe_int(market.get("over_odds")),
+                        "under_odds": _safe_int(market.get("under_odds")),
+                        "model_prob_over": model_prob_over,
+                        "market_prob_over": side_pick.get("marketProbOver"),
+                        "market_prob_under": side_pick.get("marketProbUnder"),
+                        "market_prob_mode": side_pick.get("marketProbMode"),
+                        "selected_side_market_prob": side_pick.get("selectedSideMarketProb"),
+                        "edge": side_pick.get("marketEdge"),
+                        "live_edge": side_pick.get("liveEdge"),
+                        "projection_gap": side_pick.get("projectionGap"),
+                        "outs_mean": model_mean if prop_key == "outs" else None,
+                        "model_mean": model_mean,
+                        "actual": actual_value,
+                        "actual_value": actual_value,
+                        "live_projection": live_projection,
+                    }
+                )
+
+        batting_rows = (((actual_teams.get(side) or {}).get("boxscore") or {}).get("batting") or [])
+        for actual_row in batting_rows:
+            player_name = _first_text(actual_row.get("name"))
+            player_key = normalize_pitcher_name(player_name)
+            model_entry = hitter_models.get(player_key) if player_key else None
+            market_entry = hitter_market_lines.get(player_key) if player_key else None
+            if not isinstance(model_entry, dict) or not isinstance(market_entry, dict):
+                continue
+            model_row = model_entry.get("model") or {}
+            for prop_key, cfg in _HITTER_LADDER_PROPS.items():
+                market_key = cfg.get("market_key")
+                market_name = hitter_market_names.get(str(prop_key))
+                if not market_key or not market_name:
+                    continue
+                market = market_entry.get(str(market_key))
+                if not isinstance(market, dict):
+                    continue
+                line_value = _safe_float(market.get("line"))
+                if line_value is None:
+                    continue
+                model_mean = _safe_float(model_row.get(str(cfg.get("mean_key"))))
+                model_prob_over = _prob_over_line_from_dist(model_row.get(str(cfg.get("dist_key"))) or {}, float(line_value))
+                actual_value = _live_stat_value(actual_row, {"market": market_name, "prop": prop_key})
+                live_projection = _project_live_value(actual_value, model_mean, progress_fraction)
+                side_pick = _select_live_prop_side(
+                    model_prob_over=model_prob_over,
+                    live_projection=live_projection,
+                    line=float(line_value),
+                    over_odds=market.get("over_odds"),
+                    under_odds=market.get("under_odds"),
+                )
+                if side_pick is None:
+                    continue
+                rows.append(
+                    {
+                        "recommendation_tier": "live",
+                        "source": "current_market",
+                        "market": market_name,
+                        "market_label": cfg.get("label"),
+                        "prop": prop_key,
+                        "player_name": player_name,
+                        "team": model_entry.get("team"),
+                        "team_side": side,
+                        "selection": side_pick.get("selection"),
+                        "market_line": float(line_value),
+                        "odds": side_pick.get("odds"),
+                        "over_odds": _safe_int(market.get("over_odds")),
+                        "under_odds": _safe_int(market.get("under_odds")),
+                        "model_prob_over": model_prob_over,
+                        "market_prob_over": side_pick.get("marketProbOver"),
+                        "market_prob_under": side_pick.get("marketProbUnder"),
+                        "market_prob_mode": side_pick.get("marketProbMode"),
+                        "selected_side_market_prob": side_pick.get("selectedSideMarketProb"),
+                        "edge": side_pick.get("marketEdge"),
+                        "live_edge": side_pick.get("liveEdge"),
+                        "projection_gap": side_pick.get("projectionGap"),
+                        "model_mean": model_mean,
+                        "actual": actual_value,
+                        "actual_value": actual_value,
+                        "live_projection": live_projection,
+                    }
+                )
+
+    rows.sort(
+        key=lambda row: (
+            -float(_safe_float(row.get("live_edge")) or -999.0),
+            -float(_safe_float(row.get("projection_gap")) or -999.0),
+            -float(_safe_float(row.get("edge")) or -999.0),
+            str(_prop_owner_name(row) or ""),
+            str(row.get("market") or ""),
+        )
+    )
+    out: List[Dict[str, Any]] = []
+    for idx, row in enumerate(rows, start=1):
+        item = dict(row)
+        item["rank"] = int(idx)
+        out.append(item)
+    return out
+
+
+def _normalize_two_way_probs(first_prob: Optional[float], second_prob: Optional[float]) -> Tuple[Optional[float], Optional[float]]:
+    if first_prob is None or second_prob is None:
+        return None, None
+    denom = float(first_prob) + float(second_prob)
+    if denom <= 0.0:
+        return None, None
+    return float(first_prob) / denom, float(second_prob) / denom
+
+
+def _live_margin_win_prob(home_margin: Optional[float]) -> Optional[float]:
+    margin = _safe_float(home_margin)
+    if margin is None:
+        return None
+    return 1.0 / (1.0 + math.exp(-0.65 * float(margin)))
+
+
+def _normalize_team_key(value: Any) -> str:
+    return " ".join(part for part in normalize_pitcher_name(str(value or "")).split() if part)
+
+
+def _card_matchup_key(card: Dict[str, Any]) -> Tuple[str, str]:
+    away = _normalize_team_key(((card.get("away") or {}).get("name") or (card.get("away") or {}).get("abbr") or ""))
+    home = _normalize_team_key(((card.get("home") or {}).get("name") or (card.get("home") or {}).get("abbr") or ""))
+    return away, home
+
+
+def _card_event_id(card: Dict[str, Any]) -> Optional[str]:
+    markets = card.get("markets") or {}
+    candidates: List[Any] = [
+        (markets.get("totals") or {}).get("event_id"),
+        (markets.get("ml") or {}).get("event_id"),
+    ]
+    for key in ("pitcherProps", "hitterProps", "extraPitcherProps", "extraHitterProps"):
+        rows = markets.get(key) or []
+        if isinstance(rows, list) and rows:
+            candidates.append((rows[0] or {}).get("event_id"))
+    for raw in candidates:
+        text = str(raw or "").strip()
+        if text:
+            return text
+    return None
+
+
+def _load_game_line_market_index(d: str) -> Dict[str, Any]:
+    path = _resolve_oddsapi_market_file(d, "oddsapi_game_lines")
+    doc = _load_json_file(path)
+    by_event_id: Dict[str, Dict[str, Any]] = {}
+    by_matchup: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    if isinstance(doc, dict):
+        for row in doc.get("games") or []:
+            if not isinstance(row, dict):
+                continue
+            event_id = str(row.get("event_id") or "").strip()
+            away_key = _normalize_team_key(row.get("away_team"))
+            home_key = _normalize_team_key(row.get("home_team"))
+            if event_id:
+                by_event_id[event_id] = row
+            if away_key and home_key:
+                by_matchup[(away_key, home_key)] = row
+    return {
+        "path": path,
+        "by_event_id": by_event_id,
+        "by_matchup": by_matchup,
+    }
+
+
+def _game_line_market_for_card(card: Dict[str, Any], index: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    event_id = _card_event_id(card)
+    if event_id:
+        row = (index.get("by_event_id") or {}).get(str(event_id))
+        if isinstance(row, dict):
+            return row
+    return (index.get("by_matchup") or {}).get(_card_matchup_key(card))
+
+
+def _live_game_progress(snapshot: Optional[Dict[str, Any]], card: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    status = ((snapshot or {}).get("status") or {}) if isinstance(snapshot, dict) else {}
+    abstract = str(status.get("abstractGameState") or ((card or {}).get("status") or {}).get("abstract") or "")
+    detailed = str(status.get("detailedState") or ((card or {}).get("status") or {}).get("detailed") or "")
+    if abstract.lower() == "final":
+        return {"fraction": 1.0, "inning": 9, "half": "final", "outs": 3, "label": detailed or "Final"}
+    if abstract.lower() != "live":
+        return {"fraction": 0.0, "inning": None, "half": None, "outs": 0, "label": detailed or abstract or "Pregame"}
+
+    current = ((snapshot or {}).get("current") or {}) if isinstance(snapshot, dict) else {}
+    inning = _safe_int(current.get("inning")) or 1
+    half = str(current.get("halfInning") or "").strip().lower()
+    outs = _safe_int(((current.get("count") or {}).get("outs"))) or 0
+    outs = int(max(0, min(2, outs)))
+    outs_recorded = int(max(0, ((inning - 1) * 6) + (3 if half == "bottom" else 0) + outs))
+    fraction = max(0.0, min(1.0, float(outs_recorded) / 54.0))
+    label = f"{half.title()} {inning}".strip() if half else f"Inning {inning}"
+    return {"fraction": fraction, "inning": inning, "half": half, "outs": outs, "label": label}
+
+
+def _project_live_value(actual_value: Optional[float], model_mean: Optional[float], progress_fraction: float) -> Optional[float]:
+    mean = _safe_float(model_mean)
+    if mean is None:
+        return None
+    actual = float(_safe_float(actual_value) or 0.0)
+    progress = max(0.0, min(1.0, float(progress_fraction or 0.0)))
+    expected_to_date = float(mean) * progress
+    remaining = max(float(mean) - expected_to_date, 0.0)
+    return round(actual + remaining, 3)
+
+
+def _segment_projection(
+    *,
+    pregame_away: Optional[float],
+    pregame_home: Optional[float],
+    actual_away: Optional[float],
+    actual_home: Optional[float],
+    progress_fraction: float,
+    target_innings: int,
+) -> Dict[str, Any]:
+    away_mean = _safe_float(pregame_away)
+    home_mean = _safe_float(pregame_home)
+    if away_mean is None or home_mean is None:
+        return {"away": None, "home": None, "total": None, "homeMargin": None, "closed": False}
+    target_fraction = max(0.0, min(1.0, float(target_innings) / 9.0))
+    if progress_fraction > target_fraction + 1e-9:
+        return {"away": None, "home": None, "total": None, "homeMargin": None, "closed": True}
+    away_target = float(away_mean) * target_fraction
+    home_target = float(home_mean) * target_fraction
+    expected_away_to_date = min(float(away_mean) * progress_fraction, away_target)
+    expected_home_to_date = min(float(home_mean) * progress_fraction, home_target)
+    away_projection = float(_safe_float(actual_away) or 0.0) + max(away_target - expected_away_to_date, 0.0)
+    home_projection = float(_safe_float(actual_home) or 0.0) + max(home_target - expected_home_to_date, 0.0)
+    return {
+        "away": round(away_projection, 2),
+        "home": round(home_projection, 2),
+        "total": round(away_projection + home_projection, 2),
+        "homeMargin": round(home_projection - away_projection, 2),
+        "closed": False,
+    }
+
+
+def _load_sim_context_for_game(
+    game_pk: int,
+    d: str,
+    *,
+    artifacts: Optional[Dict[str, Any]] = None,
+    archive: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    artifacts = artifacts or _load_cards_artifacts(d)
+    archive = archive or _load_cards_archive_context(d)
+    sim_dir = artifacts.get("sim_dir")
+    snapshot_dir = artifacts.get("snapshot_dir")
+
+    p = _find_sim_file(game_pk=int(game_pk), d=d, day_dir=sim_dir)
+    source_path: Optional[Path] = p
+    if p:
+        try:
+            sim_obj = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            return {"gamePk": int(game_pk), "date": d, "found": False, "error": "read_failed"}
+    else:
+        report_obj = archive.get("report") if isinstance(archive.get("report"), dict) else None
+        report_game = _season_report_game(report_obj, int(game_pk))
+        if not isinstance(report_game, dict):
+            return {"gamePk": int(game_pk), "date": d, "found": False}
+        sim_obj = _report_game_to_sim_obj(
+            report_game,
+            _safe_int(((report_obj.get("meta") or {}).get("sims_per_game")) if isinstance(report_obj, dict) else None),
+        )
+        source_path = archive.get("report_path") if isinstance(archive.get("report_path"), Path) else None
+
+    player_meta: Dict[int, Dict[str, Any]] = {}
+    if p:
+        try:
+            roster_path = _find_roster_snapshot_for_sim(
+                d=d,
+                sim_file=p,
+                sim_obj=sim_obj,
+                day_dir=snapshot_dir,
+            )
+            if roster_path:
+                roster_obj = json.loads(roster_path.read_text(encoding="utf-8"))
+                if isinstance(roster_obj, dict):
+                    player_meta.update(_player_meta_from_roster_snapshot(roster_obj))
+        except Exception:
+            pass
+    else:
+        player_meta.update(_report_player_meta(_season_report_game(archive.get("report"), int(game_pk))))
+
+    name_lookup: Dict[int, str] = {}
+    try:
+        feed = _load_game_feed_for_date(int(game_pk), d) if _is_historical_date(d) else None
+        if not isinstance(feed, dict) or not feed:
+            feed = fetch_game_feed_live(_client(), int(game_pk))
+        if isinstance(feed, dict) and feed:
+            box = (feed.get("liveData") or {}).get("boxscore") or {}
+            teams = box.get("teams") or {}
+            for side in ("away", "home"):
+                players = (teams.get(side) or {}).get("players") or {}
+                if isinstance(players, dict):
+                    for _k, pobj in players.items():
+                        if not isinstance(pobj, dict):
+                            continue
+                        person = pobj.get("person") or {}
+                        pid = _safe_int(person.get("id"))
+                        nm = str(person.get("fullName") or "")
+                        if pid and nm:
+                            name_lookup[int(pid)] = nm
+                            row = player_meta.setdefault(int(pid), {"id": int(pid)})
+                            row.setdefault("name", nm)
+                            row.setdefault("side", side)
+                            pos = _pos_abbr(pobj)
+                            if pos and not row.get("pos"):
+                                row["pos"] = pos
+                            batting_order = pobj.get("battingOrder")
+                            try:
+                                order_value = int(str(batting_order)) if batting_order is not None else None
+                            except Exception:
+                                order_value = None
+                            if order_value is not None and row.get("order") is None:
+                                row["order"] = int(order_value)
+    except Exception:
+        pass
+
+    for pid, nm in name_lookup.items():
+        if not pid or not nm:
+            continue
+        row = player_meta.setdefault(int(pid), {"id": int(pid)})
+        row.setdefault("name", str(nm))
+
+    pbp_list = ((sim_obj.get("pbp") or {}).get("pbp") or [])
+    has_pbp = isinstance(pbp_list, list) and len(pbp_list) > 0
+    sim_data = sim_obj.get("sim") or {}
+    away_abbr = _first_text((sim_obj.get("away") or {}).get("abbreviation"), (sim_obj.get("away") or {}).get("name"))
+    home_abbr = _first_text((sim_obj.get("home") or {}).get("abbreviation"), (sim_obj.get("home") or {}).get("name"))
+    prop_models: Dict[str, Dict[str, Dict[str, Any]]] = {"pitchers": {}, "hitters": {}}
+    starter_names = sim_obj.get("starter_names") or {}
+    starters = sim_obj.get("starters") or {}
+    pitcher_props = sim_data.get("pitcher_props") or {}
+    for side in ("away", "home"):
+        starter_name = _first_text(starter_names.get(side))
+        starter_id = _safe_int(starters.get(side))
+        if not starter_name or starter_id is None:
+            continue
+        pred = pitcher_props.get(str(int(starter_id)))
+        if not isinstance(pred, dict):
+            continue
+        normalized = normalize_pitcher_name(starter_name)
+        if not normalized:
+            continue
+        prop_models["pitchers"][normalized] = {
+            "name": starter_name,
+            "team": away_abbr if side == "away" else home_abbr,
+            "team_side": side,
+            "model": dict(pred),
+        }
+
+    hitter_props = sim_data.get("hitter_props") or {}
+    if isinstance(hitter_props, dict):
+        for _player_id, pred in hitter_props.items():
+            if not isinstance(pred, dict):
+                continue
+            hitter_name = _first_text(pred.get("name"))
+            team = _first_text(pred.get("team"))
+            normalized = normalize_pitcher_name(hitter_name)
+            if not normalized or not hitter_name:
+                continue
+            side = "away" if team == away_abbr else ("home" if team == home_abbr else "")
+            prop_models["hitters"][normalized] = {
+                "name": hitter_name,
+                "team": team,
+                "team_side": side,
+                "model": dict(pred),
+            }
+
+    sim_count = _safe_int(sim_data.get("sims"))
+    aggregate_boxscore_present = isinstance(sim_data.get("aggregate_boxscore"), dict)
+    sim_boxscore = _sim_boxscore_from_aggregate_means(sim_obj, player_meta=player_meta)
+    boxscore_mode = "aggregate" if sim_boxscore is not None else None
+    pitching_scope = ("full_staff" if aggregate_boxscore_present else "starters_only") if sim_boxscore is not None else None
+    if sim_boxscore is None:
+        sim_boxscore = _sim_boxscore_from_sim_boxscore(sim_obj, player_meta=player_meta)
+        if sim_boxscore is not None:
+            boxscore_mode = "representative"
+            pitching_scope = None
+    if sim_boxscore is None:
+        sim_boxscore = _sim_boxscore_from_pbp(
+            sim_obj,
+            name_lookup={pid: (m.get("name") or "") for pid, m in player_meta.items() if m.get("name")},
+        )
+        boxscore_mode = "representative_pbp"
+        pitching_scope = None
+
+    return {
+        "gamePk": int(game_pk),
+        "date": d,
+        "found": True,
+        "sourceFile": _relative_path_str(source_path),
+        "simCount": sim_count,
+        "away": sim_obj.get("away") or {},
+        "home": sim_obj.get("home") or {},
+        "predicted": _sim_predicted_score(sim_obj),
+        "predictedMode": "aggregate_mean",
+        "hasPbp": bool(has_pbp),
+        "note": None if has_pbp else "sim_output_has_no_pbp",
+        "propModels": prop_models,
+        "boxscoreMode": boxscore_mode,
+        "pitchingScope": pitching_scope,
+        "boxscore": sim_boxscore,
+    }
 
 
 def _live_matchup_text(snapshot: Optional[Dict[str, Any]]) -> str:
@@ -3986,13 +4668,143 @@ def _load_live_lens_snapshot(game_pk: int, d: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def _prop_lens_rows(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _sim_boxscore_rows(sim_context: Optional[Dict[str, Any]], side: str, kind: str) -> List[Dict[str, Any]]:
+    return (((((sim_context or {}).get("boxscore") or {}).get("teams") or {}).get(side) or {}).get(kind) or [])
+
+
+def _prop_model_mean_value(reco: Dict[str, Any], sim_row: Optional[Dict[str, Any]]) -> Optional[float]:
+    value = _live_stat_value(sim_row, reco)
+    if value is not None:
+        return value
+    if str(reco.get("market") or "") == "pitcher_props":
+        return _safe_float(reco.get("outs_mean"))
+    return None
+
+
+def _build_game_lens(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], sim_context: Optional[Dict[str, Any]], market_row: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    predicted = (sim_context or {}).get("predicted") or {}
+    pregame_away = _safe_float(predicted.get("away"))
+    pregame_home = _safe_float(predicted.get("home"))
+    away_score = _safe_float((((snapshot or {}).get("teams") or {}).get("away") or {}).get("totals", {}).get("R"))
+    home_score = _safe_float((((snapshot or {}).get("teams") or {}).get("home") or {}).get("totals", {}).get("R"))
+    progress = _live_game_progress(snapshot, card)
+    predictions = card.get("predictions") or {}
+    markets = (market_row or {}).get("markets") or {}
+    h2h = markets.get("h2h") if isinstance(markets.get("h2h"), dict) else {}
+    spreads = markets.get("spreads") if isinstance(markets.get("spreads"), dict) else {}
+    totals = markets.get("totals") if isinstance(markets.get("totals"), dict) else {}
+
+    lanes = [
+        {"key": "live", "label": progress.get("label") or "Live", "innings": 9, "baseline": False},
+        {"key": "first3", "label": "F3", "innings": 3, "baseline": True},
+        {"key": "first5", "label": "F5", "innings": 5, "baseline": True},
+        {"key": "first7", "label": "F7", "innings": 7, "baseline": False},
+        {"key": "full", "label": "Full Game", "innings": 9, "baseline": True},
+    ]
+    rows: List[Dict[str, Any]] = []
+    for lane in lanes:
+        projection = _segment_projection(
+            pregame_away=pregame_away,
+            pregame_home=pregame_home,
+            actual_away=away_score,
+            actual_home=home_score,
+            progress_fraction=float(progress.get("fraction") or 0.0),
+            target_innings=int(lane["innings"]),
+        )
+        baseline_probs = predictions.get(lane["key"]) if isinstance(predictions.get(lane["key"]), dict) else {}
+        baseline_home_prob = None
+        if baseline_probs:
+            if lane["key"] == "full":
+                baseline_home_prob = _safe_float(baseline_probs.get("homeWin"))
+            else:
+                baseline_home_prob = _safe_float(baseline_probs.get("homeWin"))
+                away_prob = _safe_float(baseline_probs.get("awayWin"))
+                baseline_home_prob, _ = _normalize_two_way_probs(baseline_home_prob, away_prob)
+        model_home_prob = _live_margin_win_prob(projection.get("homeMargin")) if not projection.get("closed") else None
+
+        total_line = _safe_float(totals.get("line"))
+        total_over_odds = totals.get("over_odds") or totals.get("overOdds")
+        total_under_odds = totals.get("under_odds") or totals.get("underOdds")
+        total_edge = None
+        total_pick = None
+        if projection.get("total") is not None and total_line is not None:
+            total_edge = round(float(projection["total"]) - float(total_line), 3)
+            total_pick = "over" if total_edge > 0 else ("under" if total_edge < 0 else None)
+
+        spread_line = _safe_float(spreads.get("home_line") or spreads.get("homeLine"))
+        spread_home_odds = spreads.get("home_odds") or spreads.get("homeOdds")
+        spread_away_odds = spreads.get("away_odds") or spreads.get("awayOdds")
+        spread_edge = None
+        spread_pick = None
+        if projection.get("homeMargin") is not None and spread_line is not None:
+            spread_edge = round(float(projection["homeMargin"]) + float(spread_line), 3)
+            spread_pick = "home" if spread_edge > 0 else ("away" if spread_edge < 0 else None)
+
+        home_odds = h2h.get("home_odds") or h2h.get("homeOdds")
+        away_odds = h2h.get("away_odds") or h2h.get("awayOdds")
+        home_prob_market = _american_odds_implied_prob(home_odds)
+        away_prob_market = _american_odds_implied_prob(away_odds)
+        home_prob_market, away_prob_market = _normalize_two_way_probs(home_prob_market, away_prob_market)
+        ml_pick = None
+        ml_edge = None
+        if model_home_prob is not None and home_prob_market is not None and away_prob_market is not None:
+            home_delta = float(model_home_prob) - float(home_prob_market)
+            away_delta = (1.0 - float(model_home_prob)) - float(away_prob_market)
+            if abs(home_delta) >= abs(away_delta):
+                ml_pick = "home" if home_delta > 0 else None
+                ml_edge = round(home_delta, 4) if home_delta > 0 else None
+            else:
+                ml_pick = "away" if away_delta > 0 else None
+                ml_edge = round(away_delta, 4) if away_delta > 0 else None
+
+        rows.append(
+            {
+                "key": lane["key"],
+                "label": lane["label"],
+                "closed": bool(projection.get("closed")),
+                "projection": projection,
+                "progress": progress,
+                "baselineHomeWinProb": baseline_home_prob,
+                "modelHomeWinProb": model_home_prob,
+                "source": "live_projection" if lane["key"] == "live" else "segment_projection",
+                "markets": {
+                    "moneyline": {
+                        "homeOdds": home_odds,
+                        "awayOdds": away_odds,
+                        "marketHomeProb": home_prob_market,
+                        "pick": ml_pick,
+                        "edge": ml_edge,
+                    },
+                    "spread": {
+                        "homeLine": spread_line,
+                        "homeOdds": spread_home_odds,
+                        "awayOdds": spread_away_odds,
+                        "pick": spread_pick,
+                        "edge": spread_edge,
+                    },
+                    "total": {
+                        "line": total_line,
+                        "overOdds": total_over_odds,
+                        "underOdds": total_under_odds,
+                        "pick": total_pick,
+                        "edge": total_edge,
+                    },
+                },
+            }
+        )
+    return rows
+
+
+def _prop_lens_rows(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], sim_context: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
     status_text = ((snapshot or {}).get("status") or {}).get("abstractGameState") or ((card.get("status") or {}).get("abstract") or "")
+    progress_fraction = float((_live_game_progress(snapshot, card).get("fraction") or 0.0))
     rows: List[Dict[str, Any]] = []
     actual_teams = ((snapshot or {}).get("teams") or {})
     for key, tier in (("pitcherProps", "official"), ("hitterProps", "official"), ("extraPitcherProps", "playable"), ("extraHitterProps", "playable")):
         for reco in card.get("markets", {}).get(key) or []:
             if not isinstance(reco, dict):
+                continue
+            if not _prop_price_allowed(reco.get("odds"), max_favorite_odds=-200):
                 continue
             owner_name = _prop_owner_name(reco)
             if not owner_name:
@@ -4001,17 +4813,28 @@ def _prop_lens_rows(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]]) ->
             is_pitcher = str(reco.get("market") or "") == "pitcher_props"
             type_key = "pitching" if is_pitcher else "batting"
             search_sets: List[Any] = []
+            sim_sets: List[Any] = []
             if side in {"away", "home"}:
                 search_sets.append((((actual_teams.get(side) or {}).get("boxscore") or {}).get(type_key) or []))
+                sim_sets.append(_sim_boxscore_rows(sim_context, side, type_key))
             else:
                 search_sets.append((((actual_teams.get("away") or {}).get("boxscore") or {}).get(type_key) or []))
                 search_sets.append((((actual_teams.get("home") or {}).get("boxscore") or {}).get(type_key) or []))
+                sim_sets.append(_sim_boxscore_rows(sim_context, "away", type_key))
+                sim_sets.append(_sim_boxscore_rows(sim_context, "home", type_key))
             actual_row = None
             for row_set in search_sets:
                 actual_row = _lookup_boxscore_row(row_set, owner_name)
                 if actual_row:
                     break
+            sim_row = None
+            for row_set in sim_sets:
+                sim_row = _lookup_boxscore_row(row_set, owner_name)
+                if sim_row:
+                    break
             actual_value = _live_stat_value(actual_row, reco)
+            model_mean = _prop_model_mean_value(reco, sim_row)
+            live_projection = _project_live_value(actual_value, model_mean, progress_fraction)
             market_line = _safe_float(reco.get("market_line"))
             rows.append(
                 {
@@ -4023,6 +4846,9 @@ def _prop_lens_rows(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]]) ->
                     "selection": reco.get("selection"),
                     "line": market_line,
                     "actual": actual_value,
+                    "modelMean": model_mean,
+                    "liveProjection": live_projection,
+                    "liveEdge": (float(live_projection) - float(market_line)) if live_projection is not None and market_line is not None else None,
                     "delta": (float(actual_value) - float(market_line)) if actual_value is not None and market_line is not None else None,
                     "status": _prop_result_state(reco, actual_value, status_text),
                     "edge": _safe_float(reco.get("edge")),
@@ -4032,12 +4858,22 @@ def _prop_lens_rows(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]]) ->
                     "marketLabel": reco.get("market_label") or reco.get("prop") or reco.get("market"),
                 }
             )
-    rows.sort(key=lambda row: (0 if row.get("tier") == "official" else 1, -(_safe_float(row.get("edge")) or -999.0), str(row.get("playerName") or "")))
+    rows.sort(
+        key=lambda row: (
+            0 if row.get("tier") == "official" else 1,
+            -abs(_safe_float(row.get("liveEdge")) or 0.0),
+            -(_safe_float(row.get("edge")) or -999.0),
+            str(row.get("playerName") or ""),
+        )
+    )
     return rows
 
 
 def _live_lens_payload(d: str, *, persist: bool = False) -> Dict[str, Any]:
     cards = _load_live_lens_cards(d)
+    artifacts = _load_cards_artifacts(d)
+    archive = _load_cards_archive_context(d)
+    game_line_index = _load_game_line_market_index(d)
     games_out: List[Dict[str, Any]] = []
     counts = {
         "games": 0,
@@ -4051,9 +4887,11 @@ def _live_lens_payload(d: str, *, persist: bool = False) -> Dict[str, Any]:
         if not game_pk:
             continue
         snapshot = _load_live_lens_snapshot(int(game_pk), d)
+        sim_context = _load_sim_context_for_game(int(game_pk), d, artifacts=artifacts, archive=archive)
         status = ((snapshot or {}).get("status") or {})
         status_abstract = str(status.get("abstractGameState") or ((card.get("status") or {}).get("abstract") or ""))
-        prop_rows = _prop_lens_rows(card, snapshot)
+        prop_rows = _prop_lens_rows(card, snapshot, sim_context if sim_context.get("found") else None)
+        game_lens = _build_game_lens(card, snapshot, sim_context if sim_context.get("found") else None, _game_line_market_for_card(card, game_line_index))
         if status_abstract.lower() == "live":
             counts["live"] += 1
         elif status_abstract.lower() == "final":
@@ -4086,7 +4924,9 @@ def _live_lens_payload(d: str, *, persist: bool = False) -> Dict[str, Any]:
                     "totals": ((card.get("markets") or {}).get("totals")),
                     "ml": ((card.get("markets") or {}).get("ml")),
                 },
+                "gameLens": game_lens,
                 "props": prop_rows,
+                "simContextAvailable": bool(sim_context.get("found")),
                 "snapshotAvailable": bool(snapshot),
             }
         )
@@ -4124,6 +4964,7 @@ def _live_lens_payload(d: str, *, persist: bool = False) -> Dict[str, Any]:
 
 
 def _refresh_oddsapi_markets(d: str, *, overwrite: bool = True) -> Dict[str, Any]:
+    recorded_at = datetime.utcnow()
     result = fetch_and_write_live_odds_for_date(
         d,
         out_dir=_MARKET_DIR,
@@ -4139,12 +4980,14 @@ def _refresh_oddsapi_markets(d: str, *, overwrite: bool = True) -> Dict[str, Any
         destination = snapshot_dir / source_path.name
         shutil.copy2(source_path, destination)
         copied[source_path.name] = _relative_path_str(destination) or str(destination)
+    archived = _archive_oddsapi_refresh_outputs(d, result, recorded_at=recorded_at)
     meta = {
-        "recordedAt": datetime.utcnow().isoformat() + "Z",
+        "recordedAt": recorded_at.isoformat() + "Z",
         "date": str(d),
         "overwrite": bool(overwrite),
         "result": result,
         "copied": copied,
+        "archived": archived,
     }
     _write_json_file(_cron_meta_dir() / "latest_refresh_oddsapi.json", meta)
     return {
@@ -4154,6 +4997,7 @@ def _refresh_oddsapi_markets(d: str, *, overwrite: bool = True) -> Dict[str, Any
         "snapshotDir": _relative_path_str(snapshot_dir),
         "result": result,
         "copied": copied,
+        "archived": archived,
     }
 
 
@@ -4376,6 +5220,7 @@ def api_cards() -> Response:
     d = str(request.args.get("date") or "").strip() or _default_cards_date()
     artifacts = _load_cards_artifacts(d)
     archive = _load_cards_archive_context(d)
+    game_line_index = _load_game_line_market_index(d)
 
     if isinstance(artifacts.get("locked_policy"), dict):
         recos_by_game = _recommendations_by_game(artifacts.get("locked_policy"))
@@ -4403,6 +5248,11 @@ def api_cards() -> Response:
         outputs_by_game=outputs_by_game,
         recos_by_game=recos_by_game,
     )
+    for card in cards:
+        if not isinstance(card, dict):
+            continue
+        market_row = _game_line_market_for_card(card, game_line_index)
+        card["trackedGameLines"] = (market_row.get("markets") or {}) if isinstance(market_row, dict) else None
 
     has_legacy_data = bool(artifacts.get("locked_policy") or artifacts.get("game_summary"))
     has_archive_data = bool(archive.get("report") or archive.get("card"))
@@ -4870,134 +5720,21 @@ def api_game_sim(game_pk: int) -> Response:
     d = str(request.args.get("date") or "").strip()
     if not d:
         return jsonify({"gamePk": int(game_pk), "found": False, "error": "missing_date"}), 400
-
-    artifacts = _load_cards_artifacts(d)
-    archive = _load_cards_archive_context(d)
-    sim_dir = artifacts.get("sim_dir")
-    snapshot_dir = artifacts.get("snapshot_dir")
-
-    p = _find_sim_file(game_pk=int(game_pk), d=d, day_dir=sim_dir)
-    source_path: Optional[Path] = p
-    if p:
-        try:
-            sim_obj = json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
-            return jsonify({"gamePk": int(game_pk), "date": d, "found": False, "error": "read_failed"}), 500
-    else:
-        report_obj = archive.get("report") if isinstance(archive.get("report"), dict) else None
-        report_game = _season_report_game(report_obj, int(game_pk))
-        if not isinstance(report_game, dict):
-            return jsonify({"gamePk": int(game_pk), "date": d, "found": False})
-        sim_obj = _report_game_to_sim_obj(
-            report_game,
-            _safe_int(((report_obj.get("meta") or {}).get("sims_per_game")) if isinstance(report_obj, dict) else None),
-        )
-        source_path = archive.get("report_path") if isinstance(archive.get("report_path"), Path) else None
-
-    # Build player meta from the daily snapshot roster file (preferred for mapping IDs to names/side).
-    player_meta: Dict[int, Dict[str, Any]] = {}
-    if p:
-        try:
-            roster_path = _find_roster_snapshot_for_sim(
-                d=d,
-                sim_file=p,
-                sim_obj=sim_obj,
-                day_dir=snapshot_dir,
-            )
-            if roster_path:
-                roster_obj = json.loads(roster_path.read_text(encoding="utf-8"))
-                if isinstance(roster_obj, dict):
-                    player_meta.update(_player_meta_from_roster_snapshot(roster_obj))
-        except Exception:
-            pass
-    else:
-        player_meta.update(_report_player_meta(_season_report_game(archive.get("report"), int(game_pk))))
-
-    # Best-effort name lookup from the live feed boxscore (if available).
-    name_lookup: Dict[int, str] = {}
-    try:
-        feed = _load_game_feed_for_date(int(game_pk), d) if _is_historical_date(d) else None
-        if not isinstance(feed, dict) or not feed:
-            c = _client()
-            feed = fetch_game_feed_live(c, int(game_pk))
-        if isinstance(feed, dict) and feed:
-            box = (feed.get("liveData") or {}).get("boxscore") or {}
-            teams = box.get("teams") or {}
-            for side in ("away", "home"):
-                players = (teams.get(side) or {}).get("players") or {}
-                if isinstance(players, dict):
-                    for _k, pobj in players.items():
-                        if not isinstance(pobj, dict):
-                            continue
-                        person = pobj.get("person") or {}
-                        pid = _safe_int(person.get("id"))
-                        nm = str(person.get("fullName") or "")
-                        if pid and nm:
-                            name_lookup[int(pid)] = nm
-                            row = player_meta.setdefault(int(pid), {"id": int(pid)})
-                            row.setdefault("name", nm)
-                            row.setdefault("side", side)
-                            pos = _pos_abbr(pobj)
-                            if pos and not row.get("pos"):
-                                row["pos"] = pos
-                            batting_order = pobj.get("battingOrder")
-                            try:
-                                order_value = int(str(batting_order)) if batting_order is not None else None
-                            except Exception:
-                                order_value = None
-                            if order_value is not None and row.get("order") is None:
-                                row["order"] = int(order_value)
-    except Exception:
-        pass
-
-    # Merge live feed names as a fallback for any missing snapshot names.
-    for pid, nm in name_lookup.items():
-        if not pid or not nm:
-            continue
-        row = player_meta.setdefault(int(pid), {"id": int(pid)})
-        row.setdefault("name", str(nm))
-
-    pbp_list = ((sim_obj.get("pbp") or {}).get("pbp") or [])
-    has_pbp = isinstance(pbp_list, list) and len(pbp_list) > 0
-
-    sim_data = sim_obj.get("sim") or {}
-    sim_count = _safe_int(sim_data.get("sims"))
-    aggregate_boxscore_present = isinstance(sim_data.get("aggregate_boxscore"), dict)
-
-    # Prefer aggregate means across all sims; fall back to one realized sim path only if needed.
-    sim_boxscore = _sim_boxscore_from_aggregate_means(sim_obj, player_meta=player_meta)
-    boxscore_mode = "aggregate" if sim_boxscore is not None else None
-    pitching_scope = ("full_staff" if aggregate_boxscore_present else "starters_only") if sim_boxscore is not None else None
-    if sim_boxscore is None:
-        sim_boxscore = _sim_boxscore_from_sim_boxscore(sim_obj, player_meta=player_meta)
-        if sim_boxscore is not None:
-            boxscore_mode = "representative"
-            pitching_scope = None
-    if sim_boxscore is None:
-        sim_boxscore = _sim_boxscore_from_pbp(
-            sim_obj,
-            name_lookup={pid: (m.get("name") or "") for pid, m in player_meta.items() if m.get("name")},
-        )
-        boxscore_mode = "representative_pbp"
-        pitching_scope = None
-
-    out = {
-        "gamePk": int(game_pk),
-        "date": d,
-        "found": True,
-        "sourceFile": _relative_path_str(source_path),
-        "simCount": sim_count,
-        "away": sim_obj.get("away") or {},
-        "home": sim_obj.get("home") or {},
-        "predicted": _sim_predicted_score(sim_obj),
-        "predictedMode": "aggregate_mean",
-        "hasPbp": bool(has_pbp),
-        "note": None if has_pbp else "sim_output_has_no_pbp",
-        "boxscoreMode": boxscore_mode,
-        "pitchingScope": pitching_scope,
-        "boxscore": sim_boxscore,
-    }
-    return jsonify(out)
+    out = _load_sim_context_for_game(int(game_pk), d)
+    if out.get("found"):
+        snapshot = _load_live_lens_snapshot(int(game_pk), d)
+        live_card = {
+            "gamePk": int(game_pk),
+            "status": {
+                "abstract": str((((snapshot or {}).get("status") or {}).get("abstractGameState") or "")),
+            },
+        }
+        out["livePropRows"] = _current_live_prop_rows(live_card, snapshot, out, d)
+        out.pop("propModels", None)
+    status = 200 if out.get("found") else 404
+    if out.get("error") == "read_failed":
+        status = 500
+    return jsonify(out), status
 
 
 if __name__ == "__main__":
