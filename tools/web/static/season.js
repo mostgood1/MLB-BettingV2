@@ -11,7 +11,7 @@
     },
     bettingProfile: "retuned",
     day: null,
-    dayPicksMode: "official",
+    dayPicksMode: "props",
   };
 
   const BETTING_MARKET_ORDER = [
@@ -1122,9 +1122,12 @@
   function dayPickGroups() {
     const groups = {
       official: [],
+      props: [],
       playable: [],
       counts: {
         official: 0,
+        props: 0,
+        officialProps: 0,
         playable: 0,
         playablePitcher: 0,
         playableHitter: 0,
@@ -1136,30 +1139,45 @@
       const awayAbbr = game?.away?.abbr || "Away";
       const homeAbbr = game?.home?.abbr || "Home";
       bettingOfficialRows(betting).forEach((reco, recoIndex) => {
-        groups.official.push({ game, reco, awayAbbr, homeAbbr, sortKey: `${gameIndex}-${recoIndex}` });
+        const item = { game, reco, awayAbbr, homeAbbr, bucket: "official", sortKey: `${gameIndex}-${recoIndex}` };
+        groups.official.push(item);
+        const market = String(reco?.market || "").toLowerCase();
+        if (market === "pitcher_props" || market === "hitter_props") {
+          groups.props.push(item);
+        }
       });
       bettingPlayableRows(betting).forEach((reco, recoIndex) => {
-        groups.playable.push({ game, reco, awayAbbr, homeAbbr, sortKey: `${gameIndex}-${recoIndex}` });
+        const item = { game, reco, awayAbbr, homeAbbr, bucket: "playable", sortKey: `${gameIndex}-${recoIndex}` };
+        groups.playable.push(item);
+        groups.props.push(item);
       });
       const counts = betting?.counts || {};
       groups.counts.playablePitcher += Number(counts.extra_pitcher || 0);
       groups.counts.playableHitter += Number(counts.extra_hitter || 0);
+      groups.counts.officialProps += Number(counts.pitcher || 0) + Number(counts.hitter || 0);
     });
     groups.counts.official = groups.official.length;
+    groups.counts.props = groups.props.length;
     groups.counts.playable = groups.playable.length;
     return groups;
   }
 
   function normalizedDayPicksMode(groups) {
+    if (state.dayPicksMode === "props" && groups.props.length) return "props";
     if (state.dayPicksMode === "playable" && groups.playable.length) return "playable";
     if (state.dayPicksMode === "official" && groups.official.length) return "official";
+    if (groups.props.length) return "props";
     if (groups.official.length) return "official";
     if (groups.playable.length) return "playable";
-    return "official";
+    return "props";
   }
 
   function setDayPicksMode(mode, options) {
-    state.dayPicksMode = mode === "playable" ? "playable" : "official";
+    state.dayPicksMode = mode === "playable"
+      ? "playable"
+      : mode === "official"
+        ? "official"
+        : "props";
     renderDaySummary();
     renderDayPicksRecap();
     if (options?.scroll && root.dayPicks) {
@@ -1170,7 +1188,11 @@
   async function activateDayPicks(dateStr, mode) {
     const nextDate = String(dateStr || "");
     if (!nextDate) return;
-    state.dayPicksMode = mode === "playable" ? "playable" : "official";
+    state.dayPicksMode = mode === "playable"
+      ? "playable"
+      : mode === "official"
+        ? "official"
+        : "props";
     if (state.selectedDate === nextDate && state.day?.date === nextDate) {
       setDayPicksMode(state.dayPicksMode, { scroll: true });
       return;
@@ -1194,7 +1216,8 @@
       const homeAbbr = item.homeAbbr || "Home";
       const anchorId = dayPickGameAnchorId(game.game_pk);
       const settlement = reco?.settlement || null;
-      const isPlayable = mode === "playable";
+      const itemMode = String(item.bucket || (mode === "playable" ? "playable" : "official"));
+      const isPlayable = itemMode === "playable";
       const statusText = bettingResultLabel(reco);
       const tone = bettingResultTone(reco);
       const profitText = settlement ? formatUnits(settlement.profit_u, 2) : "-";
@@ -1202,11 +1225,15 @@
         ? `Actual ${formatLine(settlement.actual)}`
         : "Settlement unavailable";
       const gameLabel = `${awayAbbr} @ ${homeAbbr}`;
+      const gameMeta = [
+        game?.start_time ? `First pitch ${game.start_time}` : "",
+        (game?.status?.abstract || "").trim(),
+      ].filter(Boolean).join(" | ");
       return `
         <tr>
           <td>
             <div class="season-betting-cell-main">${anchorId ? `<a class="season-day-picks-link" href="#${escapeHtml(anchorId)}">${escapeHtml(gameLabel)}</a>` : escapeHtml(gameLabel)}</div>
-            <div class="season-betting-cell-sub">Game ${escapeHtml(String(game.game_pk || "-"))}</div>
+            <div class="season-betting-cell-sub">${escapeHtml(gameMeta || `Game ${String(game.game_pk || "-")}`)}</div>
           </td>
           <td>
             <div class="season-betting-cell-main">${escapeHtml(BETTING_MARKET_LABELS[String(reco?.market || "").toLowerCase()] || bettingMetricLabel(reco))}</div>
@@ -1242,12 +1269,22 @@
     const groups = dayPickGroups();
     const mode = normalizedDayPicksMode(groups);
     state.dayPicksMode = mode;
-    const activeItems = mode === "playable" ? groups.playable : groups.official;
+    const activeItems = mode === "playable"
+      ? groups.playable
+      : mode === "official"
+        ? groups.official
+        : groups.props;
     const profileLabel = bettingProfileLabel(betting.profile);
-    const modeTitle = mode === "playable" ? "Playable props by date" : "Official picks by date";
+    const modeTitle = mode === "playable"
+      ? "Playable props by date"
+      : mode === "official"
+        ? "Official picks by date"
+        : "Today's props board";
     const modeCopy = mode === "playable"
       ? `${formatNumber(groups.counts.playable, 0)} playable props across the selected date under ${profileLabel}.`
-      : `${formatNumber(groups.counts.official, 0)} on-card picks across the selected date under ${profileLabel}.`;
+      : mode === "official"
+        ? `${formatNumber(groups.counts.official, 0)} on-card picks across the selected date under ${profileLabel}.`
+        : `${formatNumber(groups.counts.props, 0)} props for the selected date under ${profileLabel}, combining on-card prop picks and extra playable candidates.`;
 
     root.dayPicks.innerHTML = `
       <div class="season-panel-head">
@@ -1256,6 +1293,9 @@
           <div class="season-panel-title">${escapeHtml(modeTitle)}</div>
         </div>
         <div class="season-day-picks-toolbar">
+          <button type="button" class="cards-filter-pill ${mode === "props" ? "is-active" : ""}" data-day-picks-filter="props">
+            ${escapeHtml(`Props ${groups.counts.props}`)}
+          </button>
           <button type="button" class="cards-filter-pill ${mode === "official" ? "is-active" : ""}" data-day-picks-filter="official">
             ${escapeHtml(`Official ${groups.counts.official}`)}
           </button>
@@ -1265,7 +1305,7 @@
         </div>
       </div>
       <div class="season-inline-note">${escapeHtml(modeCopy)}</div>
-      <div class="season-inline-note">${escapeHtml(`Click a game matchup to jump to the full drilldown card below. Both official picks and playable props are exact-settled from the final game feeds.`)}</div>
+      <div class="season-inline-note">${escapeHtml(`Click a game matchup to jump to the full drilldown card below. Game rows carry first-pitch time from the daily cards payload, and both official picks and playable props are exact-settled from the final game feeds.`)}</div>
       ${activeItems.length ? `
         <div class="season-calibration-table-wrap">
           <table class="season-calibration-table season-day-picks-table">
@@ -1531,6 +1571,13 @@
     if (betting.found) {
       metrics.push(metricCard("Official P/L", formatUnits(bettingCombined.profit_u, 2), `ROI ${formatPercent(bettingCombined.roi, 1)}`));
       metrics.push(metricActionCard(
+        "Today's props",
+        formatNumber(pickGroups.counts.props || (bettingCounts.pitcher_props + bettingCounts.hitter_props + pickGroups.counts.playable), 0),
+        `On card ${pickGroups.counts.officialProps} | Playable ${pickGroups.counts.playable}`,
+        "props",
+        { isActive: activePicksMode === "props", disabled: pickGroups.counts.props <= 0 }
+      ));
+      metrics.push(metricActionCard(
         "Official bets",
         formatNumber(pickGroups.counts.official || bettingCounts.combined || bettingCombined.n, 0),
         `Tot ${bettingCounts.totals} | ML ${bettingCounts.ml} | P ${bettingCounts.pitcher_props} | H ${bettingCounts.hitter_props}`,
@@ -1572,6 +1619,10 @@
         const gameCardsLink = state.day.cards_available && game.game_pk
           ? `${state.day.cards_url}#game-card-${encodeURIComponent(game.game_pk)}`
           : "";
+        const gameTimeBits = [
+          game?.start_time ? `First pitch ${game.start_time}` : "",
+          String(game?.status?.detailed || game?.status?.abstract || "").trim(),
+        ].filter(Boolean).join(" | ");
         return `
           <article class="season-game-card"${gameAnchorId ? ` id="${escapeHtml(gameAnchorId)}"` : ""}>
             <div class="season-game-head">
@@ -1585,6 +1636,7 @@
                   <span class="season-team-name">${escapeHtml(game.home?.name || homeAbbr)}</span>
                 </div>
                 <div class="season-game-subcopy">${escapeHtml((game.starter_names || {}).away || "TBD")} vs ${escapeHtml((game.starter_names || {}).home || "TBD")}</div>
+                ${gameTimeBits ? `<div class="season-game-time">${escapeHtml(gameTimeBits)}</div>` : ""}
               </div>
               <div class="season-scorebox">
                 <div class="season-score-label">Actual final</div>

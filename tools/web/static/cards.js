@@ -944,6 +944,10 @@
           ${teamMarkup(card.home)}
         </div>
         <div class="cards-status-cluster">
+          <div class="cards-game-time-row">
+            <span class="cards-game-time-label">First pitch</span>
+            <span class="cards-game-time-value">${escapeHtml(card.startTime || "-")}</span>
+          </div>
           <span class="cards-status-badge ${escapeHtml(statusClass(card.status?.abstract))}" data-role="status-badge">${escapeHtml(card.status?.abstract || "Scheduled")}</span>
           <div class="cards-start-time" data-role="status-detail">${escapeHtml(statusDetailText(null, card) || card.startTime || "")}</div>
           <a class="cards-game-link" href="/game/${encodeURIComponent(card.gamePk)}?date=${encodeURIComponent(state.date)}">Open game view</a>

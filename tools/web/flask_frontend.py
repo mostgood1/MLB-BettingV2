@@ -2855,6 +2855,16 @@ def _season_day_payload(
     cards_url = _season_day_cards_link(season_manifest, date_str)
     betting_payload = _season_betting_day_payload(int(season), date_str, betting_profile)
     betting_games = betting_payload.get("games") if isinstance(betting_payload.get("games"), dict) else {}
+    cards_by_game_pk: Dict[int, Dict[str, Any]] = {}
+
+    try:
+        cards_by_game_pk = {
+            int(card.get("gamePk")): dict(card)
+            for card in (_load_live_lens_cards(date_str) or [])
+            if isinstance(card, dict) and _safe_int(card.get("gamePk"))
+        }
+    except Exception:
+        cards_by_game_pk = {}
 
     games_out: List[Dict[str, Any]] = []
     for raw_game in day_report.get("games") or []:
@@ -2864,9 +2874,18 @@ def _season_day_payload(
         game_betting = None
         if betting_payload.get("found"):
             game_betting = dict(betting_games.get(int(game_pk or 0)) or _empty_game_betting())
+        card_row = dict(cards_by_game_pk.get(int(game_pk or 0)) or {})
+        card_status = card_row.get("status") if isinstance(card_row.get("status"), dict) else {}
         games_out.append(
             {
                 "game_pk": game_pk,
+                "game_date": card_row.get("gameDate") or raw_game.get("game_date") or raw_game.get("commence_time"),
+                "start_time": card_row.get("startTime") or "",
+                "official_date": card_row.get("officialDate") or date_str,
+                "status": {
+                    "abstract": str(card_status.get("abstract") or ""),
+                    "detailed": str(card_status.get("detailed") or ""),
+                },
                 "away": raw_game.get("away") or {},
                 "home": raw_game.get("home") or {},
                 "starter_names": raw_game.get("starter_names") or {},
