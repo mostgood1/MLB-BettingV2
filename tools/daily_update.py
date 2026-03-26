@@ -28,6 +28,9 @@ if sys.platform.startswith("win"):
 
 # Ensure the project root (MLB-BettingV2/) is importable when running this file directly.
 _ROOT = Path(__file__).resolve().parents[1]
+_TRACKED_DATA_DIR = (_ROOT / "data").resolve()
+_DATA_ROOT_ENV = str(os.environ.get("MLB_BETTING_DATA_ROOT") or "").strip()
+_DATA_DIR = (Path(_DATA_ROOT_ENV).resolve() if _DATA_ROOT_ENV else _TRACKED_DATA_DIR)
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
@@ -659,15 +662,15 @@ def _season_from_date_str(date_str: str, fallback: int) -> int:
 
 
 def _default_ui_profile_out_dirs(game_out: Path) -> Tuple[Path, Path]:
-    default_game = (_ROOT / "data" / "daily").resolve()
+    default_game = (_DATA_DIR / "daily").resolve()
     try:
         resolved_game = game_out.resolve()
     except Exception:
         resolved_game = game_out
     if resolved_game == default_game:
         return (
-            (_ROOT / "data" / "daily_pitcher_props").resolve(),
-            (_ROOT / "data" / "daily_hitter_props").resolve(),
+            (_DATA_DIR / "daily_pitcher_props").resolve(),
+            (_DATA_DIR / "daily_hitter_props").resolve(),
         )
     base_name = str(game_out.name or "daily").strip() or "daily"
     return (
@@ -1128,7 +1131,7 @@ def _maybe_git_push_daily_update(
 
 
 def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> int:
-    game_out = _resolve_path_arg(str(getattr(args, "out", "") or ""), default=(_ROOT / "data" / "daily"))
+    game_out = _resolve_path_arg(str(getattr(args, "out", "") or ""), default=(_DATA_DIR / "daily"))
     default_pitcher_out, default_hitter_out = _default_ui_profile_out_dirs(game_out)
     pitcher_out = _resolve_path_arg(
         str(getattr(args, "workflow_out_pitcher", "") or ""),
@@ -1153,12 +1156,12 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
     season_batch_dir_arg = str(getattr(args, "season_batch_dir", "") or "").strip()
     season_batch_dir = _resolve_path_arg(
         season_batch_dir_arg,
-        default=(_ROOT / "data" / "eval" / "batches" / f"season_{int(args.season)}_ui_daily_live"),
+        default=(_DATA_DIR / "eval" / "batches" / f"season_{int(args.season)}_ui_daily_live"),
     )
     season_output_dir_arg = str(getattr(args, "season_output_dir", "") or "").strip()
     season_output_dir = _resolve_path_arg(
         season_output_dir_arg,
-        default=(_ROOT / "data" / "eval" / "seasons" / str(int(args.season))),
+        default=(_DATA_DIR / "eval" / "seasons" / str(int(args.season))),
     )
     prior_report_path = season_batch_dir / f"sim_vs_actual_{prior_date}.json"
     ops_report_arg = str(getattr(args, "ops_report_out", "") or "").strip()
@@ -2546,7 +2549,7 @@ def main() -> int:
     )
     ap.add_argument("--seed", type=int, default=1337)
     ap.add_argument("--seed-source", default="", help=argparse.SUPPRESS)
-    ap.add_argument("--out", default=str(_ROOT / "data" / "daily"))
+    ap.add_argument("--out", default=str(_DATA_DIR / "daily"))
     ap.add_argument(
         "--lineups-last-known",
         default="",

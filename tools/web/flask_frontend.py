@@ -475,9 +475,28 @@ def _path_from_maybe_relative(value: Any) -> Optional[Path]:
     if not raw:
         return None
     path = Path(raw)
-    if not path.is_absolute():
-        path = _ROOT_DIR / path
-    return path
+    if path.is_absolute():
+        return path
+
+    normalized = raw.replace("\\", "/").lstrip("./")
+    candidates: List[Path] = []
+    if normalized == "data" or normalized.startswith("data/"):
+        suffix = normalized[5:] if normalized.startswith("data/") else ""
+        relative_suffix = Path(suffix) if suffix else Path()
+        candidates.extend((data_root / relative_suffix) for data_root in _data_roots())
+    candidates.append(_ROOT_DIR / Path(normalized or raw))
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        if resolved.exists():
+            return resolved
+
+    return candidates[0].resolve() if candidates else None
 
 
 def _relative_path_str(path: Optional[Path]) -> Optional[str]:
@@ -2236,25 +2255,34 @@ def _default_cards_date() -> str:
 
 
 def _find_season_manifest_path(season: int) -> Optional[Path]:
-    season_dir = _ROOT_DIR / "data" / "eval" / "seasons" / str(int(season))
-    candidates = [
-        season_dir / "season_eval_manifest.json",
-        season_dir / "manifest.json",
-    ]
-    for path in candidates:
-        if path.exists() and path.is_file():
-            return path
-    if not season_dir.exists() or not season_dir.is_dir():
-        return None
-    try:
-        extra = sorted(
-            [path for path in season_dir.glob("*.json") if path.is_file()],
-            key=lambda path: path.stat().st_mtime,
-            reverse=True,
-        )
-    except OSError:
-        return None
-    return extra[0] if extra else None
+    season_dirs = [data_root / "eval" / "seasons" / str(int(season)) for data_root in _data_roots()]
+    seen: set[str] = set()
+    for season_dir in season_dirs:
+        resolved_dir = season_dir.resolve()
+        key = str(resolved_dir)
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates = [
+            resolved_dir / "season_eval_manifest.json",
+            resolved_dir / "manifest.json",
+        ]
+        for path in candidates:
+            if path.exists() and path.is_file():
+                return path
+        if not resolved_dir.exists() or not resolved_dir.is_dir():
+            continue
+        try:
+            extra = sorted(
+                [path for path in resolved_dir.glob("*.json") if path.is_file()],
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+        except OSError:
+            continue
+        if extra:
+            return extra[0]
+    return None
 
 
 def _load_season_manifest(season: int) -> Tuple[Optional[Path], Optional[Dict[str, Any]]]:
@@ -2435,10 +2463,10 @@ def _load_cards_archive_context(date_str: str) -> Dict[str, Any]:
 
 
 def _season_betting_manifest_candidates(season: int) -> Dict[str, List[Path]]:
-    season_dir = _ROOT_DIR / "data" / "eval" / "seasons" / str(int(season))
+    season_dirs = [data_root / "eval" / "seasons" / str(int(season)) for data_root in _data_roots()]
     return {
-        "baseline": [season_dir / "season_betting_cards_manifest.json"],
-        "retuned": [season_dir / "season_betting_cards_retuned_manifest.json"],
+        "baseline": [season_dir / "season_betting_cards_manifest.json" for season_dir in season_dirs],
+        "retuned": [season_dir / "season_betting_cards_retuned_manifest.json" for season_dir in season_dirs],
     }
 
 
