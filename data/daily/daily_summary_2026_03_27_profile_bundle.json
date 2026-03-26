@@ -1,7 +1,7 @@
 {
-  "date": "2026-03-26",
+  "date": "2026-03-27",
   "season": 2026,
-  "generated_at": "2026-03-26T09:22:21.616037",
+  "generated_at": "2026-03-26T09:38:51.464086",
   "tool": "tools/daily_update_multi_profile.py",
   "daily_update_tool": "tools\\daily_update.py",
   "python_exe": ".venv_x64\\Scripts\\python.exe",
@@ -18,17 +18,17 @@
     "--write-roster-artifacts",
     "on",
     "--seed",
-    "1337",
+    "1963862833",
     "--seed-source",
-    "default_fixed"
+    "auto_future_date"
   ],
   "profiles": {
     "game_recos": {
       "profile": "game_roi",
       "out_dir": "data\\daily",
-      "summary_path": "data\\daily\\daily_summary_2026_03_26.json",
-      "sim_dir": "data\\daily\\sims\\2026-03-26",
-      "snapshot_dir": "data\\daily\\snapshots\\2026-03-26",
+      "summary_path": "data\\daily\\daily_summary_2026_03_27.json",
+      "sim_dir": "data\\daily\\sims\\2026-03-27",
+      "snapshot_dir": "data\\daily\\snapshots\\2026-03-27",
       "extra_args": [
         "--pitch-model-overrides",
         "data/tuning/pitch_model_overrides/_tmp_hr_bbhbp1p04_starterbbhbp1p04.json"
@@ -39,19 +39,20 @@
     "pitcher_props_recos": {
       "profile": "pitcher_props",
       "out_dir": "data\\daily_pitcher_props",
-      "summary_path": "data\\daily_pitcher_props\\daily_summary_2026_03_26.json",
-      "sim_dir": "data\\daily_pitcher_props\\sims\\2026-03-26",
-      "snapshot_dir": "data\\daily_pitcher_props\\snapshots\\2026-03-26",
+      "summary_path": "data\\daily_pitcher_props\\daily_summary_2026_03_27.json",
+      "sim_dir": "data\\daily_pitcher_props\\sims\\2026-03-27",
+      "snapshot_dir": "data\\daily_pitcher_props\\snapshots\\2026-03-27",
       "extra_args": [],
       "exit_code": 0,
-      "skipped": false
+      "skipped": true,
+      "skip_reason": "no pitcher prop market entries in data\\market\\oddsapi\\oddsapi_pitcher_props_2026_03_27.json"
     },
     "hitter_props_recos": {
       "profile": "hitter_props",
       "out_dir": "data\\daily_hitter_props",
-      "summary_path": "data\\daily_hitter_props\\daily_summary_2026_03_26.json",
-      "sim_dir": "data\\daily_hitter_props\\sims\\2026-03-26",
-      "snapshot_dir": "data\\daily_hitter_props\\snapshots\\2026-03-26",
+      "summary_path": "data\\daily_hitter_props\\daily_summary_2026_03_27.json",
+      "sim_dir": "data\\daily_hitter_props\\sims\\2026-03-27",
+      "snapshot_dir": "data\\daily_hitter_props\\snapshots\\2026-03-27",
       "extra_args": [
         "--bip-roe-rate",
         "0.015",
@@ -63,7 +64,8 @@
         "24"
       ],
       "exit_code": 0,
-      "skipped": false
+      "skipped": true,
+      "skip_reason": "no hitter prop market entries in data\\market\\oddsapi\\oddsapi_hitter_props_2026_03_27.json"
     }
   },
   "selection_source": "_tmp_best_set_selection_holdout13.json",
@@ -279,7 +281,7 @@
     }
   },
   "official_locked_policy": {
-    "card_path": "data\\daily\\daily_summary_2026_03_26_locked_policy.json",
+    "card_path": "data\\daily\\daily_summary_2026_03_27_locked_policy.json",
     "cap_profile": "totals2_p3_tbheavy11_r1",
     "caps": {
       "totals": 2,
@@ -301,17 +303,20 @@
       "hitter_props": 0.25
     },
     "selected_counts": {
-      "totals": 1,
-      "ml": 1,
-      "pitcher_props": 3,
-      "hitter_props": 11,
-      "hitter_home_runs": 2,
-      "hitter_hits": 4,
-      "hitter_total_bases": 4,
-      "hitter_runs": 1,
+      "totals": 2,
+      "ml": 0,
+      "pitcher_props": 0,
+      "hitter_props": 0,
+      "hitter_home_runs": 0,
+      "hitter_hits": 0,
+      "hitter_total_bases": 0,
+      "hitter_runs": 0,
       "hitter_rbis": 0
     },
-    "warnings": [],
+    "warnings": [
+      "No pitcher lines entries found in data\\market\\oddsapi\\oddsapi_pitcher_props_2026_03_27.json",
+      "No hitter lines entries found in data\\market\\oddsapi\\oddsapi_hitter_props_2026_03_27.json"
+    ],
     "error": null
   },
   "failures": [],
