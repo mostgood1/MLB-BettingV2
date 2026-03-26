@@ -1900,6 +1900,7 @@ def _season_report_outputs_by_game(day_report: Optional[Dict[str, Any]]) -> Dict
             "game_pk": int(game_pk),
             "away_id": _safe_int(away.get("id")),
             "home_id": _safe_int(home.get("id")),
+            "game_date": _first_text(raw_game.get("game_date"), raw_game.get("commence_time")),
             "away_abbr": away_abbr,
             "home_abbr": home_abbr,
             "away": _first_text(away.get("name"), away_abbr),
@@ -1913,6 +1914,47 @@ def _season_report_outputs_by_game(day_report: Optional[Dict[str, Any]]) -> Dict
             },
             "status_abstract": "Final",
             "status_detailed": status_detailed,
+        }
+    return out
+
+
+def _schedule_context_by_game_pk(d: str) -> Dict[int, Dict[str, Any]]:
+    out: Dict[int, Dict[str, Any]] = {}
+    schedule_snapshot_path: Optional[Path] = None
+    for candidate in (
+        _DATA_DIR / "daily" / "snapshots" / str(d) / "schedule_raw.json",
+        _TRACKED_DATA_DIR / "daily" / "snapshots" / str(d) / "schedule_raw.json",
+    ):
+        if candidate.exists() and candidate.is_file():
+            schedule_snapshot_path = candidate
+            break
+    schedule_snapshot = _load_json_file(schedule_snapshot_path)
+    if isinstance(schedule_snapshot, list):
+        schedule_games = schedule_snapshot
+    elif isinstance(schedule_snapshot, dict):
+        schedule_games = (((schedule_snapshot.get("dates") or [{}])[0]).get("games") or [])
+    else:
+        try:
+            schedule_games = fetch_schedule_for_date(_client(), d) or []
+        except Exception:
+            schedule_games = []
+
+    for game in schedule_games:
+        if not isinstance(game, dict):
+            continue
+        game_pk = _safe_int(game.get("gamePk"))
+        if not game_pk or int(game_pk) <= 0:
+            continue
+        status = game.get("status") or {}
+        game_date = str(game.get("gameDate") or "")
+        out[int(game_pk)] = {
+            "gameDate": game_date,
+            "startTime": _format_start_time_local(game_date),
+            "officialDate": str(game.get("officialDate") or d),
+            "status": {
+                "abstract": str(status.get("abstractGameState") or ""),
+                "detailed": str(status.get("detailedState") or ""),
+            },
         }
     return out
 
@@ -2617,8 +2659,98 @@ def _empty_game_betting() -> Dict[str, Any]:
     }
 
 
+def _fallback_recommendation_from_settled_row(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if not isinstance(row, dict):
+        return None
+    game_pk = _safe_int(row.get("game_pk"))
+    if not game_pk or int(game_pk) <= 0:
+        return None
+    raw_market = str(row.get("market") or "").strip().lower()
+    if not raw_market:
+        return None
+    market = raw_market
+    prop = str(row.get("prop") or "").strip().lower()
+    if raw_market.startswith("hitter_") and raw_market != "hitter_props":
+        market = "hitter_props"
+        prop = raw_market
+    item: Dict[str, Any] = {
+        "game_pk": int(game_pk),
+        "market": market,
+        "prop": prop,
+        "player_name": row.get("player_name"),
+        "pitcher_name": row.get("pitcher_name") or row.get("player_name"),
+        "selection": row.get("selection"),
+        "market_line": row.get("market_line"),
+        "odds": row.get("odds"),
+        "recommendation_tier": row.get("recommendation_tier") or "official",
+    }
+    if any(key in row for key in ("result", "profit_u", "actual", "stake_u")):
+        item["settlement"] = {
+            "result": row.get("result"),
+            "profit_u": row.get("profit_u"),
+            "actual": row.get("actual"),
+            "stake_u": row.get("stake_u"),
+        }
+    return item
+
+
+def _fallback_recommendations_by_game_from_settled_card(settled_card: Dict[str, Any]) -> Dict[int, Dict[str, Any]]:
+    grouped: Dict[int, Dict[str, Any]] = defaultdict(
+        lambda: {
+            "totals": None,
+            "ml": None,
+            "pitcher_props": [],
+            "hitter_props": [],
+            "extra_pitcher_props": [],
+            "extra_hitter_props": [],
+        }
+    )
+    rows: List[Dict[str, Any]] = []
+    for key in (
+        "_settled_rows",
+        "_playable_settled_rows",
+        "unresolved_recommendations",
+        "playable_unresolved_recommendations",
+    ):
+        rows.extend([row for row in (settled_card.get(key) or []) if isinstance(row, dict)])
+
+    for row in rows:
+        item = _fallback_recommendation_from_settled_row(row)
+        if not isinstance(item, dict):
+            continue
+        game_pk = int(item.get("game_pk") or 0)
+        if game_pk <= 0:
+            continue
+        bucket = grouped[game_pk]
+        market = str(item.get("market") or "").strip().lower()
+        tier = str(item.get("recommendation_tier") or "official").strip().lower()
+        if market == "totals":
+            bucket["totals"] = item
+        elif market == "ml":
+            bucket["ml"] = item
+        elif market == "pitcher_props":
+            if tier == "candidate":
+                bucket["extra_pitcher_props"].append(item)
+            else:
+                bucket["pitcher_props"].append(item)
+        else:
+            if tier == "candidate":
+                bucket["extra_hitter_props"].append(item)
+            else:
+                bucket["hitter_props"].append(item)
+
+    for bucket in grouped.values():
+        bucket["pitcher_props"].sort(key=lambda reco: (str(reco.get("pitcher_name") or ""), _safe_float(reco.get("market_line")) or 0.0))
+        bucket["hitter_props"].sort(key=lambda reco: (str(reco.get("player_name") or ""), _safe_float(reco.get("market_line")) or 0.0))
+        bucket["extra_pitcher_props"].sort(key=lambda reco: (str(reco.get("pitcher_name") or ""), _safe_float(reco.get("market_line")) or 0.0))
+        bucket["extra_hitter_props"].sort(key=lambda reco: (str(reco.get("player_name") or ""), _safe_float(reco.get("market_line")) or 0.0))
+    return dict(grouped)
+
+
 def _season_betting_games_payload(card_obj: Dict[str, Any], settled_card: Dict[str, Any]) -> Dict[int, Dict[str, Any]]:
     recos_by_game = _recommendations_by_game(card_obj)
+    if not recos_by_game:
+        recos_by_game = _fallback_recommendations_by_game_from_settled_card(settled_card)
     settled_rows_by_game: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
     playable_settled_rows_by_game: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
     unresolved_rows_by_game: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
@@ -2738,6 +2870,8 @@ def _season_betting_day_payload(season: int, date_str: str, requested_profile: s
     ) -> Dict[str, Any]:
         if not card_path or not isinstance(card_obj, dict):
             return payload
+        effective_card_path = card_path
+        effective_card_obj = card_obj
         try:
             settled_card = _settle_card(card_path)
         except Exception as exc:
@@ -2750,19 +2884,39 @@ def _season_betting_day_payload(season: int, date_str: str, requested_profile: s
             payload["detail"] = str(exc)
             return payload
 
+        settled_counts = _betting_selected_counts_with_defaults(settled_card.get("selected_counts") or {})
+        if int(settled_counts.get("combined") or 0) <= 0 and canonical_card_path and canonical_card_path != card_path:
+            try:
+                canonical_settled = _settle_card(canonical_card_path)
+            except Exception:
+                canonical_settled = None
+            canonical_counts = _betting_selected_counts_with_defaults(
+                ((canonical_settled or {}).get("selected_counts") if isinstance(canonical_settled, dict) else None) or {}
+            )
+            if int(canonical_counts.get("combined") or 0) > int(settled_counts.get("combined") or 0):
+                settled_card = canonical_settled
+                settled_counts = canonical_counts
+                effective_card_path = canonical_card_path
+                if isinstance(canonical_card_obj, dict):
+                    effective_card_obj = canonical_card_obj
+
+        summary_counts = _betting_selected_counts_with_defaults(
+            (summary.get("selected_counts") if isinstance(summary, dict) else None) or {}
+        )
+        if int(summary_counts.get("combined") or 0) > 0:
+            selected_counts = summary_counts
+        else:
+            selected_counts = settled_counts
+
         payload.update(
             {
                 "found": True,
                 "source_kind": str(source_kind),
                 "manifest_source": _relative_path_str(manifest_source) if manifest_source is not None else None,
-                "card_source": _relative_path_str(card_path),
+                "card_source": _relative_path_str(effective_card_path),
                 "summary": summary if isinstance(summary, dict) else None,
-                "cap_profile": card_obj.get("cap_profile"),
-                "selected_counts": _betting_selected_counts_with_defaults(
-                    (summary.get("selected_counts") if isinstance(summary, dict) else None)
-                    or settled_card.get("selected_counts")
-                    or {}
-                ),
+                "cap_profile": effective_card_obj.get("cap_profile"),
+                "selected_counts": selected_counts,
                 "playable_selected_counts": _betting_selected_counts_with_defaults(
                     settled_card.get("playable_selected_counts") or {}
                 ),
@@ -2774,7 +2928,7 @@ def _season_betting_day_payload(season: int, date_str: str, requested_profile: s
                 "all_results": _settled_results_from_rows(
                     list(settled_card.get("_all_settled_rows") or [])
                 ),
-                "games": _season_betting_games_payload(card_obj, settled_card),
+                "games": _season_betting_games_payload(effective_card_obj, settled_card),
             }
         )
         return payload
@@ -2855,16 +3009,8 @@ def _season_day_payload(
     cards_url = _season_day_cards_link(season_manifest, date_str)
     betting_payload = _season_betting_day_payload(int(season), date_str, betting_profile)
     betting_games = betting_payload.get("games") if isinstance(betting_payload.get("games"), dict) else {}
-    cards_by_game_pk: Dict[int, Dict[str, Any]] = {}
-
-    try:
-        cards_by_game_pk = {
-            int(card.get("gamePk")): dict(card)
-            for card in (_load_live_lens_cards(date_str) or [])
-            if isinstance(card, dict) and _safe_int(card.get("gamePk"))
-        }
-    except Exception:
-        cards_by_game_pk = {}
+    schedule_by_game_pk = _schedule_context_by_game_pk(date_str)
+    report_by_game_pk = _season_report_outputs_by_game(day_report)
 
     games_out: List[Dict[str, Any]] = []
     for raw_game in day_report.get("games") or []:
@@ -2874,17 +3020,26 @@ def _season_day_payload(
         game_betting = None
         if betting_payload.get("found"):
             game_betting = dict(betting_games.get(int(game_pk or 0)) or _empty_game_betting())
-        card_row = dict(cards_by_game_pk.get(int(game_pk or 0)) or {})
-        card_status = card_row.get("status") if isinstance(card_row.get("status"), dict) else {}
+        schedule_row = dict(schedule_by_game_pk.get(int(game_pk or 0)) or {})
+        schedule_status = schedule_row.get("status") if isinstance(schedule_row.get("status"), dict) else {}
+        report_row = dict(report_by_game_pk.get(int(game_pk or 0)) or {})
+        game_date = (
+            schedule_row.get("gameDate")
+            or report_row.get("game_date")
+            or raw_game.get("game_date")
+            or raw_game.get("commence_time")
+            or ""
+        )
+        start_time = schedule_row.get("startTime") or _format_start_time_local(str(game_date or ""))
         games_out.append(
             {
                 "game_pk": game_pk,
-                "game_date": card_row.get("gameDate") or raw_game.get("game_date") or raw_game.get("commence_time"),
-                "start_time": card_row.get("startTime") or "",
-                "official_date": card_row.get("officialDate") or date_str,
+                "game_date": game_date,
+                "start_time": start_time,
+                "official_date": schedule_row.get("officialDate") or date_str,
                 "status": {
-                    "abstract": str(card_status.get("abstract") or ""),
-                    "detailed": str(card_status.get("detailed") or ""),
+                    "abstract": str(schedule_status.get("abstract") or report_row.get("status_abstract") or ""),
+                    "detailed": str(schedule_status.get("detailed") or report_row.get("status_detailed") or ""),
                 },
                 "away": raw_game.get("away") or {},
                 "home": raw_game.get("home") or {},

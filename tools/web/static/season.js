@@ -1711,10 +1711,11 @@
       renderSummary();
       renderHitterCalibration();
       renderMonthlyBreakdown();
-      await loadBettingCardsRecap();
+      const bettingCardsPromise = loadBettingCardsRecap();
       renderMonths();
       const days = Array.isArray(state.manifest?.days) ? state.manifest.days : [];
       if (!days.length) {
+        await bettingCardsPromise;
         if (root.days) root.days.innerHTML = '<div class="season-empty-copy">No day reports were published for this season manifest.</div>';
         if (root.dayPicks) root.dayPicks.innerHTML = '<div class="season-empty-copy">No day picks recap is available.</div>';
         if (root.games) root.games.innerHTML = '<div class="season-empty-copy">No game reports available.</div>';
@@ -1725,6 +1726,7 @@
       }
       renderDays();
       await loadDay(state.selectedDate);
+      await bettingCardsPromise;
     } catch (error) {
       const message = error && error.message ? error.message : "Unknown error";
       if (root.headerMeta) root.headerMeta.textContent = `Failed to load season ${state.season}.`;
