@@ -127,6 +127,19 @@
     return 1 / (1 + Math.exp(-0.65 * margin));
   }
 
+  function formatTimestampShort(value) {
+    const text = String(value || '').trim();
+    if (!text) return '-';
+    const parsed = new Date(text);
+    if (Number.isNaN(parsed.getTime())) return text;
+    return new Intl.DateTimeFormat(undefined, {
+      month: 'numeric',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    }).format(parsed);
+  }
+
   function shiftIsoDate(value, days) {
     const text = String(value || "").trim();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return "";
@@ -1411,7 +1424,7 @@
               </div>
               <div class="cards-prop-overview-foot">
                 <span>${escapeHtml(stateObj.modelMean == null ? 'Model mean -' : `Model mean ${formatLine(stateObj.modelMean)}`)}</span>
-                <span>${escapeHtml(`${stateObj.tierLabel} | ${formatOdds(reco?.odds)}`)}</span>
+                <span>${escapeHtml(reco?.first_seen_at ? `Live since ${formatTimestampShort(reco.first_seen_at)}` : `${stateObj.tierLabel} | ${formatOdds(reco?.odds)}`)}</span>
               </div>
             </div>`;
         }).join('')}
@@ -1571,6 +1584,8 @@
         { label: "Sim row", value: simLabel },
         { label: "Model mean", value: modelMean == null ? "-" : `${formatLine(modelMean)} ${metricLabel(selected)}` },
         { label: "Live proj", value: liveProjection == null ? "-" : `${formatLine(liveProjection)} ${metricLabel(selected)}` },
+        { label: "Live since", value: selected?.first_seen_at ? formatTimestampShort(selected.first_seen_at) : "-" },
+        { label: "Opened at", value: selected?.first_seen_odds != null ? formatOdds(selected.first_seen_odds) : formatOdds(selected?.odds) },
         { label: "Line", value: lineLabel },
         { label: "Live edge", value: liveEdge == null ? "-" : formatSigned(liveEdge, 2) },
         { label: "Odds", value: formatOdds(selected?.odds) },
@@ -1750,6 +1765,8 @@
       { label: "Sim row", value: simLabel },
       { label: "Model mean", value: modelMean == null ? "-" : `${formatLine(modelMean)} ${metricLabel(selected)}` },
       { label: "Live proj", value: liveProjection == null ? "-" : `${formatLine(liveProjection)} ${metricLabel(selected)}` },
+      { label: "Live since", value: selected?.first_seen_at ? formatTimestampShort(selected.first_seen_at) : "-" },
+      { label: "Opened at", value: selected?.first_seen_odds != null ? formatOdds(selected.first_seen_odds) : formatOdds(selected?.odds) },
       { label: "Line", value: lineLabel },
       { label: "Live edge", value: liveEdge == null ? "-" : formatSigned(liveEdge, 2) },
       { label: "Odds", value: formatOdds(selected?.odds) },

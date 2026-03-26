@@ -316,6 +316,127 @@ def _live_lens_report_path(d: str) -> Path:
     return _LIVE_LENS_DIR / f"live_lens_report_{_date_slug(d)}.json"
 
 
+def _live_prop_registry_path(d: str) -> Path:
+    return _ensure_dir(_LIVE_LENS_DIR / "prop_registry") / f"live_prop_registry_{_date_slug(d)}.json"
+
+
+def _live_prop_registry_log_path(d: str) -> Path:
+    return _ensure_dir(_LIVE_LENS_DIR / "prop_registry") / f"live_prop_registry_{_date_slug(d)}.jsonl"
+
+
+def _live_prop_tracking_key(row: Dict[str, Any]) -> str:
+    owner = normalize_pitcher_name(_prop_owner_name(row) or "")
+    market = str(row.get("market") or "").strip().lower()
+    prop = str(row.get("prop") or "").strip().lower()
+    selection = str(row.get("selection") or "").strip().lower()
+    line = _safe_float(row.get("market_line"))
+    game_pk = _safe_int(row.get("game_pk") or row.get("gamePk")) or 0
+    return "|".join(
+        [
+            str(game_pk),
+            owner,
+            market,
+            prop,
+            selection,
+            "" if line is None else f"{float(line):.3f}",
+        ]
+    )
+
+
+def _live_prop_capture_snapshot(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "selection": str(row.get("selection") or ""),
+        "marketLine": _safe_float(row.get("market_line")),
+        "odds": _safe_int(row.get("odds")),
+        "liveProjection": _safe_float(row.get("live_projection")),
+        "liveEdge": _safe_float(row.get("live_edge")),
+        "modelMean": _safe_float(row.get("model_mean")),
+        "actual": _safe_float(row.get("actual")),
+    }
+
+
+def _load_live_prop_registry(d: str) -> Dict[str, Any]:
+    doc = _load_json_file(_live_prop_registry_path(d)) or {}
+    entries = doc.get("entries") if isinstance(doc.get("entries"), dict) else {}
+    return {
+        "date": str(doc.get("date") or d),
+        "updatedAt": doc.get("updatedAt"),
+        "entries": dict(entries),
+    }
+
+
+def _enrich_live_prop_rows_with_registry(rows: List[Dict[str, Any]], d: str, *, recorded_at: Optional[datetime] = None) -> List[Dict[str, Any]]:
+    if not rows:
+        return []
+
+    stamp = recorded_at or datetime.utcnow()
+    stamp_text = stamp.isoformat() + "Z"
+    registry = _load_live_prop_registry(d)
+    entries = registry.get("entries") if isinstance(registry.get("entries"), dict) else {}
+    changed = False
+    out: List[Dict[str, Any]] = []
+
+    for row in rows:
+        item = dict(row)
+        key = _live_prop_tracking_key(item)
+        snapshot = _live_prop_capture_snapshot(item)
+        entry = entries.get(key) if isinstance(entries.get(key), dict) else None
+        if not entry:
+            entry = {
+                "key": key,
+                "date": str(d),
+                "gamePk": _safe_int(item.get("game_pk") or item.get("gamePk")),
+                "owner": _prop_owner_name(item),
+                "market": item.get("market"),
+                "prop": item.get("prop"),
+                "selection": item.get("selection"),
+                "marketLine": _safe_float(item.get("market_line")),
+                "firstSeenAt": stamp_text,
+                "firstSeenSnapshot": snapshot,
+                "lastSeenAt": stamp_text,
+                "lastSeenSnapshot": snapshot,
+                "seenCount": 1,
+            }
+            entries[key] = entry
+            _append_jsonl(
+                _live_prop_registry_log_path(d),
+                {
+                    "recordedAt": stamp_text,
+                    "event": "first_seen",
+                    "date": str(d),
+                    "key": key,
+                    "owner": _prop_owner_name(item),
+                    "market": item.get("market"),
+                    "prop": item.get("prop"),
+                    "selection": item.get("selection"),
+                    "snapshot": snapshot,
+                },
+            )
+            changed = True
+        else:
+            entry["lastSeenAt"] = stamp_text
+            entry["lastSeenSnapshot"] = snapshot
+            entry["seenCount"] = int(_safe_int(entry.get("seenCount")) or 0) + 1
+            changed = True
+
+        first_snapshot = entry.get("firstSeenSnapshot") if isinstance(entry.get("firstSeenSnapshot"), dict) else {}
+        item["first_seen_at"] = entry.get("firstSeenAt")
+        item["last_seen_at"] = entry.get("lastSeenAt")
+        item["first_seen_odds"] = _safe_int(first_snapshot.get("odds"))
+        item["first_seen_line"] = _safe_float(first_snapshot.get("marketLine"))
+        item["first_seen_live_projection"] = _safe_float(first_snapshot.get("liveProjection"))
+        item["first_seen_live_edge"] = _safe_float(first_snapshot.get("liveEdge"))
+        item["first_seen_actual"] = _safe_float(first_snapshot.get("actual"))
+        item["seen_count"] = _safe_int(entry.get("seenCount"))
+        out.append(item)
+
+    if changed:
+        registry["updatedAt"] = stamp_text
+        registry["entries"] = entries
+        _write_json_file(_live_prop_registry_path(d), registry)
+    return out
+
+
 def _require_cron_auth() -> Optional[Response]:
     if not _CRON_TOKEN:
         return None
@@ -4277,8 +4398,9 @@ def _current_live_prop_rows(card: Dict[str, Any], snapshot: Optional[Dict[str, A
     for idx, row in enumerate(rows, start=1):
         item = dict(row)
         item["rank"] = int(idx)
+        item["game_pk"] = _safe_int(card.get("gamePk"))
         out.append(item)
-    return out
+    return _enrich_live_prop_rows_with_registry(out, d)
 
 
 def _normalize_two_way_probs(first_prob: Optional[float], second_prob: Optional[float]) -> Tuple[Optional[float], Optional[float]]:
