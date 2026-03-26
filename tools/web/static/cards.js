@@ -862,16 +862,20 @@
     }
     if (pitcherTop) {
       items.push(`
-        <li class="cards-callout">
-          <strong>Pitcher</strong>
-          <span class="cards-callout-copy">${escapeHtml(pitcherTop.pitcher_name || "Pitcher")} ${escapeHtml(marketLabelLong(pitcherTop))} | ${escapeHtml(formatOdds(pitcherTop.odds))}</span>
+        <li>
+          <button type="button" class="cards-callout cards-callout-button" data-tab-target="props" data-prop-key="${escapeHtml(propKey(pitcherTop))}">
+            <strong>Pitcher</strong>
+            <span class="cards-callout-copy">${escapeHtml(pitcherTop.pitcher_name || "Pitcher")} ${escapeHtml(marketLabelLong(pitcherTop))} | ${escapeHtml(formatOdds(pitcherTop.odds))}</span>
+          </button>
         </li>`);
     }
     if (hitterTop) {
       items.push(`
-        <li class="cards-callout">
-          <strong>Top hitter</strong>
-          <span class="cards-callout-copy">${escapeHtml(hitterTop.player_name || "Player")} ${escapeHtml(marketLabelLong(hitterTop))} | ${escapeHtml(formatOdds(hitterTop.odds))}</span>
+        <li>
+          <button type="button" class="cards-callout cards-callout-button" data-tab-target="props" data-prop-key="${escapeHtml(propKey(hitterTop))}">
+            <strong>Top hitter</strong>
+            <span class="cards-callout-copy">${escapeHtml(hitterTop.player_name || "Player")} ${escapeHtml(marketLabelLong(hitterTop))} | ${escapeHtml(formatOdds(hitterTop.odds))}</span>
+          </button>
         </li>`);
     }
     if (extraCount) {
@@ -1041,10 +1045,11 @@
         );
         return;
       }
-      const propButton = event.target.closest(".cards-prop-button");
+      const propButton = event.target.closest("[data-prop-key]");
       if (propButton && node.contains(propButton)) {
         event.preventDefault();
         selectProp(card, propButton.getAttribute("data-prop-key"));
+        activateTab(node, "props");
       }
     });
 
@@ -1450,42 +1455,101 @@
 
     const currentLiveRows = livePropRows(detail);
     if (hasLivePropPayload(detail)) {
+      const pitcherRows = marketRows(card, "pitcherProps");
+      const hitterRows = marketRows(card, "hitterProps");
+      const extraPitcherRows = extraMarketRows(card, "extraPitcherProps");
+      const extraHitterRows = extraMarketRows(card, "extraHitterProps");
+      const filteredPitcherRows = filteredPropRows(pitcherRows, filters);
+      const filteredHitterRows = filteredPropRows(hitterRows, filters);
+      const filteredExtraPitcherRows = filteredPropRows(extraPitcherRows, filters);
+      const filteredExtraHitterRows = filteredPropRows(extraHitterRows, filters);
+      const filteredOfficialCount = filteredPitcherRows.length + filteredHitterRows.length;
+      const filteredExtraCount = filteredExtraPitcherRows.length + filteredExtraHitterRows.length;
       const filteredLiveRows = filteredPropRows(currentLiveRows, filters);
       const filtersApplied = filters.side !== "all" || filters.type !== "all";
-      filtersNode.innerHTML = renderPropFilterControls(currentLiveRows, detail);
+      filtersNode.innerHTML = renderPropFilterControls(currentLiveRows.length ? currentLiveRows : allPropRows(card), detail);
       summaryChip.textContent = filtersApplied
-        ? (filteredLiveRows.length ? `${filteredLiveRows.length} live opps` : "No matches")
+        ? ((filteredLiveRows.length || filteredOfficialCount || filteredExtraCount)
+          ? `${filteredLiveRows.length} live · ${filteredOfficialCount} official${filteredExtraCount ? ` · +${filteredExtraCount}` : ""}`
+          : "No matches")
         : `${currentLiveRows.length} live opps`;
 
-      if (!filteredLiveRows.length) {
+      if (!filteredLiveRows.length && !filteredOfficialCount && !filteredExtraCount) {
         groupsNode.innerHTML = currentLiveRows.length
-          ? '<div class="cards-empty-copy">No live prop opportunities match the current side and prop-type filters.</div>'
-          : '<div class="cards-empty-copy">No unresolved live prop opportunities remain for this game.</div>';
+          ? '<div class="cards-empty-copy">No live or pregame props match the current side and prop-type filters.</div>'
+          : '<div class="cards-empty-copy">No unresolved live prop opportunities remain for this game, and no pregame props match the current filters.</div>';
         lensNode.innerHTML = `
           <div class="cards-lens-head">
             <div>
               <div class="cards-lens-label">Prop lens</div>
-              <div class="cards-lens-main">No live prop selected</div>
+              <div class="cards-lens-main">No prop selected</div>
             </div>
             <span class="cards-lens-badge is-live">Live</span>
           </div>
-          <div class="cards-callout-copy">${escapeHtml(currentLiveRows.length ? 'No current live prop opportunities matched the active filters for this game.' : 'All current live prop opportunities for this game are already decided and were removed from the board.')}</div>`;
+          <div class="cards-callout-copy">${escapeHtml(currentLiveRows.length ? 'No current live or pregame props matched the active filters for this game.' : 'All current live prop opportunities for this game are already decided and no pregame props matched the active filters.')}</div>`;
         return;
       }
 
-      let selected = filteredLiveRows.find((row) => propKey(row) === detail.selectedPropKey) || filteredLiveRows[0] || null;
+      const visibleRows = filteredLiveRows
+        .concat(filteredPitcherRows)
+        .concat(filteredHitterRows)
+        .concat(filteredExtraPitcherRows)
+        .concat(filteredExtraHitterRows);
+      let selected = visibleRows.find((row) => propKey(row) === detail.selectedPropKey)
+        || filteredLiveRows[0]
+        || filteredPitcherRows[0]
+        || filteredHitterRows[0]
+        || filteredExtraPitcherRows[0]
+        || filteredExtraHitterRows[0]
+        || null;
       const selectedKey = selected ? propKey(selected) : detail.selectedPropKey;
       if (selected) detail.selectedPropKey = selectedKey;
 
       groupsNode.innerHTML = `
-        <div class="cards-prop-group">
-          <div class="cards-box-head">
-            <div class="cards-table-title"><strong>Live opportunities</strong></div>
-            <span class="cards-chip is-live">${escapeHtml(String(filteredLiveRows.length))} plays</span>
-          </div>
-          <div class="cards-callout-copy">Current market odds ranked by live projection first, then model-vs-market edge.</div>
-          ${propButtonMarkup(filteredLiveRows, selectedKey, "live")}
-        </div>`;
+        ${filteredLiveRows.length ? `
+          <div class="cards-prop-group">
+            <div class="cards-box-head">
+              <div class="cards-table-title"><strong>Live opportunities</strong></div>
+              <span class="cards-chip is-live">${escapeHtml(String(filteredLiveRows.length))} plays</span>
+            </div>
+            <div class="cards-callout-copy">Current market odds ranked by live projection first, then model-vs-market edge.</div>
+            ${propButtonMarkup(filteredLiveRows, selectedKey, "live")}
+          </div>` : ""}
+        ${filteredOfficialCount ? `
+          <div class="cards-prop-group">
+            <div class="cards-box-head">
+              <div class="cards-table-title"><strong>Official picks</strong></div>
+              <span class="cards-chip is-official">${escapeHtml(String(filteredOfficialCount))} plays</span>
+            </div>
+            ${filteredPitcherRows.length ? `
+              <div class="cards-prop-stack">
+                <div class="cards-section-label">Pitcher props</div>
+                ${propButtonMarkup(filteredPitcherRows, selectedKey, "official")}
+              </div>` : ""}
+            ${filteredHitterRows.length ? `
+              <div class="cards-prop-stack">
+                <div class="cards-section-label">Hitter props</div>
+                ${propButtonMarkup(filteredHitterRows, selectedKey, "official")}
+              </div>` : ""}
+          </div>` : ""}
+        ${filteredExtraCount ? `
+          <div class="cards-prop-group is-secondary">
+            <div class="cards-box-head">
+              <div class="cards-table-title"><strong>Other playable props</strong></div>
+              <span class="cards-chip is-candidate">${escapeHtml(String(filteredExtraCount))} plays</span>
+            </div>
+            <div class="cards-callout-copy">Qualified lanes that did not make the official card after caps and one-prop-per-player selection.</div>
+            ${filteredExtraPitcherRows.length ? `
+              <div class="cards-prop-stack">
+                <div class="cards-section-label">Pitcher props</div>
+                ${propButtonMarkup(filteredExtraPitcherRows, selectedKey, "candidate")}
+              </div>` : ""}
+            ${filteredExtraHitterRows.length ? `
+              <div class="cards-prop-stack">
+                <div class="cards-section-label">Hitter props</div>
+                ${propButtonMarkup(filteredExtraHitterRows, selectedKey, "candidate")}
+              </div>` : ""}
+          </div>` : ""}`;
 
       const stateObj = propLensState(card, detail, selected);
       const rows = stateObj.rows;
