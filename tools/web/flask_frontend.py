@@ -62,6 +62,8 @@ try:
     _USER_TIMEZONE = ZoneInfo(_USER_TIMEZONE_NAME)
 except Exception:
     _USER_TIMEZONE = ZoneInfo("America/Chicago")
+
+
 _DEMO_DATE = "2025-06-04"
 _CARDS_PRESEASON_DEFAULT_WINDOW_DAYS = 21
 _LIVE_PROP_MARKET_MAX_AGE_SECONDS = 60
@@ -511,6 +513,69 @@ def _relative_path_str(path: Optional[Path]) -> Optional[str]:
         return str(path.relative_to(_ROOT_DIR)).replace("\\", "/")
     except Exception:
         return str(path).replace("\\", "/")
+
+
+def _detect_app_build_info() -> Dict[str, Any]:
+    commit = (
+        str(
+            os.environ.get("RENDER_GIT_COMMIT")
+            or os.environ.get("GIT_COMMIT")
+            or os.environ.get("COMMIT_SHA")
+            or ""
+        ).strip()
+        or None
+    )
+    branch = (
+        str(
+            os.environ.get("RENDER_GIT_BRANCH")
+            or os.environ.get("GIT_BRANCH")
+            or os.environ.get("BRANCH")
+            or ""
+        ).strip()
+        or None
+    )
+
+    if commit is None:
+        git_dir = _ROOT_DIR / ".git"
+        if git_dir.exists():
+            try:
+                commit = subprocess.check_output(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=str(_ROOT_DIR),
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                ).strip() or None
+            except Exception:
+                commit = None
+    if branch is None:
+        git_dir = _ROOT_DIR / ".git"
+        if git_dir.exists():
+            try:
+                branch = subprocess.check_output(
+                    ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                    cwd=str(_ROOT_DIR),
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                ).strip() or None
+            except Exception:
+                branch = None
+
+    return {
+        "service": str(os.environ.get("RENDER_SERVICE_NAME") or "mlb-betting-v2").strip() or "mlb-betting-v2",
+        "commit": commit,
+        "branch": branch,
+        "root": _relative_path_str(_ROOT_DIR),
+        "dataRoot": _relative_path_str(_DATA_DIR),
+    }
+
+
+_APP_BUILD_INFO = _detect_app_build_info()
+
+
+def _with_app_build(payload: Dict[str, Any]) -> Dict[str, Any]:
+    merged = dict(payload)
+    merged["app"] = dict(_APP_BUILD_INFO)
+    return merged
 
 
 def _resolve_oddsapi_market_file(d: str, prefix: str) -> Optional[Path]:
@@ -6324,13 +6389,15 @@ def api_cron_ping() -> Response:
     if auth_error is not None:
         return auth_error
     return jsonify(
-        {
-            "ok": True,
-            "service": "mlb-betting-v2",
-            "time": _local_timestamp_text(),
-            "dataRoot": _relative_path_str(_DATA_DIR),
-            "liveLensDir": _relative_path_str(_LIVE_LENS_DIR),
-        }
+        _with_app_build(
+            {
+                "ok": True,
+                "service": "mlb-betting-v2",
+                "time": _local_timestamp_text(),
+                "dataRoot": _relative_path_str(_DATA_DIR),
+                "liveLensDir": _relative_path_str(_LIVE_LENS_DIR),
+            }
+        )
     )
 
 
@@ -6340,16 +6407,18 @@ def api_cron_config() -> Response:
     if auth_error is not None:
         return auth_error
     return jsonify(
-        {
-            "ok": True,
-            "cronTokenConfigured": bool(_CRON_TOKEN),
-            "dataRoot": _relative_path_str(_DATA_DIR),
-            "marketDir": _relative_path_str(_MARKET_DIR),
-            "dailyDir": _relative_path_str(_DAILY_DIR),
-            "liveLensDir": _relative_path_str(_LIVE_LENS_DIR),
-            "seasonRebuildEndpoint": "/api/cron/rebuild-season-report?season=YYYY&date=YYYY-MM-DD",
-            "seasonRepublishEndpoint": "/api/cron/republish-season?season=YYYY&profile=retuned",
-        }
+        _with_app_build(
+            {
+                "ok": True,
+                "cronTokenConfigured": bool(_CRON_TOKEN),
+                "dataRoot": _relative_path_str(_DATA_DIR),
+                "marketDir": _relative_path_str(_MARKET_DIR),
+                "dailyDir": _relative_path_str(_DAILY_DIR),
+                "liveLensDir": _relative_path_str(_LIVE_LENS_DIR),
+                "seasonRebuildEndpoint": "/api/cron/rebuild-season-report?season=YYYY&date=YYYY-MM-DD",
+                "seasonRepublishEndpoint": "/api/cron/republish-season?season=YYYY&profile=retuned",
+            }
+        )
     )
 
 
@@ -6695,11 +6764,13 @@ def api_season_manifest(season: int) -> Response:
     manifest_path, manifest = _load_season_manifest(int(season))
     if not manifest_path or not isinstance(manifest, dict):
         return jsonify(
-            {
-                "season": int(season),
-                "found": False,
-                "error": "season_manifest_missing",
-            }
+            _with_app_build(
+                {
+                    "season": int(season),
+                    "found": False,
+                    "error": "season_manifest_missing",
+                }
+            )
         ), 404
 
     payload = dict(manifest)
@@ -6707,9 +6778,10 @@ def api_season_manifest(season: int) -> Response:
     sources = dict(meta.get("sources") or {})
     sources["manifest"] = _relative_path_str(manifest_path)
     meta["sources"] = sources
+    meta["app"] = dict(_APP_BUILD_INFO)
     payload["meta"] = meta
     payload["found"] = True
-    return jsonify(payload)
+    return jsonify(_with_app_build(payload))
 
 
 @app.get("/api/season/<int:season>/betting-cards")
@@ -6721,13 +6793,15 @@ def api_season_betting_cards(season: int) -> Response:
     )
     if not manifest_path or not isinstance(manifest, dict):
         return jsonify(
-            {
-                "season": int(season),
-                "profile": profile_name,
-                "found": False,
-                "available_profiles": available_profiles,
-                "error": "season_betting_cards_missing",
-            }
+            _with_app_build(
+                {
+                    "season": int(season),
+                    "profile": profile_name,
+                    "found": False,
+                    "available_profiles": available_profiles,
+                    "error": "season_betting_cards_missing",
+                }
+            )
         ), 404
 
     payload = _rebuild_season_betting_manifest_payload(
@@ -6737,7 +6811,10 @@ def api_season_betting_cards(season: int) -> Response:
         manifest,
         available_profiles,
     )
-    return jsonify(payload)
+    meta = dict(payload.get("meta") or {})
+    meta["app"] = dict(_APP_BUILD_INFO)
+    payload["meta"] = meta
+    return jsonify(_with_app_build(payload))
 
 
 @app.get("/api/season/<int:season>/betting-cards/day/<date_str>")
@@ -6747,10 +6824,10 @@ def api_season_betting_cards_day(season: int, date_str: str) -> Response:
     if payload.get("found"):
         card_path = _path_from_maybe_relative(payload.get("card_source"))
         payload["card"] = _load_json_file(card_path)
-        return jsonify(payload)
+        return jsonify(_with_app_build(payload))
 
     status_code = 500 if payload.get("error") == "season_betting_day_settle_failed" else 404
-    return jsonify(payload), status_code
+    return jsonify(_with_app_build(payload)), status_code
 
 
 @app.get("/api/season/<int:season>/day/<date_str>")
@@ -6759,34 +6836,40 @@ def api_season_day(season: int, date_str: str) -> Response:
     manifest_path, manifest = _load_season_manifest(int(season))
     if not manifest_path or not isinstance(manifest, dict):
         return jsonify(
-            {
-                "season": int(season),
-                "date": str(date_str),
-                "found": False,
-                "error": "season_manifest_missing",
-            }
+            _with_app_build(
+                {
+                    "season": int(season),
+                    "date": str(date_str),
+                    "found": False,
+                    "error": "season_manifest_missing",
+                }
+            )
         ), 404
 
     report_path = _resolve_season_day_report_path(manifest, str(date_str))
     if not report_path or not report_path.exists() or not report_path.is_file():
         return jsonify(
-            {
-                "season": int(season),
-                "date": str(date_str),
-                "found": False,
-                "error": "season_day_missing",
-            }
+            _with_app_build(
+                {
+                    "season": int(season),
+                    "date": str(date_str),
+                    "found": False,
+                    "error": "season_day_missing",
+                }
+            )
         ), 404
 
     report_obj = _load_json_file(report_path)
     if not isinstance(report_obj, dict):
         return jsonify(
-            {
-                "season": int(season),
-                "date": str(date_str),
-                "found": False,
-                "error": "season_day_read_failed",
-            }
+            _with_app_build(
+                {
+                    "season": int(season),
+                    "date": str(date_str),
+                    "found": False,
+                    "error": "season_day_read_failed",
+                }
+            )
         ), 500
 
     payload = _season_day_payload(
@@ -6798,7 +6881,7 @@ def api_season_day(season: int, date_str: str) -> Response:
     )
     payload["found"] = True
     payload["manifest_source"] = _relative_path_str(manifest_path)
-    return jsonify(payload)
+    return jsonify(_with_app_build(payload))
 
 
 @app.get("/game/<int:game_pk>")
