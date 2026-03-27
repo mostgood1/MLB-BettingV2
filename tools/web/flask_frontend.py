@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from collections import defaultdict
 from dataclasses import dataclass
@@ -67,6 +68,11 @@ except Exception:
 _DEMO_DATE = "2025-06-04"
 _CARDS_PRESEASON_DEFAULT_WINDOW_DAYS = 21
 _LIVE_PROP_MARKET_MAX_AGE_SECONDS = 15
+_LIVE_LENS_LOOP_DEFAULT_INTERVAL_SECONDS = 15
+_LIVE_LENS_LOOP_MIN_INTERVAL_SECONDS = 5
+_LIVE_LENS_LOOP_THREAD: Optional[threading.Thread] = None
+_LIVE_LENS_LOOP_LOCK = threading.Lock()
+_LIVE_LENS_LOOP_STOP = threading.Event()
 _PITCHER_LADDER_PROPS: Dict[str, Dict[str, Any]] = {
     "strikeouts": {
         "label": "Strikeouts",
@@ -332,6 +338,20 @@ def _archive_oddsapi_refresh_outputs(d: str, result: Dict[str, Any], *, recorded
 
 def _cron_meta_dir() -> Path:
     return _ensure_dir(_LIVE_LENS_DIR / "cron_meta")
+
+
+def _is_live_lens_loop_enabled() -> bool:
+    token = str(os.environ.get("MLB_ENABLE_LIVE_LENS_LOOP") or "").strip().lower()
+    return token in {"1", "true", "yes", "on"}
+
+
+def _live_lens_loop_interval_seconds() -> int:
+    raw = str(os.environ.get("MLB_LIVE_LENS_LOOP_INTERVAL_SECONDS") or "").strip()
+    try:
+        value = int(raw or _LIVE_LENS_LOOP_DEFAULT_INTERVAL_SECONDS)
+    except Exception:
+        value = _LIVE_LENS_LOOP_DEFAULT_INTERVAL_SECONDS
+    return max(_LIVE_LENS_LOOP_MIN_INTERVAL_SECONDS, int(value))
 
 
 def _live_lens_log_path(d: str) -> Path:
@@ -6676,6 +6696,72 @@ def _live_lens_reports_payload(d: str) -> Dict[str, Any]:
     }
 
 
+def _persist_live_lens_tick(d: str, *, trigger: str = "api") -> Dict[str, Any]:
+    payload = _live_lens_payload(d, persist=True)
+    meta = {
+        "recordedAt": _local_timestamp_text(),
+        "date": str(d),
+        "counts": payload.get("counts"),
+        "reportPath": _relative_path_str(_live_lens_report_path(d)),
+        "logPath": _relative_path_str(_live_lens_log_path(d)),
+        "propObservationLogPath": _relative_path_str(_live_prop_observation_log_path(d)),
+        "trigger": str(trigger),
+    }
+    _write_json_file(_cron_meta_dir() / "latest_live_lens_tick.json", meta)
+    return {"ok": True, "date": str(d), "counts": payload.get("counts"), "report": meta}
+
+
+def _live_lens_background_loop() -> None:
+    interval_seconds = _live_lens_loop_interval_seconds()
+    status_path = _cron_meta_dir() / "live_lens_loop_status.json"
+    while not _LIVE_LENS_LOOP_STOP.is_set():
+        started_at = time.time()
+        try:
+            result = _persist_live_lens_tick(_today_iso(), trigger="background_loop")
+            _write_json_file(
+                status_path,
+                {
+                    "ok": True,
+                    "recordedAt": _local_timestamp_text(),
+                    "intervalSeconds": int(interval_seconds),
+                    "date": result.get("date"),
+                    "counts": result.get("counts"),
+                },
+            )
+        except Exception as exc:
+            _write_json_file(
+                status_path,
+                {
+                    "ok": False,
+                    "recordedAt": _local_timestamp_text(),
+                    "intervalSeconds": int(interval_seconds),
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+            )
+        elapsed = max(0.0, float(time.time()) - float(started_at))
+        wait_seconds = max(1.0, float(interval_seconds) - float(elapsed))
+        _LIVE_LENS_LOOP_STOP.wait(wait_seconds)
+
+
+def start_live_lens_background_loop() -> bool:
+    global _LIVE_LENS_LOOP_THREAD
+    if not _is_live_lens_loop_enabled():
+        return False
+    if str(os.environ.get("WERKZEUG_RUN_MAIN") or "").strip().lower() == "false":
+        return False
+    with _LIVE_LENS_LOOP_LOCK:
+        if _LIVE_LENS_LOOP_THREAD is not None and _LIVE_LENS_LOOP_THREAD.is_alive():
+            return False
+        _LIVE_LENS_LOOP_STOP.clear()
+        _LIVE_LENS_LOOP_THREAD = threading.Thread(
+            target=_live_lens_background_loop,
+            name="mlb-live-lens-loop",
+            daemon=True,
+        )
+        _LIVE_LENS_LOOP_THREAD.start()
+        return True
+
+
 def _season_live_lens_payload(season: int, d: str) -> Dict[str, Any]:
     date_str = str(d or "").strip() or _default_cards_date()
     payload: Dict[str, Any] = {
@@ -7003,17 +7089,7 @@ def api_cron_live_lens_tick() -> Response:
         return auth_error
     d = str(request.args.get("date") or "").strip() or _today_iso()
     try:
-        payload = _live_lens_payload(d, persist=True)
-        meta = {
-            "recordedAt": _local_timestamp_text(),
-            "date": str(d),
-            "counts": payload.get("counts"),
-            "reportPath": _relative_path_str(_live_lens_report_path(d)),
-            "logPath": _relative_path_str(_live_lens_log_path(d)),
-            "propObservationLogPath": _relative_path_str(_live_prop_observation_log_path(d)),
-        }
-        _write_json_file(_cron_meta_dir() / "latest_live_lens_tick.json", meta)
-        return jsonify({"ok": True, "date": d, "counts": payload.get("counts"), "report": meta})
+        return jsonify(_persist_live_lens_tick(d, trigger="api"))
     except Exception as exc:
         return jsonify({"ok": False, "date": d, "error": f"{type(exc).__name__}: {exc}"}), 500
 
@@ -7766,4 +7842,5 @@ if __name__ == "__main__":
 
     debug_env = str(os.environ.get("FLASK_DEBUG") or "").strip().lower()
     debug = debug_env in {"1", "true", "yes", "on"}
+    start_live_lens_background_loop()
     app.run(host=host, port=port, debug=debug, threaded=True)
