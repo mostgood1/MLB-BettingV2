@@ -3,12 +3,15 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
+import os
 import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+DATA_ROOT_ENV = str(os.environ.get("MLB_BETTING_DATA_ROOT") or "").strip()
+DATA_ROOT = Path(DATA_ROOT_ENV).resolve() if DATA_ROOT_ENV else None
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -27,8 +30,19 @@ def _write_json(path: Path, obj: Any) -> None:
 def _resolve_path(value: str) -> Path:
     path = Path(str(value))
     if not path.is_absolute():
-        path = REPO_ROOT / path
+        parts = path.parts
+        if DATA_ROOT is not None and parts and str(parts[0]).lower() == "data":
+            path = DATA_ROOT.joinpath(*parts[1:])
+        else:
+            path = REPO_ROOT / path
     return path.resolve()
+
+
+def _feed_live_path(date: str, game_pk: int) -> Path:
+    year = str(date).split("-", 1)[0]
+    if DATA_ROOT is not None:
+        return (DATA_ROOT / "raw" / "statsapi" / "feed_live" / year / date / f"{int(game_pk)}.json.gz").resolve()
+    return (REPO_ROOT / "data" / "raw" / "statsapi" / "feed_live" / year / date / f"{int(game_pk)}.json.gz").resolve()
 
 
 def _iter_paths(values: Sequence[str], patterns: Sequence[str]) -> List[Path]:
@@ -90,8 +104,7 @@ def _american_profit(odds: Any, stake_u: float) -> float:
 
 
 def _load_feed(date: str, game_pk: int) -> Dict[str, Any]:
-    year = str(date).split("-", 1)[0]
-    path = REPO_ROOT / "data" / "raw" / "statsapi" / "feed_live" / year / date / f"{int(game_pk)}.json.gz"
+    path = _feed_live_path(date, game_pk)
     with gzip.open(path, "rt", encoding="utf-8") as fh:
         return json.load(fh)
 
