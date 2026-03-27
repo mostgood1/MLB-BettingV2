@@ -750,7 +750,7 @@ def _refresh_feed_live_cache_for_date(
     season: int,
 ) -> Dict[str, Any]:
     games = fetch_schedule_for_date(client, str(date_str))
-    out_dir = (_ROOT / "data" / "raw" / "statsapi" / "feed_live" / str(int(season)) / str(date_str)).resolve()
+    out_dir = (_DATA_DIR / "raw" / "statsapi" / "feed_live" / str(int(season)) / str(date_str)).resolve()
     _ensure_dir(out_dir)
 
     scheduled = 0
