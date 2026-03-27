@@ -3740,6 +3740,7 @@ def _season_betting_day_payload(season: int, date_str: str, requested_profile: s
             return payload
         effective_card_path = card_path
         effective_card_obj = card_obj
+        effective_source_kind = str(source_kind)
         settled_card: Optional[Dict[str, Any]] = None
         if (
             canonical_settlement_path
@@ -3870,13 +3871,22 @@ def _season_betting_day_payload(season: int, date_str: str, requested_profile: s
                 settled_card = canonical_settled
                 settled_counts = canonical_counts
                 effective_card_path = canonical_card_path
+                effective_source_kind = "canonical_daily_override"
                 if isinstance(canonical_card_obj, dict):
                     effective_card_obj = canonical_card_obj
 
         summary_counts = _betting_selected_counts_with_defaults(
             (summary.get("selected_counts") if isinstance(summary, dict) else None) or {}
         )
-        if int(summary_counts.get("combined") or 0) > 0:
+        summary_card_path = _path_from_maybe_relative(summary.get("card_path")) if isinstance(summary, dict) else None
+        if (
+            int(settled_counts.get("combined") or 0) <= 0
+            and int(summary_counts.get("combined") or 0) > 0
+            and (
+                summary_card_path is None
+                or _same_daily_card_path(summary_card_path, effective_card_path)
+            )
+        ):
             selected_counts = summary_counts
         else:
             selected_counts = settled_counts
@@ -3913,7 +3923,7 @@ def _season_betting_day_payload(season: int, date_str: str, requested_profile: s
         payload.update(
             {
                 "found": True,
-                "source_kind": str(source_kind),
+                "source_kind": effective_source_kind,
                 "manifest_source": _relative_path_str(manifest_source) if manifest_source is not None else None,
                 "card_source": _relative_path_str(effective_card_path),
                 "summary": normalized_summary,
