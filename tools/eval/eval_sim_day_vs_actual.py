@@ -24,6 +24,9 @@ if sys.platform.startswith("win"):
 
 # Ensure the project root (MLB-BettingV2/) is importable.
 _ROOT = Path(__file__).resolve().parents[2]
+_TRACKED_DATA_DIR = (_ROOT / "data").resolve()
+_DATA_ROOT_ENV = str(__import__("os").environ.get("MLB_BETTING_DATA_ROOT") or "").strip()
+_DATA_DIR = (Path(_DATA_ROOT_ENV).resolve() if _DATA_ROOT_ENV else _TRACKED_DATA_DIR)
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
@@ -2103,7 +2106,7 @@ def main() -> int:
             feed = fetch_game_feed_live(client, game_pk_i)
             if args.write_missing_raw == "on" and isinstance(feed, dict) and feed:
                 # best-effort persist
-                raw_root = _ROOT / "data" / "raw" / "statsapi" / "feed_live"
+                raw_root = _DATA_DIR / "raw" / "statsapi" / "feed_live"
                 out_dir = raw_root / str(int(season)) / str(args.date)
                 _ensure_dir(out_dir)
                 import gzip
