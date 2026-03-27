@@ -765,6 +765,16 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
     )
     profile_bundle = _load_json_file(profile_bundle_path)
 
+    settlement_path = _find_candidate_file(
+        preferred=[
+            canonical_daily_dir / "settlements" / f"daily_summary_{slug}_locked_policy_settlement.json",
+            tracked_daily_dir / "settlements" / f"daily_summary_{slug}_locked_policy_settlement.json",
+            data_dir / f"daily_summary_{slug}_locked_policy_settlement.json",
+        ],
+        recursive_pattern=f"**/daily_summary_{slug}_locked_policy_settlement.json",
+    )
+    settlement = _load_json_file(settlement_path)
+
     locked_policy_path = _find_candidate_file(
         preferred=[
             canonical_locked_policy_path,
@@ -840,6 +850,8 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
     return {
         "profile_bundle_path": profile_bundle_path,
         "profile_bundle": profile_bundle,
+        "settlement_path": settlement_path,
+        "settlement": settlement,
         "locked_policy_path": locked_policy_path,
         "locked_policy": locked_policy,
         "game_summary_path": game_summary_path,
@@ -3118,6 +3130,8 @@ def _season_betting_day_payload(season: int, date_str: str, requested_profile: s
     daily_artifacts = _load_cards_artifacts(str(date_str))
     canonical_card_path = daily_artifacts.get("locked_policy_path")
     canonical_card_obj = daily_artifacts.get("locked_policy")
+    canonical_settlement_path = daily_artifacts.get("settlement_path")
+    canonical_settlement = daily_artifacts.get("settlement")
 
     def _finalize_from_card(
         *,
@@ -3131,24 +3145,51 @@ def _season_betting_day_payload(season: int, date_str: str, requested_profile: s
             return payload
         effective_card_path = card_path
         effective_card_obj = card_obj
-        try:
-            settled_card = _settle_card(card_path)
-        except Exception as exc:
+        settled_card: Optional[Dict[str, Any]] = None
+        if (
+            canonical_settlement_path
+            and canonical_card_path
+            and card_path == canonical_card_path
+            and canonical_settlement_path.exists()
+            and isinstance(canonical_settlement, dict)
+        ):
+            settled_card = canonical_settlement
+
+        if not isinstance(settled_card, dict):
+            try:
+                settled_card = _settle_card(card_path)
+            except Exception as exc:
+                if manifest_source is not None:
+                    payload["manifest_source"] = _relative_path_str(manifest_source)
+                payload["card_source"] = _relative_path_str(card_path)
+                if isinstance(summary, dict):
+                    payload["summary"] = summary
+                payload["error"] = "season_betting_day_settle_failed"
+                payload["detail"] = str(exc)
+                return payload
+
+        if not isinstance(settled_card, dict):
             if manifest_source is not None:
                 payload["manifest_source"] = _relative_path_str(manifest_source)
             payload["card_source"] = _relative_path_str(card_path)
             if isinstance(summary, dict):
                 payload["summary"] = summary
-            payload["error"] = "season_betting_day_settle_failed"
-            payload["detail"] = str(exc)
+            payload["error"] = "season_betting_day_settlement_missing"
             return payload
 
         settled_counts = _betting_selected_counts_with_defaults(settled_card.get("selected_counts") or {})
         if int(settled_counts.get("combined") or 0) <= 0 and canonical_card_path and canonical_card_path != card_path:
-            try:
-                canonical_settled = _settle_card(canonical_card_path)
-            except Exception:
-                canonical_settled = None
+            if (
+                canonical_settlement_path
+                and canonical_settlement_path.exists()
+                and isinstance(canonical_settlement, dict)
+            ):
+                canonical_settled = canonical_settlement
+            else:
+                try:
+                    canonical_settled = _settle_card(canonical_card_path)
+                except Exception:
+                    canonical_settled = None
             canonical_counts = _betting_selected_counts_with_defaults(
                 ((canonical_settled or {}).get("selected_counts") if isinstance(canonical_settled, dict) else None) or {}
             )
