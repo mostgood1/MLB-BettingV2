@@ -1020,6 +1020,7 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
     return {
         "profile_bundle_path": profile_bundle_path,
         "profile_bundle": profile_bundle,
+        "embedded_settlement_summary": embedded_settlement_summary,
         "settlement_path": settlement_path,
         "settlement": settlement,
         "locked_policy_path": locked_policy_path,
@@ -3449,6 +3450,7 @@ def _season_betting_day_payload(season: int, date_str: str, requested_profile: s
     canonical_card_obj = daily_artifacts.get("locked_policy")
     canonical_settlement_path = daily_artifacts.get("settlement_path")
     canonical_settlement = daily_artifacts.get("settlement")
+    embedded_settlement_summary = daily_artifacts.get("embedded_settlement_summary")
 
     def _finalize_from_card(
         *,
@@ -3472,6 +3474,15 @@ def _season_betting_day_payload(season: int, date_str: str, requested_profile: s
         ):
             settled_card = canonical_settlement
 
+        embedded_settlement: Optional[Dict[str, Any]] = None
+        if isinstance(embedded_settlement_summary, dict):
+            embedded_card_path = _path_from_maybe_relative(embedded_settlement_summary.get("card_path"))
+            if not embedded_card_path or _same_daily_card_path(embedded_card_path, card_path):
+                embedded_settlement = _synthetic_settlement_from_summary(embedded_settlement_summary)
+
+        if not isinstance(settled_card, dict) and isinstance(embedded_settlement, dict):
+            settled_card = embedded_settlement
+
         if not isinstance(settled_card, dict):
             try:
                 settled_card = _settle_card(card_path)
@@ -3493,6 +3504,18 @@ def _season_betting_day_payload(season: int, date_str: str, requested_profile: s
                 payload["summary"] = summary
             payload["error"] = "season_betting_day_settlement_missing"
             return payload
+
+        settled_results_preview = _merge_settled_results_blocks([settled_card.get("results") or {}])
+        settled_combined_preview = settled_results_preview.get("combined") or _blank_settled_summary()
+        if (
+            isinstance(embedded_settlement, dict)
+            and int(settled_combined_preview.get("n") or 0) <= 0
+            and _season_betting_unresolved_count(settled_card) > 0
+        ):
+            embedded_results_preview = _merge_settled_results_blocks([embedded_settlement.get("results") or {}])
+            embedded_combined_preview = embedded_results_preview.get("combined") or _blank_settled_summary()
+            if int(embedded_combined_preview.get("n") or 0) > 0:
+                settled_card = embedded_settlement
 
         settled_counts = _betting_selected_counts_with_defaults(settled_card.get("selected_counts") or {})
         if int(settled_counts.get("combined") or 0) <= 0 and canonical_card_path and not _same_daily_card_path(canonical_card_path, card_path):
