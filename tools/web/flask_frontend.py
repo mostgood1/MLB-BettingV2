@@ -3007,6 +3007,59 @@ def _season_betting_aggregate_selected_counts(day_rows: Sequence[Dict[str, Any]]
     return totals
 
 
+def _season_betting_unresolved_count(settled_card: Any) -> int:
+    if not isinstance(settled_card, dict):
+        return 0
+    return int(len([row for row in (settled_card.get("unresolved_recommendations") or []) if isinstance(row, dict)]))
+
+
+def _normalized_season_betting_summary(
+    *,
+    date_str: str,
+    card_path: Optional[Path],
+    source_summary: Optional[Dict[str, Any]],
+    selected_counts: Any,
+    results: Any,
+    settled_card: Any,
+) -> Dict[str, Any]:
+    summary = dict(source_summary or {})
+    merged_results = _merge_settled_results_blocks([results or {}])
+    combined = merged_results.get("combined") or _blank_settled_summary()
+    summary["date"] = str(summary.get("date") or date_str)
+    summary["month"] = str(summary.get("month") or str(date_str)[:7])
+    summary["card_path"] = _relative_path_str(card_path) if card_path is not None else summary.get("card_path")
+    summary["selected_counts"] = _betting_selected_counts_with_defaults(selected_counts or {})
+    summary["results"] = merged_results
+    summary["profit_u"] = round(float(combined.get("profit_u") or 0.0), 4)
+    summary["roi"] = combined.get("roi")
+    summary["settled_n"] = int(combined.get("n") or 0)
+    summary["unresolved_n"] = _season_betting_unresolved_count(settled_card)
+    return summary
+
+
+def _season_betting_manifest_day_row_from_payload(day_payload: Dict[str, Any]) -> Dict[str, Any]:
+    date_str = str(day_payload.get("date") or "").strip()
+    summary = dict(day_payload.get("summary") or {})
+    results = _merge_settled_results_blocks([day_payload.get("results") or {}])
+    combined = results.get("combined") or _blank_settled_summary()
+    selected_counts = _betting_selected_counts_with_defaults(
+        day_payload.get("selected_counts") or summary.get("selected_counts") or {}
+    )
+    row = dict(summary)
+    row["date"] = date_str
+    row["month"] = str(row.get("month") or date_str[:7])
+    row["cap_profile"] = day_payload.get("cap_profile") or row.get("cap_profile")
+    row["card_path"] = day_payload.get("card_source") or row.get("card_path")
+    row["selected_counts"] = selected_counts
+    row["results"] = results
+    row["profit_u"] = round(float(combined.get("profit_u") or 0.0), 4)
+    row["roi"] = combined.get("roi")
+    row["settled_n"] = int(combined.get("n") or 0)
+    row["unresolved_n"] = int(summary.get("unresolved_n") or 0)
+    row["source_kind"] = day_payload.get("source_kind") or row.get("source_kind")
+    return row
+
+
 def _rebuild_season_betting_manifest_payload(
     season: int,
     profile_name: str,
@@ -3016,6 +3069,7 @@ def _rebuild_season_betting_manifest_payload(
 ) -> Dict[str, Any]:
     days_out: List[Dict[str, Any]] = []
     corrected_days: List[Dict[str, Any]] = []
+    manifest_dates: set[str] = set()
     for raw_row in manifest.get("days") or []:
         if not isinstance(raw_row, dict):
             continue
@@ -3024,6 +3078,7 @@ def _rebuild_season_betting_manifest_payload(
         if not date_str:
             days_out.append(day_row)
             continue
+        manifest_dates.add(date_str)
         day_payload = _season_betting_day_payload(int(season), date_str, profile_name)
         if not day_payload.get("found"):
             day_row["selected_counts"] = _betting_selected_counts_with_defaults(day_row.get("selected_counts") or {})
@@ -3052,6 +3107,17 @@ def _rebuild_season_betting_manifest_payload(
         corrected_days.append(day_row)
         days_out.append(day_row)
 
+    today_str = _today_iso()
+    if _season_from_date_str(today_str) == int(season) and today_str not in manifest_dates:
+        today_payload = _season_betting_day_payload(int(season), today_str, profile_name)
+        if today_payload.get("found"):
+            supplemental_day = _season_betting_manifest_day_row_from_payload(today_payload)
+            corrected_days.append(supplemental_day)
+            days_out.append(supplemental_day)
+
+    corrected_days.sort(key=lambda row: str(row.get("date") or ""))
+    days_out.sort(key=lambda row: str(row.get("date") or ""))
+
     corrected_results = _merge_settled_results_blocks([row.get("results") or {} for row in corrected_days])
     summary_selected_counts = _season_betting_aggregate_selected_counts(corrected_days)
     summary_daily = _season_betting_daily_stats(corrected_days)
@@ -3076,6 +3142,8 @@ def _rebuild_season_betting_manifest_payload(
 
     payload = dict(manifest)
     meta = dict(payload.get("meta") or {})
+    meta["available_reports"] = max(int(meta.get("available_reports") or 0), len(days_out))
+    meta["processed_reports"] = max(int(meta.get("processed_reports") or 0), len(days_out))
     sources = dict(meta.get("sources") or {})
     sources["manifest"] = _relative_path_str(manifest_path)
     meta["sources"] = sources
@@ -3477,6 +3545,14 @@ def _season_betting_day_payload(season: int, date_str: str, requested_profile: s
             if all_rows
             else dict(settled_card.get("all_results") or {}) if isinstance(settled_card.get("all_results"), dict) else {}
         )
+        normalized_summary = _normalized_season_betting_summary(
+            date_str=str(date_str),
+            card_path=effective_card_path,
+            source_summary=summary if isinstance(summary, dict) else None,
+            selected_counts=selected_counts,
+            results=official_results,
+            settled_card=settled_card,
+        )
 
         payload.update(
             {
@@ -3484,7 +3560,7 @@ def _season_betting_day_payload(season: int, date_str: str, requested_profile: s
                 "source_kind": str(source_kind),
                 "manifest_source": _relative_path_str(manifest_source) if manifest_source is not None else None,
                 "card_source": _relative_path_str(effective_card_path),
-                "summary": summary if isinstance(summary, dict) else None,
+                "summary": normalized_summary,
                 "cap_profile": effective_card_obj.get("cap_profile"),
                 "selected_counts": selected_counts,
                 "playable_selected_counts": _betting_selected_counts_with_defaults(
