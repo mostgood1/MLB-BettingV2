@@ -2691,13 +2691,37 @@ def _supplemental_season_day_row(season: int, date_str: str) -> Optional[Dict[st
     }
 
 
+def _season_day_row_with_refreshed_cards(season: int, row: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(row)
+    date_str = str(out.get("date") or "").strip()
+    if not date_str:
+        return out
+    supplemental = _supplemental_season_day_row(int(season), date_str)
+    if not isinstance(supplemental, dict):
+        return out
+    out["month"] = str(out.get("month") or supplemental.get("month") or date_str[:7])
+    out["games"] = int(out.get("games") or supplemental.get("games") or 0)
+    out["cards_available"] = bool(supplemental.get("cards_available"))
+    out["legacy_cards_available"] = bool(supplemental.get("legacy_cards_available"))
+    out["cards_url"] = supplemental.get("cards_url")
+    out["legacy_cards_url"] = supplemental.get("legacy_cards_url")
+    out["betting_cards"] = dict(supplemental.get("betting_cards") or {})
+    return out
+
+
 def _supplement_season_manifest_payload(season: int, payload: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(payload)
-    existing_days = [dict(row) for row in (out.get("days") or []) if isinstance(row, dict)]
+    existing_days = [
+        _season_day_row_with_refreshed_cards(int(season), dict(row))
+        for row in (out.get("days") or [])
+        if isinstance(row, dict)
+    ]
     seen_dates = {str(row.get("date") or "").strip() for row in existing_days if str(row.get("date") or "").strip()}
-    supplemental_dates = [d for d in _available_daily_locked_card_dates(int(season)) if d not in seen_dates]
-    if not supplemental_dates:
-        return out
+    manifest_floor = min(seen_dates) if seen_dates else None
+    supplemental_dates = [
+        d for d in _available_daily_locked_card_dates(int(season))
+        if d not in seen_dates and (not manifest_floor or d >= manifest_floor)
+    ]
 
     for date_str in supplemental_dates:
         row = _supplemental_season_day_row(int(season), date_str)
