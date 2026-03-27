@@ -66,7 +66,7 @@ except Exception:
 
 _DEMO_DATE = "2025-06-04"
 _CARDS_PRESEASON_DEFAULT_WINDOW_DAYS = 21
-_LIVE_PROP_MARKET_MAX_AGE_SECONDS = 60
+_LIVE_PROP_MARKET_MAX_AGE_SECONDS = 15
 _PITCHER_LADDER_PROPS: Dict[str, Dict[str, Any]] = {
     "strikeouts": {
         "label": "Strikeouts",

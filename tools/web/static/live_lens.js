@@ -6,7 +6,11 @@
     apiPath: String(bootstrap.apiPath || "/api/live-lens"),
     manifest: null,
     monthFilter: "all",
+    autoRefreshHandle: null,
+    loading: false,
   };
+
+  const AUTO_REFRESH_MS = 15000;
 
   const metaNode = document.getElementById("liveLensMeta");
   const overviewNode = document.getElementById("liveLensOverview");
@@ -400,8 +404,10 @@
   }
 
   async function load() {
+    if (state.loading) return;
+    state.loading = true;
     try {
-      const response = await fetch(`${state.apiPath}?date=${encodeURIComponent(state.date)}`);
+      const response = await fetch(`${state.apiPath}?date=${encodeURIComponent(state.date)}&_ts=${Date.now()}`, { cache: "no-store" });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const payload = await response.json();
       const counts = payload?.counts || {};
@@ -421,7 +427,18 @@
       const message = error && error.message ? error.message : "Unknown error";
       if (metaNode) metaNode.textContent = `Failed to load live lens: ${message}`;
       if (gamesNode) gamesNode.innerHTML = `<div class="empty">Failed to load live lens.</div>`;
+    } finally {
+      state.loading = false;
     }
+  }
+
+  function installAutoRefresh() {
+    if (state.autoRefreshHandle) {
+      window.clearInterval(state.autoRefreshHandle);
+    }
+    state.autoRefreshHandle = window.setInterval(() => {
+      load();
+    }, AUTO_REFRESH_MS);
   }
 
   if (monthsNode) {
@@ -447,5 +464,6 @@
       await loadSeasonManifest();
     }
     await load();
+    installAutoRefresh();
   })();
 })();
