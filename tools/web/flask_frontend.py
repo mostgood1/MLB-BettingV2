@@ -2873,6 +2873,21 @@ def _season_day_fallback_payload(season: int, date_str: str, betting_profile: st
     except Exception:
         schedule_games = []
     recos_by_game = _recommendations_by_game(daily_artifacts.get("locked_policy") or {})
+    if betting_payload.get("found"):
+        for raw_game_pk, raw_game_betting in betting_games.items():
+            game_pk = _safe_int(raw_game_pk)
+            game_betting = raw_game_betting if isinstance(raw_game_betting, dict) else {}
+            markets = game_betting.get("markets") if isinstance(game_betting.get("markets"), dict) else {}
+            if not game_pk or int(game_pk) <= 0 or int(game_pk) in recos_by_game:
+                continue
+            recos_by_game[int(game_pk)] = {
+                "totals": dict(markets.get("totals") or {}) if isinstance(markets.get("totals"), dict) else None,
+                "ml": dict(markets.get("ml") or {}) if isinstance(markets.get("ml"), dict) else None,
+                "pitcher_props": [dict(row) for row in (markets.get("pitcherProps") or []) if isinstance(row, dict)],
+                "hitter_props": [dict(row) for row in (markets.get("hitterProps") or []) if isinstance(row, dict)],
+                "extra_pitcher_props": [dict(row) for row in (markets.get("extraPitcherProps") or []) if isinstance(row, dict)],
+                "extra_hitter_props": [dict(row) for row in (markets.get("extraHitterProps") or []) if isinstance(row, dict)],
+            }
     cards = _cards_list_from_sources(
         d=str(date_str),
         schedule_games=schedule_games,
