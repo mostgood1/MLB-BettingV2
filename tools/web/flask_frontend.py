@@ -743,6 +743,40 @@ def _prior_day_settlement_from_ops_report(
     return summary
 
 
+def _prior_day_settlement_from_ops_candidates(
+    ops_paths: Sequence[Optional[Path]],
+    *,
+    target_date: str,
+    target_card_path: Optional[Path],
+) -> Tuple[Optional[Path], Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    seen: set[str] = set()
+    first_report_path: Optional[Path] = None
+    first_report_obj: Optional[Dict[str, Any]] = None
+    for candidate in ops_paths:
+        if not candidate:
+            continue
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            resolved = candidate
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        ops_report = _load_json_file(resolved)
+        if first_report_path is None and isinstance(ops_report, dict):
+            first_report_path = resolved
+            first_report_obj = ops_report
+        summary = _prior_day_settlement_from_ops_report(
+            ops_report,
+            target_date=str(target_date),
+            target_card_path=target_card_path,
+        )
+        if isinstance(summary, dict):
+            return resolved, ops_report, summary
+    return first_report_path, first_report_obj, None
+
+
 def _load_json_or_gz_file(path: Optional[Path]) -> Optional[Dict[str, Any]]:
     if not path or not path.exists() or not path.is_file():
         return None
@@ -980,16 +1014,24 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
 
     preferred_ops_paths: List[Path] = []
     preferred_ops_paths.append(canonical_daily_dir / "ops" / f"daily_ops_{slug}.json")
+    preferred_ops_paths.append(tracked_daily_dir / "ops" / f"daily_ops_{slug}.json")
     if game_summary_path:
         preferred_ops_paths.append(game_summary_path.parent / "ops" / f"daily_ops_{slug}.json")
-    ops_report_path = _find_candidate_file(
-        preferred=preferred_ops_paths,
-        recursive_pattern=f"**/daily_ops_{slug}.json",
-    )
-    ops_report = _load_json_file(ops_report_path)
+    ops_report_candidates: List[Path] = []
+    seen_ops_candidates: set[str] = set()
+    for candidate in preferred_ops_paths:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            resolved = candidate
+        key = str(resolved)
+        if key in seen_ops_candidates:
+            continue
+        seen_ops_candidates.add(key)
+        ops_report_candidates.append(resolved)
 
-    embedded_settlement_summary = _prior_day_settlement_from_ops_report(
-        ops_report,
+    ops_report_path, ops_report, embedded_settlement_summary = _prior_day_settlement_from_ops_candidates(
+        ops_report_candidates,
         target_date=str(d),
         target_card_path=locked_policy_path,
     )
@@ -997,18 +1039,17 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
         next_date = _shift_iso_date_str(str(d), 1)
         if next_date:
             next_slug = _date_slug(next_date)
-            next_ops_report_path = _find_candidate_file(
-                preferred=[
+            next_ops_report_path, next_ops_report, embedded_settlement_summary = _prior_day_settlement_from_ops_candidates(
+                [
                     canonical_daily_dir / "ops" / f"daily_ops_{next_slug}.json",
                     tracked_daily_dir / "ops" / f"daily_ops_{next_slug}.json",
                 ],
-                recursive_pattern=f"**/daily_ops_{next_slug}.json",
-            )
-            embedded_settlement_summary = _prior_day_settlement_from_ops_report(
-                _load_json_file(next_ops_report_path),
                 target_date=str(d),
                 target_card_path=locked_policy_path,
             )
+            if not ops_report_path and next_ops_report_path is not None:
+                ops_report_path = next_ops_report_path
+                ops_report = next_ops_report
     if not isinstance(settlement, dict) and isinstance(embedded_settlement_summary, dict):
         settlement = _synthetic_settlement_from_summary(embedded_settlement_summary)
         settlement_path = _path_from_maybe_relative(embedded_settlement_summary.get("settlement_path")) or settlement_path
@@ -3061,6 +3102,17 @@ def _season_betting_manifest_day_row_from_payload(day_payload: Dict[str, Any]) -
     return row
 
 
+def _embedded_settlement_is_usable(summary: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(summary, dict):
+        return False
+    selected_counts = _betting_selected_counts_with_defaults(summary.get("selected_counts") or {})
+    if int(selected_counts.get("combined") or 0) > 0:
+        return True
+    results = _merge_settled_results_blocks([summary.get("results") or {}])
+    combined = results.get("combined") or _blank_settled_summary()
+    return int(combined.get("n") or 0) > 0
+
+
 def _rebuild_season_betting_manifest_payload(
     season: int,
     profile_name: str,
@@ -3475,7 +3527,7 @@ def _season_betting_day_payload(season: int, date_str: str, requested_profile: s
             settled_card = canonical_settlement
 
         embedded_settlement: Optional[Dict[str, Any]] = None
-        if isinstance(embedded_settlement_summary, dict):
+        if _embedded_settlement_is_usable(embedded_settlement_summary):
             embedded_card_path = _path_from_maybe_relative(embedded_settlement_summary.get("card_path"))
             if not embedded_card_path or _same_daily_card_path(embedded_card_path, card_path):
                 embedded_settlement = _synthetic_settlement_from_summary(embedded_settlement_summary)
