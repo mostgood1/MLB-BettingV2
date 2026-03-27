@@ -5890,6 +5890,208 @@ def _live_margin_win_prob(home_margin: Optional[float]) -> Optional[float]:
     return 1.0 / (1.0 + math.exp(-0.65 * float(margin)))
 
 
+def _game_lens_remaining_outs(progress: Dict[str, Any]) -> int:
+    remaining = _safe_int(progress.get("remainingOuts"))
+    if remaining is not None:
+        return max(0, int(remaining))
+    fraction = max(0.0, min(1.0, float(_safe_float(progress.get("fraction")) or 0.0)))
+    return max(0, int(round((1.0 - fraction) * 54.0)))
+
+
+def _game_lens_trailing_cap(progress: Dict[str, Any]) -> int:
+    remaining_outs = _game_lens_remaining_outs(progress)
+    return max(1, min(3, int(math.ceil(float(remaining_outs) / 12.0))))
+
+
+def _game_lens_min_ml_win_prob(progress: Dict[str, Any]) -> float:
+    fraction = max(0.0, min(1.0, float(_safe_float(progress.get("fraction")) or 0.0)))
+    return 0.53 + (0.03 * fraction)
+
+
+def _game_lens_min_ml_edge(progress: Dict[str, Any]) -> float:
+    fraction = max(0.0, min(1.0, float(_safe_float(progress.get("fraction")) or 0.0)))
+    return 0.015 + (0.01 * fraction)
+
+
+def _game_lens_min_margin(progress: Dict[str, Any]) -> float:
+    fraction = max(0.0, min(1.0, float(_safe_float(progress.get("fraction")) or 0.0)))
+    return 0.6 + (0.35 * fraction)
+
+
+def _game_lens_min_spread_cushion(progress: Dict[str, Any]) -> float:
+    fraction = max(0.0, min(1.0, float(_safe_float(progress.get("fraction")) or 0.0)))
+    return 0.75 + (0.25 * fraction)
+
+
+def _game_lens_min_total_cushion(progress: Dict[str, Any]) -> float:
+    fraction = max(0.0, min(1.0, float(_safe_float(progress.get("fraction")) or 0.0)))
+    return 0.6 + (0.25 * fraction)
+
+
+def _game_lens_score_phrase(side_margin: Optional[float], remaining_outs: int) -> str:
+    margin = _safe_float(side_margin)
+    if margin is None:
+        return f"{int(max(0, remaining_outs))} outs left"
+    if margin > 0:
+        return f"ahead by {int(round(margin))} with {int(max(0, remaining_outs))} outs left"
+    if margin < 0:
+        return f"trailing by {int(round(abs(margin)))} with {int(max(0, remaining_outs))} outs left"
+    return f"tied game with {int(max(0, remaining_outs))} outs left"
+
+
+def _game_lens_moneyline_market(
+    *,
+    model_home_prob: Optional[float],
+    projection_home_margin: Optional[float],
+    progress: Dict[str, Any],
+    actual_home: Optional[float],
+    actual_away: Optional[float],
+    home_odds: Any,
+    away_odds: Any,
+) -> Dict[str, Any]:
+    home_prob_market = _american_odds_implied_prob(home_odds)
+    away_prob_market = _american_odds_implied_prob(away_odds)
+    home_prob_market, away_prob_market = _normalize_two_way_probs(home_prob_market, away_prob_market)
+    out = {
+        "homeOdds": home_odds,
+        "awayOdds": away_odds,
+        "marketHomeProb": home_prob_market,
+        "pick": None,
+        "edge": None,
+        "reason": None,
+    }
+    home_prob = _safe_float(model_home_prob)
+    home_margin = _safe_float(projection_home_margin)
+    if home_prob is None or home_margin is None or home_prob_market is None or away_prob_market is None:
+        return out
+
+    current_home_margin = float(_safe_float(actual_home) or 0.0) - float(_safe_float(actual_away) or 0.0)
+    selected_side = "home" if float(home_prob) >= 0.5 else "away"
+    selected_prob = float(home_prob) if selected_side == "home" else (1.0 - float(home_prob))
+    selected_market_prob = float(home_prob_market) if selected_side == "home" else float(away_prob_market)
+    selected_projection_margin = float(home_margin) if selected_side == "home" else -float(home_margin)
+    current_side_margin = current_home_margin if selected_side == "home" else -current_home_margin
+    remaining_outs = _game_lens_remaining_outs(progress)
+    if current_side_margin < 0 and abs(current_side_margin) > float(_game_lens_trailing_cap(progress)):
+        return out
+
+    if selected_prob < _game_lens_min_ml_win_prob(progress):
+        return out
+    if selected_projection_margin < _game_lens_min_margin(progress):
+        return out
+
+    edge = float(selected_prob) - float(selected_market_prob)
+    if edge < _game_lens_min_ml_edge(progress):
+        return out
+
+    out["pick"] = selected_side
+    out["edge"] = round(edge, 4)
+    out["reason"] = "; ".join(
+        [
+            f"win prob {selected_prob:.1%}",
+            f"proj margin {selected_projection_margin:+.2f}",
+            _game_lens_score_phrase(current_side_margin, remaining_outs),
+        ]
+    )
+    return out
+
+
+def _game_lens_spread_market(
+    *,
+    projection_home_margin: Optional[float],
+    progress: Dict[str, Any],
+    actual_home: Optional[float],
+    actual_away: Optional[float],
+    spread_line: Optional[float],
+    spread_home_odds: Any,
+    spread_away_odds: Any,
+) -> Dict[str, Any]:
+    out = {
+        "homeLine": spread_line,
+        "homeOdds": spread_home_odds,
+        "awayOdds": spread_away_odds,
+        "pick": None,
+        "edge": None,
+        "reason": None,
+    }
+    home_margin = _safe_float(projection_home_margin)
+    home_line = _safe_float(spread_line)
+    if home_margin is None or home_line is None:
+        return out
+
+    spread_edge = float(home_margin) + float(home_line)
+    if abs(spread_edge) <= 1e-9:
+        return out
+
+    selected_side = "home" if spread_edge > 0 else "away"
+    cover_cushion = abs(float(spread_edge))
+    if cover_cushion < _game_lens_min_spread_cushion(progress):
+        return out
+
+    current_home_margin = float(_safe_float(actual_home) or 0.0) - float(_safe_float(actual_away) or 0.0)
+    current_cover_margin = current_home_margin + float(home_line)
+    current_side_cover = current_cover_margin if selected_side == "home" else -current_cover_margin
+    remaining_outs = _game_lens_remaining_outs(progress)
+    if current_side_cover < 0 and remaining_outs <= 9 and cover_cushion < 1.25:
+        return out
+
+    out["pick"] = selected_side
+    out["edge"] = round(spread_edge, 3)
+    out["reason"] = "; ".join(
+        [
+            f"cover cushion {cover_cushion:.2f}",
+            f"proj margin {float(home_margin):+.2f}",
+            _game_lens_score_phrase(current_side_cover, remaining_outs),
+        ]
+    )
+    return out
+
+
+def _game_lens_total_market(
+    *,
+    projection_total: Optional[float],
+    progress: Dict[str, Any],
+    actual_home: Optional[float],
+    actual_away: Optional[float],
+    total_line: Optional[float],
+    total_over_odds: Any,
+    total_under_odds: Any,
+) -> Dict[str, Any]:
+    out = {
+        "line": total_line,
+        "overOdds": total_over_odds,
+        "underOdds": total_under_odds,
+        "pick": None,
+        "edge": None,
+        "reason": None,
+    }
+    projected_total = _safe_float(projection_total)
+    live_total_line = _safe_float(total_line)
+    if projected_total is None or live_total_line is None:
+        return out
+
+    total_edge = float(projected_total) - float(live_total_line)
+    if abs(total_edge) < _game_lens_min_total_cushion(progress):
+        return out
+
+    selected_side = "over" if total_edge > 0 else "under"
+    current_total = float(_safe_float(actual_home) or 0.0) + float(_safe_float(actual_away) or 0.0)
+    remaining_outs = _game_lens_remaining_outs(progress)
+    if selected_side == "under" and current_total > float(live_total_line) and remaining_outs <= 9:
+        return out
+
+    out["pick"] = selected_side
+    out["edge"] = round(total_edge, 3)
+    out["reason"] = "; ".join(
+        [
+            f"proj total {float(projected_total):.2f}",
+            f"current total {current_total:.0f}",
+            f"{int(max(0, remaining_outs))} outs left",
+        ]
+    )
+    return out
+
+
 def _normalize_team_key(value: Any) -> str:
     return " ".join(part for part in normalize_pitcher_name(str(value or "")).split() if part)
 
@@ -5954,9 +6156,9 @@ def _live_game_progress(snapshot: Optional[Dict[str, Any]], card: Optional[Dict[
     abstract = str(status.get("abstractGameState") or ((card or {}).get("status") or {}).get("abstract") or "")
     detailed = str(status.get("detailedState") or ((card or {}).get("status") or {}).get("detailed") or "")
     if abstract.lower() == "final":
-        return {"fraction": 1.0, "inning": 9, "half": "final", "outs": 3, "label": detailed or "Final"}
+        return {"fraction": 1.0, "inning": 9, "half": "final", "outs": 3, "outsRecorded": 54, "remainingOuts": 0, "label": detailed or "Final"}
     if abstract.lower() != "live":
-        return {"fraction": 0.0, "inning": None, "half": None, "outs": 0, "label": detailed or abstract or "Pregame"}
+        return {"fraction": 0.0, "inning": None, "half": None, "outs": 0, "outsRecorded": 0, "remainingOuts": 54, "label": detailed or abstract or "Pregame"}
 
     current = ((snapshot or {}).get("current") or {}) if isinstance(snapshot, dict) else {}
     inning = _safe_int(current.get("inning")) or 1
@@ -5966,7 +6168,7 @@ def _live_game_progress(snapshot: Optional[Dict[str, Any]], card: Optional[Dict[
     outs_recorded = int(max(0, ((inning - 1) * 6) + (3 if half == "bottom" else 0) + outs))
     fraction = max(0.0, min(1.0, float(outs_recorded) / 54.0))
     label = f"{half.title()} {inning}".strip() if half else f"Inning {inning}"
-    return {"fraction": fraction, "inning": inning, "half": half, "outs": outs, "label": label}
+    return {"fraction": fraction, "inning": inning, "half": half, "outs": outs, "outsRecorded": outs_recorded, "remainingOuts": max(0, 54 - outs_recorded), "label": label}
 
 
 def _project_live_value(actual_value: Optional[float], model_mean: Optional[float], progress_fraction: float) -> Optional[float]:
@@ -6327,40 +6529,42 @@ def _build_game_lens(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], s
                 baseline_home_prob, _ = _normalize_two_way_probs(baseline_home_prob, away_prob)
         model_home_prob = _live_margin_win_prob(projection.get("homeMargin")) if not projection.get("closed") else None
 
-        total_line = _safe_float(totals.get("line"))
-        total_over_odds = totals.get("over_odds") or totals.get("overOdds")
-        total_under_odds = totals.get("under_odds") or totals.get("underOdds")
-        total_edge = None
-        total_pick = None
-        if projection.get("total") is not None and total_line is not None:
-            total_edge = round(float(projection["total"]) - float(total_line), 3)
-            total_pick = "over" if total_edge > 0 else ("under" if total_edge < 0 else None)
-
+        home_odds = h2h.get("home_odds") or h2h.get("homeOdds")
+        away_odds = h2h.get("away_odds") or h2h.get("awayOdds")
         spread_line = _safe_float(spreads.get("home_line") or spreads.get("homeLine"))
         spread_home_odds = spreads.get("home_odds") or spreads.get("homeOdds")
         spread_away_odds = spreads.get("away_odds") or spreads.get("awayOdds")
-        spread_edge = None
-        spread_pick = None
-        if projection.get("homeMargin") is not None and spread_line is not None:
-            spread_edge = round(float(projection["homeMargin"]) + float(spread_line), 3)
-            spread_pick = "home" if spread_edge > 0 else ("away" if spread_edge < 0 else None)
+        total_line = _safe_float(totals.get("line"))
+        total_over_odds = totals.get("over_odds") or totals.get("overOdds")
+        total_under_odds = totals.get("under_odds") or totals.get("underOdds")
 
-        home_odds = h2h.get("home_odds") or h2h.get("homeOdds")
-        away_odds = h2h.get("away_odds") or h2h.get("awayOdds")
-        home_prob_market = _american_odds_implied_prob(home_odds)
-        away_prob_market = _american_odds_implied_prob(away_odds)
-        home_prob_market, away_prob_market = _normalize_two_way_probs(home_prob_market, away_prob_market)
-        ml_pick = None
-        ml_edge = None
-        if model_home_prob is not None and home_prob_market is not None and away_prob_market is not None:
-            home_delta = float(model_home_prob) - float(home_prob_market)
-            away_delta = (1.0 - float(model_home_prob)) - float(away_prob_market)
-            if abs(home_delta) >= abs(away_delta):
-                ml_pick = "home" if home_delta > 0 else None
-                ml_edge = round(home_delta, 4) if home_delta > 0 else None
-            else:
-                ml_pick = "away" if away_delta > 0 else None
-                ml_edge = round(away_delta, 4) if away_delta > 0 else None
+        moneyline_market = _game_lens_moneyline_market(
+            model_home_prob=model_home_prob,
+            projection_home_margin=projection.get("homeMargin"),
+            progress=progress,
+            actual_home=home_score,
+            actual_away=away_score,
+            home_odds=home_odds,
+            away_odds=away_odds,
+        )
+        spread_market = _game_lens_spread_market(
+            projection_home_margin=projection.get("homeMargin"),
+            progress=progress,
+            actual_home=home_score,
+            actual_away=away_score,
+            spread_line=spread_line,
+            spread_home_odds=spread_home_odds,
+            spread_away_odds=spread_away_odds,
+        )
+        total_market = _game_lens_total_market(
+            projection_total=projection.get("total"),
+            progress=progress,
+            actual_home=home_score,
+            actual_away=away_score,
+            total_line=total_line,
+            total_over_odds=total_over_odds,
+            total_under_odds=total_under_odds,
+        )
 
         rows.append(
             {
@@ -6373,27 +6577,9 @@ def _build_game_lens(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], s
                 "modelHomeWinProb": model_home_prob,
                 "source": "live_projection" if lane["key"] == "live" else "segment_projection",
                 "markets": {
-                    "moneyline": {
-                        "homeOdds": home_odds,
-                        "awayOdds": away_odds,
-                        "marketHomeProb": home_prob_market,
-                        "pick": ml_pick,
-                        "edge": ml_edge,
-                    },
-                    "spread": {
-                        "homeLine": spread_line,
-                        "homeOdds": spread_home_odds,
-                        "awayOdds": spread_away_odds,
-                        "pick": spread_pick,
-                        "edge": spread_edge,
-                    },
-                    "total": {
-                        "line": total_line,
-                        "overOdds": total_over_odds,
-                        "underOdds": total_under_odds,
-                        "pick": total_pick,
-                        "edge": total_edge,
-                    },
+                    "moneyline": moneyline_market,
+                    "spread": spread_market,
+                    "total": total_market,
                 },
             }
         )
@@ -7818,13 +8004,28 @@ def api_game_sim(game_pk: int) -> Response:
     out = _load_sim_context_for_game(int(game_pk), d)
     if out.get("found"):
         snapshot = _load_live_lens_snapshot(int(game_pk), d)
-        live_card = {
-            "gamePk": int(game_pk),
-            "status": {
-                "abstract": str((((snapshot or {}).get("status") or {}).get("abstractGameState") or "")),
-            },
-        }
+        live_card = next(
+            (
+                card
+                for card in _load_live_lens_cards(d)
+                if _safe_int((card or {}).get("gamePk")) == int(game_pk)
+            ),
+            None,
+        )
+        if not isinstance(live_card, dict):
+            live_card = {
+                "gamePk": int(game_pk),
+                "status": {
+                    "abstract": str((((snapshot or {}).get("status") or {}).get("abstractGameState") or "")),
+                },
+            }
         out["livePropRows"] = _current_live_prop_rows(live_card, snapshot, out, d)
+        out["gameLens"] = _build_game_lens(
+            live_card,
+            snapshot,
+            out,
+            _game_line_market_for_card(live_card, _load_game_line_market_index(d)),
+        )
         out.pop("propModels", None)
     status = 200 if out.get("found") else 404
     if out.get("error") == "read_failed":

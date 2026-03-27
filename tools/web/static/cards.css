@@ -851,10 +851,16 @@ body.cards-body {
 
 .cards-live-lens-subtitle,
 .cards-live-lens-market,
-.cards-live-lens-margin {
+.cards-live-lens-margin,
+.cards-live-lens-reason {
   color: var(--cards-text-soft);
   font-size: 11px;
   line-height: 1.28;
+}
+
+.cards-live-lens-reasons {
+  display: grid;
+  gap: 4px;
 }
 
 .cards-live-lens-summary-row {
@@ -954,14 +960,19 @@ body.cards-body {
 
 .cards-prop-overview-foot {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 10px;
   color: var(--cards-text-soft);
   font-size: 11px;
   line-height: 1.3;
   border-top: 1px solid rgba(132, 166, 196, 0.12);
   padding-top: 7px;
+}
+
+.cards-prop-overview-foot span:first-child {
+  flex: 1 1 220px;
 }
 
 .cards-callout {

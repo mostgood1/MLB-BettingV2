@@ -427,6 +427,9 @@
   }
 
   function buildGameLensRows(card, detail) {
+    if (Array.isArray(detail?.sim?.gameLens) && detail.sim.gameLens.length) {
+      return detail.sim.gameLens;
+    }
     const snapshot = detail?.snapshot || null;
     const sim = detail?.sim || null;
     const progress = gameProgress(snapshot, card);
@@ -522,6 +525,11 @@
       if (kind === "moneyline") return `${label}: ${String(pick).toUpperCase()} ${formatSigned(edge * 100, 1)} pts`;
       return `${label}: ${String(pick).toUpperCase()} ${formatSigned(edge, 2)}`;
     }
+    function reasonSummary(label, market) {
+      const text = String(market?.reason || '').trim();
+      if (!text || !market?.pick) return '';
+      return `<div class="cards-live-lens-reason">${escapeHtml(`${label}: ${text}`)}</div>`;
+    }
     return rows.map((row) => {
       const projectionLine = row.closed || row.projection.total == null
         ? 'Segment closed'
@@ -529,6 +537,11 @@
       const ml = row.markets.moneyline;
       const spread = row.markets.spread;
       const total = row.markets.total;
+      const reasonBlock = [
+        reasonSummary('ML', ml),
+        reasonSummary('Run line', spread),
+        reasonSummary('Total', total),
+      ].filter(Boolean).join('');
       const marketLine = [
         total.line != null ? `Total ${formatLine(total.line)}` : null,
         spread.homeLine != null ? `Home ${formatSigned(spread.homeLine, 1)}` : null,
@@ -553,6 +566,7 @@
             <div class="cards-live-lens-pick">${escapeHtml(pickSummary('Total', total.pick, total.edge, 'total'))}</div>
           </div>
           <div class="cards-live-lens-market">${escapeHtml(marketLine || 'No tracked market line')}</div>
+          ${reasonBlock ? `<div class="cards-live-lens-reasons">${reasonBlock}</div>` : ''}
           ${row.closed || row.projection.homeMargin == null ? '' : `<div class="cards-live-lens-margin">${escapeHtml(`Projected margin: ${formatSigned(row.projection.homeMargin, 2)}`)}</div>`}
         </div>`;
     }).join('');
@@ -1412,7 +1426,7 @@
             ? `${homeCode} ${formatOdds(moneyline.homeOdds)}`
             : `${awayCode} ${formatOdds(moneyline.awayOdds)}`,
           edgeLabel: formatSigned((toNumber(moneyline.edge) || 0) * 100, 1),
-          footLeft: `Market ${formatPercent(moneyline.marketHomeProb, 1)} home`,
+          footLeft: moneyline.reason || `Market ${formatPercent(moneyline.marketHomeProb, 1)} home`,
           footRight: `${liveGameRow.label} | ML`,
         });
       }
@@ -1429,7 +1443,7 @@
           projectionLabel: liveGameRow.projection?.homeMargin == null ? "-" : formatSigned(liveGameRow.projection.homeMargin, 2),
           lineLabel: runLineText,
           edgeLabel: formatSigned(spread.edge, 2),
-          footLeft: `Projected margin ${formatSigned(liveGameRow.projection?.homeMargin, 2)}`,
+          footLeft: spread.reason || `Projected margin ${formatSigned(liveGameRow.projection?.homeMargin, 2)}`,
           footRight: `${liveGameRow.label} | RL`,
         });
       }
@@ -1442,7 +1456,7 @@
           projectionLabel: liveGameRow.projection?.total == null ? "-" : formatLine(liveGameRow.projection.total),
           lineLabel: `${String(total.pick || "").replace(/^./, (m) => m.toUpperCase())} ${formatLine(total.line)} ${formatOdds(total.pick === "over" ? total.overOdds : total.underOdds)}`,
           edgeLabel: formatSigned(total.edge, 2),
-          footLeft: `Projected total ${formatLine(liveGameRow.projection?.total)}`,
+          footLeft: total.reason || `Projected total ${formatLine(liveGameRow.projection?.total)}`,
           footRight: `${liveGameRow.label} | Total`,
         });
       }
