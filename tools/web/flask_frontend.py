@@ -3794,7 +3794,37 @@ def _season_betting_day_payload(season: int, date_str: str, requested_profile: s
                 settled_card = embedded_settlement
 
         settled_counts = _betting_selected_counts_with_defaults(settled_card.get("selected_counts") or {})
-        if int(settled_counts.get("combined") or 0) <= 0 and canonical_card_path and not _same_daily_card_path(canonical_card_path, card_path):
+        settled_preview = _merge_settled_results_blocks([settled_card.get("results") or {}])
+        settled_combined_preview = settled_preview.get("combined") or _blank_settled_summary()
+        settled_n_preview = int(settled_combined_preview.get("n") or 0)
+        unresolved_preview = _season_betting_unresolved_count(settled_card)
+        if (
+            int(settled_counts.get("combined") or 0) > 0
+            and (unresolved_preview > 0 or settled_n_preview < int(settled_counts.get("combined") or 0))
+        ):
+            try:
+                exact_settled = _settle_card(card_path)
+            except Exception:
+                exact_settled = None
+            if isinstance(exact_settled, dict):
+                exact_counts = _betting_selected_counts_with_defaults(exact_settled.get("selected_counts") or {})
+                exact_preview = _merge_settled_results_blocks([exact_settled.get("results") or {}])
+                exact_combined_preview = exact_preview.get("combined") or _blank_settled_summary()
+                exact_settled_n = int(exact_combined_preview.get("n") or 0)
+                exact_unresolved = _season_betting_unresolved_count(exact_settled)
+                if (
+                    int(exact_counts.get("combined") or 0) > int(settled_counts.get("combined") or 0)
+                    or exact_settled_n > settled_n_preview
+                    or exact_unresolved < unresolved_preview
+                ):
+                    settled_card = exact_settled
+                    settled_counts = exact_counts
+                    settled_preview = exact_preview
+                    settled_combined_preview = exact_combined_preview
+                    settled_n_preview = exact_settled_n
+                    unresolved_preview = exact_unresolved
+
+        if canonical_card_path and not _same_daily_card_path(canonical_card_path, card_path):
             if (
                 canonical_settlement_path
                 and canonical_settlement_path.exists()
@@ -3806,6 +3836,33 @@ def _season_betting_day_payload(season: int, date_str: str, requested_profile: s
                     canonical_settled = _settle_card(canonical_card_path)
                 except Exception:
                     canonical_settled = None
+            if isinstance(canonical_settled, dict):
+                canonical_preview = _merge_settled_results_blocks([canonical_settled.get("results") or {}])
+                canonical_combined_preview = canonical_preview.get("combined") or _blank_settled_summary()
+                canonical_unresolved = _season_betting_unresolved_count(canonical_settled)
+                canonical_counts_preview = _betting_selected_counts_with_defaults(canonical_settled.get("selected_counts") or {})
+                if (
+                    int(canonical_counts_preview.get("combined") or 0) > 0
+                    and (
+                        canonical_unresolved > 0
+                        or int(canonical_combined_preview.get("n") or 0) < int(canonical_counts_preview.get("combined") or 0)
+                    )
+                ):
+                    try:
+                        canonical_exact = _settle_card(canonical_card_path)
+                    except Exception:
+                        canonical_exact = None
+                    if isinstance(canonical_exact, dict):
+                        canonical_exact_preview = _merge_settled_results_blocks([canonical_exact.get("results") or {}])
+                        canonical_exact_combined = canonical_exact_preview.get("combined") or _blank_settled_summary()
+                        canonical_exact_counts = _betting_selected_counts_with_defaults(canonical_exact.get("selected_counts") or {})
+                        canonical_exact_unresolved = _season_betting_unresolved_count(canonical_exact)
+                        if (
+                            int(canonical_exact_counts.get("combined") or 0) > int(canonical_counts_preview.get("combined") or 0)
+                            or int(canonical_exact_combined.get("n") or 0) > int(canonical_combined_preview.get("n") or 0)
+                            or canonical_exact_unresolved < canonical_unresolved
+                        ):
+                            canonical_settled = canonical_exact
             canonical_counts = _betting_selected_counts_with_defaults(
                 ((canonical_settled or {}).get("selected_counts") if isinstance(canonical_settled, dict) else None) or {}
             )
