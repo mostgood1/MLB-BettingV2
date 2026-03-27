@@ -2935,11 +2935,12 @@ def _raw_feed_live_path(game_pk: int, date_str: str) -> Optional[Path]:
     season = _season_from_date_str(date_str)
     if not season:
         return None
-    day_dir = _ROOT_DIR / "data" / "raw" / "statsapi" / "feed_live" / str(int(season)) / str(date_str)
-    for suffix in (".json.gz", ".json"):
-        candidate = day_dir / f"{int(game_pk)}{suffix}"
-        if candidate.exists() and candidate.is_file():
-            return candidate
+    for data_root in _data_roots():
+        day_dir = data_root / "raw" / "statsapi" / "feed_live" / str(int(season)) / str(date_str)
+        for suffix in (".json.gz", ".json"):
+            candidate = day_dir / f"{int(game_pk)}{suffix}"
+            if candidate.exists() and candidate.is_file():
+                return candidate
     return None
 
 

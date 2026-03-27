@@ -140,7 +140,11 @@ def load_feed_live_from_raw(season: int, date_str: str, game_pk: int, raw_root: 
     try:
         root = raw_root
         if root is None:
-            root = Path(__file__).resolve().parents[2] / "data" / "raw" / "statsapi" / "feed_live"
+            data_root_env = str(os.environ.get("MLB_BETTING_DATA_ROOT") or "").strip()
+            if data_root_env:
+                root = Path(data_root_env).resolve() / "raw" / "statsapi" / "feed_live"
+            else:
+                root = Path(__file__).resolve().parents[2] / "data" / "raw" / "statsapi" / "feed_live"
         p = Path(root) / str(int(season)) / str(date_str) / f"{game_pk_i}.json.gz"
         if not p.exists():
             return None
