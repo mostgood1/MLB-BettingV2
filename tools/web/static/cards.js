@@ -14,6 +14,7 @@
   };
 
   const AUTO_REFRESH_MS = 15000;
+  const LIVE_DETAIL_REFRESH_MS = 15000;
 
   const root = {
     headerMeta: document.getElementById("cardsHeaderMeta"),
@@ -548,7 +549,7 @@
           </div>
           <div class="cards-live-lens-picks">
             <div class="cards-live-lens-pick">${escapeHtml(pickSummary('ML', ml.pick, ml.edge, 'moneyline'))}</div>
-            <div class="cards-live-lens-pick">${escapeHtml(pickSummary('Spread', spread.pick, spread.edge, 'spread'))}</div>
+            <div class="cards-live-lens-pick">${escapeHtml(pickSummary('Run line', spread.pick, spread.edge, 'spread'))}</div>
             <div class="cards-live-lens-pick">${escapeHtml(pickSummary('Total', total.pick, total.edge, 'total'))}</div>
           </div>
           <div class="cards-live-lens-market">${escapeHtml(marketLine || 'No tracked market line')}</div>
@@ -1391,6 +1392,62 @@
   }
 
   function renderPropOverviewLens(card, detail) {
+    const liveGameRows = buildGameLensRows(card, detail);
+    const liveGameRow = liveGameRows.find((row) => row?.key === "live") || null;
+    const liveGameCards = [];
+    if (liveGameRow && !liveGameRow.closed) {
+      const moneyline = liveGameRow.markets?.moneyline || {};
+      const spread = liveGameRow.markets?.spread || {};
+      const total = liveGameRow.markets?.total || {};
+      const awayCode = card?.away?.abbr || "Away";
+      const homeCode = card?.home?.abbr || "Home";
+      if (moneyline.pick && moneyline.edge != null) {
+        liveGameCards.push({
+          label: "Game live lens",
+          playerName: moneyline.pick === "home" ? homeCode : awayCode,
+          marketLabel: `ML ${moneyline.pick === "home" ? homeCode : awayCode}`,
+          actualLabel: `${awayCode} ${formatLine(detail?.snapshot?.teams?.away?.totals?.R)} - ${homeCode} ${formatLine(detail?.snapshot?.teams?.home?.totals?.R)}`,
+          projectionLabel: formatPercent(liveGameRow.modelHomeWinProb, 1),
+          lineLabel: moneyline.pick === "home"
+            ? `${homeCode} ${formatOdds(moneyline.homeOdds)}`
+            : `${awayCode} ${formatOdds(moneyline.awayOdds)}`,
+          edgeLabel: formatSigned((toNumber(moneyline.edge) || 0) * 100, 1),
+          footLeft: `Market ${formatPercent(moneyline.marketHomeProb, 1)} home`,
+          footRight: `${liveGameRow.label} | ML`,
+        });
+      }
+      if (spread.pick && spread.edge != null) {
+        const homeLine = toNumber(spread.homeLine);
+        const runLineText = spread.pick === "home"
+          ? `${homeCode} ${formatSigned(homeLine, 1)} ${formatOdds(spread.homeOdds)}`
+          : `${awayCode} ${formatSigned(homeLine == null ? null : -homeLine, 1)} ${formatOdds(spread.awayOdds)}`;
+        liveGameCards.push({
+          label: "Game live lens",
+          playerName: spread.pick === "home" ? homeCode : awayCode,
+          marketLabel: `Run line ${spread.pick}`,
+          actualLabel: liveGameRow.projection?.homeMargin == null ? "-" : formatSigned(liveGameRow.projection.homeMargin, 2),
+          projectionLabel: liveGameRow.projection?.homeMargin == null ? "-" : formatSigned(liveGameRow.projection.homeMargin, 2),
+          lineLabel: runLineText,
+          edgeLabel: formatSigned(spread.edge, 2),
+          footLeft: `Projected margin ${formatSigned(liveGameRow.projection?.homeMargin, 2)}`,
+          footRight: `${liveGameRow.label} | RL`,
+        });
+      }
+      if (total.pick && total.edge != null) {
+        liveGameCards.push({
+          label: "Game live lens",
+          playerName: String(total.pick || "").replace(/^./, (m) => m.toUpperCase()),
+          marketLabel: `Total ${String(total.pick || "")}`,
+          actualLabel: liveGameRow.projection?.total == null ? "-" : formatLine(liveGameRow.projection.total),
+          projectionLabel: liveGameRow.projection?.total == null ? "-" : formatLine(liveGameRow.projection.total),
+          lineLabel: `${String(total.pick || "").replace(/^./, (m) => m.toUpperCase())} ${formatLine(total.line)} ${formatOdds(total.pick === "over" ? total.overOdds : total.underOdds)}`,
+          edgeLabel: formatSigned(total.edge, 2),
+          footLeft: `Projected total ${formatLine(liveGameRow.projection?.total)}`,
+          footRight: `${liveGameRow.label} | Total`,
+        });
+      }
+    }
+
     const livePayloadAvailable = hasLivePropPayload(detail);
     const liveRows = livePropRows(detail);
     const overviewRows = livePayloadAvailable ? liveRows : officialPropRows(card).concat(extraPropRows(card));
@@ -1422,7 +1479,7 @@
       return { label, state: entry.state };
     });
 
-    if (!items.length) {
+    if (!items.length && !liveGameCards.length) {
       return livePayloadAvailable
         ? '<div class="cards-empty-copy">No unresolved live prop opportunities remain for this game.</div>'
         : '<div class="cards-empty-copy">No tracked player props for live lens.</div>';
@@ -1430,6 +1487,27 @@
 
     return `
       <div class="cards-prop-overview-grid">
+        ${liveGameCards.map((entry) => `
+          <div class="cards-prop-overview-card">
+            <div class="cards-lens-head">
+              <div>
+                <div class="cards-lens-label">${escapeHtml(entry.label)}</div>
+                <div class="cards-lens-main">${escapeHtml(entry.playerName)}</div>
+                <div class="cards-subcopy">${escapeHtml(entry.marketLabel)}</div>
+              </div>
+              <span class="cards-lens-badge is-live">Live</span>
+            </div>
+            <div class="cards-prop-overview-metrics">
+              <div class="cards-data-pair"><span>Actual</span><strong>${escapeHtml(entry.actualLabel)}</strong></div>
+              <div class="cards-data-pair"><span>Live proj</span><strong>${escapeHtml(entry.projectionLabel)}</strong></div>
+              <div class="cards-data-pair"><span>Line</span><strong>${escapeHtml(entry.lineLabel)}</strong></div>
+              <div class="cards-data-pair is-positive"><span>Live edge</span><strong>${escapeHtml(entry.edgeLabel)}</strong></div>
+            </div>
+            <div class="cards-prop-overview-foot">
+              <span>${escapeHtml(entry.footLeft)}</span>
+              <span>${escapeHtml(entry.footRight)}</span>
+            </div>
+          </div>`).join('')}
         ${items.map((entry) => {
           const stateObj = entry.state;
           const reco = stateObj.reco;
@@ -2135,7 +2213,8 @@
     if (!isLive || state.livePollers.has(gamePk)) return;
     const handle = window.setInterval(() => {
       loadSnapshot(card, true);
-    }, 20000);
+      loadSim(card);
+    }, LIVE_DETAIL_REFRESH_MS);
     state.livePollers.set(gamePk, handle);
   }
 
