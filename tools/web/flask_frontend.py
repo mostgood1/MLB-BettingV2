@@ -2376,7 +2376,80 @@ def _default_cards_date() -> str:
     return today
 
 
+def _season_batch_dir(season: int) -> Path:
+    return _DATA_DIR / "eval" / "batches" / f"season_{int(season)}_ui_daily_live"
+
+
+def _season_output_dir(season: int) -> Path:
+    return _DATA_DIR / "eval" / "seasons" / str(int(season))
+
+
+def _path_mtime(path: Optional[Path]) -> Optional[float]:
+    if not path or not path.exists():
+        return None
+    try:
+        return float(path.stat().st_mtime)
+    except OSError:
+        return None
+
+
+def _latest_report_mtime(batch_dir: Path) -> Optional[float]:
+    if not batch_dir.exists() or not batch_dir.is_dir():
+        return None
+    latest: Optional[float] = None
+    try:
+        for path in batch_dir.glob("sim_vs_actual_*.json"):
+            if not path.is_file():
+                continue
+            value = _path_mtime(path)
+            if value is None:
+                continue
+            latest = value if latest is None else max(latest, value)
+    except OSError:
+        return None
+    return latest
+
+
+def _ensure_fresh_season_manifests(season: int, betting_profile: str = "retuned") -> None:
+    batch_dir = _season_batch_dir(int(season))
+    season_dir = _season_output_dir(int(season))
+    latest_report = _latest_report_mtime(batch_dir)
+    if latest_report is None:
+        return
+
+    normalized_profile = str(betting_profile or "retuned").strip().lower()
+    if normalized_profile not in ("baseline", "retuned"):
+        normalized_profile = "retuned"
+    betting_manifest_name = (
+        "season_betting_cards_retuned_manifest.json"
+        if normalized_profile == "retuned"
+        else "season_betting_cards_manifest.json"
+    )
+    season_manifest_path = season_dir / "season_eval_manifest.json"
+    betting_manifest_path = season_dir / betting_manifest_name
+    season_manifest_mtime = _path_mtime(season_manifest_path)
+    betting_manifest_mtime = _path_mtime(betting_manifest_path)
+    needs_rebuild = (
+        season_manifest_mtime is None
+        or betting_manifest_mtime is None
+        or season_manifest_mtime < latest_report
+        or betting_manifest_mtime < latest_report
+    )
+    if not needs_rebuild:
+        return
+    try:
+        _publish_season_manifests(
+            season=int(season),
+            batch_dir=batch_dir,
+            betting_profile=normalized_profile,
+            season_dir=season_dir,
+        )
+    except Exception:
+        return
+
+
 def _find_season_manifest_path(season: int) -> Optional[Path]:
+    _ensure_fresh_season_manifests(int(season), "retuned")
     season_dirs = [data_root / "eval" / "seasons" / str(int(season)) for data_root in _data_roots()]
     seen: set[str] = set()
     for season_dir in season_dirs:
@@ -2606,14 +2679,20 @@ def _load_season_betting_manifest(
     season: int,
     requested_profile: str,
 ) -> Tuple[str, Optional[Path], Optional[Dict[str, Any]], Dict[str, str]]:
-    available = _available_season_betting_profiles(int(season))
     requested = str(requested_profile or "").strip().lower()
     if requested in ("baseline", "retuned"):
         selected_profile = requested
     elif requested in ("", "default", "current", "live"):
-        selected_profile = "retuned" if "retuned" in available else "baseline"
+        selected_profile = "retuned"
     else:
-        selected_profile = requested or ("retuned" if "retuned" in available else "baseline")
+        selected_profile = requested or "retuned"
+
+    _ensure_fresh_season_manifests(int(season), selected_profile)
+    available = _available_season_betting_profiles(int(season))
+    if requested in ("", "default", "current", "live"):
+        selected_profile = "retuned" if "retuned" in available else "baseline"
+    elif selected_profile not in available and available:
+        selected_profile = "retuned" if "retuned" in available else next(iter(available.keys()))
 
     manifest_rel = available.get(selected_profile)
     manifest_path = _path_from_maybe_relative(manifest_rel)
