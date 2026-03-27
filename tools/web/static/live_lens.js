@@ -67,6 +67,14 @@
     return raw.replace(/_/g, " ");
   }
 
+  function propTierLabel(prop) {
+    const tier = String(prop?.tier || prop?.source || "").toLowerCase();
+    if (tier === "live" || tier === "current_market" || tier === "live_registry") return "live";
+    if (tier === "official") return "official";
+    if (tier === "playable") return "playable";
+    return tier || "tracked";
+  }
+
   function badgeTone(status) {
     const token = String(status || "").toLowerCase();
     if (token === "win") return "#2d6a4f";
@@ -297,7 +305,7 @@
             <tr>
               <td>${escapeHtml(prop.playerName || "")}</td>
               <td>${escapeHtml(propLabel(prop))}</td>
-              <td>${escapeHtml(String(prop.tier || ""))}</td>
+              <td>${escapeHtml(propTierLabel(prop))}</td>
               <td>${escapeHtml(String(prop.selection || ""))}</td>
               <td>${escapeHtml(formatLine(prop.line))}</td>
               <td>${escapeHtml(formatLine(prop.actual))}</td>
@@ -310,6 +318,53 @@
             </tr>`).join("")}
         </tbody>
       </table>`;
+  }
+
+  function renderPropSection(title, copy, props, emptyMessage) {
+    if (!Array.isArray(props) || !props.length) {
+      return `
+        <section class="live-lens-prop-section">
+          <div class="live-lens-prop-head">
+            <div class="live-lens-prop-title">${escapeHtml(title)}</div>
+          </div>
+          <div class="empty">${escapeHtml(emptyMessage)}</div>
+        </section>`;
+    }
+    return `
+      <section class="live-lens-prop-section">
+        <div class="live-lens-prop-head">
+          <div>
+            <div class="live-lens-prop-title">${escapeHtml(title)}</div>
+            <div class="live-lens-prop-copy">${escapeHtml(copy)}</div>
+          </div>
+          <span class="cards-chip">${escapeHtml(String(props.length))} rows</span>
+        </div>
+        ${renderPropTable(props)}
+      </section>`;
+  }
+
+  function renderPropSections(game) {
+    const liveProps = Array.isArray(game?.liveProps) ? game.liveProps : [];
+    const trackedProps = Array.isArray(game?.trackedProps) ? game.trackedProps : [];
+    if (!liveProps.length && !trackedProps.length) {
+      return '<div class="empty">No live or tracked player props for this game.</div>';
+    }
+    const sections = [];
+    sections.push(renderPropSection(
+      "Live opportunities",
+      "Current live market lines ranked by live projection edge.",
+      liveProps,
+      "No current live prop opportunities for this game."
+    ));
+    if (trackedProps.length) {
+      sections.push(renderPropSection(
+        "Tracked pregame props",
+        "Original official and playable pregame props, updated with current game state.",
+        trackedProps,
+        "No tracked pregame props for this game."
+      ));
+    }
+    return sections.join("");
   }
 
   function renderGames(payload) {
@@ -331,7 +386,7 @@
           <div class="status-line">${escapeHtml(String(status.abstract || ""))} — ${escapeHtml(String(status.detailed || game.startTime || ""))}</div>
           <div class="status-line">Score: ${escapeHtml(String(score.away ?? "-"))} - ${escapeHtml(String(score.home ?? "-"))}${liveText ? ` | ${escapeHtml(liveText)}` : ""}</div>
           ${renderGameLens(game)}
-          ${renderPropTable(game.props)}
+          ${renderPropSections(game)}
         </section>`;
     }).join("");
   }

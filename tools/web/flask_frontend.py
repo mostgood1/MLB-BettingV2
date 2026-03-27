@@ -5576,6 +5576,51 @@ def _prop_lens_rows(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], si
     return rows
 
 
+def _normalize_live_lens_live_prop_row(row: Dict[str, Any], snapshot: Optional[Dict[str, Any]], card: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    status_text = ((snapshot or {}).get("status") or {}).get("abstractGameState") or (((card or {}).get("status") or {}).get("abstract") or "")
+    actual_value = _safe_float(row.get("actual_value"))
+    if actual_value is None:
+        actual_value = _safe_float(row.get("actual"))
+    model_mean = _safe_float(row.get("model_mean"))
+    market_line = _safe_float(row.get("market_line"))
+    live_projection = _safe_float(row.get("live_projection"))
+    live_edge = _safe_float(row.get("live_edge"))
+    return {
+        "tier": "live",
+        "source": row.get("source") or row.get("recommendation_tier") or "live",
+        "playerName": _prop_owner_name(row),
+        "teamSide": row.get("team_side"),
+        "selection": row.get("selection"),
+        "line": market_line,
+        "actual": actual_value,
+        "modelMean": model_mean,
+        "liveProjection": live_projection,
+        "liveEdge": live_edge,
+        "delta": (float(actual_value) - float(market_line)) if actual_value is not None and market_line is not None else None,
+        "status": _prop_result_state(
+            {
+                "market": row.get("market"),
+                "prop": row.get("prop"),
+                "selection": row.get("selection"),
+                "market_line": market_line,
+            },
+            actual_value,
+            status_text,
+        ),
+        "edge": _safe_float(row.get("edge")),
+        "odds": _safe_int(row.get("odds")),
+        "modelProbOver": _safe_float(row.get("model_prob_over")),
+        "outsMean": _safe_float(row.get("outs_mean")),
+        "marketLabel": row.get("market_label") or row.get("prop") or row.get("market"),
+        "firstSeenAt": row.get("first_seen_at"),
+        "lastSeenAt": row.get("last_seen_at"),
+        "firstSeenLine": _safe_float(row.get("first_seen_line")),
+        "firstSeenLiveProjection": _safe_float(row.get("first_seen_live_projection")),
+        "firstSeenLiveEdge": _safe_float(row.get("first_seen_live_edge")),
+        "seenCount": _safe_int(row.get("seen_count")),
+    }
+
+
 def _live_lens_payload(d: str, *, persist: bool = False) -> Dict[str, Any]:
     cards = _load_live_lens_cards(d)
     artifacts = _load_cards_artifacts(d)
@@ -5597,7 +5642,12 @@ def _live_lens_payload(d: str, *, persist: bool = False) -> Dict[str, Any]:
         sim_context = _load_sim_context_for_game(int(game_pk), d, artifacts=artifacts, archive=archive)
         status = ((snapshot or {}).get("status") or {})
         status_abstract = str(status.get("abstractGameState") or ((card.get("status") or {}).get("abstract") or ""))
-        prop_rows = _prop_lens_rows(card, snapshot, sim_context if sim_context.get("found") else None)
+        tracked_prop_rows = _prop_lens_rows(card, snapshot, sim_context if sim_context.get("found") else None)
+        live_prop_rows = [
+            _normalize_live_lens_live_prop_row(row, snapshot, card)
+            for row in _current_live_prop_rows(card, snapshot, sim_context if sim_context.get("found") else None, d)
+            if isinstance(row, dict)
+        ]
         game_lens = _build_game_lens(card, snapshot, sim_context if sim_context.get("found") else None, _game_line_market_for_card(card, game_line_index))
         if status_abstract.lower() == "live":
             counts["live"] += 1
@@ -5606,7 +5656,7 @@ def _live_lens_payload(d: str, *, persist: bool = False) -> Dict[str, Any]:
         else:
             counts["pregame"] += 1
         counts["games"] += 1
-        counts["props"] += len(prop_rows)
+        counts["props"] += len(live_prop_rows) if live_prop_rows else len(tracked_prop_rows)
         away_totals = ((((snapshot or {}).get("teams") or {}).get("away") or {}).get("totals") or {})
         home_totals = ((((snapshot or {}).get("teams") or {}).get("home") or {}).get("totals") or {})
         games_out.append(
@@ -5632,7 +5682,9 @@ def _live_lens_payload(d: str, *, persist: bool = False) -> Dict[str, Any]:
                     "ml": ((card.get("markets") or {}).get("ml")),
                 },
                 "gameLens": game_lens,
-                "props": prop_rows,
+                "props": live_prop_rows if live_prop_rows else tracked_prop_rows,
+                "liveProps": live_prop_rows,
+                "trackedProps": tracked_prop_rows,
                 "simContextAvailable": bool(sim_context.get("found")),
                 "snapshotAvailable": bool(snapshot),
             }
@@ -5658,8 +5710,8 @@ def _live_lens_payload(d: str, *, persist: bool = False) -> Dict[str, Any]:
                     "status": ((game.get("status") or {}).get("abstract")),
                     "score": ((game.get("matchup") or {}).get("score")),
                     "liveText": ((game.get("matchup") or {}).get("liveText")),
-                    "propCount": len(game.get("props") or []),
-                    "topProps": (game.get("props") or [])[:5],
+                    "propCount": len(game.get("liveProps") or game.get("props") or []),
+                    "topProps": (game.get("liveProps") or game.get("props") or [])[:5],
                 }
                 for game in games_out
             ],

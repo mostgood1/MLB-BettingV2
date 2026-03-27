@@ -1350,7 +1350,18 @@
   }
 
   function liveLensTierTone(tier) {
-    return String(tier || "").toLowerCase() === "playable" ? "is-playable" : "";
+    const token = String(tier || "").toLowerCase();
+    if (token === "playable") return "is-playable";
+    if (token === "live" || token === "current_market" || token === "live_registry") return "is-official";
+    return "";
+  }
+
+  function liveLensTierLabel(tier) {
+    const token = String(tier || "").toLowerCase();
+    if (token === "playable") return "playable";
+    if (token === "live" || token === "current_market" || token === "live_registry") return "live";
+    if (token === "official") return "official";
+    return token || "tracked";
   }
 
   function liveLensPickSummary(label, market, kind) {
@@ -1414,7 +1425,7 @@
                   <div class="season-betting-cell-sub">${escapeHtml(String(prop.teamSide || '').toUpperCase() || 'Team')}</div>
                 </td>
                 <td>${escapeHtml(liveLensPropLabel(prop))}</td>
-                <td><span class="season-ticket-pill ${liveLensTierTone(prop.tier)}">${escapeHtml(String(prop.tier || 'official'))}</span></td>
+                <td><span class="season-ticket-pill ${liveLensTierTone(prop.tier || prop.source)}">${escapeHtml(liveLensTierLabel(prop.tier || prop.source))}</span></td>
                 <td>${escapeHtml(`${String(prop.selection || '').toUpperCase()} ${formatLine(prop.line)}`)}</td>
                 <td>${escapeHtml(formatLine(prop.liveProjection))}</td>
                 <td>${escapeHtml(formatSigned(prop.liveEdge, 2))}</td>
@@ -1425,6 +1436,43 @@
           </tbody>
         </table>
       </div>`;
+  }
+
+  function liveLensPropSection(title, copy, props, emptyCopy) {
+    const rows = Array.isArray(props) ? props : [];
+    return `
+      <section class="live-lens-prop-section">
+        <div class="live-lens-prop-head">
+          <div>
+            <div class="live-lens-prop-title">${escapeHtml(title)}</div>
+            <div class="live-lens-prop-copy">${escapeHtml(copy)}</div>
+          </div>
+          <span class="season-day-pill">${escapeHtml(`${formatNumber(rows.length, 0)} rows`)}</span>
+        </div>
+        ${rows.length ? liveLensPropsTable({ props: rows }) : `<div class="season-empty-copy">${escapeHtml(emptyCopy)}</div>`}
+      </section>`;
+  }
+
+  function liveLensPropSectionsMarkup(game) {
+    const liveProps = Array.isArray(game?.liveProps) ? game.liveProps : [];
+    const trackedProps = Array.isArray(game?.trackedProps) ? game.trackedProps : [];
+    if (!liveProps.length && !trackedProps.length) {
+      return '<div class="season-empty-copy">No live or tracked player props for this matchup.</div>';
+    }
+    return [
+      liveLensPropSection(
+        'Live opportunities',
+        'Current live market lines ranked by live projection edge.',
+        liveProps,
+        'No current live prop opportunities for this matchup.'
+      ),
+      trackedProps.length ? liveLensPropSection(
+        'Tracked pregame props',
+        'Original official and playable pregame props, updated with current game state.',
+        trackedProps,
+        'No tracked pregame props for this matchup.'
+      ) : ''
+    ].join('');
   }
 
   function renderLiveLensPanel() {
@@ -1452,9 +1500,10 @@
 
     const counts = payload.counts || {};
     const games = Array.isArray(payload.games) ? payload.games : [];
-    const allProps = games.flatMap((game) => (Array.isArray(game?.props) ? game.props : []));
-    const officialProps = allProps.filter((prop) => String(prop?.tier || '').toLowerCase() !== 'playable').length;
-    const playableProps = allProps.filter((prop) => String(prop?.tier || '').toLowerCase() === 'playable').length;
+    const liveProps = games.flatMap((game) => (Array.isArray(game?.liveProps) ? game.liveProps : []));
+    const trackedProps = games.flatMap((game) => (Array.isArray(game?.trackedProps) ? game.trackedProps : []));
+    const officialProps = trackedProps.filter((prop) => String(prop?.tier || '').toLowerCase() !== 'playable').length;
+    const playableProps = trackedProps.filter((prop) => String(prop?.tier || '').toLowerCase() === 'playable').length;
 
     root.liveLens.innerHTML = `
       <div class="season-panel-head">
@@ -1467,7 +1516,8 @@
       <div class="season-inline-note">Intraday live-lens recommendations and live projections for ${escapeHtml(selectedDate)}. This is separate from the season locked-policy recon.</div>
       <section class="season-summary-grid season-live-lens-summary">
         ${metricCard('Games', formatNumber(counts.games, 0), `Live ${formatNumber(counts.live, 0)} | Final ${formatNumber(counts.final, 0)} | Pregame ${formatNumber(counts.pregame, 0)}`)}
-        ${metricCard('Tracked props', formatNumber(counts.props, 0), `${formatNumber(officialProps, 0)} official | ${formatNumber(playableProps, 0)} playable`)}
+        ${metricCard('Live opps', formatNumber(liveProps.length, 0), liveProps.length ? 'Current market-driven in-game opportunities' : 'No current live prop opportunities')}
+        ${metricCard('Tracked props', formatNumber(trackedProps.length, 0), `${formatNumber(officialProps, 0)} official | ${formatNumber(playableProps, 0)} playable`)}
         ${metricCard('Live games', formatNumber(counts.live, 0), payload.hasLiveGames ? 'At least one game is currently live' : 'No active live games in this slate')}
         ${metricCard('Historical mode', payload.isHistorical ? 'Archive' : 'Live feed', payload.isHistorical ? 'Using archived feed snapshots where available' : 'Using current feed and snapshots')}
       </section>
@@ -1488,11 +1538,12 @@
                 <div class="season-day-badges">
                   <span class="season-day-pill is-official">${escapeHtml(`${String(score.away ?? '-')} - ${String(score.home ?? '-')}`)}</span>
                   ${liveText ? `<span class="season-day-pill">${escapeHtml(liveText)}</span>` : ''}
-                  <span class="season-day-pill is-playable">${escapeHtml(`${formatNumber((Array.isArray(game?.props) ? game.props.length : 0), 0)} props`)}</span>
+                  <span class="season-day-pill is-playable">${escapeHtml(`${formatNumber((Array.isArray(game?.liveProps) ? game.liveProps.length : 0), 0)} live`)}</span>
+                  ${Array.isArray(game?.trackedProps) && game.trackedProps.length ? `<span class="season-day-pill">${escapeHtml(`${formatNumber(game.trackedProps.length, 0)} tracked`)}</span>` : ''}
                 </div>
               </div>
               ${liveLensLaneMarkup(game)}
-              ${liveLensPropsTable(game)}
+              ${liveLensPropSectionsMarkup(game)}
             </section>`;
         }).join('')}
       </div>`;
