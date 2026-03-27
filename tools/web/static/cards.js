@@ -1945,6 +1945,19 @@
     const st = snapshot?.status || {};
     const abstract = String(st.abstractGameState || card?.status?.abstract || "").trim();
     const detailed = String(st.detailedState || card?.status?.detailed || "").trim();
+    const normalizedAbstract = abstract.toLowerCase();
+    const normalizedDetailed = detailed.toLowerCase();
+    if (
+      card?.startTime &&
+      (
+        normalizedAbstract === "preview" ||
+        normalizedAbstract === "pregame" ||
+        normalizedDetailed === "pre-game" ||
+        normalizedDetailed === "scheduled"
+      )
+    ) {
+      return String(card.startTime);
+    }
     if (detailed && detailed.toLowerCase() !== abstract.toLowerCase()) return detailed;
     return "";
   }
