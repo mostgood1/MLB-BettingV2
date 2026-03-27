@@ -12,7 +12,7 @@
     bettingProfile: "retuned",
     day: null,
     liveLens: null,
-    dayPicksMode: "props",
+    dayPicksMode: "official",
   };
 
   const BETTING_MARKET_ORDER = [
@@ -1165,11 +1165,11 @@
   }
 
   function normalizedDayPicksMode(groups) {
+    if (state.dayPicksMode === "official" && groups.official.length) return "official";
     if (state.dayPicksMode === "props" && groups.props.length) return "props";
     if (state.dayPicksMode === "playable" && groups.playable.length) return "playable";
-    if (state.dayPicksMode === "official" && groups.official.length) return "official";
-    if (groups.props.length) return "props";
     if (groups.official.length) return "official";
+    if (groups.props.length) return "props";
     if (groups.playable.length) return "playable";
     return "props";
   }
@@ -1285,7 +1285,7 @@
     const modeCopy = mode === "playable"
       ? `${formatNumber(groups.counts.playable, 0)} playable props across the selected date under ${profileLabel}.`
       : mode === "official"
-        ? `${formatNumber(groups.counts.official, 0)} on-card picks across the selected date under ${profileLabel}.`
+        ? `${formatNumber(groups.counts.official, 0)} official betting-card picks across the selected date under ${profileLabel}.`
         : `${formatNumber(groups.counts.props, 0)} props for the selected date under ${profileLabel}, combining on-card prop picks and extra playable candidates.`;
 
     root.dayPicks.innerHTML = `
@@ -1299,7 +1299,7 @@
             ${escapeHtml(`Props ${groups.counts.props}`)}
           </button>
           <button type="button" class="cards-filter-pill ${mode === "official" ? "is-active" : ""}" data-day-picks-filter="official">
-            ${escapeHtml(`Official ${groups.counts.official}`)}
+            ${escapeHtml(`Full card ${groups.counts.official}`)}
           </button>
           <button type="button" class="cards-filter-pill ${mode === "playable" ? "is-active" : ""}" data-day-picks-filter="playable">
             ${escapeHtml(`Playable ${groups.counts.playable}`)}
