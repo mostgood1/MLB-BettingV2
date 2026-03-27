@@ -2303,6 +2303,10 @@ def _schedule_context_by_game_pk(d: str) -> Dict[int, Dict[str, Any]]:
             continue
         status = game.get("status") or {}
         game_date = str(game.get("gameDate") or "")
+        away_side = (game.get("teams") or {}).get("away") or {}
+        home_side = (game.get("teams") or {}).get("home") or {}
+        away_team = _team_from_schedule(away_side)
+        home_team = _team_from_schedule(home_side)
         out[int(game_pk)] = {
             "gameDate": game_date,
             "startTime": _format_start_time_local(game_date),
@@ -2310,6 +2314,12 @@ def _schedule_context_by_game_pk(d: str) -> Dict[int, Dict[str, Any]]:
             "status": {
                 "abstract": str(status.get("abstractGameState") or ""),
                 "detailed": str(status.get("detailedState") or ""),
+            },
+            "away": {"id": away_team.id, "abbr": away_team.abbr, "name": away_team.name},
+            "home": {"id": home_team.id, "abbr": home_team.abbr, "name": home_team.name},
+            "probable": {
+                "away": _normalized_probable_entry(_probable_pitcher_from_schedule(away_side)),
+                "home": _normalized_probable_entry(_probable_pitcher_from_schedule(home_side)),
             },
         }
     return out
@@ -4146,10 +4156,13 @@ def _season_day_payload(
     report_by_game_pk = _season_report_outputs_by_game(day_report)
 
     games_out: List[Dict[str, Any]] = []
+    seen_game_pks: set[int] = set()
     for raw_game in day_report.get("games") or []:
         if not isinstance(raw_game, dict):
             continue
         game_pk = _safe_int(raw_game.get("game_pk"))
+        if game_pk and int(game_pk) > 0:
+            seen_game_pks.add(int(game_pk))
         game_betting = None
         if betting_payload.get("found"):
             game_betting = dict(betting_games.get(int(game_pk or 0)) or _empty_game_betting())
@@ -4182,6 +4195,44 @@ def _season_day_payload(
                 "betting": game_betting,
             }
         )
+
+    if betting_payload.get("found"):
+        for raw_game_pk, raw_game_betting in betting_games.items():
+            game_pk = _safe_int(raw_game_pk)
+            if not game_pk or int(game_pk) <= 0 or int(game_pk) in seen_game_pks:
+                continue
+            schedule_row = dict(schedule_by_game_pk.get(int(game_pk)) or {})
+            schedule_status = schedule_row.get("status") if isinstance(schedule_row.get("status"), dict) else {}
+            probable = schedule_row.get("probable") if isinstance(schedule_row.get("probable"), dict) else {}
+            games_out.append(
+                {
+                    "game_pk": int(game_pk),
+                    "game_date": schedule_row.get("gameDate") or "",
+                    "start_time": schedule_row.get("startTime") or _format_start_time_local(str(schedule_row.get("gameDate") or "")),
+                    "official_date": schedule_row.get("officialDate") or date_str,
+                    "status": {
+                        "abstract": str(schedule_status.get("abstract") or ""),
+                        "detailed": str(schedule_status.get("detailed") or ""),
+                    },
+                    "away": dict(schedule_row.get("away") or {}),
+                    "home": dict(schedule_row.get("home") or {}),
+                    "starter_names": {
+                        "away": _first_text((probable.get("away") or {}).get("fullName")),
+                        "home": _first_text((probable.get("home") or {}).get("fullName")),
+                    },
+                    "segments": {},
+                    "pitcher_props": {},
+                    "betting": dict(raw_game_betting) if isinstance(raw_game_betting, dict) else _empty_game_betting(),
+                }
+            )
+
+    games_out.sort(
+        key=lambda row: (
+            str(row.get("game_date") or ""),
+            str(row.get("start_time") or ""),
+            int(_safe_int(row.get("game_pk")) or 0),
+        )
+    )
 
     betting_payload.pop("games", None)
 
