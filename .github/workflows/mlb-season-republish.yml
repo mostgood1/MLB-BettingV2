@@ -7,6 +7,10 @@ on:
         description: Optional single date to rebuild before republishing
         required: false
         default: ""
+      rebuild_window_days:
+        description: Recent-day rebuild window when rebuild_date is empty
+        required: false
+        default: "3"
       season:
         description: Season to republish
         required: true
@@ -47,6 +51,7 @@ jobs:
         shell: bash
         env:
           INPUT_REBUILD_DATE: ${{ github.event.inputs.rebuild_date }}
+          INPUT_REBUILD_WINDOW_DAYS: ${{ github.event.inputs.rebuild_window_days }}
           INPUT_SEASON: ${{ github.event.inputs.season }}
           INPUT_PROFILE: ${{ github.event.inputs.profile }}
         run: |
@@ -54,7 +59,17 @@ jobs:
 
           rebuild_date="${INPUT_REBUILD_DATE}"
           if [[ -z "${rebuild_date}" ]]; then
-            rebuild_date="$(date -d 'yesterday' +%F)"
+            rebuild_window_days="${INPUT_REBUILD_WINDOW_DAYS}"
+            if ! [[ "${rebuild_window_days}" =~ ^[0-9]+$ ]] || [[ "${rebuild_window_days}" -lt 1 ]]; then
+              rebuild_window_days="3"
+            fi
+            rebuild_dates=""
+            for ((offset=1; offset<=rebuild_window_days; offset++)); do
+              rebuild_dates+="$(date -d "${offset} day ago" +%F)"$'\n'
+            done
+            rebuild_date="$(printf '%s' "${rebuild_dates}" | head -n 1)"
+          else
+            rebuild_dates="${rebuild_date}"
           fi
 
           season="${INPUT_SEASON}"
@@ -68,11 +83,23 @@ jobs:
           fi
 
           echo "rebuild_date=${rebuild_date}" >> "$GITHUB_OUTPUT"
+          {
+            echo "rebuild_dates<<EOF"
+            printf '%s\n' "${rebuild_dates}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
           echo "season=${season}" >> "$GITHUB_OUTPUT"
           echo "profile=${profile}" >> "$GITHUB_OUTPUT"
 
-      - name: Rebuild season day report
-        run: bash scripts/render_cron_call.sh "/api/cron/rebuild-season-report?season=${{ steps.resolve.outputs.season }}&date=${{ steps.resolve.outputs.rebuild_date }}&profile=${{ steps.resolve.outputs.profile }}"
+      - name: Rebuild season day reports
+        shell: bash
+        run: |
+          while IFS= read -r rebuild_date; do
+            if [[ -z "${rebuild_date}" ]]; then
+              continue
+            fi
+            bash scripts/render_cron_call.sh "/api/cron/rebuild-season-report?season=${{ steps.resolve.outputs.season }}&date=${rebuild_date}&profile=${{ steps.resolve.outputs.profile }}"
+          done <<< "${{ steps.resolve.outputs.rebuild_dates }}"
 
       - name: Republish rolling season manifests
         run: bash scripts/render_cron_call.sh "/api/cron/republish-season?season=${{ steps.resolve.outputs.season }}&profile=${{ steps.resolve.outputs.profile }}"

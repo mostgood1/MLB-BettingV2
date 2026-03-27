@@ -144,6 +144,18 @@ def _settle_over_under(actual: float, line: float, selection: str) -> Optional[b
     return None
 
 
+def _is_final_game_status(status_text: Any) -> bool:
+    token = str(status_text or "").strip().lower()
+    if not token:
+        return False
+    return token in {"final", "completed early", "game over"} or token.startswith("final") or token.startswith("completed")
+
+
+def _feed_is_final(feed: Dict[str, Any]) -> bool:
+    status = (feed.get("gameData") or {}).get("status") or {}
+    return _is_final_game_status(status.get("abstractGameState")) or _is_final_game_status(status.get("detailedState"))
+
+
 HITTER_STAT_KEYS: Dict[str, str] = {
     "hitter_hits": "hits",
     "hitter_total_bases": "totalBases",
@@ -220,6 +232,8 @@ def _settle_card(path: Path) -> Dict[str, Any]:
                 player_label = rec.get("player_name") or rec.get("pitcher_name") or None
                 try:
                     feed = feed_cache.setdefault(game_pk, _load_feed(date, game_pk))
+                    if not _feed_is_final(feed):
+                        raise LookupError("game not final")
                     actual_value: Any
                     won: Optional[bool]
                     if market == "totals":
@@ -239,20 +253,16 @@ def _settle_card(path: Path) -> Dict[str, Any]:
                         if not side:
                             raise LookupError("missing pitcher team side")
                         pitching = _player_stats(feed, side, str(rec.get("pitcher_name") or ""), "pitching")
-                        if not pitching:
-                            raise LookupError("pitcher absent from final raw boxscore pitching rows")
                         if str(rec.get("prop") or "") != "outs":
                             raise LookupError(f"unsupported pitcher prop: {rec.get('prop')}")
-                        actual_value = float(pitching.get("outs") or 0.0)
+                        actual_value = float((pitching or {}).get("outs") or 0.0)
                         won = _settle_over_under(float(actual_value), line, selection)
                     elif market in HITTER_STAT_KEYS:
                         side = _team_side(feed, str(rec.get("team") or ""))
                         if not side:
                             raise LookupError("missing hitter team side")
                         batting = _player_stats(feed, side, str(rec.get("player_name") or ""), "batting")
-                        if not batting:
-                            raise LookupError("player absent from final raw boxscore batting rows")
-                        actual_value = float(batting.get(HITTER_STAT_KEYS[market]) or 0.0)
+                        actual_value = float((batting or {}).get(HITTER_STAT_KEYS[market]) or 0.0)
                         won = _settle_over_under(float(actual_value), line, selection)
                     else:
                         raise LookupError(f"unsupported market: {market}")
