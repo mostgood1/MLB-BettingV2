@@ -5496,6 +5496,8 @@ def _select_live_prop_side(
         if not _prop_price_allowed(odds, max_favorite_odds=-200):
             continue
         live_edge = _selection_live_edge(selection, live_projection, line_value)
+        if live_edge is None or float(live_edge) <= 0.0:
+            continue
         projection_gap = abs(float(live_edge)) if live_edge is not None else None
         market_edge = None
         if model_prob_over is not None:
