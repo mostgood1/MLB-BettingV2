@@ -598,6 +598,86 @@ def _load_json_file(path: Optional[Path]) -> Optional[Dict[str, Any]]:
     return _load_json_file_cached(str(path))
 
 
+def _logical_path_str(path: Optional[Path]) -> Optional[str]:
+    if not path:
+        return None
+    try:
+        resolved = path.resolve()
+    except Exception:
+        resolved = path
+    for data_root in _data_roots():
+        try:
+            return str(resolved.relative_to(data_root)).replace("\\", "/")
+        except Exception:
+            continue
+    try:
+        return str(resolved.relative_to(_ROOT_DIR)).replace("\\", "/")
+    except Exception:
+        return str(resolved).replace("\\", "/")
+
+
+def _same_daily_card_path(left: Optional[Path], right: Optional[Path]) -> bool:
+    if not left or not right:
+        return False
+    try:
+        if left.resolve() == right.resolve():
+            return True
+    except Exception:
+        pass
+    left_logical = _logical_path_str(left)
+    right_logical = _logical_path_str(right)
+    return bool(left_logical and right_logical and left_logical == right_logical)
+
+
+def _synthetic_settlement_from_summary(summary: Dict[str, Any]) -> Dict[str, Any]:
+    settlement: Dict[str, Any] = {
+        "_settled_rows": [],
+        "_playable_settled_rows": [],
+        "_all_settled_rows": [],
+        "unresolved_recommendations": [],
+        "playable_unresolved_recommendations": [],
+    }
+    for key in (
+        "status",
+        "date",
+        "card_path",
+        "settlement_path",
+        "selected_counts",
+        "playable_selected_counts",
+        "all_selected_counts",
+        "results",
+        "playable_results",
+        "all_results",
+    ):
+        value = summary.get(key)
+        if isinstance(value, dict):
+            settlement[key] = dict(value)
+        elif value is not None:
+            settlement[key] = value
+    return settlement
+
+
+def _prior_day_settlement_from_ops_report(
+    ops_report: Optional[Dict[str, Any]],
+    *,
+    target_date: str,
+    target_card_path: Optional[Path],
+) -> Optional[Dict[str, Any]]:
+    if not isinstance(ops_report, dict):
+        return None
+    summary = ops_report.get("prior_day_card_settlement")
+    if not isinstance(summary, dict):
+        summary = ((ops_report.get("stages") or {}).get("prior_day_card_settlement"))
+    if not isinstance(summary, dict):
+        return None
+    if str(summary.get("date") or "").strip() != str(target_date or "").strip():
+        return None
+    summary_card_path = _path_from_maybe_relative(summary.get("card_path"))
+    if target_card_path and summary_card_path and not _same_daily_card_path(summary_card_path, target_card_path):
+        return None
+    return summary
+
+
 def _load_json_or_gz_file(path: Optional[Path]) -> Optional[Dict[str, Any]]:
     if not path or not path.exists() or not path.is_file():
         return None
@@ -842,6 +922,31 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
         recursive_pattern=f"**/daily_ops_{slug}.json",
     )
     ops_report = _load_json_file(ops_report_path)
+
+    embedded_settlement_summary = _prior_day_settlement_from_ops_report(
+        ops_report,
+        target_date=str(d),
+        target_card_path=locked_policy_path,
+    )
+    if not isinstance(embedded_settlement_summary, dict):
+        next_date = _shift_iso_date_str(str(d), 1)
+        if next_date:
+            next_slug = _date_slug(next_date)
+            next_ops_report_path = _find_candidate_file(
+                preferred=[
+                    canonical_daily_dir / "ops" / f"daily_ops_{next_slug}.json",
+                    tracked_daily_dir / "ops" / f"daily_ops_{next_slug}.json",
+                ],
+                recursive_pattern=f"**/daily_ops_{next_slug}.json",
+            )
+            embedded_settlement_summary = _prior_day_settlement_from_ops_report(
+                _load_json_file(next_ops_report_path),
+                target_date=str(d),
+                target_card_path=locked_policy_path,
+            )
+    if not isinstance(settlement, dict) and isinstance(embedded_settlement_summary, dict):
+        settlement = _synthetic_settlement_from_summary(embedded_settlement_summary)
+        settlement_path = _path_from_maybe_relative(embedded_settlement_summary.get("settlement_path")) or settlement_path
 
     lineups_path = (snapshot_dir / "lineups.json") if snapshot_dir else None
     lineups = _load_json_file(lineups_path)
@@ -3149,7 +3254,7 @@ def _season_betting_day_payload(season: int, date_str: str, requested_profile: s
         if (
             canonical_settlement_path
             and canonical_card_path
-            and card_path == canonical_card_path
+            and _same_daily_card_path(card_path, canonical_card_path)
             and canonical_settlement_path.exists()
             and isinstance(canonical_settlement, dict)
         ):
@@ -3178,7 +3283,7 @@ def _season_betting_day_payload(season: int, date_str: str, requested_profile: s
             return payload
 
         settled_counts = _betting_selected_counts_with_defaults(settled_card.get("selected_counts") or {})
-        if int(settled_counts.get("combined") or 0) <= 0 and canonical_card_path and canonical_card_path != card_path:
+        if int(settled_counts.get("combined") or 0) <= 0 and canonical_card_path and not _same_daily_card_path(canonical_card_path, card_path):
             if (
                 canonical_settlement_path
                 and canonical_settlement_path.exists()
@@ -3208,6 +3313,27 @@ def _season_betting_day_payload(season: int, date_str: str, requested_profile: s
         else:
             selected_counts = settled_counts
 
+        official_rows = list(settled_card.get("_settled_rows") or [])
+        playable_rows = list(settled_card.get("_playable_settled_rows") or [])
+        all_rows = list(settled_card.get("_all_settled_rows") or [])
+        official_results = (
+            _settled_results_from_rows(official_rows)
+            if official_rows
+            else dict(settled_card.get("results") or {}) if isinstance(settled_card.get("results"), dict) else {}
+        )
+        playable_results = (
+            _settled_results_from_rows(playable_rows)
+            if playable_rows
+            else dict(settled_card.get("playable_results") or {})
+            if isinstance(settled_card.get("playable_results"), dict)
+            else {}
+        )
+        all_results = (
+            _settled_results_from_rows(all_rows)
+            if all_rows
+            else dict(settled_card.get("all_results") or {}) if isinstance(settled_card.get("all_results"), dict) else {}
+        )
+
         payload.update(
             {
                 "found": True,
@@ -3223,11 +3349,9 @@ def _season_betting_day_payload(season: int, date_str: str, requested_profile: s
                 "all_selected_counts": _betting_selected_counts_with_defaults(
                     settled_card.get("all_selected_counts") or {}
                 ),
-                "results": _settled_results_from_rows(list(settled_card.get("_settled_rows") or [])),
-                "playable_results": _settled_results_from_rows(list(settled_card.get("_playable_settled_rows") or [])),
-                "all_results": _settled_results_from_rows(
-                    list(settled_card.get("_all_settled_rows") or [])
-                ),
+                "results": official_results,
+                "playable_results": playable_results,
+                "all_results": all_results,
                 "games": _season_betting_games_payload(effective_card_obj, settled_card),
             }
         )
