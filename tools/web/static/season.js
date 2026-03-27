@@ -894,6 +894,9 @@
     root.days.innerHTML = days
       .map((day) => {
         const isActive = String(day?.date || "") === state.selectedDate;
+        const renderedGameCount = isActive && String(state.day?.date || "") === String(day?.date || "")
+          ? (Array.isArray(state.day?.games) ? state.day.games.length : Number(day?.games || 0))
+          : Number(day?.games || 0);
         const moneyline = ((day?.full_game || {}).moneyline || {});
         const totals = ((day?.full_game || {}).totals || {});
         const availability = dayAvailability(day);
@@ -930,7 +933,7 @@
             >
               <div class="season-day-row">
                 <div class="season-day-primary">${escapeHtml(dateStr)}</div>
-                <span class="cards-chip">${escapeHtml(String(day?.games || 0))} games</span>
+                <span class="cards-chip">${escapeHtml(String(renderedGameCount || 0))} games</span>
               </div>
               <div class="season-day-secondary">ML brier ${escapeHtml(formatNumber(moneyline.brier, 3))} | Total mae ${escapeHtml(formatNumber(totals.mae, 2))}</div>
             </button>
@@ -1813,12 +1816,15 @@
       : "";
     const pickGroups = dayPickGroups();
     const activePicksMode = normalizedDayPicksMode(pickGroups);
+    const renderedGameCount = Array.isArray(state.day.games) ? state.day.games.length : 0;
+    const summaryGameCount = toNumber((aggregate.full || {}).games);
+    const displayGameCount = renderedGameCount || summaryGameCount || 0;
     state.dayPicksMode = activePicksMode;
 
     root.dayTitle.textContent = formatDateLong(state.day.date);
     root.dayMeta.textContent = [
       `Source ${state.day.source_file || "report"}`,
-      `${state.day.games?.length || 0} games`,
+      `${displayGameCount} games`,
       `${meta.sims_per_game || "-"} sims per game`,
       bettingProfile ? `${bettingProfile} official ${formatUnits(bettingCombined.profit_u, 2)}` : "No betting card detail",
     ].join(" | ");
@@ -1830,7 +1836,7 @@
       root.dayActions.innerHTML = `${liveLensLink}<span class="season-inline-note is-muted">No daily card artifacts for this date.</span>`;
     }
     const metrics = [
-      metricCard("Games", String((aggregate.full || {}).games ?? state.day.games?.length ?? "-"), `Skipped ${meta.skipped_games ?? 0}`),
+      metricCard("Games", String(displayGameCount || "-"), `Skipped ${meta.skipped_games ?? 0}`),
       metricCard("Moneyline brier", formatNumber(moneyline.brier, 3), `Accuracy ${formatPercent(moneyline.accuracy, 1)}`),
       metricCard("Totals mae", formatNumber(totals.mae, 2), `RMSE ${formatNumber(totals.rmse, 2)}`),
       metricCard("Runline accuracy", formatPercent(runline.accuracy, 1), `Brier ${formatNumber(runline.brier, 3)}`),
