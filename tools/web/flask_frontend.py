@@ -2610,6 +2610,205 @@ def _shift_iso_date_str(date_str: str, days: int) -> Optional[str]:
     return shifted.isoformat()
 
 
+def _available_daily_locked_card_dates(season: int) -> Tuple[str, ...]:
+    prefix = "daily_summary_"
+    suffix = "_locked_policy.json"
+    out: List[str] = []
+    seen: set[str] = set()
+    for data_root in _data_roots():
+        daily_dir = data_root / "daily"
+        if not daily_dir.exists() or not daily_dir.is_dir():
+            continue
+        try:
+            candidates = sorted(daily_dir.glob(f"daily_summary_{int(season)}_*_locked_policy.json"))
+        except OSError:
+            continue
+        for path in candidates:
+            name = path.name
+            if not name.startswith(prefix) or not name.endswith(suffix):
+                continue
+            date_slug = name[len(prefix):-len(suffix)]
+            date_str = str(date_slug).replace("_", "-")
+            try:
+                parsed = date.fromisoformat(date_str)
+            except Exception:
+                continue
+            if parsed.year != int(season):
+                continue
+            normalized = parsed.isoformat()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            out.append(normalized)
+    return tuple(sorted(out))
+
+
+def _supplemental_season_day_row(season: int, date_str: str) -> Optional[Dict[str, Any]]:
+    daily_artifacts = _load_cards_artifacts(str(date_str))
+    has_cards = bool(daily_artifacts.get("locked_policy") or daily_artifacts.get("game_summary"))
+    if not has_cards:
+        return None
+
+    betting_payload = _season_betting_day_payload(int(season), str(date_str), "retuned")
+    betting_profiles: Dict[str, Any] = {}
+    if betting_payload.get("found"):
+        betting_profiles[str(betting_payload.get("profile") or "retuned")] = {
+            "available": True,
+            "card_path": betting_payload.get("card_source"),
+            "selected_counts": _betting_selected_counts_with_defaults(betting_payload.get("selected_counts") or {}),
+            "playable_counts": _betting_selected_counts_with_defaults(betting_payload.get("playable_selected_counts") or {}),
+            "results": _merge_settled_results_blocks([betting_payload.get("results") or {}]),
+        }
+
+    schedule_by_game = _schedule_context_by_game_pk(str(date_str))
+    return {
+        "date": str(date_str),
+        "month": str(date_str)[:7],
+        "games": int(len(schedule_by_game)),
+        "cards_available": bool(has_cards),
+        "legacy_cards_available": bool(has_cards),
+        "cards_url": f"/?date={date_str}" if has_cards else None,
+        "legacy_cards_url": f"/?date={date_str}" if has_cards else None,
+        "betting_cards": {
+            "available": bool(betting_payload.get("found")),
+            "available_profiles": sorted(betting_profiles.keys()),
+            "default_profile": (str(betting_payload.get("profile") or "retuned") if betting_payload.get("found") else None),
+            "profiles": betting_profiles,
+        },
+        "full_game": {
+            "moneyline": {},
+            "totals": {},
+            "runline_fav_minus_1_5": {},
+            "pitcher_props_starters": {},
+            "pitcher_props_at_market_lines": {},
+        },
+        "aggregate": {
+            "full": {"games": int(len(schedule_by_game))},
+            "first5": {"games": int(len(schedule_by_game))},
+            "first3": {"games": int(len(schedule_by_game))},
+        },
+        "report_path": None,
+    }
+
+
+def _supplement_season_manifest_payload(season: int, payload: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(payload)
+    existing_days = [dict(row) for row in (out.get("days") or []) if isinstance(row, dict)]
+    seen_dates = {str(row.get("date") or "").strip() for row in existing_days if str(row.get("date") or "").strip()}
+    supplemental_dates = [d for d in _available_daily_locked_card_dates(int(season)) if d not in seen_dates]
+    if not supplemental_dates:
+        return out
+
+    for date_str in supplemental_dates:
+        row = _supplemental_season_day_row(int(season), date_str)
+        if isinstance(row, dict):
+            existing_days.append(row)
+
+    existing_days.sort(key=lambda row: str(row.get("date") or ""))
+    out["days"] = existing_days
+
+    months = [dict(row) for row in (out.get("months") or []) if isinstance(row, dict)]
+    month_counts: Dict[str, int] = defaultdict(int)
+    for row in existing_days:
+        month_counts[str(row.get("month") or str(row.get("date") or "")[:7])] += 1
+    months_by_key = {str(row.get("month") or ""): row for row in months}
+    for month_key, count in month_counts.items():
+        if month_key in months_by_key:
+            months_by_key[month_key]["days"] = int(count)
+        else:
+            months_by_key[month_key] = {
+                "month": str(month_key),
+                "label": _season_betting_month_label(str(month_key)),
+                "days": int(count),
+                "full_game": {},
+                "hitter_hr_likelihood_topn": {},
+                "hitter_props_likelihood_topn": {},
+                "segments": {},
+            }
+    out["months"] = [months_by_key[key] for key in sorted(months_by_key)]
+    return out
+
+
+def _season_day_fallback_payload(season: int, date_str: str, betting_profile: str) -> Dict[str, Any]:
+    daily_artifacts = _load_cards_artifacts(str(date_str))
+    has_cards = bool(daily_artifacts.get("locked_policy") or daily_artifacts.get("game_summary"))
+    betting_payload = _season_betting_day_payload(int(season), str(date_str), betting_profile)
+    betting_games = betting_payload.get("games") if isinstance(betting_payload.get("games"), dict) else {}
+
+    schedule_games: List[Dict[str, Any]] = []
+    try:
+        schedule_games = fetch_schedule_for_date(_client(), str(date_str)) or []
+    except Exception:
+        schedule_games = []
+    recos_by_game = _recommendations_by_game(daily_artifacts.get("locked_policy") or {})
+    cards = _cards_list_from_sources(
+        d=str(date_str),
+        schedule_games=schedule_games,
+        outputs_by_game={},
+        recos_by_game=recos_by_game,
+    )
+
+    games_out: List[Dict[str, Any]] = []
+    for card in cards:
+        if not isinstance(card, dict):
+            continue
+        game_pk = _safe_int(card.get("gamePk"))
+        probable = card.get("probable") or {}
+        game_betting = None
+        if betting_payload.get("found"):
+            game_betting = dict(betting_games.get(int(game_pk or 0)) or _empty_game_betting())
+        games_out.append(
+            {
+                "game_pk": game_pk,
+                "game_date": card.get("gameDate") or "",
+                "start_time": card.get("startTime") or "",
+                "official_date": card.get("officialDate") or str(date_str),
+                "status": {
+                    "abstract": str(((card.get("status") or {}).get("abstract") or "")),
+                    "detailed": str(((card.get("status") or {}).get("detailed") or "")),
+                },
+                "away": card.get("away") or {},
+                "home": card.get("home") or {},
+                "starter_names": {
+                    "away": _first_text((probable.get("away") or {}).get("fullName")),
+                    "home": _first_text((probable.get("home") or {}).get("fullName")),
+                },
+                "segments": {},
+                "pitcher_props": {},
+                "betting": game_betting,
+            }
+        )
+
+    betting_payload.pop("games", None)
+    return {
+        "season": int(season),
+        "date": str(date_str),
+        "cards_available": bool(has_cards),
+        "cards_url": (f"/?date={date_str}" if has_cards else None),
+        "source_file": None,
+        "meta": {
+            "sims_per_game": None,
+            "season": int(season),
+            "generated_at": _local_timestamp_text(),
+            "use_raw": None,
+            "jobs": None,
+            "skipped_games": 0,
+        },
+        "summary": {
+            "aggregate": {"full": {}, "first5": {}, "first3": {}},
+            "full_game": {
+                "totals": {},
+                "moneyline": {},
+                "runline_fav_minus_1_5": {},
+                "pitcher_props_starters": {},
+                "pitcher_props_at_market_lines": {},
+            },
+        },
+        "betting": betting_payload,
+        "games": games_out,
+    }
+
+
 def _is_historical_date(date_str: str) -> bool:
     text = str(date_str or "").strip()
     if not text:
@@ -6924,7 +7123,7 @@ def api_season_manifest(season: int) -> Response:
             )
         ), 404
 
-    payload = dict(manifest)
+    payload = _supplement_season_manifest_payload(int(season), dict(manifest))
     meta = dict(payload.get("meta") or {})
     sources = dict(meta.get("sources") or {})
     sources["manifest"] = _relative_path_str(manifest_path)
@@ -6999,6 +7198,11 @@ def api_season_day(season: int, date_str: str) -> Response:
 
     report_path = _resolve_season_day_report_path(manifest, str(date_str))
     if not report_path or not report_path.exists() or not report_path.is_file():
+        fallback_payload = _season_day_fallback_payload(int(season), str(date_str), requested_profile)
+        if fallback_payload.get("cards_available") or ((fallback_payload.get("betting") or {}).get("found")):
+            fallback_payload["found"] = True
+            fallback_payload["manifest_source"] = _relative_path_str(manifest_path)
+            return jsonify(_with_app_build(fallback_payload))
         return jsonify(
             _with_app_build(
                 {
