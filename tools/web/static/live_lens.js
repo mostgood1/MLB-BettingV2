@@ -343,6 +343,14 @@
       </section>`;
   }
 
+  function liveOpportunitiesEmptyMessage(game) {
+    const status = String(game?.status?.abstract || "").toLowerCase();
+    if (status && status !== "live" && status !== "final") {
+      return "Live opportunities unlock when the game goes live.";
+    }
+    return "No current live prop opportunities for this game.";
+  }
+
   function renderPropSections(game) {
     const liveProps = Array.isArray(game?.liveProps) ? game.liveProps : [];
     const trackedProps = Array.isArray(game?.trackedProps) ? game.trackedProps : [];
@@ -352,9 +360,9 @@
     const sections = [];
     sections.push(renderPropSection(
       "Live opportunities",
-      "Current live market lines ranked by live projection edge.",
+      "Current in-game market lines with positive model-vs-market edge, ranked by edge then live projection gap.",
       liveProps,
-      "No current live prop opportunities for this game."
+      liveOpportunitiesEmptyMessage(game)
     ));
     if (trackedProps.length) {
       sections.push(renderPropSection(

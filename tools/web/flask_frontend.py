@@ -4537,9 +4537,11 @@ def _live_stat_value(row: Optional[Dict[str, Any]], reco: Dict[str, Any]) -> Opt
 def _prop_result_state(reco: Dict[str, Any], actual_value: Optional[float], status_text: Any) -> str:
     status_token = str(status_text or "").strip().lower()
     if actual_value is None:
-        return "live" if status_token in {"live", "in progress", "manager challenge"} or "live" in status_token else "pending"
-    if status_token in {"live", "in progress", "manager challenge"} or "live" in status_token:
+        return "live" if _is_live_game_status(status_token) else "pending"
+    if _is_live_game_status(status_token):
         return "live"
+    if not _is_final_game_status(status_token):
+        return "pending"
     line = _safe_float(reco.get("market_line"))
     selection = str(reco.get("selection") or "over").strip().lower()
     if line is None:
@@ -4615,6 +4617,18 @@ def _selection_live_edge(selection: str, live_projection: Optional[float], line:
     return None
 
 
+def _is_live_game_status(status_text: Any) -> bool:
+    token = str(status_text or "").strip().lower()
+    return token in {"live", "in progress", "manager challenge"} or "live" in token
+
+
+def _is_final_game_status(status_text: Any) -> bool:
+    token = str(status_text or "").strip().lower()
+    if not token:
+        return False
+    return token in {"final", "completed early", "game over"} or token.startswith("final") or token.startswith("completed")
+
+
 def _live_prop_market_resolved(actual_value: Optional[float], market_line: Optional[float]) -> bool:
     actual = _safe_float(actual_value)
     line = _safe_float(market_line)
@@ -4650,7 +4664,7 @@ def _select_live_prop_side(
                 market_edge = round(float(model_prob_over) - float(market_prob_over), 4)
             elif selection == "under" and market_prob_under is not None:
                 market_edge = round((1.0 - float(model_prob_over)) - float(market_prob_under), 4)
-        score = live_edge if live_edge is not None else market_edge
+        score = market_edge
         if score is None or float(score) <= 0.0:
             continue
         candidates.append(
@@ -4673,9 +4687,9 @@ def _select_live_prop_side(
     return max(
         candidates,
         key=lambda item: (
+            float(item.get("marketEdge") or float("-inf")),
             float(item.get("liveEdge") or float("-inf")),
             float(item.get("projectionGap") or float("-inf")),
-            float(item.get("marketEdge") or float("-inf")),
             1 if item.get("selection") == "over" else 0,
         ),
     )
@@ -4810,6 +4824,8 @@ def _current_live_prop_rows(card: Dict[str, Any], snapshot: Optional[Dict[str, A
     abstract = str(status.get("abstractGameState") or ((card or {}).get("status") or {}).get("abstract") or "").strip().lower()
     if abstract == "final":
         return _final_live_prop_rows_from_registry(card, snapshot, d)
+    if abstract != "live":
+        return []
 
     _maybe_refresh_live_oddsapi_markets(d)
 
@@ -4960,9 +4976,9 @@ def _current_live_prop_rows(card: Dict[str, Any], snapshot: Optional[Dict[str, A
 
     rows.sort(
         key=lambda row: (
+            -float(_safe_float(row.get("edge")) or -999.0),
             -float(_safe_float(row.get("live_edge")) or -999.0),
             -float(_safe_float(row.get("projection_gap")) or -999.0),
-            -float(_safe_float(row.get("edge")) or -999.0),
             str(_prop_owner_name(row) or ""),
             str(row.get("market") or ""),
         )

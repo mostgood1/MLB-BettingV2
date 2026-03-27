@@ -1453,6 +1453,14 @@
       </section>`;
   }
 
+  function liveLensOpportunitiesEmptyCopy(game) {
+    const status = String(game?.status?.abstract || '').toLowerCase();
+    if (status && status !== 'live' && status !== 'final') {
+      return 'Live opportunities unlock when the game goes live.';
+    }
+    return 'No current live prop opportunities for this matchup.';
+  }
+
   function liveLensPropSectionsMarkup(game) {
     const liveProps = Array.isArray(game?.liveProps) ? game.liveProps : [];
     const trackedProps = Array.isArray(game?.trackedProps) ? game.trackedProps : [];
@@ -1462,9 +1470,9 @@
     return [
       liveLensPropSection(
         'Live opportunities',
-        'Current live market lines ranked by live projection edge.',
+        'Current in-game market lines with positive model-vs-market edge, ranked by edge then live projection gap.',
         liveProps,
-        'No current live prop opportunities for this matchup.'
+        liveLensOpportunitiesEmptyCopy(game)
       ),
       trackedProps.length ? liveLensPropSection(
         'Tracked pregame props',
@@ -1516,7 +1524,7 @@
       <div class="season-inline-note">Intraday live-lens recommendations and live projections for ${escapeHtml(selectedDate)}. This is separate from the season locked-policy recon.</div>
       <section class="season-summary-grid season-live-lens-summary">
         ${metricCard('Games', formatNumber(counts.games, 0), `Live ${formatNumber(counts.live, 0)} | Final ${formatNumber(counts.final, 0)} | Pregame ${formatNumber(counts.pregame, 0)}`)}
-        ${metricCard('Live opps', formatNumber(liveProps.length, 0), liveProps.length ? 'Current market-driven in-game opportunities' : 'No current live prop opportunities')}
+        ${metricCard('Live opps', formatNumber(liveProps.length, 0), liveProps.length ? 'Positive-EV opportunities in currently live games' : 'No current live prop opportunities')}
         ${metricCard('Tracked props', formatNumber(trackedProps.length, 0), `${formatNumber(officialProps, 0)} official | ${formatNumber(playableProps, 0)} playable`)}
         ${metricCard('Live games', formatNumber(counts.live, 0), payload.hasLiveGames ? 'At least one game is currently live' : 'No active live games in this slate')}
         ${metricCard('Historical mode', payload.isHistorical ? 'Archive' : 'Live feed', payload.isHistorical ? 'Using archived feed snapshots where available' : 'Using current feed and snapshots')}
