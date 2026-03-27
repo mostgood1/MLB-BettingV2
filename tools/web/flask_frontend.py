@@ -350,6 +350,10 @@ def _live_prop_registry_log_path(d: str) -> Path:
     return _ensure_dir(_LIVE_LENS_DIR / "prop_registry") / f"live_prop_registry_{_date_slug(d)}.jsonl"
 
 
+def _live_prop_observation_log_path(d: str) -> Path:
+    return _ensure_dir(_LIVE_LENS_DIR / "prop_registry") / f"live_prop_observations_{_date_slug(d)}.jsonl"
+
+
 def _live_prop_tracking_key(row: Dict[str, Any]) -> str:
     owner = normalize_pitcher_name(_prop_owner_name(row) or "")
     market = str(row.get("market") or "").strip().lower()
@@ -381,6 +385,67 @@ def _live_prop_capture_snapshot(row: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _live_prop_snapshot_changed_fields(previous: Dict[str, Any], current: Dict[str, Any]) -> List[str]:
+    changed: List[str] = []
+    keys = sorted({str(key) for key in (previous or {}).keys()} | {str(key) for key in (current or {}).keys()})
+    for key in keys:
+        if (previous or {}).get(key) != (current or {}).get(key):
+            changed.append(str(key))
+    return changed
+
+
+def _live_prop_observation_event(
+    item: Dict[str, Any],
+    *,
+    d: str,
+    key: str,
+    recorded_at: str,
+    snapshot: Dict[str, Any],
+    previous_snapshot: Optional[Dict[str, Any]],
+    previous_seen_at: Optional[str],
+    entry: Dict[str, Any],
+) -> Dict[str, Any]:
+    previous = previous_snapshot if isinstance(previous_snapshot, dict) else {}
+    changed_fields = _live_prop_snapshot_changed_fields(previous, snapshot)
+    return {
+        "recordedAt": recorded_at,
+        "event": "observed",
+        "date": str(d),
+        "key": key,
+        "gamePk": _safe_int(item.get("game_pk") or item.get("gamePk")),
+        "owner": _prop_owner_name(item),
+        "market": item.get("market"),
+        "prop": item.get("prop"),
+        "selection": item.get("selection"),
+        "team": item.get("team"),
+        "teamSide": item.get("team_side"),
+        "rank": _safe_int(item.get("rank")),
+        "source": item.get("source"),
+        "recommendationTier": item.get("recommendation_tier"),
+        "status": {
+            "abstract": str(item.get("status_abstract") or ""),
+            "detailed": str(item.get("status_detailed") or ""),
+        },
+        "gameState": {
+            "inning": _safe_int(item.get("inning")),
+            "halfInning": item.get("half_inning"),
+            "outs": _safe_int(item.get("outs")),
+            "progressFraction": _safe_float(item.get("progress_fraction")),
+            "liveText": item.get("live_text"),
+            "score": {
+                "away": _safe_int(item.get("score_away")),
+                "home": _safe_int(item.get("score_home")),
+            },
+        },
+        "seenCount": int(_safe_int(entry.get("seenCount")) or 0),
+        "firstSeenAt": entry.get("firstSeenAt"),
+        "previousSeenAt": previous_seen_at,
+        "snapshotChanged": bool(changed_fields),
+        "changedFields": changed_fields,
+        "snapshot": snapshot,
+    }
+
+
 def _load_live_prop_registry(d: str) -> Dict[str, Any]:
     doc = _load_json_file(_live_prop_registry_path(d)) or {}
     entries = doc.get("entries") if isinstance(doc.get("entries"), dict) else {}
@@ -391,7 +456,13 @@ def _load_live_prop_registry(d: str) -> Dict[str, Any]:
     }
 
 
-def _enrich_live_prop_rows_with_registry(rows: List[Dict[str, Any]], d: str, *, recorded_at: Optional[datetime] = None) -> List[Dict[str, Any]]:
+def _enrich_live_prop_rows_with_registry(
+    rows: List[Dict[str, Any]],
+    d: str,
+    *,
+    recorded_at: Optional[datetime] = None,
+    write_observation_log: bool = False,
+) -> List[Dict[str, Any]]:
     if not rows:
         return []
 
@@ -407,6 +478,8 @@ def _enrich_live_prop_rows_with_registry(rows: List[Dict[str, Any]], d: str, *, 
         key = _live_prop_tracking_key(item)
         snapshot = _live_prop_capture_snapshot(item)
         entry = entries.get(key) if isinstance(entries.get(key), dict) else None
+        previous_snapshot = (entry.get("lastSeenSnapshot") if isinstance(entry, dict) and isinstance(entry.get("lastSeenSnapshot"), dict) else None)
+        previous_seen_at = entry.get("lastSeenAt") if isinstance(entry, dict) else None
         if not entry:
             entry = {
                 "key": key,
@@ -444,6 +517,21 @@ def _enrich_live_prop_rows_with_registry(rows: List[Dict[str, Any]], d: str, *, 
             entry["lastSeenSnapshot"] = snapshot
             entry["seenCount"] = int(_safe_int(entry.get("seenCount")) or 0) + 1
             changed = True
+
+        if write_observation_log:
+            _append_jsonl(
+                _live_prop_observation_log_path(d),
+                _live_prop_observation_event(
+                    item,
+                    d=str(d),
+                    key=key,
+                    recorded_at=stamp_text,
+                    snapshot=snapshot,
+                    previous_snapshot=previous_snapshot,
+                    previous_seen_at=previous_seen_at,
+                    entry=entry,
+                ),
+            )
 
         first_snapshot = entry.get("firstSeenSnapshot") if isinstance(entry.get("firstSeenSnapshot"), dict) else {}
         item["first_seen_at"] = entry.get("firstSeenAt")
@@ -5567,7 +5655,14 @@ def _final_live_prop_rows_from_registry(
     return out
 
 
-def _current_live_prop_rows(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], sim_context: Optional[Dict[str, Any]], d: str) -> List[Dict[str, Any]]:
+def _current_live_prop_rows(
+    card: Dict[str, Any],
+    snapshot: Optional[Dict[str, Any]],
+    sim_context: Optional[Dict[str, Any]],
+    d: str,
+    *,
+    write_observation_log: bool = False,
+) -> List[Dict[str, Any]]:
     if not isinstance(snapshot, dict) or not isinstance(sim_context, dict) or not sim_context.get("found"):
         return []
 
@@ -5735,12 +5830,26 @@ def _current_live_prop_rows(card: Dict[str, Any], snapshot: Optional[Dict[str, A
         )
     )
     out: List[Dict[str, Any]] = []
+    current = (snapshot or {}).get("current") or {}
+    count = current.get("count") or {}
+    status = (snapshot or {}).get("status") or {}
+    away_totals = ((((snapshot or {}).get("teams") or {}).get("away") or {}).get("totals") or {})
+    home_totals = ((((snapshot or {}).get("teams") or {}).get("home") or {}).get("totals") or {})
     for idx, row in enumerate(rows, start=1):
         item = dict(row)
         item["rank"] = int(idx)
         item["game_pk"] = _safe_int(card.get("gamePk"))
+        item["status_abstract"] = str(status.get("abstractGameState") or ((card.get("status") or {}).get("abstract") or ""))
+        item["status_detailed"] = str(status.get("detailedState") or ((card.get("status") or {}).get("detailed") or ""))
+        item["inning"] = _safe_int(current.get("inning"))
+        item["half_inning"] = str(current.get("halfInning") or "").strip().lower() or None
+        item["outs"] = _safe_int(count.get("outs"))
+        item["progress_fraction"] = _safe_float(progress_fraction)
+        item["score_away"] = _safe_int(away_totals.get("R"))
+        item["score_home"] = _safe_int(home_totals.get("R"))
+        item["live_text"] = _live_matchup_text(snapshot)
         out.append(item)
-    return _enrich_live_prop_rows_with_registry(out, d)
+    return _enrich_live_prop_rows_with_registry(out, d, write_observation_log=write_observation_log)
 
 
 def _normalize_two_way_probs(first_prob: Optional[float], second_prob: Optional[float]) -> Tuple[Optional[float], Optional[float]]:
@@ -6412,7 +6521,13 @@ def _live_lens_payload(d: str, *, persist: bool = False) -> Dict[str, Any]:
         tracked_prop_rows = _prop_lens_rows(card, snapshot, sim_context if sim_context.get("found") else None)
         live_prop_rows = [
             _normalize_live_lens_live_prop_row(row, snapshot, card)
-            for row in _current_live_prop_rows(card, snapshot, sim_context if sim_context.get("found") else None, d)
+            for row in _current_live_prop_rows(
+                card,
+                snapshot,
+                sim_context if sim_context.get("found") else None,
+                d,
+                write_observation_log=bool(persist),
+            )
             if isinstance(row, dict)
         ]
         game_lens = _build_game_lens(card, snapshot, sim_context if sim_context.get("found") else None, _game_line_market_for_card(card, game_line_index))
@@ -6529,6 +6644,7 @@ def _refresh_oddsapi_markets(d: str, *, overwrite: bool = True) -> Dict[str, Any
 
 def _live_lens_reports_payload(d: str) -> Dict[str, Any]:
     log_path = _live_lens_log_path(d)
+    observation_log_path = _live_prop_observation_log_path(d)
     latest_report = _load_json_file(_live_lens_report_path(d)) or {}
     entries = 0
     latest_entry: Optional[Dict[str, Any]] = None
@@ -6550,6 +6666,7 @@ def _live_lens_reports_payload(d: str) -> Dict[str, Any]:
         "ok": True,
         "date": str(d),
         "logPath": _relative_path_str(log_path),
+        "propObservationLogPath": _relative_path_str(observation_log_path),
         "reportPath": _relative_path_str(_live_lens_report_path(d)),
         "entries": int(entries),
         "latestEntry": latest_entry,
@@ -6891,6 +7008,7 @@ def api_cron_live_lens_tick() -> Response:
             "counts": payload.get("counts"),
             "reportPath": _relative_path_str(_live_lens_report_path(d)),
             "logPath": _relative_path_str(_live_lens_log_path(d)),
+            "propObservationLogPath": _relative_path_str(_live_prop_observation_log_path(d)),
         }
         _write_json_file(_cron_meta_dir() / "latest_live_lens_tick.json", meta)
         return jsonify({"ok": True, "date": d, "counts": payload.get("counts"), "report": meta})
