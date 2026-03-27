@@ -49,6 +49,13 @@ The included workflows are intended to run from GitHub Actions and hit the Rende
 - `MLB_BETTING_BASE_URL` or `RENDER_URL`
 - `MLB_BETTING_CRON_TOKEN` or `CRON_TOKEN`
 
+Scheduled workflows in this repo now cover both live-market refreshes and season recap maintenance on the Render disk:
+
+- `.github/workflows/mlb-pregame-odds-refresh.yml`: refreshes Render OddsAPI snapshots throughout the day
+- `.github/workflows/mlb-season-republish.yml`: runs daily at `11:30 UTC`, rebuilds the prior Chicago-date season day report on Render, then republishes rolling season manifests for that season
+
+The season republish workflow is what keeps `/opt/render/project/data/eval/seasons/...` current without relying on a user request to trigger a rebuild.
+
 ## Notes
 
 - The Flask app now resolves template and static directories with `pathlib`, so it works on Linux hosts such as Render.

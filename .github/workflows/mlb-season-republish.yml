@@ -15,16 +15,17 @@ on:
         description: Betting profile manifest to rebuild
         required: true
         default: retuned
+  schedule:
+    - cron: '30 11 * * *'
 
 concurrency:
   group: mlb-season-republish
   cancel-in-progress: false
 
 env:
-  MLB_BETTING_BASE_URL: ${{ secrets['MLB_BETTING_BASE_URL'] }}
-  RENDER_URL: ${{ secrets['RENDER_URL'] }}
-  MLB_BETTING_CRON_TOKEN: ${{ secrets['MLB_BETTING_CRON_TOKEN'] }}
-  CRON_TOKEN: ${{ secrets['CRON_TOKEN'] }}
+  MLB_BETTING_BASE_URL: ${{ secrets.MLB_BETTING_BASE_URL }}
+  RENDER_URL: ${{ secrets.RENDER_URL }}
+  MLB_BETTING_CRON_TOKEN: ${{ secrets.MLB_BETTING_CRON_TOKEN }}
 
 jobs:
   republish-season:
@@ -41,9 +42,37 @@ jobs:
       - name: Ping Render cron surface
         run: bash scripts/render_cron_call.sh /api/cron/ping
 
+      - name: Resolve rebuild inputs
+        id: resolve
+        shell: bash
+        env:
+          INPUT_REBUILD_DATE: ${{ github.event.inputs.rebuild_date }}
+          INPUT_SEASON: ${{ github.event.inputs.season }}
+          INPUT_PROFILE: ${{ github.event.inputs.profile }}
+        run: |
+          export TZ=America/Chicago
+
+          rebuild_date="${INPUT_REBUILD_DATE}"
+          if [[ -z "${rebuild_date}" ]]; then
+            rebuild_date="$(date -d 'yesterday' +%F)"
+          fi
+
+          season="${INPUT_SEASON}"
+          if [[ -z "${season}" ]]; then
+            season="$(date -d "${rebuild_date}" +%Y)"
+          fi
+
+          profile="${INPUT_PROFILE}"
+          if [[ -z "${profile}" ]]; then
+            profile="retuned"
+          fi
+
+          echo "rebuild_date=${rebuild_date}" >> "$GITHUB_OUTPUT"
+          echo "season=${season}" >> "$GITHUB_OUTPUT"
+          echo "profile=${profile}" >> "$GITHUB_OUTPUT"
+
       - name: Rebuild season day report
-        if: ${{ inputs.rebuild_date != '' }}
-        run: bash scripts/render_cron_call.sh "/api/cron/rebuild-season-report?season=${{ inputs.season }}&date=${{ inputs.rebuild_date }}&profile=${{ inputs.profile }}"
+        run: bash scripts/render_cron_call.sh "/api/cron/rebuild-season-report?season=${{ steps.resolve.outputs.season }}&date=${{ steps.resolve.outputs.rebuild_date }}&profile=${{ steps.resolve.outputs.profile }}"
 
       - name: Republish rolling season manifests
-        run: bash scripts/render_cron_call.sh "/api/cron/republish-season?season=${{ inputs.season }}&profile=${{ inputs.profile }}"
+        run: bash scripts/render_cron_call.sh "/api/cron/republish-season?season=${{ steps.resolve.outputs.season }}&profile=${{ steps.resolve.outputs.profile }}"
