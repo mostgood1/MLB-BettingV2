@@ -2232,7 +2232,7 @@
     if (!root.grid) return;
     root.grid.innerHTML = "";
     state.cardNodes.clear();
-    state.cards.forEach((card) => {
+    sortCardsForStrip(state.cards).forEach((card) => {
       const node = createCardNode(card);
       state.cardNodes.set(Number(card.gamePk), node);
       root.grid.appendChild(node);
