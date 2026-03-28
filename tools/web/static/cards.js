@@ -1985,10 +1985,6 @@
   }
 
   function stripSortValue(card) {
-    const detail = ensureDetail(card);
-    const progress = gameProgress(detail?.snapshot, card);
-    if (progress.isLive) return -(Number(progress.fraction || 0));
-    if (progress.isFinal) return Number(detail?.snapshot?.generatedAt ? Date.parse(detail.snapshot.generatedAt) || 0 : 0);
     return 0;
   }
 
@@ -2023,14 +2019,6 @@
     if (batter) matchupBits.push(`Batter ${batter}`);
     if (pitcher) matchupBits.push(`Pitcher ${pitcher}`);
     return [inningBits.join(" | "), matchupBits.join(" | ")].filter(Boolean).join("\n");
-  }
-
-  function reorderScoreboard() {
-    if (!root.scoreboard) return;
-    sortCardsForStrip(state.cards).forEach((card) => {
-      const node = state.stripNodes.get(Number(card.gamePk));
-      if (node) root.scoreboard.appendChild(node);
-    });
   }
 
   function liveSummary(snapshot, card) {
@@ -2327,7 +2315,6 @@
       liveNode.textContent = liveText;
       liveNode.hidden = !liveText;
     }
-    reorderScoreboard();
   }
 
   function syncCard(card) {
