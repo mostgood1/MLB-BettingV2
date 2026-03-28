@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from bisect import bisect_left
 from contextlib import redirect_stderr, redirect_stdout
+from functools import lru_cache
 import gzip
 import io
 import json
@@ -699,6 +700,58 @@ def _resolve_oddsapi_market_file(d: str, prefix: str) -> Optional[Path]:
     )
 
 
+def _pregame_oddsapi_market_filename(d: str, prefix: str) -> str:
+    return f"{prefix}_pregame_{_date_slug(d)}.json"
+
+
+def _resolve_pregame_oddsapi_market_file(d: str, prefix: str) -> Optional[Path]:
+    filename = _pregame_oddsapi_market_filename(d, prefix)
+    preferred: List[Path] = []
+    for data_root in _data_roots():
+        preferred.append(data_root / "daily" / "snapshots" / str(d) / filename)
+        preferred.append(data_root / "market" / "oddsapi" / filename)
+    return _find_candidate_file(
+        preferred=preferred,
+        recursive_pattern=f"**/{filename}",
+    )
+
+
+def _freeze_oddsapi_pregame_markets(d: str) -> Dict[str, str]:
+    slug = _date_slug(d)
+    snapshot_dir = _daily_snapshot_dir(d)
+    _ensure_dir(snapshot_dir)
+    copied: Dict[str, str] = {}
+
+    for prefix in ("oddsapi_game_lines", "oddsapi_pitcher_props", "oddsapi_hitter_props"):
+        source_path = _MARKET_DIR / f"{prefix}_{slug}.json"
+        if not source_path.exists() or not source_path.is_file():
+            continue
+
+        source_doc = _load_json_file(source_path)
+        mode = str((source_doc or {}).get("mode") or "").strip().lower()
+        if mode == "live":
+            continue
+
+        frozen_name = _pregame_oddsapi_market_filename(d, prefix)
+        for destination in (_MARKET_DIR / frozen_name, snapshot_dir / frozen_name):
+            shutil.copy2(source_path, destination)
+            copied[destination.name] = _relative_path_str(destination) or str(destination)
+
+    return copied
+
+
+def _resolve_earliest_archived_oddsapi_market_file(d: str, prefix: str) -> Optional[Path]:
+    archive_root = _market_refresh_archive_root() / _date_slug(d)
+    if not archive_root.exists() or not archive_root.is_dir():
+        return None
+    filename = f"{prefix}_{_date_slug(d)}.json"
+    for child in sorted(path for path in archive_root.iterdir() if path.is_dir()):
+        candidate = child / filename
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    return None
+
+
 def _file_age_seconds(path: Optional[Path]) -> Optional[float]:
     if not path or not path.exists() or not path.is_file():
         return None
@@ -755,7 +808,8 @@ def _find_candidate_file(*, preferred: List[Path], recursive_pattern: str) -> Op
     return None
 
 
-def _load_json_file_cached(path_str: str) -> Optional[Dict[str, Any]]:
+@lru_cache(maxsize=2048)
+def _load_json_file_cached(path_str: str, mtime_ns: int, size_bytes: int) -> Optional[Dict[str, Any]]:
     try:
         obj = json.loads(Path(path_str).read_text(encoding="utf-8"))
     except Exception:
@@ -768,7 +822,11 @@ def _load_json_file_cached(path_str: str) -> Optional[Dict[str, Any]]:
 def _load_json_file(path: Optional[Path]) -> Optional[Dict[str, Any]]:
     if not path or not path.exists() or not path.is_file():
         return None
-    return _load_json_file_cached(str(path))
+    try:
+        stat = path.stat()
+    except Exception:
+        return None
+    return _load_json_file_cached(str(path), int(getattr(stat, "st_mtime_ns", 0)), int(getattr(stat, "st_size", 0)))
 
 
 def _logical_path_str(path: Optional[Path]) -> Optional[str]:
@@ -1271,13 +1329,11 @@ def _normalize_hitter_ladder_prop(value: Any) -> str:
     return normalized
 
 
-def _load_pitcher_prop_market_lines(d: str) -> Tuple[Optional[Path], Dict[str, Dict[str, Dict[str, Any]]]]:
-    path = _resolve_oddsapi_market_file(d, "oddsapi_pitcher_props")
-    doc = _load_json_file(path)
+def _extract_pitcher_prop_market_lines(doc: Any) -> Dict[str, Dict[str, Dict[str, Any]]]:
     raw = (doc or {}).get("pitcher_props") or {}
     out: Dict[str, Dict[str, Dict[str, Any]]] = {}
     if not isinstance(raw, dict):
-        return path, out
+        return out
 
     for raw_name, markets in raw.items():
         nk = normalize_pitcher_name(str(raw_name))
@@ -1296,16 +1352,20 @@ def _load_pitcher_prop_market_lines(d: str) -> Tuple[Optional[Path], Dict[str, D
                 "under_odds": _safe_int(market.get("under_odds")),
                 "alternates": list(market.get("alternates") or []),
             }
-    return path, out
+    return out
 
 
-def _load_hitter_prop_market_lines(d: str) -> Tuple[Optional[Path], Dict[str, Dict[str, Dict[str, Any]]]]:
-    path = _resolve_oddsapi_market_file(d, "oddsapi_hitter_props")
+def _load_pitcher_prop_market_lines(d: str) -> Tuple[Optional[Path], Dict[str, Dict[str, Dict[str, Any]]]]:
+    path = _resolve_oddsapi_market_file(d, "oddsapi_pitcher_props")
     doc = _load_json_file(path)
+    return path, _extract_pitcher_prop_market_lines(doc)
+
+
+def _extract_hitter_prop_market_lines(doc: Any) -> Dict[str, Dict[str, Dict[str, Any]]]:
     raw = (doc or {}).get("hitter_props") or {}
     out: Dict[str, Dict[str, Dict[str, Any]]] = {}
     if not isinstance(raw, dict):
-        return path, out
+        return out
 
     for raw_name, markets in raw.items():
         nk = normalize_pitcher_name(str(raw_name))
@@ -1323,7 +1383,29 @@ def _load_hitter_prop_market_lines(d: str) -> Tuple[Optional[Path], Dict[str, Di
                 "under_odds": _safe_int(market.get("under_odds")),
                 "alternates": list(market.get("alternates") or []),
             }
-    return path, out
+    return out
+
+
+def _load_hitter_prop_market_lines(d: str) -> Tuple[Optional[Path], Dict[str, Dict[str, Dict[str, Any]]]]:
+    path = _resolve_oddsapi_market_file(d, "oddsapi_hitter_props")
+    doc = _load_json_file(path)
+    return path, _extract_hitter_prop_market_lines(doc)
+
+
+def _market_line_stage_entry(market: Any, *, stage: str, source: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    if not isinstance(market, dict):
+        return None
+    line = _safe_float(market.get("line"))
+    if line is None:
+        return None
+    return {
+        "stage": str(stage),
+        "line": float(line),
+        "overOdds": _safe_int(market.get("over_odds")),
+        "underOdds": _safe_int(market.get("under_odds")),
+        "alternates": list(market.get("alternates") or []),
+        "source": str(source or ""),
+    }
 
 
 def _market_line_entry(*, stat_key: str, label: str, unit: str, market: Any) -> Optional[Dict[str, Any]]:
@@ -1343,21 +1425,132 @@ def _market_line_entry(*, stat_key: str, label: str, unit: str, market: Any) -> 
     }
 
 
-def _pitcher_market_lines_by_stat(markets: Any) -> List[Dict[str, Any]]:
-    if not isinstance(markets, dict):
+def _first_seen_pitcher_market_lines_from_registry(d: str) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    registry = _load_live_prop_registry(d)
+    entries = registry.get("entries") if isinstance(registry.get("entries"), dict) else {}
+    grouped: Dict[str, Dict[str, Dict[str, Dict[str, Any]]]] = {}
+
+    for entry in entries.values():
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("market") or "").strip().lower() != "pitcher_props":
+            continue
+
+        owner_key = normalize_pitcher_name(str(entry.get("owner") or ""))
+        prop_key = str(entry.get("prop") or "").strip().lower()
+        if not owner_key or prop_key not in {"strikeouts", "outs", "earned_runs"}:
+            continue
+
+        first_snapshot = entry.get("firstSeenSnapshot") if isinstance(entry.get("firstSeenSnapshot"), dict) else {}
+        line = _safe_float(first_snapshot.get("marketLine"))
+        selection = str(first_snapshot.get("selection") or entry.get("selection") or "").strip().lower()
+        if line is None or selection not in {"over", "under"}:
+            continue
+
+        line_key = f"{float(line):.3f}"
+        stamp = str(entry.get("firstSeenAt") or "")
+        bucket = grouped.setdefault(owner_key, {}).setdefault(prop_key, {}).setdefault(
+            line_key,
+            {
+                "line": float(line),
+                "over_odds": None,
+                "under_odds": None,
+                "alternates": [],
+                "source": "live_registry_first_seen",
+                "firstSeenAt": stamp,
+            },
+        )
+        if stamp and (not bucket.get("firstSeenAt") or stamp < str(bucket.get("firstSeenAt"))):
+            bucket["firstSeenAt"] = stamp
+        bucket[f"{selection}_odds"] = _safe_int(first_snapshot.get("odds"))
+
+    out: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    for owner_key, owner_markets in grouped.items():
+        for prop_key, line_groups in owner_markets.items():
+            if not isinstance(line_groups, dict) or not line_groups:
+                continue
+            chosen = min(
+                line_groups.values(),
+                key=lambda item: (
+                    str(item.get("firstSeenAt") or "9999-12-31T23:59:59"),
+                    float(_safe_float(item.get("line")) or 999.0),
+                ),
+            )
+            out.setdefault(owner_key, {})[prop_key] = {
+                "line": float(_safe_float(chosen.get("line")) or 0.0),
+                "over_odds": _safe_int(chosen.get("over_odds")),
+                "under_odds": _safe_int(chosen.get("under_odds")),
+                "alternates": [],
+                "source": str(chosen.get("source") or "live_registry_first_seen"),
+            }
+    return out
+
+
+def _load_pitcher_ladder_market_context(d: str) -> Dict[str, Any]:
+    current_path = _resolve_oddsapi_market_file(d, "oddsapi_pitcher_props")
+    current_doc = _load_json_file(current_path)
+    current_mode = str((current_doc or {}).get("mode") or "").strip().lower()
+    current_lines = _extract_pitcher_prop_market_lines(current_doc)
+
+    pregame_path = _resolve_pregame_oddsapi_market_file(d, "oddsapi_pitcher_props")
+    pregame_doc = _load_json_file(pregame_path) if pregame_path else None
+    pregame_lines = _extract_pitcher_prop_market_lines(pregame_doc) if isinstance(pregame_doc, dict) else {}
+    pregame_source = _relative_path_str(pregame_path) if pregame_path else None
+    if not pregame_lines:
+        archived_path = _resolve_earliest_archived_oddsapi_market_file(d, "oddsapi_pitcher_props")
+        archived_doc = _load_json_file(archived_path) if archived_path else None
+        pregame_lines = _extract_pitcher_prop_market_lines(archived_doc) if isinstance(archived_doc, dict) else {}
+        if pregame_lines:
+            pregame_source = _relative_path_str(archived_path)
+    if not pregame_lines:
+        pregame_lines = _first_seen_pitcher_market_lines_from_registry(d)
+        if pregame_lines:
+            pregame_source = "live_registry_first_seen"
+
+    return {
+        "currentPath": current_path,
+        "currentMode": current_mode,
+        "currentLines": current_lines,
+        "pregamePath": pregame_path,
+        "pregameLines": pregame_lines,
+        "pregameSource": pregame_source,
+    }
+
+
+def _pitcher_market_lines_by_stat(
+    markets: Any,
+    *,
+    pregame_markets: Any = None,
+    live_markets: Any = None,
+    current_mode: str = "",
+) -> List[Dict[str, Any]]:
+    if not isinstance(markets, dict) and not isinstance(pregame_markets, dict) and not isinstance(live_markets, dict):
         return []
     out: List[Dict[str, Any]] = []
     for stat_key, cfg in _PITCHER_LADDER_PROPS.items():
         market_key = str(cfg.get("market_key") or "").strip()
         if not market_key:
             continue
+        current_market = markets.get(market_key) if isinstance(markets, dict) else None
+        pregame_market = pregame_markets.get(market_key) if isinstance(pregame_markets, dict) else None
+        live_market = live_markets.get(market_key) if isinstance(live_markets, dict) else None
         entry = _market_line_entry(
             stat_key=str(stat_key),
             label=str(cfg.get("label") or stat_key),
             unit=str(cfg.get("unit") or ""),
-            market=markets.get(market_key),
+            market=live_market or current_market or pregame_market,
         )
         if entry:
+            entry["pregame"] = _market_line_stage_entry(
+                pregame_market,
+                stage="pregame",
+                source=(pregame_market or {}).get("source") if isinstance(pregame_market, dict) else None,
+            )
+            entry["live"] = _market_line_stage_entry(
+                live_market,
+                stage="live",
+                source="oddsapi_live" if str(current_mode or "").lower() == "live" else None,
+            )
             out.append(entry)
     return out
 
@@ -1558,7 +1751,12 @@ def _pitcher_ladders_payload(d: str, prop_value: Any, sort_value: Any) -> Dict[s
     prop_cfg = _PITCHER_LADDER_PROPS[prop]
     artifacts = _load_cards_artifacts(d)
     sim_dir = artifacts.get("sim_dir") if isinstance(artifacts.get("sim_dir"), Path) else None
-    market_path, market_lines = _load_pitcher_prop_market_lines(d)
+    market_ctx = _load_pitcher_ladder_market_context(d)
+    market_path = market_ctx.get("currentPath") if isinstance(market_ctx.get("currentPath"), Path) else None
+    market_lines = market_ctx.get("currentLines") if isinstance(market_ctx.get("currentLines"), dict) else {}
+    pregame_market_lines = market_ctx.get("pregameLines") if isinstance(market_ctx.get("pregameLines"), dict) else {}
+    market_mode = str(market_ctx.get("currentMode") or "")
+    pregame_market_source = str(market_ctx.get("pregameSource") or "")
     nav = _cards_nav_from_schedule(d) or {"season": _season_from_date_str(d)}
 
     payload: Dict[str, Any] = {
@@ -1577,6 +1775,8 @@ def _pitcher_ladders_payload(d: str, prop_value: Any, sort_value: Any) -> Dict[s
         "found": False,
         "sourceDir": _relative_path_str(sim_dir),
         "marketSource": _relative_path_str(market_path),
+        "marketMode": market_mode,
+        "pregameMarketSource": pregame_market_source,
         "nav": nav,
         "rows": [],
     }
@@ -1614,12 +1814,16 @@ def _pitcher_ladders_payload(d: str, prop_value: Any, sort_value: Any) -> Dict[s
             opponent = home_abbr if side == "away" else away_abbr
             team_id = away_team_id if side == "away" else home_team_id
             opponent_team_id = home_team_id if side == "away" else away_team_id
-            player_market_lines = market_lines.get(normalize_pitcher_name(starter_name)) or {}
+            starter_key = normalize_pitcher_name(starter_name)
+            player_market_lines = market_lines.get(starter_key) or {}
+            player_pregame_market_lines = pregame_market_lines.get(starter_key) or {}
             market = {}
             market_key = prop_cfg.get("market_key")
             if market_key:
                 market = (player_market_lines.get(str(market_key)) or {})
+            pregame_market = (player_pregame_market_lines.get(str(market_key)) or {}) if market_key else {}
             market_line = _safe_float(market.get("line")) if isinstance(market, dict) else None
+            pregame_market_line = _safe_float(pregame_market.get("line")) if isinstance(pregame_market, dict) else None
             over_line_count = None
             over_line_prob = None
             if market_line is not None:
@@ -1651,7 +1855,13 @@ def _pitcher_ladders_payload(d: str, prop_value: Any, sort_value: Any) -> Dict[s
                     "minTotal": min_total,
                     "maxTotal": max_total,
                     "marketLine": market_line,
-                    "marketLinesByStat": _pitcher_market_lines_by_stat(player_market_lines),
+                    "pregameMarketLine": pregame_market_line,
+                    "marketLinesByStat": _pitcher_market_lines_by_stat(
+                        player_market_lines,
+                        pregame_markets=player_pregame_market_lines,
+                        live_markets=player_market_lines if market_mode == "live" else None,
+                        current_mode=market_mode,
+                    ),
                     "overLineCount": over_line_count,
                     "overLineProb": over_line_prob,
                     "ladder": ladder_rows,
@@ -7055,6 +7265,7 @@ def _live_lens_payload(d: str, *, persist: bool = False) -> Dict[str, Any]:
 
 def _refresh_oddsapi_markets(d: str, *, overwrite: bool = True) -> Dict[str, Any]:
     recorded_at = _local_now()
+    frozen_pregame = _freeze_oddsapi_pregame_markets(d)
     result = fetch_and_write_live_odds_for_date(
         d,
         out_dir=_MARKET_DIR,
@@ -7075,6 +7286,7 @@ def _refresh_oddsapi_markets(d: str, *, overwrite: bool = True) -> Dict[str, Any
         "recordedAt": _local_timestamp_text(recorded_at),
         "date": str(d),
         "overwrite": bool(overwrite),
+        "frozenPregame": frozen_pregame,
         "result": result,
         "copied": copied,
         "archived": archived,
@@ -7085,6 +7297,7 @@ def _refresh_oddsapi_markets(d: str, *, overwrite: bool = True) -> Dict[str, Any
         "date": str(d),
         "marketDir": _relative_path_str(_MARKET_DIR),
         "snapshotDir": _relative_path_str(snapshot_dir),
+        "frozenPregame": frozen_pregame,
         "result": result,
         "copied": copied,
         "archived": archived,

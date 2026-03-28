@@ -103,16 +103,35 @@
       <div class="ladder-market-lines">
         ${entries.map((entry) => {
           const isActive = String(entry.stat || "") === activeStat;
-          const oddsBits = [];
-          if (entry.overOdds != null) oddsBits.push(`O ${escapeHtml(formatOdds(entry.overOdds))}`);
-          if (entry.underOdds != null) oddsBits.push(`U ${escapeHtml(formatOdds(entry.underOdds))}`);
-          return `
-            <span class="ladder-market-line${isActive ? " is-active" : ""}">
-              <span class="ladder-market-line-label">${escapeHtml(entry.label || entry.stat || "Prop")}</span>
-              <strong>${escapeHtml(formatNumber(entry.line, 1))}</strong>
-              ${oddsBits.length ? `<span class="ladder-market-line-odds">${oddsBits.join(" / ")}</span>` : ""}
-            </span>
-          `;
+          const stages = [];
+          if (entry.pregame && typeof entry.pregame === "object") {
+            stages.push({ ...entry.pregame, badge: "Pregame", className: "is-pregame" });
+          }
+          if (entry.live && typeof entry.live === "object") {
+            stages.push({ ...entry.live, badge: "Live", className: "is-live" });
+          }
+          if (!stages.length) {
+            stages.push({
+              line: entry.line,
+              overOdds: entry.overOdds,
+              underOdds: entry.underOdds,
+              badge: payload.marketMode === "live" ? "Live" : "Pregame",
+              className: payload.marketMode === "live" ? "is-live" : "is-pregame",
+            });
+          }
+          return stages.map((stage) => {
+            const oddsBits = [];
+            if (stage.overOdds != null) oddsBits.push(`O ${escapeHtml(formatOdds(stage.overOdds))}`);
+            if (stage.underOdds != null) oddsBits.push(`U ${escapeHtml(formatOdds(stage.underOdds))}`);
+            return `
+              <span class="ladder-market-line ${stage.className}${isActive ? " is-active" : ""}">
+                <span class="ladder-market-line-label">${escapeHtml(entry.label || entry.stat || "Prop")}</span>
+                <span class="ladder-market-line-stage">${escapeHtml(stage.badge)}</span>
+                <strong>${escapeHtml(formatNumber(stage.line, 1))}</strong>
+                ${oddsBits.length ? `<span class="ladder-market-line-odds">${oddsBits.join(" / ")}</span>` : ""}
+              </span>
+            `;
+          }).join("");
         }).join("")}
       </div>
     `;
@@ -253,6 +272,14 @@
     const overLineText = row.marketLine == null || row.overLineCount == null
       ? ""
       : `<span class="ladder-pill"><span>Over ${escapeHtml(formatNumber(row.marketLine, 1))}</span><strong>${escapeHtml(formatCount(row.overLineCount))}</strong><span>${escapeHtml(formatPercent(row.overLineProb))}</span></span>`;
+    const linePills = [];
+    if (row.pregameMarketLine != null) {
+      linePills.push(`<span class="ladder-pill"><span>Pregame line</span><strong>${escapeHtml(formatNumber(row.pregameMarketLine, 1))}</strong></span>`);
+    }
+    if (row.marketLine != null) {
+      const currentLabel = payload.marketMode === "live" ? "Live line" : (row.pregameMarketLine != null ? "Current line" : "Market line");
+      linePills.push(`<span class="ladder-pill"><span>${escapeHtml(currentLabel)}</span><strong>${escapeHtml(formatNumber(row.marketLine, 1))}</strong></span>`);
+    }
     const gameHref = row.gamePk != null && payload.date
       ? `/game/${encodeURIComponent(String(row.gamePk))}?date=${encodeURIComponent(String(payload.date))}`
       : "";
@@ -291,7 +318,7 @@
         <div class="ladder-pills">
           <span class="ladder-pill"><span>Mean</span><strong>${escapeHtml(formatNumber(row.mean, 2))}</strong></span>
           <span class="ladder-pill"><span>Mode</span><strong>${escapeHtml(formatCount(row.mode))}</strong><span>${escapeHtml(formatPercent(row.modeProb))}</span></span>
-          ${row.marketLine == null ? "" : `<span class="ladder-pill"><span>Market line</span><strong>${escapeHtml(formatNumber(row.marketLine, 1))}</strong></span>`}
+          ${linePills.join("")}
           ${overLineText}
         </div>
         ${renderMarketLineChips(row, payload)}
@@ -334,7 +361,7 @@
       ? `${summary.starters || 0} starters across ${summary.games || 0} games. Sorted by ${sortLabel}. Sim counts: ${simCounts.length ? simCounts.join(", ") : "-"}.${state.game ? ` Filtered to game ${gameLabel || state.game}.` : ""}${state.pitcher ? ` Filtered to pitcher ${state.pitcher}.` : ""}`
       : "No ladder data found for this selection.";
 
-    sourceMetaEl.textContent = `Sim dir: ${payload.sourceDir || "-"} | Market file: ${payload.marketSource || "-"} | Default daily sims: ${payload.defaultSims || "-"}`;
+    sourceMetaEl.textContent = `Sim dir: ${payload.sourceDir || "-"} | Current market file: ${payload.marketSource || "-"} | Pregame source: ${payload.pregameMarketSource || "-"} | Default daily sims: ${payload.defaultSims || "-"}`;
 
     const nav = payload.nav || {};
     prevDateLinkEl.href = pageHref(nav.prevDate || state.date, state.prop, state.game, state.pitcher, state.sort);
