@@ -889,6 +889,68 @@
   border-radius: 18px;
 }
 
+.betting-card-mobile-list {
+  display: none;
+}
+
+.betting-card-mobile-entry {
+  border-radius: 16px;
+  border: 1px solid rgba(132, 166, 196, 0.14);
+  background: rgba(6, 14, 23, 0.78);
+  padding: 14px;
+  display: grid;
+  gap: 10px;
+}
+
+.betting-card-mobile-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.betting-card-mobile-title {
+  color: var(--cards-text);
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.betting-card-mobile-pick {
+  color: var(--cards-text);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.betting-card-mobile-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.betting-card-mobile-stat {
+  border-radius: 12px;
+  border: 1px solid rgba(132, 166, 196, 0.12);
+  background: rgba(8, 18, 29, 0.72);
+  padding: 10px;
+  display: grid;
+  gap: 4px;
+}
+
+.betting-card-mobile-label {
+  color: var(--cards-text-dim);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.betting-card-mobile-value {
+  color: var(--cards-text);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
 @media (max-width: 1180px) {
   .season-layout {
     grid-template-columns: 1fr;
@@ -933,5 +995,61 @@
   .season-prob-row,
   .season-stat-grid {
     grid-template-columns: 1fr;
+  }
+
+  .betting-card-body .season-header-actions,
+  .betting-card-body .season-day-actions {
+    width: 100%;
+  }
+
+  .betting-card-body .season-header-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .betting-card-body .season-header-actions .cards-nav-pill,
+  .betting-card-body .season-day-actions .cards-nav-pill {
+    width: 100%;
+  }
+
+  #bettingCardProfiles,
+  #bettingCardMonths,
+  #bettingCardDays {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(200px, 84vw);
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-bottom: 6px;
+    scroll-snap-type: x proximity;
+  }
+
+  #bettingCardProfiles,
+  #bettingCardMonths {
+    grid-auto-columns: max-content;
+  }
+
+  #bettingCardProfiles .cards-filter-pill,
+  #bettingCardMonths .cards-filter-pill {
+    white-space: nowrap;
+  }
+
+  #bettingCardDays .season-day-entry {
+    scroll-snap-align: start;
+  }
+
+  #bettingCardDayPicks .season-calibration-table-wrap,
+  #bettingCardGames .season-calibration-table-wrap {
+    display: none;
+  }
+
+  #bettingCardDayPicks .betting-card-mobile-list,
+  #bettingCardGames .betting-card-mobile-list {
+    display: grid;
+    gap: 12px;
+  }
+
+  .betting-card-mobile-grid {
+    grid-template-columns: 1fr 1fr;
   }
 }

@@ -456,6 +456,54 @@
     }).join("");
   }
 
+  function dayPickCardsMarkup(items) {
+    return items.map((item) => {
+      const game = item.game || {};
+      const reco = item.reco || {};
+      const settlement = reco?.settlement || null;
+      const tone = bettingResultTone(reco);
+      const statusText = bettingResultLabel(reco);
+      const profitText = settlement ? formatUnits(settlement.profit_u, 2) : "-";
+      const actualText = settlement && settlement.actual != null ? `Actual ${formatLine(settlement.actual)}` : "Settlement unavailable";
+      const gameLabel = `${item.awayAbbr} @ ${item.homeAbbr}`;
+      const gameMeta = [
+        game?.start_time ? `First pitch ${game.start_time}` : "",
+        String(game?.status?.abstract || "").trim(),
+      ].filter(Boolean).join(" | ");
+      return `
+        <article class="betting-card-mobile-entry">
+          <div class="betting-card-mobile-head">
+            <div>
+              <div class="betting-card-mobile-title">${escapeHtml(gameLabel)}</div>
+              <div class="season-inline-note">${escapeHtml(gameMeta || `Game ${String(game.game_pk || "-")}`)}</div>
+            </div>
+            <span class="season-ticket-pill ${tone}" style="${seasonTicketPillStyle(tone)}">${escapeHtml(statusText)}</span>
+          </div>
+          <div class="betting-card-mobile-grid">
+            <div class="betting-card-mobile-stat">
+              <div class="betting-card-mobile-label">Market</div>
+              <div class="betting-card-mobile-value">${escapeHtml(BETTING_MARKET_LABELS[String(reco?.market || "").toLowerCase()] || bettingMetricLabel(reco))}</div>
+            </div>
+            <div class="betting-card-mobile-stat">
+              <div class="betting-card-mobile-label">Odds</div>
+              <div class="betting-card-mobile-value">${escapeHtml(formatOdds(reco?.odds))}</div>
+            </div>
+            <div class="betting-card-mobile-stat">
+              <div class="betting-card-mobile-label">Edge</div>
+              <div class="betting-card-mobile-value">${escapeHtml(formatSignedPercentPoints(reco?.edge, 1))}</div>
+            </div>
+            <div class="betting-card-mobile-stat">
+              <div class="betting-card-mobile-label">Profit</div>
+              <div class="betting-card-mobile-value">${escapeHtml(profitText)}</div>
+            </div>
+          </div>
+          <div class="betting-card-mobile-pick">${escapeHtml(bettingSelectionLabel(reco, item.awayAbbr, item.homeAbbr))}</div>
+          <div class="season-inline-note">${escapeHtml(bettingDetailText(reco))}</div>
+          <div class="season-inline-note">${escapeHtml(actualText)}</div>
+        </article>`;
+    }).join("");
+  }
+
   function renderDayPicks() {
     if (!root.dayPicks) return;
     if (!state.day) {
@@ -489,7 +537,8 @@
             </thead>
             <tbody>${dayPickRowsMarkup(items)}</tbody>
           </table>
-        </div>` : '<div class="season-empty-copy">No official plays were logged for this date.</div>'}
+        </div>
+        <div class="betting-card-mobile-list">${dayPickCardsMarkup(items)}</div>` : '<div class="season-empty-copy">No official plays were logged for this date.</div>'}
     `;
   }
 
@@ -550,6 +599,45 @@
             <div class="season-betting-cell-sub">${escapeHtml(actualText)}</div>
           </td>
         </tr>`;
+    }).join("");
+  }
+
+  function renderGameRowCards(rows, awayAbbr, homeAbbr) {
+    return rows.map((reco) => {
+      const tone = bettingResultTone(reco);
+      const settlement = reco?.settlement || null;
+      const profitText = settlement ? formatUnits(settlement.profit_u, 2) : "-";
+      const actualText = settlement && settlement.actual != null ? `Actual ${formatLine(settlement.actual)}` : "Settlement unavailable";
+      return `
+        <article class="betting-card-mobile-entry">
+          <div class="betting-card-mobile-head">
+            <div>
+              <div class="betting-card-mobile-title">${escapeHtml(BETTING_MARKET_LABELS[String(reco?.market || "").toLowerCase()] || bettingMetricLabel(reco))}</div>
+              <div class="season-inline-note">Official card</div>
+            </div>
+            <span class="season-ticket-pill ${tone}" style="${seasonTicketPillStyle(tone)}">${escapeHtml(bettingResultLabel(reco))}</span>
+          </div>
+          <div class="betting-card-mobile-grid">
+            <div class="betting-card-mobile-stat">
+              <div class="betting-card-mobile-label">Pick</div>
+              <div class="betting-card-mobile-value">${escapeHtml(bettingSelectionLabel(reco, awayAbbr, homeAbbr))}</div>
+            </div>
+            <div class="betting-card-mobile-stat">
+              <div class="betting-card-mobile-label">Odds</div>
+              <div class="betting-card-mobile-value">${escapeHtml(formatOdds(reco?.odds))}</div>
+            </div>
+            <div class="betting-card-mobile-stat">
+              <div class="betting-card-mobile-label">Edge</div>
+              <div class="betting-card-mobile-value">${escapeHtml(formatSignedPercentPoints(reco?.edge, 1))}</div>
+            </div>
+            <div class="betting-card-mobile-stat">
+              <div class="betting-card-mobile-label">Profit</div>
+              <div class="betting-card-mobile-value">${escapeHtml(profitText)}</div>
+            </div>
+          </div>
+          <div class="season-inline-note">${escapeHtml(bettingDetailText(reco))}</div>
+          <div class="season-inline-note">${escapeHtml(actualText)}</div>
+        </article>`;
     }).join("");
   }
 
@@ -618,6 +706,7 @@
                   <tbody>${renderGameRows(officialRows, awayAbbr, homeAbbr)}</tbody>
                 </table>
               </div>
+              <div class="betting-card-mobile-list">${renderGameRowCards(officialRows, awayAbbr, homeAbbr)}</div>
             </section>
           </section>
         </article>`;
