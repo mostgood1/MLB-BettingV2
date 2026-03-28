@@ -1976,6 +1976,63 @@
     return "";
   }
 
+  function stripSortWeight(card) {
+    const detail = ensureDetail(card);
+    const progress = gameProgress(detail?.snapshot, card);
+    if (progress.isLive) return 0;
+    if (progress.isFinal) return 2;
+    return 1;
+  }
+
+  function stripSortValue(card) {
+    const detail = ensureDetail(card);
+    const progress = gameProgress(detail?.snapshot, card);
+    if (progress.isLive) return -(Number(progress.fraction || 0));
+    if (progress.isFinal) return Number(detail?.snapshot?.generatedAt ? Date.parse(detail.snapshot.generatedAt) || 0 : 0);
+    return 0;
+  }
+
+  function sortCardsForStrip(cards) {
+    return [...(Array.isArray(cards) ? cards : [])].sort((left, right) => {
+      const weightDelta = stripSortWeight(left) - stripSortWeight(right);
+      if (weightDelta !== 0) return weightDelta;
+      const sortDelta = stripSortValue(left) - stripSortValue(right);
+      if (sortDelta !== 0) return sortDelta;
+      const timeDelta = String(left?.startTime || "").localeCompare(String(right?.startTime || ""));
+      if (timeDelta !== 0) return timeDelta;
+      return Number(left?.gamePk || 0) - Number(right?.gamePk || 0);
+    });
+  }
+
+  function stripLiveSummary(snapshot, card) {
+    const progress = gameProgress(snapshot, card);
+    if (!progress.isLive) return "";
+    const current = snapshot?.current || {};
+    const count = current?.count || {};
+    const balls = count?.balls;
+    const strikes = count?.strikes;
+    const outs = count?.outs;
+    const batter = String(current?.batter?.fullName || "").trim();
+    const pitcher = String(current?.pitcher?.fullName || "").trim();
+    const half = String(progress.half || "").trim();
+    const inningBits = [];
+    if (half && progress.inning) inningBits.push(`${half.replace(/^./, (m) => m.toUpperCase())} ${progress.inning}`);
+    if (balls != null && strikes != null) inningBits.push(`Count ${balls}-${strikes}`);
+    if (outs != null) inningBits.push(`${outs} out${Number(outs) === 1 ? "" : "s"}`);
+    const matchupBits = [];
+    if (batter) matchupBits.push(`Batter ${batter}`);
+    if (pitcher) matchupBits.push(`Pitcher ${pitcher}`);
+    return [inningBits.join(" | "), matchupBits.join(" | ")].filter(Boolean).join("\n");
+  }
+
+  function reorderScoreboard() {
+    if (!root.scoreboard) return;
+    sortCardsForStrip(state.cards).forEach((card) => {
+      const node = state.stripNodes.get(Number(card.gamePk));
+      if (node) root.scoreboard.appendChild(node);
+    });
+  }
+
   function liveSummary(snapshot, card) {
     if (!snapshot || !snapshot.teams) return card?.startTime ? `Scheduled - ${card.startTime}` : "Live box unavailable";
     const statusText = String(snapshot?.status?.abstractGameState || card?.status?.abstract || "");
@@ -2042,6 +2099,7 @@
           <span class="cards-linescore-stat" data-role="strip-home-e">-</span>
         </div>
       </div>
+      <div class="cards-strip-live" data-role="strip-live" hidden></div>
       <div class="cards-strip-meta">${escapeHtml(marketCountSummary(card))}</div>`;
     return anchor;
   }
@@ -2174,7 +2232,7 @@
     if (!root.scoreboard) return;
     root.scoreboard.innerHTML = "";
     state.stripNodes.clear();
-    state.cards.forEach((card) => {
+    sortCardsForStrip(state.cards).forEach((card) => {
       const node = createStripNode(card);
       state.stripNodes.set(Number(card.gamePk), node);
       root.scoreboard.appendChild(node);
@@ -2255,6 +2313,7 @@
     const homeHits = stripNode.querySelector('[data-role="strip-home-h"]');
     const homeErrors = stripNode.querySelector('[data-role="strip-home-e"]');
     const detailNode = stripNode.querySelector('[data-role="strip-detail"]');
+    const liveNode = stripNode.querySelector('[data-role="strip-live"]');
     const snapshot = detail.snapshot;
     if (awayRuns) awayRuns.textContent = linescoreValue(snapshot?.teams?.away?.totals?.R);
     if (awayHits) awayHits.textContent = linescoreValue(snapshot?.teams?.away?.totals?.H);
@@ -2263,6 +2322,12 @@
     if (homeHits) homeHits.textContent = linescoreValue(snapshot?.teams?.home?.totals?.H);
     if (homeErrors) homeErrors.textContent = linescoreValue(snapshot?.teams?.home?.totals?.E);
     if (detailNode) detailNode.textContent = statusDetailText(snapshot, card) || card.startTime || "";
+    if (liveNode) {
+      const liveText = stripLiveSummary(snapshot, card);
+      liveNode.textContent = liveText;
+      liveNode.hidden = !liveText;
+    }
+    reorderScoreboard();
   }
 
   function syncCard(card) {

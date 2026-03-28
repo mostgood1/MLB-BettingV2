@@ -296,7 +296,7 @@ body.cards-body {
 .cards-scoreboard {
   display: grid;
   grid-auto-flow: column;
-  grid-auto-columns: minmax(240px, 1fr);
+  grid-auto-columns: minmax(360px, 1fr);
   gap: 12px;
   overflow-x: auto;
   margin-top: 18px;
@@ -324,6 +324,7 @@ body.cards-body {
   color: inherit;
   text-decoration: none;
   animation: cards-fade-up 260ms ease both;
+  min-width: 0;
 }
 
 .cards-strip-card:hover {
@@ -356,6 +357,16 @@ body.cards-body {
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
+  min-width: 0;
+}
+
+.cards-strip-head > * {
+  min-width: 0;
+}
+
+.cards-strip-head [data-role="strip-detail"] {
+  text-align: right;
+  overflow-wrap: anywhere;
 }
 
 .cards-strip-team,
@@ -375,9 +386,27 @@ body.cards-body {
   font-family: "Space Grotesk", sans-serif;
 }
 
+.cards-linescore-team strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .cards-strip-meta {
   color: var(--cards-text-soft);
   font-size: 12px;
+}
+
+.cards-strip-live {
+  color: var(--cards-text-soft);
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(154, 243, 222, 0.16);
+  background: rgba(154, 243, 222, 0.06);
 }
 
 .cards-strip-logo.cards-logo,
@@ -1409,6 +1438,6 @@ body.cards-body {
   }
 
   .cards-scoreboard {
-    grid-auto-columns: minmax(180px, 1fr);
+    grid-auto-columns: minmax(300px, 1fr);
   }
 }
