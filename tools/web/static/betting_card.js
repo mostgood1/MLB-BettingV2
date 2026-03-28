@@ -114,6 +114,84 @@
     return dt.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" });
   }
 
+  function formatHalfInning(value) {
+    const text = String(value || "").trim().toLowerCase();
+    if (text === "top") return "Top";
+    if (text === "bottom") return "Bot";
+    return "";
+  }
+
+  function isLiveStatus(statusText) {
+    const text = String(statusText || "").trim().toLowerCase();
+    return text === "live" || text === "in progress" || text === "manager challenge";
+  }
+
+  function isFinalStatus(statusText) {
+    return String(statusText || "").trim().toLowerCase() === "final";
+  }
+
+  function gameSortWeight(game) {
+    const matchup = game?.matchup || {};
+    const status = game?.status || {};
+    const isLive = Boolean(matchup?.isLive) || isLiveStatus(status?.abstract);
+    const isFinal = Boolean(matchup?.isFinal) || isFinalStatus(status?.abstract);
+    if (isLive) return 0;
+    if (isFinal) return 2;
+    return 1;
+  }
+
+  function sortedGames(games) {
+    return [...games].sort((left, right) => {
+      const weightDelta = gameSortWeight(left) - gameSortWeight(right);
+      if (weightDelta !== 0) return weightDelta;
+      const dateDelta = String(left?.game_date || "").localeCompare(String(right?.game_date || ""));
+      if (dateDelta !== 0) return dateDelta;
+      const timeDelta = String(left?.start_time || "").localeCompare(String(right?.start_time || ""));
+      if (timeDelta !== 0) return timeDelta;
+      return Number(left?.game_pk || 0) - Number(right?.game_pk || 0);
+    });
+  }
+
+  function compactGameStatus(game) {
+    const matchup = game?.matchup || {};
+    const status = game?.status || {};
+    const detailed = String(matchup?.displayState || status?.detailed || status?.abstract || "").trim();
+    if (matchup?.isLive) return detailed || "Live";
+    if (matchup?.isFinal) return detailed || "Final";
+    return detailed;
+  }
+
+  function compactLiveDetailBits(game) {
+    const matchup = game?.matchup || {};
+    if (!matchup?.isLive) return [];
+    const bits = [];
+    const half = formatHalfInning(matchup?.halfInning);
+    const inning = Number(matchup?.inning || 0);
+    if (half && inning > 0) bits.push(`${half} ${inning}`);
+    else if (String(matchup?.liveText || "").trim()) bits.push(String(matchup.liveText).trim());
+
+    const balls = matchup?.count?.balls;
+    const strikes = matchup?.count?.strikes;
+    if (balls != null && strikes != null) bits.push(`Count ${balls}-${strikes}`);
+
+    const outs = matchup?.count?.outs;
+    if (outs != null) bits.push(`${outs} out${Number(outs) === 1 ? "" : "s"}`);
+
+    if (String(matchup?.batter || "").trim()) bits.push(`Batter ${String(matchup.batter).trim()}`);
+    if (String(matchup?.pitcher || "").trim()) bits.push(`Pitcher ${String(matchup.pitcher).trim()}`);
+    return bits;
+  }
+
+  function compactScoreText(game) {
+    const matchup = game?.matchup || {};
+    const score = game?.matchup?.score || {};
+    const isVisibleState = Boolean(matchup?.isLive) || Boolean(matchup?.isFinal);
+    const hasNonZeroScore = Number(score?.away || 0) !== 0 || Number(score?.home || 0) !== 0;
+    if (!isVisibleState && !hasNonZeroScore) return "";
+    if (score?.away == null && score?.home == null) return "";
+    return `${game?.away?.abbr || "Away"} ${score?.away ?? "-"} - ${game?.home?.abbr || "Home"} ${score?.home ?? "-"}`;
+  }
+
   function monthLabel(monthKey) {
     const dt = new Date(`${monthKey}-01T12:00:00`);
     if (Number.isNaN(dt.getTime())) return monthKey;
@@ -647,7 +725,7 @@
       root.games.innerHTML = '<div class="season-empty-copy">No official card games loaded.</div>';
       return;
     }
-    const games = Array.isArray(state.day?.games) ? state.day.games : [];
+    const games = Array.isArray(state.day?.games) ? sortedGames(state.day.games) : [];
     if (!games.length) {
       root.games.innerHTML = '<div class="season-empty-copy">No official-card games were found for this date.</div>';
       return;
@@ -657,9 +735,12 @@
       const homeAbbr = game?.home?.abbr || "Home";
       const officialRows = bettingOfficialRows(game?.betting || {});
       const combined = ((game?.betting || {}).results || {}).combined || {};
+      const compactStatus = compactGameStatus(game);
+      const scoreText = compactScoreText(game);
+      const liveDetailBits = compactLiveDetailBits(game);
       const gameTimeBits = [
         game?.start_time ? `First pitch ${game.start_time}` : "",
-        String(game?.status?.detailed || game?.status?.abstract || "").trim(),
+        compactStatus,
       ].filter(Boolean).join(" | ");
       return `
         <article class="season-game-card">
@@ -675,6 +756,8 @@
               </div>
               <div class="season-game-subcopy">${escapeHtml(String(game?.starter_names?.away || "TBD"))} vs ${escapeHtml(String(game?.starter_names?.home || "TBD"))}</div>
               ${gameTimeBits ? `<div class="season-game-time">${escapeHtml(gameTimeBits)}</div>` : ""}
+              ${scoreText ? `<div class="season-game-scoreline">${escapeHtml(scoreText)}</div>` : ""}
+              ${liveDetailBits.length ? `<div class="season-game-live-grid">${liveDetailBits.map((bit) => `<span class="season-game-live-pill">${escapeHtml(bit)}</span>`).join("")}</div>` : ""}
             </div>
             <div class="season-scorebox">
               <div class="season-score-label">Official card</div>

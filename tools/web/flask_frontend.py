@@ -3897,6 +3897,7 @@ def _official_betting_card_games_payload(date_str: str, betting_games: Dict[int,
         game_date = str(schedule_row.get("gameDate") or "")
         away = dict(schedule_row.get("away") or {"id": None, "abbr": "Away", "name": "Away"})
         home = dict(schedule_row.get("home") or {"id": None, "abbr": "Home", "name": "Home"})
+        matchup = _official_betting_game_matchup_payload(int(game_pk), str(schedule_row.get("officialDate") or date_str), status)
         games_out.append(
             {
                 "game_pk": int(game_pk),
@@ -3913,6 +3914,7 @@ def _official_betting_card_games_payload(date_str: str, betting_games: Dict[int,
                     "away": _first_text(((probable.get("away") or {}).get("fullName"))),
                     "home": _first_text(((probable.get("home") or {}).get("fullName"))),
                 },
+                "matchup": matchup,
                 "betting": dict(raw_game_betting),
             }
         )
@@ -5555,6 +5557,102 @@ def _current_matchup(feed: Dict[str, Any]) -> Dict[str, Any]:
         }
     except Exception:
         return {"inning": None, "halfInning": None, "count": None, "batter": None, "pitcher": None}
+
+
+def _status_is_live(status_text: Any) -> bool:
+    text = str(status_text or "").strip().lower()
+    return text in {"live", "in progress", "manager challenge"}
+
+
+def _status_is_final(status_text: Any) -> bool:
+    return str(status_text or "").strip().lower() == "final"
+
+
+def _format_matchup_live_text(current: Dict[str, Any]) -> str:
+    inning = _safe_int(current.get("inning"))
+    half = str(current.get("halfInning") or "").strip().lower()
+    if inning is None:
+        return ""
+    if half == "top":
+        return f"Top {int(inning)}"
+    if half == "bottom":
+        return f"Bot {int(inning)}"
+    return f"Inning {int(inning)}"
+
+
+def _official_betting_game_matchup_payload(game_pk: int, date_str: str, status: Dict[str, Any]) -> Dict[str, Any]:
+    abstract = str((status or {}).get("abstract") or "").strip()
+    detailed = str((status or {}).get("detailed") or "").strip()
+    out: Dict[str, Any] = {
+        "isLive": bool(_status_is_live(abstract)),
+        "isFinal": bool(_status_is_final(abstract)),
+        "liveText": "",
+        "displayState": detailed or abstract,
+        "inning": None,
+        "halfInning": "",
+        "count": {"balls": None, "strikes": None, "outs": None},
+        "batter": "",
+        "pitcher": "",
+        "score": {"away": None, "home": None},
+    }
+
+    if int(game_pk or 0) <= 0:
+        return out
+
+    feed = _load_game_feed_for_date(int(game_pk), str(date_str or "")) if _is_historical_date(str(date_str or "")) else None
+    if not isinstance(feed, dict) or not feed:
+        try:
+            feed = fetch_game_feed_live(_client(), int(game_pk))
+        except Exception:
+            feed = None
+    if not isinstance(feed, dict) or not feed:
+        return out
+
+    feed_status = ((feed.get("gameData") or {}).get("status") or {})
+    abstract = str(feed_status.get("abstractGameState") or abstract).strip()
+    detailed = str(feed_status.get("detailedState") or detailed).strip()
+    current = _current_matchup(feed)
+    away_totals = _team_totals(feed, "away")
+    home_totals = _team_totals(feed, "home")
+    count = current.get("count") if isinstance(current.get("count"), dict) else {}
+    batter = current.get("batter") if isinstance(current.get("batter"), dict) else {}
+    pitcher = current.get("pitcher") if isinstance(current.get("pitcher"), dict) else {}
+
+    out.update(
+        {
+            "isLive": bool(_status_is_live(abstract)),
+            "isFinal": bool(_status_is_final(abstract)),
+            "liveText": _format_matchup_live_text(current),
+            "displayState": detailed or abstract,
+            "inning": _safe_int(current.get("inning")),
+            "halfInning": str(current.get("halfInning") or ""),
+            "count": {
+                "balls": _safe_int(count.get("balls")),
+                "strikes": _safe_int(count.get("strikes")),
+                "outs": _safe_int(count.get("outs")),
+            },
+            "batter": str(batter.get("fullName") or ""),
+            "pitcher": str(pitcher.get("fullName") or ""),
+            "score": {
+                "away": _safe_int(away_totals.get("R")),
+                "home": _safe_int(home_totals.get("R")),
+            },
+        }
+    )
+    if not out.get("isLive"):
+        out["liveText"] = ""
+        out["inning"] = None
+        out["halfInning"] = ""
+        out["count"] = {"balls": None, "strikes": None, "outs": None}
+        out["batter"] = ""
+        out["pitcher"] = ""
+    if (not out.get("isLive")) and (not out.get("isFinal")):
+        score = out.get("score") if isinstance(out.get("score"), dict) else {}
+        away_score = _safe_int(score.get("away"))
+        home_score = _safe_int(score.get("home"))
+        if int(away_score or 0) == 0 and int(home_score or 0) == 0:
+            out["score"] = {"away": None, "home": None}
+    return out
 
 
 def _iter_team_players(feed: Dict[str, Any], side: str) -> List[Dict[str, Any]]:

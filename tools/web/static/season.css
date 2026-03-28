@@ -708,11 +708,13 @@
 .season-team-code {
   font-size: 18px;
   font-weight: 900;
+  flex: 0 0 auto;
 }
 
 .season-team-name {
   color: var(--cards-text-soft);
   min-width: 0;
+  flex: 1 1 auto;
   overflow-wrap: anywhere;
 }
 
@@ -798,6 +800,36 @@
   color: var(--cards-text-soft);
   font-size: 12px;
   line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.season-game-scoreline {
+  color: var(--cards-text);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.season-game-live-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.season-game-live-pill {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(154, 243, 222, 0.22);
+  background: rgba(154, 243, 222, 0.08);
+  color: var(--cards-text-soft);
+  font-size: 11px;
+  line-height: 1.25;
   overflow-wrap: anywhere;
 }
 
@@ -1100,6 +1132,7 @@
 
   .season-game-matchup,
   .season-game-subcopy,
+  .season-game-scoreline,
   .season-inline-note,
   .season-betting-cell-sub,
   .season-betting-cell-main,
@@ -1109,10 +1142,16 @@
   }
 
   .season-game-subcopy,
+  .season-game-scoreline,
   .season-inline-note,
   .season-betting-cell-sub,
   .season-betting-cell-main {
     overflow-wrap: anywhere;
+  }
+
+  .season-scorebox,
+  .season-game-head > * {
+    min-width: 0;
   }
 
   .season-segments-grid,
@@ -1216,6 +1255,11 @@
 
   .betting-card-mobile-head .season-ticket-pill {
     align-self: flex-start;
+  }
+
+  .season-game-live-pill {
+    width: 100%;
+    justify-content: flex-start;
   }
 }
 
