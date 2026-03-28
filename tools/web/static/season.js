@@ -1250,7 +1250,7 @@
           </td>
           <td>${escapeHtml(formatOdds(reco?.odds))}</td>
           <td>${escapeHtml(formatSignedPercentPoints(reco?.edge, 1))}</td>
-          <td><span class="season-ticket-pill ${tone}">${escapeHtml(statusText)}</span></td>
+          <td><span class="season-ticket-pill ${tone}" style="${seasonTicketPillStyle(tone)}">${escapeHtml(statusText)}</span></td>
           <td>
             <div class="season-betting-cell-main">${escapeHtml(profitText)}</div>
             <div class="season-betting-cell-sub">${escapeHtml(actualText)}</div>
@@ -1352,6 +1352,38 @@
     return "is-pending";
   }
 
+  function seasonTicketPillStyle(tone) {
+    const styles = [
+      "display:inline-flex",
+      "align-items:center",
+      "justify-content:center",
+      "min-height:28px",
+      "padding:0 10px",
+      "border-radius:999px",
+      "border:1px solid rgba(132, 166, 196, 0.18)",
+      "background:rgba(10, 21, 34, 0.88)",
+      "color:var(--cards-text-soft)",
+      "font-size:12px",
+      "font-weight:700",
+    ];
+    if (tone === "is-win") {
+      styles.push("border-color:rgba(49, 163, 84, 0.72)");
+      styles.push("background:rgba(24, 99, 58, 0.95)");
+      styles.push("color:#ecfff3");
+      styles.push("box-shadow:inset 0 0 0 1px rgba(117, 255, 166, 0.18)");
+    } else if (tone === "is-loss") {
+      styles.push("border-color:rgba(198, 40, 40, 0.72)");
+      styles.push("background:rgba(122, 22, 22, 0.95)");
+      styles.push("color:#fff1f1");
+      styles.push("box-shadow:inset 0 0 0 1px rgba(255, 132, 132, 0.16)");
+    } else if (tone === "is-playable") {
+      styles.push("border-color:rgba(255, 191, 105, 0.32)");
+      styles.push("background:rgba(255, 191, 105, 0.14)");
+      styles.push("color:#ffd79c");
+    }
+    return styles.join(";");
+  }
+
   function liveLensTierTone(tier) {
     const token = String(tier || "").toLowerCase();
     if (token === "playable") return "is-playable";
@@ -1428,13 +1460,13 @@
                   <div class="season-betting-cell-sub">${escapeHtml(String(prop.teamSide || '').toUpperCase() || 'Team')}</div>
                 </td>
                 <td>${escapeHtml(liveLensPropLabel(prop))}</td>
-                <td><span class="season-ticket-pill ${liveLensTierTone(prop.tier || prop.source)}">${escapeHtml(liveLensTierLabel(prop.tier || prop.source))}</span></td>
+                <td><span class="season-ticket-pill ${liveLensTierTone(prop.tier || prop.source)}" style="${seasonTicketPillStyle(liveLensTierTone(prop.tier || prop.source))}">${escapeHtml(liveLensTierLabel(prop.tier || prop.source))}</span></td>
                 <td>${escapeHtml(`${String(prop.selection || '').toUpperCase()} ${formatLine(prop.line)}`)}</td>
                 <td>${escapeHtml(formatLine(prop.liveProjection))}</td>
                 <td>${escapeHtml(formatSigned(prop.liveEdge, 2))}</td>
                 <td>${escapeHtml(formatSignedPercentPoints(prop.edge, 1))}</td>
                 <td>${escapeHtml(formatOdds(prop.odds))}</td>
-                <td><span class="season-ticket-pill ${liveLensStatusTone(prop.status)}">${escapeHtml(String(prop.status || 'pending'))}</span></td>
+                <td><span class="season-ticket-pill ${liveLensStatusTone(prop.status)}" style="${seasonTicketPillStyle(liveLensStatusTone(prop.status))}">${escapeHtml(String(prop.status || 'pending'))}</span></td>
               </tr>`).join('')}
           </tbody>
         </table>
@@ -1661,7 +1693,7 @@
           </td>
           <td>${escapeHtml(formatOdds(reco?.odds))}</td>
           <td>${escapeHtml(formatSignedPercentPoints(reco?.edge, 1))}</td>
-          <td><span class="season-ticket-pill ${bettingResultTone(reco)}">${escapeHtml(bettingResultLabel(reco))}</span></td>
+          <td><span class="season-ticket-pill ${bettingResultTone(reco)}" style="${seasonTicketPillStyle(bettingResultTone(reco))}">${escapeHtml(bettingResultLabel(reco))}</span></td>
           <td>
             <div class="season-betting-cell-main">${escapeHtml(profitText)}</div>
             <div class="season-betting-cell-sub">${escapeHtml(actualText || "Settlement unavailable")}</div>
