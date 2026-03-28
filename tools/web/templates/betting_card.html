@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MLB Official Betting Card - {{ season }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='cards.css') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='season.css', v='20260328-betting-card-v1') }}" />
+  </head>
+  <body class="cards-body season-body">
+    <div class="season-shell">
+      <header class="season-header">
+        <div class="season-title-block">
+          <div class="season-kicker">Official card review</div>
+          <div class="season-title-row">
+            <h1>MLB {{ season }} Betting Card</h1>
+            <span class="cards-nav-pill is-active">{{ season }}</span>
+            <span class="cards-nav-pill" id="bettingCardStatusPill">Loading</span>
+          </div>
+          <p class="season-header-meta" id="bettingCardHeaderMeta">Loading official betting-card recap...</p>
+        </div>
+        <div class="season-header-actions">
+          <a class="cards-nav-pill" href="/?date={{ date or '' }}">Daily cards</a>
+          <a class="cards-nav-pill" href="/season/{{ season }}?date={{ date or '' }}">Season review</a>
+          <a class="cards-nav-pill" href="/season/{{ season }}/live-lens?date={{ date or '' }}">Live lens</a>
+        </div>
+      </header>
+
+      <section class="season-months" id="bettingCardProfiles" aria-label="Betting card profiles"></section>
+
+      <section class="season-summary-grid" id="bettingCardSummary">
+        <div class="cards-loading-state">Loading official betting-card recap...</div>
+      </section>
+
+      <section class="season-months" id="bettingCardMonths" aria-label="Betting card month filters"></section>
+
+      <main class="season-layout">
+        <aside class="season-day-rail">
+          <div class="season-rail-head">
+            <div>
+              <div class="season-kicker">Official card days</div>
+              <div class="season-rail-title">Browse by date</div>
+            </div>
+          </div>
+          <div class="season-day-list" id="bettingCardDays">
+            <div class="cards-loading-state">Loading official card days...</div>
+          </div>
+        </aside>
+
+        <section class="season-main">
+          <div class="season-day-head">
+            <div>
+              <div class="season-kicker">Selected card</div>
+              <h2 id="bettingCardDayTitle">Loading...</h2>
+              <p class="season-day-meta" id="bettingCardDayMeta">Loading official card detail...</p>
+            </div>
+            <div class="season-day-actions" id="bettingCardDayActions"></div>
+          </div>
+
+          <section class="season-day-metrics" id="bettingCardDayMetrics">
+            <div class="cards-loading-state">Loading day metrics...</div>
+          </section>
+
+          <section class="season-breakdown-panel season-day-picks-panel" id="bettingCardDayPicks">
+            <div class="cards-loading-state">Loading official picks...</div>
+          </section>
+
+          <section class="season-games" id="bettingCardGames">
+            <div class="cards-loading-state">Loading official card games...</div>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <script>
+      window.MLBBettingCardBootstrap = {
+        season: {{ season|tojson }},
+        date: {{ date|tojson }},
+        profile: {{ profile|tojson }},
+      };
+    </script>
+    <script src="{{ url_for('static', filename='betting_card.js', v='20260328-betting-card-v1') }}"></script>
+  </body>
+</html>

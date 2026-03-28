@@ -3582,6 +3582,181 @@ def _rebuild_season_betting_manifest_payload(
     return payload
 
 
+def _official_betting_card_active_days(day_rows: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for raw_row in day_rows:
+        if not isinstance(raw_row, dict):
+            continue
+        row = dict(raw_row)
+        selected_counts = _betting_selected_counts_with_defaults(row.get("selected_counts") or {})
+        if int(selected_counts.get("combined") or 0) <= 0:
+            continue
+        results = _merge_settled_results_blocks([row.get("results") or {}])
+        combined = results.get("combined") or _blank_settled_summary()
+        row["month"] = str(row.get("month") or str(row.get("date") or "")[:7])
+        row["selected_counts"] = selected_counts
+        row["results"] = results
+        row["profit_u"] = round(float(combined.get("profit_u") or row.get("profit_u") or 0.0), 4)
+        row["roi"] = combined.get("roi")
+        row["settled_n"] = int(combined.get("n") or row.get("settled_n") or 0)
+        row["unresolved_n"] = int(row.get("unresolved_n") or 0)
+        out.append(row)
+    out.sort(key=lambda row: str(row.get("date") or ""))
+    return out
+
+
+def _official_betting_card_month_rows(day_rows: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    month_buckets: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for row in day_rows:
+        month_buckets[str(row.get("month") or "")].append(dict(row))
+
+    months_out: List[Dict[str, Any]] = []
+    for month_key in sorted(month_buckets):
+        month_days = list(month_buckets[month_key])
+        month_results = _merge_settled_results_blocks([row.get("results") or {} for row in month_days])
+        months_out.append(
+            {
+                "month": str(month_key),
+                "label": _season_betting_month_label(str(month_key)),
+                "days": int(len(month_days)),
+                "selected_counts": _season_betting_aggregate_selected_counts(month_days),
+                "results": month_results,
+                "daily": _season_betting_daily_stats(month_days),
+            }
+        )
+    return months_out
+
+
+def _official_betting_card_manifest_payload(
+    season: int,
+    profile_name: str,
+    manifest_path: Path,
+    manifest: Dict[str, Any],
+    available_profiles: Sequence[str],
+) -> Dict[str, Any]:
+    payload = _rebuild_season_betting_manifest_payload(
+        int(season),
+        profile_name,
+        manifest_path,
+        manifest,
+        available_profiles,
+    )
+    active_days = _official_betting_card_active_days(payload.get("days") or [])
+    active_results = _merge_settled_results_blocks([row.get("results") or {} for row in active_days])
+    active_combined = active_results.get("combined") or _blank_settled_summary()
+
+    summary = dict(payload.get("summary") or {})
+    summary["cards"] = int(len(active_days))
+    summary["cards_processed"] = int(len(active_days))
+    summary["selected_counts"] = _season_betting_aggregate_selected_counts(active_days)
+    summary["settled_recommendations"] = int(active_combined.get("n") or 0)
+    summary["unresolved_recommendations"] = int(sum(int(row.get("unresolved_n") or 0) for row in active_days))
+    summary["results"] = active_results
+    summary["daily"] = _season_betting_daily_stats(active_days)
+    summary["combined"] = active_combined
+    summary["market_results"] = {
+        key: value
+        for key, value in active_results.items()
+        if key not in {"combined", "hitter_props"}
+    }
+
+    payload["summary"] = summary
+    payload["days"] = active_days
+    payload["months"] = _official_betting_card_month_rows(active_days)
+    payload["view"] = "official_betting_card"
+    payload["found"] = True
+    return payload
+
+
+def _official_betting_card_games_payload(date_str: str, betting_games: Dict[int, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    schedule_by_game_pk = _schedule_context_by_game_pk(str(date_str))
+    games_out: List[Dict[str, Any]] = []
+
+    for raw_game_pk, raw_game_betting in (betting_games or {}).items():
+        game_pk = _safe_int(raw_game_pk)
+        if not game_pk or int(game_pk) <= 0 or not isinstance(raw_game_betting, dict):
+            continue
+        counts = raw_game_betting.get("counts") if isinstance(raw_game_betting.get("counts"), dict) else {}
+        flags = raw_game_betting.get("flags") if isinstance(raw_game_betting.get("flags"), dict) else {}
+        if int(counts.get("official") or 0) <= 0 and not bool(flags.get("hasOfficialRecommendations")):
+            continue
+
+        schedule_row = dict(schedule_by_game_pk.get(int(game_pk)) or {})
+        probable = schedule_row.get("probable") if isinstance(schedule_row.get("probable"), dict) else {}
+        status = schedule_row.get("status") if isinstance(schedule_row.get("status"), dict) else {}
+        game_date = str(schedule_row.get("gameDate") or "")
+        away = dict(schedule_row.get("away") or {"id": None, "abbr": "Away", "name": "Away"})
+        home = dict(schedule_row.get("home") or {"id": None, "abbr": "Home", "name": "Home"})
+        games_out.append(
+            {
+                "game_pk": int(game_pk),
+                "game_date": game_date,
+                "start_time": schedule_row.get("startTime") or _format_start_time_local(game_date),
+                "official_date": schedule_row.get("officialDate") or str(date_str),
+                "status": {
+                    "abstract": str(status.get("abstract") or ""),
+                    "detailed": str(status.get("detailed") or ""),
+                },
+                "away": away,
+                "home": home,
+                "starter_names": {
+                    "away": _first_text(((probable.get("away") or {}).get("fullName"))),
+                    "home": _first_text(((probable.get("home") or {}).get("fullName"))),
+                },
+                "betting": dict(raw_game_betting),
+            }
+        )
+
+    games_out.sort(key=lambda row: (str(row.get("game_date") or ""), int(row.get("game_pk") or 0)))
+    return games_out
+
+
+def _official_betting_card_day_payload(season: int, date_str: str, requested_profile: str) -> Dict[str, Any]:
+    betting_payload = _season_betting_day_payload(int(season), str(date_str), requested_profile)
+    payload: Dict[str, Any] = {
+        "season": int(season),
+        "date": str(date_str),
+        "profile": betting_payload.get("profile"),
+        "available_profiles": betting_payload.get("available_profiles") or [],
+        "found": False,
+        "games": [],
+    }
+    if not betting_payload.get("found"):
+        payload.update(
+            {
+                "error": betting_payload.get("error"),
+                "detail": betting_payload.get("detail"),
+                "manifest_source": betting_payload.get("manifest_source"),
+            }
+        )
+        return payload
+
+    selected_counts = _betting_selected_counts_with_defaults(betting_payload.get("selected_counts") or {})
+    if int(selected_counts.get("combined") or 0) <= 0:
+        payload["error"] = "official_betting_card_day_missing"
+        return payload
+
+    daily_artifacts = _load_cards_artifacts(str(date_str))
+    has_cards = bool(daily_artifacts.get("locked_policy") or daily_artifacts.get("game_summary"))
+    betting_games = betting_payload.get("games") if isinstance(betting_payload.get("games"), dict) else {}
+    payload.update(
+        {
+            "found": True,
+            "manifest_source": betting_payload.get("manifest_source"),
+            "card_source": betting_payload.get("card_source"),
+            "source_kind": betting_payload.get("source_kind"),
+            "summary": dict(betting_payload.get("summary") or {}),
+            "cap_profile": betting_payload.get("cap_profile"),
+            "selected_counts": selected_counts,
+            "results": _merge_settled_results_blocks([betting_payload.get("results") or {}]),
+            "cards_available": bool(has_cards),
+            "cards_url": (f"/?date={date_str}" if has_cards else None),
+            "games": _official_betting_card_games_payload(str(date_str), betting_games),
+        }
+    )
+    return payload
+
+
 def _settlement_player_key(value: Any) -> str:
     return str(value or "").strip().lower()
 
@@ -7545,6 +7720,13 @@ def season_view(season: int) -> str:
     return render_template("season.html", season=int(season), date=d)
 
 
+@app.get("/season/<int:season>/betting-card")
+def season_betting_card_view(season: int) -> str:
+    d = str(request.args.get("date") or "").strip()
+    profile = str(request.args.get("profile") or "retuned").strip().lower() or "retuned"
+    return render_template("betting_card.html", season=int(season), date=d, profile=profile)
+
+
 @app.get("/api/cards")
 def api_cards() -> Response:
     d = str(request.args.get("date") or "").strip() or _default_cards_date()
@@ -7707,6 +7889,39 @@ def api_season_betting_cards(season: int) -> Response:
     return jsonify(_with_app_build(payload))
 
 
+@app.get("/api/season/<int:season>/betting-card")
+def api_season_official_betting_card(season: int) -> Response:
+    requested_profile = str(request.args.get("profile") or "").strip().lower()
+    profile_name, manifest_path, manifest, available_profiles = _load_season_betting_manifest(
+        int(season),
+        requested_profile,
+    )
+    if not manifest_path or not isinstance(manifest, dict):
+        return jsonify(
+            _with_app_build(
+                {
+                    "season": int(season),
+                    "profile": profile_name,
+                    "found": False,
+                    "available_profiles": available_profiles,
+                    "error": "season_betting_cards_missing",
+                }
+            )
+        ), 404
+
+    payload = _official_betting_card_manifest_payload(
+        int(season),
+        profile_name,
+        manifest_path,
+        manifest,
+        available_profiles,
+    )
+    meta = dict(payload.get("meta") or {})
+    meta["app"] = dict(_APP_BUILD_INFO)
+    payload["meta"] = meta
+    return jsonify(_with_app_build(payload))
+
+
 @app.get("/api/season/<int:season>/betting-cards/day/<date_str>")
 def api_season_betting_cards_day(season: int, date_str: str) -> Response:
     requested_profile = str(request.args.get("profile") or "").strip().lower()
@@ -7714,6 +7929,17 @@ def api_season_betting_cards_day(season: int, date_str: str) -> Response:
     if payload.get("found"):
         card_path = _path_from_maybe_relative(payload.get("card_source"))
         payload["card"] = _load_json_file(card_path)
+        return jsonify(_with_app_build(payload))
+
+    status_code = 500 if payload.get("error") == "season_betting_day_settle_failed" else 404
+    return jsonify(_with_app_build(payload)), status_code
+
+
+@app.get("/api/season/<int:season>/betting-card/day/<date_str>")
+def api_season_official_betting_card_day(season: int, date_str: str) -> Response:
+    requested_profile = str(request.args.get("profile") or "").strip().lower()
+    payload = _official_betting_card_day_payload(int(season), str(date_str), requested_profile)
+    if payload.get("found"):
         return jsonify(_with_app_build(payload))
 
     status_code = 500 if payload.get("error") == "season_betting_day_settle_failed" else 404
