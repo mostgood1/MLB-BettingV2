@@ -8,13 +8,12 @@
     cardNodes: new Map(),
     stripNodes: new Map(),
     details: new Map(),
-    livePollers: new Map(),
     autoRefreshHandle: null,
     loadingCards: false,
   };
 
   const AUTO_REFRESH_MS = 15000;
-  const LIVE_DETAIL_REFRESH_MS = 15000;
+  const HYDRATE_CARD_CONCURRENCY = 4;
 
   const root = {
     headerMeta: document.getElementById("cardsHeaderMeta"),
@@ -2262,7 +2261,6 @@
       const snapshot = await fetchJson(`/api/game/${encodeURIComponent(card.gamePk)}/snapshot?date=${encodeURIComponent(state.date)}`);
       detail.snapshot = snapshot;
       syncCard(card);
-      if (!isRefresh) maybeStartPolling(card, snapshot);
     } catch (_error) {
       if (!isRefresh) syncCard(card);
     }
@@ -2280,15 +2278,11 @@
     }
   }
 
-  function maybeStartPolling(card, snapshot) {
-    const gamePk = Number(card.gamePk);
-    const isLive = String(snapshot?.status?.abstractGameState || "").toLowerCase() === "live";
-    if (!isLive || state.livePollers.has(gamePk)) return;
-    const handle = window.setInterval(() => {
-      loadSnapshot(card, true);
-      loadSim(card);
-    }, LIVE_DETAIL_REFRESH_MS);
-    state.livePollers.set(gamePk, handle);
+  function cardIsLive(card) {
+    const detail = state.details.get(Number(card?.gamePk));
+    const snapshotState = String(detail?.snapshot?.status?.abstractGameState || "").toLowerCase();
+    const cardState = String(card?.status?.abstract || "").toLowerCase();
+    return snapshotState === "live" || cardState === "live";
   }
 
   function syncStrip(card, detail) {
@@ -2352,12 +2346,31 @@
     syncStrip(card, detail);
   }
 
-  async function hydrateCards() {
-    await Promise.all(
-      state.cards.map(async (card) => {
-        await Promise.allSettled([loadSnapshot(card, false), loadSim(card)]);
-      })
-    );
+  function shouldHydrateCard(card, options = {}) {
+    if (!options.liveOnly) return true;
+    const detail = state.details.get(Number(card?.gamePk));
+    if (!detail?.snapshot || !detail?.sim) return true;
+    return cardIsLive(card);
+  }
+
+  async function runHydrationQueue(cards, workerLimit, worker) {
+    const queue = Array.isArray(cards) ? cards.slice() : [];
+    const concurrency = Math.max(1, Number(workerLimit) || 1);
+    const workers = Array.from({ length: Math.min(concurrency, queue.length) }, async function () {
+      while (queue.length) {
+        const card = queue.shift();
+        if (!card) continue;
+        await worker(card);
+      }
+    });
+    await Promise.all(workers);
+  }
+
+  async function hydrateCards(options = {}) {
+    const targets = state.cards.filter((card) => shouldHydrateCard(card, options));
+    await runHydrationQueue(targets, HYDRATE_CARD_CONCURRENCY, async function (card) {
+      await Promise.allSettled([loadSnapshot(card, !!options.liveOnly), loadSim(card)]);
+    });
   }
 
   function sameSlate(nextCards, currentCards) {
@@ -2407,7 +2420,7 @@
         return;
       }
 
-      await hydrateCards();
+      await hydrateCards({ liveOnly: Boolean(silent && slateUnchanged) });
     } catch (error) {
       const message = error && error.message ? error.message : "Unknown error";
       if (root.headerMeta) {
