@@ -16,6 +16,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from sim_engine.market_pitcher_props import normalize_pitcher_name
+from sim_engine.data.statsapi import StatsApiClient, fetch_game_feed_live
 
 
 def _read_json(path: Path) -> Any:
@@ -114,6 +115,16 @@ def _load_feed(date: str, game_pk: int) -> Dict[str, Any]:
             continue
         with gzip.open(path, "rt", encoding="utf-8") as fh:
             return json.load(fh)
+    client = StatsApiClient.with_default_cache(ttl_seconds=15 * 60)
+    fetched = fetch_game_feed_live(client, int(game_pk))
+    if isinstance(fetched, dict) and fetched:
+        try:
+            primary_path.parent.mkdir(parents=True, exist_ok=True)
+            with gzip.open(primary_path, "wt", encoding="utf-8") as fh:
+                json.dump(fetched, fh)
+        except Exception:
+            pass
+        return fetched
     raise FileNotFoundError(str(primary_path))
 
 
