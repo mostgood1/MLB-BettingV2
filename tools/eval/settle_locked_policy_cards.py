@@ -104,9 +104,17 @@ def _american_profit(odds: Any, stake_u: float) -> float:
 
 
 def _load_feed(date: str, game_pk: int) -> Dict[str, Any]:
-    path = _feed_live_path(date, game_pk)
-    with gzip.open(path, "rt", encoding="utf-8") as fh:
-        return json.load(fh)
+    primary_path = _feed_live_path(date, game_pk)
+    candidate_paths = [primary_path]
+    fallback_path = (REPO_ROOT / "data" / "raw" / "statsapi" / "feed_live" / str(date).split("-", 1)[0] / str(date) / f"{int(game_pk)}.json.gz").resolve()
+    if fallback_path not in candidate_paths:
+        candidate_paths.append(fallback_path)
+    for path in candidate_paths:
+        if not path.exists() or not path.is_file():
+            continue
+        with gzip.open(path, "rt", encoding="utf-8") as fh:
+            return json.load(fh)
+    raise FileNotFoundError(str(primary_path))
 
 
 def _team_side(feed: Dict[str, Any], team_abbr: str) -> Optional[str]:
