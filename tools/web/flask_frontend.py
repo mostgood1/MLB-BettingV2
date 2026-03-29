@@ -5581,6 +5581,65 @@ def _player_name_from_box(feed: Dict[str, Any], pid: int) -> str:
     return ""
 
 
+def _pitching_row_has_appearance(row: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(row, dict):
+        return False
+    for key in ("OUTS", "BF", "P", "SO", "ER", "R", "H", "BB"):
+        value = _safe_float(row.get(key))
+        if value is not None and float(value) > 0.0:
+            return True
+    outs = _parse_ip_to_outs(row.get("IP"))
+    return outs is not None and int(outs) > 0
+
+
+def _current_pitching_side(snapshot: Optional[Dict[str, Any]]) -> Optional[str]:
+    half = str((((snapshot or {}).get("current") or {}).get("halfInning") or "")).strip().lower()
+    if half == "top":
+        return "home"
+    if half == "bottom":
+        return "away"
+    return None
+
+
+def _starter_removed_from_snapshot(snapshot: Optional[Dict[str, Any]], side: str) -> bool:
+    if side not in {"away", "home"} or not isinstance(snapshot, dict):
+        return False
+
+    team = (((snapshot.get("teams") or {}).get(side)) or {})
+    starter = (team.get("starter") or {}) if isinstance(team.get("starter"), dict) else {}
+    starter_id = _safe_int(starter.get("id"))
+    starter_name = _first_text(starter.get("name"))
+    if starter_id is None and not starter_name:
+        return False
+
+    current_pitching_side = _current_pitching_side(snapshot)
+    current_pitcher = (((snapshot.get("current") or {}).get("pitcher")) or {})
+    current_pitcher_id = _safe_int(current_pitcher.get("id"))
+    current_pitcher_name = _first_text(current_pitcher.get("fullName"), current_pitcher.get("name"))
+    if current_pitching_side == side:
+        if starter_id is not None and current_pitcher_id is not None and int(current_pitcher_id) != int(starter_id):
+            return True
+        if starter_name and current_pitcher_name and normalize_pitcher_name(current_pitcher_name) != normalize_pitcher_name(starter_name):
+            return True
+
+    pitching_rows = (((team.get("boxscore") or {}).get("pitching")) or [])
+    for row in pitching_rows:
+        if not isinstance(row, dict):
+            continue
+        row_id = _safe_int(row.get("id"))
+        row_name = _first_text(row.get("name"))
+        is_starter_row = False
+        if starter_id is not None and row_id is not None:
+            is_starter_row = int(row_id) == int(starter_id)
+        elif starter_name and row_name:
+            is_starter_row = normalize_pitcher_name(row_name) == normalize_pitcher_name(starter_name)
+        if is_starter_row:
+            continue
+        if _pitching_row_has_appearance(row):
+            return True
+    return False
+
+
 def _lineup_from_box(feed: Dict[str, Any], side: str) -> List[Dict[str, Any]]:
     """Best-effort batting order from boxscore players[].battingOrder."""
     out: List[Tuple[int, int, str]] = []
@@ -6259,6 +6318,8 @@ def _final_live_prop_rows_from_registry(
         prop = str(entry.get("prop") or "").strip().lower()
         selection = str(entry.get("selection") or "").strip().lower()
         market_line = _safe_float(entry.get("marketLine"))
+        if market != "pitcher_props":
+            continue
         if not owner or not market or not prop or not selection or market_line is None:
             continue
 
@@ -6273,6 +6334,8 @@ def _final_live_prop_rows_from_registry(
                 actual_row = candidate_row
                 team_side = candidate_side
                 break
+        if team_side in {"away", "home"} and _starter_removed_from_snapshot(snapshot, str(team_side)):
+            continue
 
         live_edge = _safe_float(first_snapshot.get("liveEdge"))
         actual_value = _live_stat_value(actual_row, {"market": market, "prop": prop})
@@ -6314,8 +6377,6 @@ def _final_live_prop_rows_from_registry(
         if market == "pitcher_props":
             item["pitcher_name"] = owner
             item["outs_mean"] = _safe_float(first_snapshot.get("modelMean")) if prop == "outs" else None
-        else:
-            item["player_name"] = owner
         if team_side:
             item["team_side"] = team_side
         if team_info:
@@ -6361,20 +6422,12 @@ def _current_live_prop_rows(
     progress_fraction = float((_live_game_progress(snapshot, card).get("fraction") or 0.0))
     actual_teams = ((snapshot or {}).get("teams") or {})
     _, pitcher_market_lines = _load_pitcher_prop_market_lines(d)
-    _, hitter_market_lines = _load_hitter_prop_market_lines(d)
     pitcher_models = _sim_prop_models(sim_context, "pitchers")
-    hitter_models = _sim_prop_models(sim_context, "hitters")
     rows: List[Dict[str, Any]] = []
 
-    hitter_market_names = {
-        "hits": "hitter_hits",
-        "home_runs": "hitter_home_runs",
-        "total_bases": "hitter_total_bases",
-        "runs": "hitter_runs",
-        "rbi": "hitter_rbis",
-    }
-
     for side in ("away", "home"):
+        if _starter_removed_from_snapshot(snapshot, side):
+            continue
         starter_name = _first_text((((actual_teams.get(side) or {}).get("starter") or {}).get("name")))
         starter_key = normalize_pitcher_name(starter_name)
         model_entry = pitcher_models.get(starter_key) if starter_key else None
@@ -6431,71 +6484,6 @@ def _current_live_prop_rows(
                         "live_edge": side_pick.get("liveEdge"),
                         "projection_gap": side_pick.get("projectionGap"),
                         "outs_mean": model_mean if prop_key == "outs" else None,
-                        "model_mean": model_mean,
-                        "actual": actual_value,
-                        "actual_value": actual_value,
-                        "live_projection": live_projection,
-                    }
-                )
-
-        batting_rows = (((actual_teams.get(side) or {}).get("boxscore") or {}).get("batting") or [])
-        for actual_row in batting_rows:
-            player_name = _first_text(actual_row.get("name"))
-            player_key = normalize_pitcher_name(player_name)
-            model_entry = hitter_models.get(player_key) if player_key else None
-            market_entry = hitter_market_lines.get(player_key) if player_key else None
-            if not isinstance(model_entry, dict) or not isinstance(market_entry, dict):
-                continue
-            model_row = model_entry.get("model") or {}
-            for prop_key, cfg in _HITTER_LADDER_PROPS.items():
-                market_key = cfg.get("market_key")
-                market_name = hitter_market_names.get(str(prop_key))
-                if not market_key or not market_name:
-                    continue
-                market = market_entry.get(str(market_key))
-                if not isinstance(market, dict):
-                    continue
-                line_value = _safe_float(market.get("line"))
-                if line_value is None:
-                    continue
-                model_mean = _safe_float(model_row.get(str(cfg.get("mean_key"))))
-                model_prob_over = _prob_over_line_from_dist(model_row.get(str(cfg.get("dist_key"))) or {}, float(line_value))
-                actual_value = _live_stat_value(actual_row, {"market": market_name, "prop": prop_key})
-                if _live_prop_market_resolved(actual_value, line_value):
-                    continue
-                live_projection = _project_live_value(actual_value, model_mean, progress_fraction)
-                side_pick = _select_live_prop_side(
-                    model_prob_over=model_prob_over,
-                    live_projection=live_projection,
-                    line=float(line_value),
-                    over_odds=market.get("over_odds"),
-                    under_odds=market.get("under_odds"),
-                )
-                if side_pick is None:
-                    continue
-                rows.append(
-                    {
-                        "recommendation_tier": "live",
-                        "source": "current_market",
-                        "market": market_name,
-                        "market_label": cfg.get("label"),
-                        "prop": prop_key,
-                        "player_name": player_name,
-                        "team": model_entry.get("team"),
-                        "team_side": side,
-                        "selection": side_pick.get("selection"),
-                        "market_line": float(line_value),
-                        "odds": side_pick.get("odds"),
-                        "over_odds": _safe_int(market.get("over_odds")),
-                        "under_odds": _safe_int(market.get("under_odds")),
-                        "model_prob_over": model_prob_over,
-                        "market_prob_over": side_pick.get("marketProbOver"),
-                        "market_prob_under": side_pick.get("marketProbUnder"),
-                        "market_prob_mode": side_pick.get("marketProbMode"),
-                        "selected_side_market_prob": side_pick.get("selectedSideMarketProb"),
-                        "edge": side_pick.get("marketEdge"),
-                        "live_edge": side_pick.get("liveEdge"),
-                        "projection_gap": side_pick.get("projectionGap"),
                         "model_mean": model_mean,
                         "actual": actual_value,
                         "actual_value": actual_value,
@@ -7255,7 +7243,7 @@ def _prop_lens_rows(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], si
     progress_fraction = float((_live_game_progress(snapshot, card).get("fraction") or 0.0))
     rows: List[Dict[str, Any]] = []
     actual_teams = ((snapshot or {}).get("teams") or {})
-    for key, tier in (("pitcherProps", "official"), ("hitterProps", "official"), ("extraPitcherProps", "playable"), ("extraHitterProps", "playable")):
+    for key, tier in (("pitcherProps", "official"), ("extraPitcherProps", "playable")):
         for reco in card.get("markets", {}).get(key) or []:
             if not isinstance(reco, dict):
                 continue
@@ -7266,6 +7254,8 @@ def _prop_lens_rows(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], si
                 continue
             side = _prop_side(card, reco)
             is_pitcher = str(reco.get("market") or "") == "pitcher_props"
+            if is_pitcher and side in {"away", "home"} and _starter_removed_from_snapshot(snapshot, str(side)):
+                continue
             type_key = "pitching" if is_pitcher else "batting"
             search_sets: List[Any] = []
             sim_sets: List[Any] = []
