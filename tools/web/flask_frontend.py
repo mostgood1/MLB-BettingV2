@@ -66,9 +66,21 @@ except Exception:
     _USER_TIMEZONE = ZoneInfo("America/Chicago")
 
 
+def _env_int(name: str, default: int, *, minimum: Optional[int] = None) -> int:
+    raw = str(os.environ.get(name) or "").strip()
+    try:
+        value = int(raw or default)
+    except Exception:
+        value = int(default)
+    if minimum is not None:
+        value = max(int(minimum), int(value))
+    return int(value)
+
+
 _DEMO_DATE = "2025-06-04"
 _CARDS_PRESEASON_DEFAULT_WINDOW_DAYS = 21
 _LIVE_PROP_MARKET_MAX_AGE_SECONDS = 15
+_JSON_FILE_CACHE_MAXSIZE = _env_int("MLB_JSON_FILE_CACHE_MAXSIZE", 256, minimum=32)
 _LIVE_LENS_LOOP_DEFAULT_INTERVAL_SECONDS = 15
 _LIVE_LENS_LOOP_MIN_INTERVAL_SECONDS = 5
 _LIVE_LENS_LOOP_THREAD: Optional[threading.Thread] = None
@@ -808,7 +820,7 @@ def _find_candidate_file(*, preferred: List[Path], recursive_pattern: str) -> Op
     return None
 
 
-@lru_cache(maxsize=2048)
+@lru_cache(maxsize=_JSON_FILE_CACHE_MAXSIZE)
 def _load_json_file_cached(path_str: str, mtime_ns: int, size_bytes: int) -> Optional[Dict[str, Any]]:
     try:
         obj = json.loads(Path(path_str).read_text(encoding="utf-8"))

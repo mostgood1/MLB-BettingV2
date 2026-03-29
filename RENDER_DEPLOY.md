@@ -27,8 +27,9 @@ This repo is configured for a Render Python web service with a persistent disk f
 - Python version: `3.11.9`
 - Data root: `/opt/render/project/data`
 - Live lens dir: `/opt/render/project/data/live_lens`
-- Background live-lens loop: enabled with `MLB_ENABLE_LIVE_LENS_LOOP=on`
+- Background live-lens loop: disabled on the Render web worker; GitHub Actions should hit `/api/cron/live-lens-tick` instead
 - Background live-lens interval: `MLB_LIVE_LENS_LOOP_INTERVAL_SECONDS=15`
+- JSON file cache size: `MLB_JSON_FILE_CACHE_MAXSIZE=256`
 
 ## Cron Endpoints
 
@@ -62,5 +63,5 @@ The season republish workflow is what keeps `/opt/render/project/data/eval/seaso
 
 - The Flask app now resolves template and static directories with `pathlib`, so it works on Linux hosts such as Render.
 - The web app now prefers `MLB_BETTING_DATA_ROOT` for mutable live data and falls back to tracked repo data for historical files.
-- Render now starts a background live-lens loop inside the single Gunicorn worker, persisting a live-lens tick roughly every 15 seconds even with no browser open.
+- Render should keep the web worker focused on serving requests; live-lens ticks are driven by the existing GitHub workflow against `/api/cron/live-lens-tick` instead of an in-process background loop.
 - The local runner in `tools/web/flask_frontend.py` also honors `HOST`, `PORT`, and `FLASK_DEBUG`.
