@@ -81,6 +81,7 @@ _DEMO_DATE = "2025-06-04"
 _CARDS_PRESEASON_DEFAULT_WINDOW_DAYS = 21
 _LIVE_PROP_MARKET_MAX_AGE_SECONDS = 15
 _JSON_FILE_CACHE_MAXSIZE = _env_int("MLB_JSON_FILE_CACHE_MAXSIZE", 256, minimum=32)
+_SCHEDULE_FETCH_CACHE_MAXSIZE = _env_int("MLB_SCHEDULE_FETCH_CACHE_MAXSIZE", 32, minimum=4)
 _LIVE_LENS_LOOP_DEFAULT_INTERVAL_SECONDS = 15
 _LIVE_LENS_LOOP_MIN_INTERVAL_SECONDS = 5
 _LIVE_LENS_LOOP_THREAD: Optional[threading.Thread] = None
@@ -2498,24 +2499,7 @@ def _season_report_outputs_by_game(day_report: Optional[Dict[str, Any]]) -> Dict
 
 def _schedule_context_by_game_pk(d: str) -> Dict[int, Dict[str, Any]]:
     out: Dict[int, Dict[str, Any]] = {}
-    schedule_snapshot_path: Optional[Path] = None
-    for candidate in (
-        _DATA_DIR / "daily" / "snapshots" / str(d) / "schedule_raw.json",
-        _TRACKED_DATA_DIR / "daily" / "snapshots" / str(d) / "schedule_raw.json",
-    ):
-        if candidate.exists() and candidate.is_file():
-            schedule_snapshot_path = candidate
-            break
-    schedule_snapshot = _load_json_file(schedule_snapshot_path)
-    if isinstance(schedule_snapshot, list):
-        schedule_games = schedule_snapshot
-    elif isinstance(schedule_snapshot, dict):
-        schedule_games = (((schedule_snapshot.get("dates") or [{}])[0]).get("games") or [])
-    else:
-        try:
-            schedule_games = fetch_schedule_for_date(_client(), d) or []
-        except Exception:
-            schedule_games = []
+    schedule_games = _schedule_games_for_date(d)
 
     for game in schedule_games:
         if not isinstance(game, dict):
@@ -2545,6 +2529,33 @@ def _schedule_context_by_game_pk(d: str) -> Dict[int, Dict[str, Any]]:
             },
         }
     return out
+
+
+@lru_cache(maxsize=_SCHEDULE_FETCH_CACHE_MAXSIZE)
+def _fetch_schedule_games_remote_cached(d: str) -> Tuple[Dict[str, Any], ...]:
+    try:
+        schedule_games = fetch_schedule_for_date(_client(), d) or []
+    except Exception:
+        return tuple()
+    return tuple(game for game in schedule_games if isinstance(game, dict))
+
+
+def _schedule_games_for_date(d: str) -> List[Dict[str, Any]]:
+    schedule_snapshot_path: Optional[Path] = None
+    for candidate in (
+        _DATA_DIR / "daily" / "snapshots" / str(d) / "schedule_raw.json",
+        _TRACKED_DATA_DIR / "daily" / "snapshots" / str(d) / "schedule_raw.json",
+    ):
+        if candidate.exists() and candidate.is_file():
+            schedule_snapshot_path = candidate
+            break
+    schedule_snapshot = _load_json_file(schedule_snapshot_path)
+    if isinstance(schedule_snapshot, list):
+        return [game for game in schedule_snapshot if isinstance(game, dict)]
+    if isinstance(schedule_snapshot, dict):
+        games = (((schedule_snapshot.get("dates") or [{}])[0]).get("games") or [])
+        return [game for game in games if isinstance(game, dict)]
+    return [dict(game) for game in _fetch_schedule_games_remote_cached(str(d))]
 
 
 def _cards_list_from_sources(
@@ -3341,6 +3352,13 @@ def _load_cards_archive_context(date_str: str) -> Dict[str, Any]:
         out["card_path"] = card_path
         out["card"] = _load_json_file(card_path)
     return out
+
+
+def _should_load_cards_archive_context(date_str: str, artifacts: Optional[Dict[str, Any]] = None) -> bool:
+    if _is_historical_date(str(date_str or "")):
+        return True
+    artifact_map = artifacts if isinstance(artifacts, dict) else _load_cards_artifacts(str(date_str or ""))
+    return not bool(artifact_map.get("locked_policy") or artifact_map.get("game_summary"))
 
 
 def _season_betting_manifest_candidates(season: int) -> Dict[str, List[Path]]:
@@ -6782,7 +6800,6 @@ def _load_sim_context_for_game(
     archive: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     artifacts = artifacts or _load_cards_artifacts(d)
-    archive = archive or _load_cards_archive_context(d)
     sim_dir = artifacts.get("sim_dir")
     snapshot_dir = artifacts.get("snapshot_dir")
 
@@ -6794,6 +6811,7 @@ def _load_sim_context_for_game(
         except Exception:
             return {"gamePk": int(game_pk), "date": d, "found": False, "error": "read_failed"}
     else:
+        archive = archive or _load_cards_archive_context(d)
         report_obj = archive.get("report") if isinstance(archive.get("report"), dict) else None
         report_game = _season_report_game(report_obj, int(game_pk))
         if not isinstance(report_game, dict):
@@ -6967,9 +6985,15 @@ def _live_matchup_text(snapshot: Optional[Dict[str, Any]]) -> str:
     return " | ".join(piece for piece in pieces if piece)
 
 
-def _load_live_lens_cards(d: str) -> List[Dict[str, Any]]:
-    artifacts = _load_cards_artifacts(d)
-    archive = _load_cards_archive_context(d)
+def _load_live_lens_cards(
+    d: str,
+    *,
+    artifacts: Optional[Dict[str, Any]] = None,
+    archive: Optional[Dict[str, Any]] = None,
+    schedule_games: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    artifacts = artifacts or _load_cards_artifacts(d)
+    archive = archive or (_load_cards_archive_context(d) if _should_load_cards_archive_context(d, artifacts) else {})
 
     if isinstance(artifacts.get("locked_policy"), dict):
         recos_by_game = _recommendations_by_game(artifacts.get("locked_policy"))
@@ -6985,11 +7009,8 @@ def _load_live_lens_cards(d: str) -> List[Dict[str, Any]]:
     else:
         outputs_by_game = {}
 
-    schedule_games: List[Dict[str, Any]] = []
-    try:
-        schedule_games = fetch_schedule_for_date(_client(), d) or []
-    except Exception:
-        schedule_games = []
+    if not isinstance(schedule_games, list):
+        schedule_games = _schedule_games_for_date(d)
 
     return _cards_list_from_sources(
         d=d,
@@ -7267,9 +7288,10 @@ def _normalize_live_lens_live_prop_row(row: Dict[str, Any], snapshot: Optional[D
 
 
 def _live_lens_payload(d: str, *, persist: bool = False) -> Dict[str, Any]:
-    cards = _load_live_lens_cards(d)
     artifacts = _load_cards_artifacts(d)
-    archive = _load_cards_archive_context(d)
+    archive = _load_cards_archive_context(d) if _should_load_cards_archive_context(d, artifacts) else {}
+    schedule_games = _schedule_games_for_date(d)
+    cards = _load_live_lens_cards(d, artifacts=artifacts, archive=archive, schedule_games=schedule_games)
     game_line_index = _load_game_line_market_index(d)
     games_out: List[Dict[str, Any]] = []
     counts = {
@@ -8054,7 +8076,7 @@ def season_betting_card_view(season: int) -> str:
 def api_cards() -> Response:
     d = str(request.args.get("date") or "").strip() or _default_cards_date()
     artifacts = _load_cards_artifacts(d)
-    archive = _load_cards_archive_context(d)
+    archive = _load_cards_archive_context(d) if _should_load_cards_archive_context(d, artifacts) else {}
     game_line_index = _load_game_line_market_index(d)
 
     if isinstance(artifacts.get("locked_policy"), dict):
@@ -8071,11 +8093,7 @@ def api_cards() -> Response:
     else:
         outputs_by_game = {}
 
-    schedule_games: List[Dict[str, Any]] = []
-    try:
-        schedule_games = fetch_schedule_for_date(_client(), d) or []
-    except Exception:
-        schedule_games = []
+    schedule_games = _schedule_games_for_date(d)
 
     cards = _cards_list_from_sources(
         d=d,
@@ -8616,13 +8634,16 @@ def api_game_sim(game_pk: int) -> Response:
     d = str(request.args.get("date") or "").strip()
     if not d:
         return jsonify({"gamePk": int(game_pk), "found": False, "error": "missing_date"}), 400
-    out = _load_sim_context_for_game(int(game_pk), d)
+    artifacts = _load_cards_artifacts(d)
+    archive = _load_cards_archive_context(d) if _should_load_cards_archive_context(d, artifacts) else {}
+    out = _load_sim_context_for_game(int(game_pk), d, artifacts=artifacts, archive=archive)
     if out.get("found"):
         snapshot = _load_live_lens_snapshot(int(game_pk), d)
+        schedule_games = _schedule_games_for_date(d)
         live_card = next(
             (
                 card
-                for card in _load_live_lens_cards(d)
+                for card in _load_live_lens_cards(d, artifacts=artifacts, archive=archive, schedule_games=schedule_games)
                 if _safe_int((card or {}).get("gamePk")) == int(game_pk)
             ),
             None,
