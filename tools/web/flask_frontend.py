@@ -78,6 +78,17 @@ def _env_int(name: str, default: int, *, minimum: Optional[int] = None) -> int:
     return int(value)
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = str(os.environ.get(name) or "").strip().lower()
+    if not raw:
+        return bool(default)
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return bool(default)
+
+
 _DEMO_DATE = "2025-06-04"
 _CARDS_PRESEASON_DEFAULT_WINDOW_DAYS = 21
 _LIVE_PROP_MARKET_MAX_AGE_SECONDS = 15
@@ -356,8 +367,11 @@ def _cron_meta_dir() -> Path:
 
 
 def _is_live_lens_loop_enabled() -> bool:
-    token = str(os.environ.get("MLB_ENABLE_LIVE_LENS_LOOP") or "").strip().lower()
-    return token in {"1", "true", "yes", "on"}
+    return _env_bool("MLB_ENABLE_LIVE_LENS_LOOP", default=False)
+
+
+def _is_inline_season_manifest_rebuild_enabled() -> bool:
+    return _env_bool("MLB_ENABLE_INLINE_SEASON_MANIFEST_REBUILD", default=True)
 
 
 def _live_lens_loop_interval_seconds() -> int:
@@ -2874,6 +2888,8 @@ def _latest_report_mtime(batch_dir: Path) -> Optional[float]:
 
 
 def _ensure_fresh_season_manifests(season: int, betting_profile: str = "retuned") -> None:
+    if not _is_inline_season_manifest_rebuild_enabled():
+        return
     batch_dir = _season_batch_dir(int(season))
     season_dir = _season_output_dir(int(season))
     latest_report = _latest_report_mtime(batch_dir)

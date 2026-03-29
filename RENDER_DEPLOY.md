@@ -28,6 +28,7 @@ This repo is configured for a Render Python web service with a persistent disk f
 - Data root: `/opt/render/project/data`
 - Live lens dir: `/opt/render/project/data/live_lens`
 - Background live-lens loop: disabled on the Render web worker; GitHub Actions should hit `/api/cron/live-lens-tick` instead
+- Inline season manifest rebuilds: disabled on the Render web worker; scheduled republish should keep `/opt/render/project/data/eval/seasons/...` fresh instead of rebuilding on user reads
 - Background live-lens interval: `MLB_LIVE_LENS_LOOP_INTERVAL_SECONDS=15`
 - JSON file cache size: `MLB_JSON_FILE_CACHE_MAXSIZE=256`
 
