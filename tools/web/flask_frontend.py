@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from bisect import bisect_left
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import redirect_stderr, redirect_stdout
 from functools import lru_cache
 import gzip
@@ -2523,6 +2524,10 @@ def _schedule_context_by_game_pk(d: str) -> Dict[int, Dict[str, Any]]:
             },
             "away": {"id": away_team.id, "abbr": away_team.abbr, "name": away_team.name},
             "home": {"id": home_team.id, "abbr": home_team.abbr, "name": home_team.name},
+            "score": {
+                "away": _safe_int(away_side.get("score")),
+                "home": _safe_int(home_side.get("score")),
+            },
             "probable": {
                 "away": _normalized_probable_entry(_probable_pitcher_from_schedule(away_side)),
                 "home": _normalized_probable_entry(_probable_pitcher_from_schedule(home_side)),
@@ -3720,6 +3725,7 @@ def _rebuild_season_betting_manifest_payload(
     days_out: List[Dict[str, Any]] = []
     corrected_days: List[Dict[str, Any]] = []
     manifest_dates: set[str] = set()
+    today_str = _today_iso()
     for raw_row in manifest.get("days") or []:
         if not isinstance(raw_row, dict):
             continue
@@ -3729,6 +3735,20 @@ def _rebuild_season_betting_manifest_payload(
             days_out.append(day_row)
             continue
         manifest_dates.add(date_str)
+        row_counts = _betting_selected_counts_with_defaults(day_row.get("selected_counts") or {})
+        refresh_day = bool(date_str == today_str or int(row_counts.get("combined") or 0) <= 0)
+        if not refresh_day:
+            day_row["selected_counts"] = row_counts
+            day_row["results"] = _merge_settled_results_blocks([day_row.get("results") or {}])
+            combined = (day_row.get("results") or {}).get("combined") or _blank_settled_summary()
+            day_row["profit_u"] = round(float(combined.get("profit_u") or day_row.get("profit_u") or 0.0), 4)
+            day_row["roi"] = combined.get("roi")
+            day_row["settled_n"] = int(combined.get("n") or day_row.get("settled_n") or 0)
+            day_row["unresolved_n"] = int(day_row.get("unresolved_n") or 0)
+            day_row.setdefault("month", date_str[:7])
+            corrected_days.append(day_row)
+            days_out.append(day_row)
+            continue
         day_payload = _season_betting_day_payload(int(season), date_str, profile_name)
         if not day_payload.get("found"):
             day_row["selected_counts"] = _betting_selected_counts_with_defaults(day_row.get("selected_counts") or {})
@@ -3757,7 +3777,6 @@ def _rebuild_season_betting_manifest_payload(
         corrected_days.append(day_row)
         days_out.append(day_row)
 
-    today_str = _today_iso()
     if _season_from_date_str(today_str) == int(season) and today_str not in manifest_dates:
         today_payload = _season_betting_day_payload(int(season), today_str, profile_name)
         if today_payload.get("found"):
@@ -3911,6 +3930,7 @@ def _official_betting_card_manifest_payload(
 def _official_betting_card_games_payload(date_str: str, betting_games: Dict[int, Dict[str, Any]]) -> List[Dict[str, Any]]:
     schedule_by_game_pk = _schedule_context_by_game_pk(str(date_str))
     games_out: List[Dict[str, Any]] = []
+    live_matchup_candidates: List[Tuple[int, str, Dict[str, Any]]] = []
 
     for raw_game_pk, raw_game_betting in (betting_games or {}).items():
         game_pk = _safe_int(raw_game_pk)
@@ -3927,27 +3947,55 @@ def _official_betting_card_games_payload(date_str: str, betting_games: Dict[int,
         game_date = str(schedule_row.get("gameDate") or "")
         away = dict(schedule_row.get("away") or {"id": None, "abbr": "Away", "name": "Away"})
         home = dict(schedule_row.get("home") or {"id": None, "abbr": "Home", "name": "Home"})
-        matchup = _official_betting_game_matchup_payload(int(game_pk), str(schedule_row.get("officialDate") or date_str), status)
-        games_out.append(
-            {
-                "game_pk": int(game_pk),
-                "game_date": game_date,
-                "start_time": schedule_row.get("startTime") or _format_start_time_local(game_date),
-                "official_date": schedule_row.get("officialDate") or str(date_str),
-                "status": {
-                    "abstract": str(status.get("abstract") or ""),
-                    "detailed": str(status.get("detailed") or ""),
-                },
-                "away": away,
-                "home": home,
-                "starter_names": {
-                    "away": _first_text(((probable.get("away") or {}).get("fullName"))),
-                    "home": _first_text(((probable.get("home") or {}).get("fullName"))),
-                },
-                "matchup": matchup,
-                "betting": dict(raw_game_betting),
+        official_date = str(schedule_row.get("officialDate") or date_str)
+        game_row = {
+            "game_pk": int(game_pk),
+            "game_date": game_date,
+            "start_time": schedule_row.get("startTime") or _format_start_time_local(game_date),
+            "official_date": official_date,
+            "status": {
+                "abstract": str(status.get("abstract") or ""),
+                "detailed": str(status.get("detailed") or ""),
+            },
+            "away": away,
+            "home": home,
+            "starter_names": {
+                "away": _first_text(((probable.get("away") or {}).get("fullName"))),
+                "home": _first_text(((probable.get("home") or {}).get("fullName"))),
+            },
+            "matchup": _official_betting_game_matchup_payload(
+                int(game_pk),
+                official_date,
+                status,
+                score=schedule_row.get("score") if isinstance(schedule_row.get("score"), dict) else None,
+                fetch_feed=bool(_status_is_live(status.get("abstract"))),
+            ),
+            "betting": dict(raw_game_betting),
+        }
+        games_out.append(game_row)
+        if bool(_status_is_live(status.get("abstract"))):
+            live_matchup_candidates.append((int(game_pk), official_date, status))
+
+    if live_matchup_candidates:
+        row_by_game_pk = {
+            int(row.get("game_pk") or 0): row
+            for row in games_out
+            if isinstance(row, dict) and int(row.get("game_pk") or 0) > 0
+        }
+        max_workers = max(1, min(8, len(live_matchup_candidates)))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(_official_betting_game_matchup_payload, game_pk, official_date, status, None, True): game_pk
+                for game_pk, official_date, status in live_matchup_candidates
             }
-        )
+            for future in as_completed(futures):
+                game_pk = int(futures[future])
+                try:
+                    matchup = future.result()
+                except Exception:
+                    matchup = None
+                if isinstance(matchup, dict) and game_pk in row_by_game_pk:
+                    row_by_game_pk[game_pk]["matchup"] = matchup
 
     games_out.sort(key=lambda row: (str(row.get("game_date") or ""), int(row.get("game_pk") or 0)))
     return games_out
@@ -5610,9 +5658,16 @@ def _format_matchup_live_text(current: Dict[str, Any]) -> str:
     return f"Inning {int(inning)}"
 
 
-def _official_betting_game_matchup_payload(game_pk: int, date_str: str, status: Dict[str, Any]) -> Dict[str, Any]:
+def _official_betting_game_matchup_payload(
+    game_pk: int,
+    date_str: str,
+    status: Dict[str, Any],
+    score: Optional[Dict[str, Any]] = None,
+    fetch_feed: bool = True,
+) -> Dict[str, Any]:
     abstract = str((status or {}).get("abstract") or "").strip()
     detailed = str((status or {}).get("detailed") or "").strip()
+    schedule_score = score if isinstance(score, dict) else {}
     out: Dict[str, Any] = {
         "isLive": bool(_status_is_live(abstract)),
         "isFinal": bool(_status_is_final(abstract)),
@@ -5623,10 +5678,21 @@ def _official_betting_game_matchup_payload(game_pk: int, date_str: str, status: 
         "count": {"balls": None, "strikes": None, "outs": None},
         "batter": "",
         "pitcher": "",
-        "score": {"away": None, "home": None},
+        "score": {
+            "away": _safe_int(schedule_score.get("away")),
+            "home": _safe_int(schedule_score.get("home")),
+        },
     }
 
     if int(game_pk or 0) <= 0:
+        return out
+
+    if not fetch_feed:
+        if (not out.get("isLive")) and (not out.get("isFinal")):
+            away_score = _safe_int((out.get("score") or {}).get("away"))
+            home_score = _safe_int((out.get("score") or {}).get("home"))
+            if int(away_score or 0) == 0 and int(home_score or 0) == 0:
+                out["score"] = {"away": None, "home": None}
         return out
 
     feed = _load_game_feed_for_date(int(game_pk), str(date_str or "")) if _is_historical_date(str(date_str or "")) else None
