@@ -1258,6 +1258,10 @@ def _select_pitcher_v2(roster: TeamRoster, state: GameState, rng: random.Random)
     starter_pull_bias = _clamp01(_ov_f("starter_pull_bias", 0.15))
     starter_hard_cap_buffer = max(0, _ov_i("starter_hard_cap_buffer", 28))
     starter_third_time_scale = max(0.0, _ov_f("starter_third_time_scale", 1.0))
+    starter_early_sample_bf_cap = max(0.0, _ov_f("starter_early_sample_bf_cap", 120.0))
+    starter_early_sample_hook_delta_max = max(0, _ov_i("starter_early_sample_hook_delta_max", 8))
+    starter_early_sample_pull_bias_drop = _clamp01(_ov_f("starter_early_sample_pull_bias_drop", 0.04))
+    starter_early_sample_short_start_boost = _clamp01(_ov_f("starter_early_sample_short_start_boost", 0.04))
     # Starter leash-break controls (only relevant while inning <= starter_min_innings).
     # Defaults preserve the existing behavior (i.e., "always keep" within leash unless blowout).
     starter_leash_pc_buffer = max(0, _ov_i("starter_leash_pc_buffer", 20))
@@ -1300,11 +1304,26 @@ def _select_pitcher_v2(roster: TeamRoster, state: GameState, rng: random.Random)
 
     if int(current) == int(starter):
         starter_prof = roster.lineup.pitcher
+        starter_bf = max(0.0, float(getattr(starter_prof, "batters_faced", 0.0) or 0.0))
+        early_sample_scale = 0.0
+        if starter_early_sample_bf_cap > 0:
+            early_sample_scale = _clamp01((starter_early_sample_bf_cap - starter_bf) / starter_early_sample_bf_cap)
         # Effective hook blends manager tendency + pitcher stamina + availability.
         base_hook = int(roster.manager.pull_starter_pitch_count)
         stamina_hook = int(getattr(starter_prof, "stamina_pitches", base_hook) or base_hook)
         avail = _avail_pitcher(starter_prof)
         eff_hook = int(min(base_hook, stamina_hook) - round((1.0 - avail) * 10.0))
+
+        if early_sample_scale > 0:
+            eff_hook -= int(round(float(starter_early_sample_hook_delta_max) * float(early_sample_scale)))
+
+        starter_pull_bias_eff = max(
+            0.0,
+            float(starter_pull_bias) - (float(starter_early_sample_pull_bias_drop) * float(early_sample_scale)),
+        )
+        starter_short_start_prob_eff = _clamp01(
+            float(starter_short_start_prob) + (float(starter_early_sample_short_start_boost) * float(early_sample_scale))
+        )
 
         if starter_hook_add_pitches:
             eff_hook = int(eff_hook + int(starter_hook_add_pitches))
@@ -1312,11 +1331,11 @@ def _select_pitcher_v2(roster: TeamRoster, state: GameState, rng: random.Random)
         # Per-game hook adjustment to inject realistic variance.
         # This can include (a) small uniform jitter, and (b) rare large negative shifts
         # to represent "short starts" (quick hooks due to ineffectiveness/injury).
-        if hook_jitter_pitches > 0 or starter_short_start_prob > 0:
+        if hook_jitter_pitches > 0 or starter_short_start_prob_eff > 0:
             j = state.manager_hook_jitter.get(int(starter))
             if j is None:
                 j = int(rng.randint(-int(hook_jitter_pitches), int(hook_jitter_pitches))) if hook_jitter_pitches > 0 else 0
-                if starter_short_start_prob > 0 and rng.random() < float(starter_short_start_prob):
+                if starter_short_start_prob_eff > 0 and rng.random() < float(starter_short_start_prob_eff):
                     j = int(j + int(starter_short_start_hook_delta))
                 state.manager_hook_jitter[int(starter)] = int(j)
             eff_hook = int(eff_hook + int(j))
@@ -1352,7 +1371,7 @@ def _select_pitcher_v2(roster: TeamRoster, state: GameState, rng: random.Random)
         if blowout:
             x -= 0.8  # leave him in during blowouts
 
-        p_pull = _clamp01(_sigmoid(x) - float(starter_pull_bias))
+        p_pull = _clamp01(_sigmoid(x) - float(starter_pull_bias_eff))
 
         # Hard cap: always pull if very deep.
         if pc >= eff_hook + int(starter_hard_cap_buffer):

@@ -1,7 +1,7 @@
 {
   "date": "2026-03-31",
   "season": 2026,
-  "generated_at": "2026-03-30T11:55:50.923719",
+  "generated_at": "2026-03-30T15:16:18.470506",
   "tool": "tools/daily_update_multi_profile.py",
   "selection_source": "_tmp_best_set_selection_holdout13.json",
   "best_selection": {
@@ -252,7 +252,11 @@
       }
     },
     "pitcher_props": {
-      "market": "outs",
+      "market": "best",
+      "eligible_markets": [
+        "outs",
+        "strikeouts"
+      ],
       "side": "over",
       "one_prop_per_player": true,
       "calibrated_no_vig_edge_min": 0.01,
@@ -285,6 +289,7 @@
     "Current live defaults run totals at 2/day with a 1.0 mean-minus-line gate, keep ml at 1 and pitcher props at 3, and add one high-edge runs slot to the HR/Hits/TB hitter mix.",
     "Hitter submarkets are separated in output and capped independently at HR 2 / Hits 4 / Total Bases 4 / Runs 1 / RBIs 0, with a 11-pick aggregate hitter ceiling.",
     "Official player props are limited to one selected lane per player; additional qualified lanes remain available as playable candidates.",
+    "Pitcher props rank the best qualified outs/strikeouts over lanes into the shared pitcher bucket.",
     "Prop price guardrails drop overly juiced favorites before official and other playable candidates are ranked.",
     "Totals, moneyline, and pitcher props are graded at 1.0u; hitter props are graded at 0.25u."
   ],
@@ -338,10 +343,10 @@
     "game_lines": "data\\market\\oddsapi\\oddsapi_game_lines_2026_03_31.json",
     "pitcher_lines": "data\\market\\oddsapi\\oddsapi_pitcher_props_2026_03_31.json",
     "hitter_lines": "data\\market\\oddsapi\\oddsapi_hitter_props_2026_03_31.json",
+    "so_prob_calibration": "data\\tuning\\so_calibration\\default.json",
     "outs_prob_calibration": "data\\tuning\\outs_calibration\\default.json"
   },
   "warnings": [
-    "No game lines entries found in data\\market\\oddsapi\\oddsapi_game_lines_2026_03_31.json",
     "No pitcher lines entries found in data\\market\\oddsapi\\oddsapi_pitcher_props_2026_03_31.json",
     "No hitter lines entries found in data\\market\\oddsapi\\oddsapi_hitter_props_2026_03_31.json"
   ],
@@ -379,18 +384,61 @@
   },
   "markets": {
     "totals": {
-      "raw_candidates_n": 0,
-      "selected_n": 0,
+      "raw_candidates_n": 1,
+      "selected_n": 1,
       "cap": 2,
       "stake_u": 1.0,
-      "recommendations": []
+      "recommendations": [
+        {
+          "date": "2026-03-31",
+          "game_pk": 824212,
+          "away": "Boston Red Sox",
+          "home": "Houston Astros",
+          "away_abbr": "BOS",
+          "home_abbr": "HOU",
+          "double_header": "N",
+          "game_number": 1,
+          "event_id": "5fa4f7bd1d1be2a30a40c0d7f653d9ff",
+          "commence_time": "2026-04-01T00:11:00Z",
+          "market": "totals",
+          "selection": "over",
+          "edge": 1.8889999999999993,
+          "market_line": 7.5,
+          "model_mean_total": 9.389,
+          "odds": "-110",
+          "stake_u": 1.0,
+          "market_no_vig_prob": 0.5,
+          "rank": 1
+        }
+      ]
     },
     "ml": {
-      "raw_candidates_n": 0,
-      "selected_n": 0,
+      "raw_candidates_n": 3,
+      "selected_n": 1,
       "cap": 1,
       "stake_u": 1.0,
-      "recommendations": []
+      "recommendations": [
+        {
+          "date": "2026-03-31",
+          "game_pk": 823322,
+          "away": "San Francisco Giants",
+          "home": "San Diego Padres",
+          "away_abbr": "SF",
+          "home_abbr": "SD",
+          "double_header": "N",
+          "game_number": 1,
+          "event_id": "293dc85524404aab44c5329de3f56664",
+          "commence_time": "2026-04-01T01:41:00Z",
+          "market": "ml",
+          "selection": "home",
+          "edge": 0.23913028668748232,
+          "model_prob": 0.672,
+          "market_no_vig_prob": 0.4328697133125177,
+          "odds": "+122",
+          "stake_u": 1.0,
+          "rank": 1
+        }
+      ]
     },
     "pitcher_props": {
       "raw_candidates_n": 0,
@@ -464,7 +512,7 @@
     }
   },
   "combined": {
-    "raw_candidates_n": 0,
-    "selected_n": 0
+    "raw_candidates_n": 4,
+    "selected_n": 2
   }
 }

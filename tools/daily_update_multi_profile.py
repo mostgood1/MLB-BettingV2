@@ -36,6 +36,25 @@ DEFAULT_HITTER_EDGE_MIN_BY_MARKET: Dict[str, float] = {
     "hitter_runs": 0.10,
 }
 
+PITCHER_MARKET_SPECS: Dict[str, Dict[str, str]] = {
+    "outs": {
+        "market_key": "outs",
+        "dist_key": "outs_dist",
+        "mean_key": "outs_mean",
+    },
+    "strikeouts": {
+        "market_key": "strikeouts",
+        "dist_key": "so_dist",
+        "mean_key": "so_mean",
+    },
+}
+
+PITCHER_MARKET_ALIASES: Dict[str, str] = {
+    "k": "strikeouts",
+    "ks": "strikeouts",
+    "so": "strikeouts",
+}
+
 DEFAULT_LOCK_POLICY: Dict[str, Any] = {
     "totals_side": "over",
     "totals_diff_min": 1.0,
@@ -45,7 +64,7 @@ DEFAULT_LOCK_POLICY: Dict[str, Any] = {
     "hitter_edge_min_by_market": dict(DEFAULT_HITTER_EDGE_MIN_BY_MARKET),
     "hitter_max_favorite_odds": -200,
     "hitter_hr_under_0_5_max_favorite_odds": -200,
-    "pitcher_market": "outs",
+    "pitcher_market": "best",
     "pitcher_side": "over",
     "pitcher_edge_min": 0.01,
     "pitcher_max_favorite_odds": -200,
@@ -774,6 +793,23 @@ def _pitcher_price_allowed(policy: Optional[Dict[str, Any]], *, odds: Any) -> bo
     return not _favorite_price_exceeds_limit(odds, (policy or {}).get("pitcher_max_favorite_odds"))
 
 
+def _normalized_pitcher_market(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    normalized = PITCHER_MARKET_ALIASES.get(raw, raw)
+    if normalized in PITCHER_MARKET_SPECS:
+        return normalized
+    if normalized in {"", "best", "all", "mixed", "any", "best_available"}:
+        return "best"
+    return "best"
+
+
+def _iter_pitcher_market_names(policy: Optional[Dict[str, Any]]) -> List[str]:
+    configured = _normalized_pitcher_market((policy or {}).get("pitcher_market"))
+    if configured == "best":
+        return list(PITCHER_MARKET_SPECS.keys())
+    return [configured]
+
+
 def _collect_hitter_recommendations(sim_dir: Path, hitter_lines_path: Path, policy: Dict[str, Any]) -> List[Dict[str, Any]]:
     if not hitter_lines_path.exists():
         return []
@@ -850,6 +886,7 @@ def _collect_pitcher_recommendations(
     sim_dir: Path,
     pitcher_lines_path: Path,
     policy: Dict[str, Any],
+    so_prob_calibration: Optional[Dict[str, Any]],
     outs_prob_calibration: Optional[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
     if not pitcher_lines_path.exists():
@@ -876,42 +913,54 @@ def _collect_pitcher_recommendations(
             markets = pitcher_odds.get(normalize_pitcher_name(starter_name))
             if not isinstance(markets, dict):
                 continue
-            outs_market = markets.get("outs") or {}
-            line = outs_market.get("line")
-            if line is None:
-                continue
-            line_value = float(line)
-            p_raw = _prob_over_line_from_dist(pred.get("outs_dist") or {}, line_value)
-            if p_raw is None:
-                continue
-            p_over = apply_prob_calibration(float(p_raw), outs_prob_calibration)
-            market_prob = no_vig_over_prob(outs_market.get("over_odds"), outs_market.get("under_odds"))
-            if market_prob is None:
-                continue
-            edge = float(p_over) - float(market_prob)
-            if edge < float(policy["pitcher_edge_min"]):
-                continue
-            if not _pitcher_price_allowed(policy, odds=outs_market.get("over_odds")):
-                continue
-            rows.append(
-                {
-                    **base,
-                    "market": "pitcher_props",
-                    "pitcher_name": starter_name,
-                    "team": (sim_obj.get(side) or {}).get("abbreviation"),
-                    "team_side": side,
-                    "prop": str(policy["pitcher_market"]),
-                    "selection": str(policy["pitcher_side"]),
-                    "edge": float(edge),
-                    "market_line": float(line_value),
-                    "model_prob_over": float(p_over),
-                    "market_no_vig_prob_over": float(market_prob),
-                    "outs_mean": pred.get("outs_mean"),
-                    "market_alternates": list(outs_market.get("alternates") or []),
-                    "odds": outs_market.get("over_odds"),
-                    "stake_u": float(DEFAULT_STANDARD_STAKE_U),
-                }
-            )
+            for market_name in _iter_pitcher_market_names(policy):
+                market_spec = PITCHER_MARKET_SPECS.get(market_name) or {}
+                market_key = str(market_spec.get("market_key") or "")
+                props_market = markets.get(market_key) or {}
+                line = props_market.get("line")
+                if line is None:
+                    continue
+                line_value = float(line)
+                dist_key = str(market_spec.get("dist_key") or "")
+                p_raw = _prob_over_line_from_dist(pred.get(dist_key) or {}, line_value)
+                if p_raw is None:
+                    continue
+                calibration = so_prob_calibration if market_name == "strikeouts" else outs_prob_calibration
+                p_over = apply_prob_calibration(float(p_raw), calibration)
+                side_pick = _select_market_side(
+                    float(p_over),
+                    props_market.get("over_odds"),
+                    props_market.get("under_odds"),
+                    float(policy["pitcher_edge_min"]),
+                )
+                if side_pick is None or str(side_pick.get("selection") or "") != str(policy["pitcher_side"]):
+                    continue
+                if not _pitcher_price_allowed(policy, odds=side_pick.get("odds")):
+                    continue
+                mean_key = str(market_spec.get("mean_key") or "")
+                rows.append(
+                    {
+                        **base,
+                        "market": "pitcher_props",
+                        "pitcher_name": starter_name,
+                        "team": (sim_obj.get(side) or {}).get("abbreviation"),
+                        "team_side": side,
+                        "prop": str(market_name),
+                        "selection": str(policy["pitcher_side"]),
+                        "edge": float(side_pick["edge"]),
+                        "market_line": float(line_value),
+                        "model_prob_over": float(p_over),
+                        "market_prob_over": side_pick.get("market_prob_over"),
+                        "market_prob_under": side_pick.get("market_prob_under"),
+                        "market_prob_mode": side_pick.get("market_prob_mode"),
+                        "market_no_vig_prob_over": side_pick.get("market_no_vig_prob_over"),
+                        "selected_side_market_prob": side_pick.get("selected_side_market_prob"),
+                        mean_key: pred.get(mean_key),
+                        "market_alternates": list(props_market.get("alternates") or []),
+                        "odds": side_pick.get("odds"),
+                        "stake_u": float(DEFAULT_STANDARD_STAKE_U),
+                    }
+                )
 
     return rows
 
@@ -1061,6 +1110,8 @@ def _build_locked_policy_card(
     best_selection_path: Path,
     best_selection: Optional[Dict[str, Any]],
     profile_info: Dict[str, Any],
+    so_prob_calibration_path: Optional[Path],
+    so_prob_calibration: Optional[Dict[str, Any]],
     outs_prob_calibration_path: Optional[Path],
     outs_prob_calibration: Optional[Dict[str, Any]],
     policy_overrides: Optional[Dict[str, Any]],
@@ -1121,7 +1172,13 @@ def _build_locked_policy_card(
             warnings.append(f"No {label} entries found in {_rel(path)}")
 
     game_rows = _collect_game_recommendations(game_sim_dir, game_lines_path, policy)
-    pitcher_rows = _collect_pitcher_recommendations(pitcher_sim_dir, pitcher_lines_path, policy, outs_prob_calibration)
+    pitcher_rows = _collect_pitcher_recommendations(
+        pitcher_sim_dir,
+        pitcher_lines_path,
+        policy,
+        so_prob_calibration,
+        outs_prob_calibration,
+    )
     hitter_rows = _collect_hitter_recommendations(hitter_sim_dir, hitter_lines_path, policy)
 
     raw_rows: Dict[str, List[Dict[str, Any]]] = {
@@ -1257,7 +1314,8 @@ def _build_locked_policy_card(
             "ml": {"side": "home", "no_vig_edge_min": float(policy["ml_edge_min"])},
             "hitter_props": hitter_policy,
             "pitcher_props": {
-                "market": str(policy["pitcher_market"]),
+                "market": str(_normalized_pitcher_market(policy.get("pitcher_market"))),
+                "eligible_markets": list(_iter_pitcher_market_names(policy)),
                 "side": str(policy["pitcher_side"]),
                 "one_prop_per_player": True,
                 "calibrated_no_vig_edge_min": float(policy["pitcher_edge_min"]),
@@ -1282,6 +1340,7 @@ def _build_locked_policy_card(
             cap_note,
             hitter_cap_note,
             "Official player props are limited to one selected lane per player; additional qualified lanes remain available as playable candidates.",
+            "Pitcher props rank the best qualified outs/strikeouts over lanes into the shared pitcher bucket.",
             "Prop price guardrails drop overly juiced favorites before official and other playable candidates are ranked.",
             "Totals, moneyline, and pitcher props are graded at 1.0u; hitter props are graded at 0.25u.",
         ],
@@ -1290,6 +1349,7 @@ def _build_locked_policy_card(
             "game_lines": _rel(game_lines_path),
             "pitcher_lines": _rel(pitcher_lines_path),
             "hitter_lines": _rel(hitter_lines_path),
+            "so_prob_calibration": (_rel(so_prob_calibration_path) if so_prob_calibration_path is not None else None),
             "outs_prob_calibration": (_rel(outs_prob_calibration_path) if outs_prob_calibration_path is not None else None),
         },
         "warnings": warnings,
@@ -1525,6 +1585,11 @@ def main() -> int:
         default="data/tuning/outs_calibration/default.json",
         help="Calibration JSON for official pitcher outs recommendations (use 'off' to disable).",
     )
+    ap.add_argument(
+        "--so-prob-calibration",
+        default="data/tuning/so_calibration/default.json",
+        help="Calibration JSON for official pitcher strikeout recommendations (use 'off' to disable).",
+    )
 
     # Parse known args and pass all unknown args through to each daily_update run.
     args, passthrough = ap.parse_known_args()
@@ -1646,6 +1711,8 @@ def main() -> int:
     except Exception:
         best_selection = None
 
+    so_prob_calibration = _load_json_cfg(str(args.so_prob_calibration))
+    so_prob_calibration_path = None if _is_off(str(args.so_prob_calibration)) else _resolve_path(str(args.so_prob_calibration))
     outs_prob_calibration = _load_json_cfg(str(args.outs_prob_calibration))
     outs_prob_calibration_path = None if _is_off(str(args.outs_prob_calibration)) else _resolve_path(str(args.outs_prob_calibration))
     official_caps = _normalized_official_caps(
@@ -1696,6 +1763,8 @@ def main() -> int:
             best_selection_path=best_selection_path,
             best_selection=best_selection,
             profile_info=profile_info,
+            so_prob_calibration_path=so_prob_calibration_path,
+            so_prob_calibration=so_prob_calibration,
             outs_prob_calibration_path=outs_prob_calibration_path,
             outs_prob_calibration=outs_prob_calibration,
             policy_overrides=official_policy_overrides,

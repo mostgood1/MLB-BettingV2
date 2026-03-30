@@ -47,6 +47,9 @@ param(
     [switch]$SpringMode,
 
     [Parameter()]
+    [switch]$SkipPriorReconcile,
+
+    [Parameter()]
     [string]$PythonExe = '',
 
     [Parameter()]
@@ -144,9 +147,10 @@ $resolvedNextDate = if ($NextDate) { $NextDate } else { Get-DatePlusDays -BaseDa
 $reconcileDate = Get-DatePlusDays -BaseDate $Date -Days -1
 $nextSeason = Get-SeasonFromDate -Value $resolvedNextDate
 
-$sharedArgs = @(
-    '--spring-mode'
-) | Where-Object { $SpringMode.IsPresent }
+$sharedArgs = @()
+if ($SpringMode.IsPresent) {
+    $sharedArgs += '--spring-mode'
+}
 
 $sharedArgs += @(
     '--sims', $Sims.ToString(),
@@ -174,9 +178,19 @@ $currentArgs = @(
     '--date', $Date,
     '--season', $Season.ToString(),
     '--workflow', 'ui-daily',
-    '--reconcile-date', $reconcileDate,
     '--git-push', 'off'
 ) + $sharedArgs
+
+if (-not $SkipPriorReconcile.IsPresent) {
+    $currentArgs += @('--reconcile-date', $reconcileDate)
+}
+else {
+    $currentArgs += @(
+        '--refresh-prior-feed-live', 'off',
+        '--settle-prior-card', 'off',
+        '--refresh-season-manifests', 'off'
+    )
+}
 
 $nextArgs = @(
     $dailyUpdatePy,
@@ -213,6 +227,6 @@ if ($GitPush -eq 'on') {
 
 Write-Host ''
 Write-Host 'End-to-end daily update completed.'
-Write-Host "  Reconciled prior day: $reconcileDate"
+Write-Host "  Reconciled prior day: $(if ($SkipPriorReconcile.IsPresent) { 'skipped' } else { $reconcileDate })"
 Write-Host "  Built current day:    $Date"
 Write-Host "  Built next day:       $resolvedNextDate"
