@@ -3793,6 +3793,20 @@ def _rebuild_season_betting_manifest_payload(
         corrected_days.append(day_row)
         days_out.append(day_row)
 
+    manifest_floor = min(manifest_dates) if manifest_dates else None
+    supplemental_dates = [
+        d for d in _available_daily_locked_card_dates(int(season))
+        if d not in manifest_dates and (not manifest_floor or d >= manifest_floor)
+    ]
+    for date_str in supplemental_dates:
+        day_payload = _season_betting_day_payload(int(season), date_str, profile_name)
+        if not day_payload.get("found"):
+            continue
+        supplemental_day = _season_betting_manifest_day_row_from_payload(day_payload)
+        corrected_days.append(supplemental_day)
+        days_out.append(supplemental_day)
+        manifest_dates.add(date_str)
+
     if _season_from_date_str(today_str) == int(season) and today_str not in manifest_dates:
         today_payload = _season_betting_day_payload(int(season), today_str, profile_name)
         if today_payload.get("found"):
