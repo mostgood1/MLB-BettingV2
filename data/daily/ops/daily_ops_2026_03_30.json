@@ -1,12 +1,12 @@
 {
   "tool": "tools/daily_update.py",
   "workflow": "ui-daily",
-  "generated_at": "2026-03-29T09:54:56.589099",
+  "generated_at": "2026-03-30T11:06:09.925977",
   "date": "2026-03-30",
   "season": 2026,
   "seed": {
-    "value": 260442692,
-    "source": "auto_future_date",
+    "value": 1337,
+    "source": "default_fixed",
     "explicit_cli": false
   },
   "prior_day": {
@@ -26,31 +26,360 @@
   },
   "stages": {
     "prior_day_feed_live_refresh": {
-      "status": "skipped",
+      "status": "ok",
       "date": "2026-03-29",
       "season": 2026,
-      "reason": "refresh_prior_feed_live=off"
+      "games_scheduled": 12,
+      "regular_season_games_scheduled": 12,
+      "games_written": 12,
+      "errors": [],
+      "error_count": 0,
+      "out_dir": "data/raw/statsapi/feed_live/2026/2026-03-29",
+      "pbp_source": "statsapi_feed_live"
     },
     "prior_day_card_settlement": {
-      "status": "skipped",
+      "status": "ok",
       "date": "2026-03-29",
       "card_path": "data/daily/daily_summary_2026_03_29_locked_policy.json",
-      "reason": "settle_prior_card=off"
+      "settlement_path": "data/daily/settlements/daily_summary_2026_03_29_locked_policy_settlement.json",
+      "selected_counts": {
+        "totals": 0,
+        "ml": 1,
+        "pitcher_props": 3,
+        "hitter_home_runs": 2,
+        "hitter_hits": 4,
+        "hitter_total_bases": 4,
+        "hitter_runs": 1,
+        "hitter_rbis": 0,
+        "combined": 15
+      },
+      "playable_selected_counts": {
+        "totals": 0,
+        "ml": 0,
+        "pitcher_props": 11,
+        "hitter_home_runs": 36,
+        "hitter_hits": 175,
+        "hitter_total_bases": 85,
+        "hitter_runs": 70,
+        "hitter_rbis": 36,
+        "combined": 413
+      },
+      "all_selected_counts": {
+        "combined": 428,
+        "hitter_hits": 179,
+        "hitter_home_runs": 38,
+        "hitter_rbis": 36,
+        "hitter_runs": 71,
+        "hitter_total_bases": 89,
+        "ml": 1,
+        "pitcher_props": 14,
+        "totals": 0
+      },
+      "results": {
+        "hitter_hits": {
+          "n": 4,
+          "wins": 2,
+          "losses": 2,
+          "stake_u": 1.0,
+          "profit_u": 0.4425,
+          "roi": 0.4425
+        },
+        "hitter_home_runs": {
+          "n": 2,
+          "wins": 0,
+          "losses": 2,
+          "stake_u": 0.5,
+          "profit_u": -0.5,
+          "roi": -1.0
+        },
+        "hitter_runs": {
+          "n": 1,
+          "wins": 1,
+          "losses": 0,
+          "stake_u": 0.25,
+          "profit_u": 0.1908,
+          "roi": 0.7632
+        },
+        "hitter_total_bases": {
+          "n": 4,
+          "wins": 2,
+          "losses": 2,
+          "stake_u": 1.0,
+          "profit_u": -0.1382,
+          "roi": -0.1382
+        },
+        "ml": {
+          "n": 1,
+          "wins": 0,
+          "losses": 1,
+          "stake_u": 1.0,
+          "profit_u": -1.0,
+          "roi": -1.0
+        },
+        "pitcher_props": {
+          "n": 3,
+          "wins": 1,
+          "losses": 2,
+          "stake_u": 3.0,
+          "profit_u": -0.7,
+          "roi": -0.2333
+        },
+        "hitter_props": {
+          "n": 11,
+          "wins": 5,
+          "losses": 6,
+          "stake_u": 2.75,
+          "profit_u": -0.0049,
+          "roi": -0.0018
+        },
+        "combined": {
+          "n": 15,
+          "wins": 6,
+          "losses": 9,
+          "stake_u": 6.75,
+          "profit_u": -1.7049,
+          "roi": -0.2526
+        }
+      },
+      "playable_results": {
+        "hitter_hits": {
+          "n": 175,
+          "wins": 78,
+          "losses": 97,
+          "stake_u": 43.75,
+          "profit_u": 2.0986,
+          "roi": 0.048
+        },
+        "hitter_home_runs": {
+          "n": 36,
+          "wins": 6,
+          "losses": 30,
+          "stake_u": 9.0,
+          "profit_u": -0.5,
+          "roi": -0.0556
+        },
+        "hitter_rbis": {
+          "n": 36,
+          "wins": 15,
+          "losses": 21,
+          "stake_u": 9.0,
+          "profit_u": 2.627,
+          "roi": 0.2919
+        },
+        "hitter_runs": {
+          "n": 70,
+          "wins": 38,
+          "losses": 32,
+          "stake_u": 17.5,
+          "profit_u": -1.3393,
+          "roi": -0.0765
+        },
+        "hitter_total_bases": {
+          "n": 85,
+          "wins": 54,
+          "losses": 31,
+          "stake_u": 21.25,
+          "profit_u": 1.1574,
+          "roi": 0.0545
+        },
+        "pitcher_props": {
+          "n": 11,
+          "wins": 4,
+          "losses": 7,
+          "stake_u": 11.0,
+          "profit_u": -3.5471,
+          "roi": -0.3225
+        },
+        "hitter_props": {
+          "n": 402,
+          "wins": 191,
+          "losses": 211,
+          "stake_u": 100.5,
+          "profit_u": 4.0437,
+          "roi": 0.0402
+        },
+        "combined": {
+          "n": 413,
+          "wins": 195,
+          "losses": 218,
+          "stake_u": 111.5,
+          "profit_u": 0.4966,
+          "roi": 0.0045
+        }
+      },
+      "all_results": {
+        "hitter_hits": {
+          "n": 179,
+          "wins": 80,
+          "losses": 99,
+          "stake_u": 44.75,
+          "profit_u": 2.5411,
+          "roi": 0.0568
+        },
+        "hitter_home_runs": {
+          "n": 38,
+          "wins": 6,
+          "losses": 32,
+          "stake_u": 9.5,
+          "profit_u": -1.0,
+          "roi": -0.1053
+        },
+        "hitter_rbis": {
+          "n": 36,
+          "wins": 15,
+          "losses": 21,
+          "stake_u": 9.0,
+          "profit_u": 2.627,
+          "roi": 0.2919
+        },
+        "hitter_runs": {
+          "n": 71,
+          "wins": 39,
+          "losses": 32,
+          "stake_u": 17.75,
+          "profit_u": -1.1485,
+          "roi": -0.0647
+        },
+        "hitter_total_bases": {
+          "n": 89,
+          "wins": 56,
+          "losses": 33,
+          "stake_u": 22.25,
+          "profit_u": 1.0192,
+          "roi": 0.0458
+        },
+        "ml": {
+          "n": 1,
+          "wins": 0,
+          "losses": 1,
+          "stake_u": 1.0,
+          "profit_u": -1.0,
+          "roi": -1.0
+        },
+        "pitcher_props": {
+          "n": 14,
+          "wins": 5,
+          "losses": 9,
+          "stake_u": 14.0,
+          "profit_u": -4.2471,
+          "roi": -0.3034
+        },
+        "hitter_props": {
+          "n": 413,
+          "wins": 196,
+          "losses": 217,
+          "stake_u": 103.25,
+          "profit_u": 4.0388,
+          "roi": 0.0391
+        },
+        "combined": {
+          "n": 428,
+          "wins": 201,
+          "losses": 227,
+          "stake_u": 118.25,
+          "profit_u": -1.2083,
+          "roi": -0.0102
+        }
+      },
+      "settled_n": 15,
+      "playable_settled_n": 413,
+      "all_settled_n": 428,
+      "unresolved_n": 0,
+      "playable_unresolved_n": 0,
+      "all_unresolved_n": 0
     },
     "prior_day_eval_report": {
-      "status": "skipped",
+      "status": "ok",
       "date": "2026-03-29",
+      "batch_dir": "data/eval/batches/season_2026_ui_daily_live",
       "report_path": "data/eval/batches/season_2026_ui_daily_live/sim_vs_actual_2026-03-29.json",
-      "reason": "refresh_season_manifests=off"
+      "command": [
+        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\.venv_x64\\Scripts\\python.exe",
+        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\tools\\eval\\eval_sim_day_vs_actual.py",
+        "--date",
+        "2026-03-29",
+        "--season",
+        "2026",
+        "--spring-mode",
+        "off",
+        "--stats-season",
+        "0",
+        "--use-daily-snapshots",
+        "on",
+        "--daily-snapshots-root",
+        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\data\\daily\\snapshots",
+        "--use-roster-artifacts",
+        "on",
+        "--write-roster-artifacts",
+        "on",
+        "--sims-per-game",
+        "1000",
+        "--bvp-hr",
+        "off",
+        "--bvp-days-back",
+        "365",
+        "--bvp-min-pa",
+        "10",
+        "--bvp-shrink-pa",
+        "50.0",
+        "--bvp-clamp-lo",
+        "0.8",
+        "--bvp-clamp-hi",
+        "1.25",
+        "--hitter-hr-topn",
+        "0",
+        "--hitter-props-topn",
+        "24",
+        "--seed",
+        "1337",
+        "--jobs",
+        "4",
+        "--use-raw",
+        "on",
+        "--write-missing-raw",
+        "on",
+        "--prop-lines-source",
+        "auto",
+        "--cache-ttl-hours",
+        "6",
+        "--umpire-shrink",
+        "0.75",
+        "--pitch-model-overrides",
+        "",
+        "--manager-pitching",
+        "v2",
+        "--manager-pitching-overrides",
+        "data/tuning/manager_pitching_overrides/default.json",
+        "--pitcher-rate-sampling",
+        "on",
+        "--bip-baserunning",
+        "on",
+        "--out",
+        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\data\\eval\\batches\\season_2026_ui_daily_live\\sim_vs_actual_2026-03-29.json",
+        "--lineups-last-known",
+        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\data\\daily\\lineups_last_known_by_team.json"
+      ],
+      "exit_code": 0,
+      "report_exists": true
     },
     "season_publish": {
-      "status": "skipped",
+      "status": "ok",
       "season": 2026,
       "batch_dir": "data/eval/batches/season_2026_ui_daily_live",
-      "reason": "refresh_season_manifests=off"
+      "season_eval_manifest": "data/eval/seasons/2026/season_eval_manifest.json",
+      "season_eval_recap": "data/eval/seasons/2026/season_eval_recap.md",
+      "season_eval_status": "partial",
+      "season_eval_partial": true,
+      "season_eval_days": 5,
+      "betting_profile": "retuned",
+      "season_betting_manifest": "data/eval/seasons/2026/season_betting_cards_retuned_manifest.json",
+      "season_betting_recap": "data/eval/seasons/2026/season_betting_cards_retuned_recap.md",
+      "season_betting_cards_dir": "data/eval/seasons/2026/locked_cards_retuned",
+      "season_betting_exit_code": 0,
+      "season_betting_manifest_exists": true
     },
     "current_day_oddsapi": {
-      "status": "warning",
+      "status": "ok",
       "date": "2026-03-30",
       "mode": "live",
       "out_dir": "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\data\\market\\oddsapi",
@@ -59,28 +388,33 @@
       "hitter_props_path": "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\data\\market\\oddsapi\\oddsapi_hitter_props_2026_03_30.json",
       "counts": {
         "game_lines": {
-          "events_matched": 0,
-          "games": 0,
-          "h2h_games": 0,
-          "totals_games": 0,
-          "spreads_games": 0
+          "events_matched": 15,
+          "games": 15,
+          "h2h_games": 15,
+          "totals_games": 15,
+          "spreads_games": 15
         },
         "pitcher_props": {
-          "players": 0,
-          "markets": {},
-          "events_matched": 0
+          "players": 30,
+          "markets": {
+            "earned_runs": 30,
+            "outs": 30,
+            "strikeouts": 30
+          },
+          "events_matched": 15
         },
         "hitter_props": {
-          "players": 0,
-          "markets": {},
-          "events_matched": 0
+          "players": 280,
+          "markets": {
+            "batter_hits": 280,
+            "batter_home_runs": 279,
+            "batter_rbis": 278,
+            "batter_runs_scored": 278,
+            "batter_total_bases": 280
+          },
+          "events_matched": 15
         }
-      },
-      "warnings": [
-        "current-day OddsAPI ingest captured no game lines",
-        "current-day OddsAPI ingest captured no pitcher props",
-        "current-day OddsAPI ingest captured no hitter props"
-      ]
+      }
     },
     "current_day_multi_profile": {
       "status": "ok",
@@ -99,8 +433,6 @@
         "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\data\\daily_pitcher_props",
         "--out-hitter",
         "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\data\\daily_hitter_props",
-        "--refresh-season-manifests",
-        "off",
         "--sims",
         "1000",
         "--workers",
@@ -114,13 +446,13 @@
         "--write-roster-artifacts",
         "on",
         "--seed",
-        "260442692",
+        "1337",
         "--seed-source",
-        "auto_future_date"
+        "default_fixed"
       ],
       "seed": {
-        "value": 260442692,
-        "source": "auto_future_date",
+        "value": 1337,
+        "source": "default_fixed",
         "explicit_cli": false
       },
       "summary_path": "data/daily/daily_summary_2026_03_30.json",
@@ -145,7 +477,7 @@
       "games": 15,
       "summary": {
         "games": 15,
-        "projected_teams": 30,
+        "projected_teams": 28,
         "adjusted_teams": 0,
         "partial_teams": 0,
         "fallback_pool_teams": 0
@@ -160,16 +492,12 @@
       "games": 15
     }
   },
-  "warnings": [
-    "current-day OddsAPI ingest captured no game lines",
-    "current-day OddsAPI ingest captured no pitcher props",
-    "current-day OddsAPI ingest captured no hitter props"
-  ],
+  "warnings": [],
   "errors": [],
   "git_push": {
     "requested": false,
     "remote": "origin",
     "branch": ""
   },
-  "status": "partial"
+  "status": "ok"
 }
