@@ -318,6 +318,38 @@ def _has_pitching_workload(pstat: Dict[str, Any]) -> bool:
     return bool(bf > 0.0 or gs > 0.0 or g > 0.0)
 
 
+def _is_sparse_pitching_workload(pstat: Dict[str, Any]) -> bool:
+    role_workload = _pitching_role_workload(pstat)
+    bf = float(role_workload.get("bf", 0.0) or 0.0)
+    gs = float(role_workload.get("gs", 0.0) or 0.0)
+    g = float(role_workload.get("g", 0.0) or 0.0)
+    gf = float(role_workload.get("gf", 0.0) or 0.0)
+    saves = float(role_workload.get("saves", 0.0) or 0.0)
+    return bool(bf < 80.0 and g < 4.0 and gs < 3.0 and gf < 3.0 and saves < 2.0)
+
+
+def _merge_pitching_workload_stats(current_pstat: Dict[str, Any], prior_pstat: Dict[str, Any]) -> Dict[str, Any]:
+    merged = dict(prior_pstat or {})
+    merged.update(dict(current_pstat or {}))
+    additive_keys = (
+        "gamesPitched",
+        "gamesPlayed",
+        "gamesStarted",
+        "gamesFinished",
+        "saves",
+        "battersFaced",
+        "pitchesThrown",
+        "numberOfPitches",
+    )
+    for key in additive_keys:
+        cur = _safe_float((current_pstat or {}).get(key), 0.0)
+        prev = _safe_float((prior_pstat or {}).get(key), 0.0)
+        total = cur + prev
+        if total > 0.0:
+            merged[key] = total
+    return merged
+
+
 def _resolve_pitching_workload_stats(
     client: StatsApiClient,
     person_id: int,
@@ -326,7 +358,7 @@ def _resolve_pitching_workload_stats(
     *,
     lookback_seasons: int = 2,
 ) -> Dict[str, Any]:
-    if _has_pitching_workload(current_pstat):
+    if _has_pitching_workload(current_pstat) and not _is_sparse_pitching_workload(current_pstat):
         return current_pstat
     max_lookback = max(0, int(lookback_seasons))
     for offset in range(1, max_lookback + 1):
@@ -338,6 +370,8 @@ def _resolve_pitching_workload_stats(
         except Exception:
             prior_pstat = {}
         if _has_pitching_workload(prior_pstat):
+            if _has_pitching_workload(current_pstat):
+                return _merge_pitching_workload_stats(current_pstat, prior_pstat)
             return prior_pstat
     return current_pstat
 
@@ -1385,6 +1419,12 @@ def build_team_roster(
             return True
         if gs >= 5.0 and gs_share >= 0.40:
             return True
+        if gs >= 2.0 and stamina >= 55.0 and saves <= 1.0 and gf <= 6.0:
+            return True
+        if gs >= 1.0 and stamina >= 65.0 and saves <= 1.0 and gf <= 4.0:
+            return True
+        if stamina >= 75.0 and gs_share >= 0.10 and saves <= 0.0 and gf <= 3.0:
+            return True
         if gs >= 3.0 and stamina >= 60.0 and saves <= 1.0 and gf <= 6.0:
             return True
         return False
@@ -1398,11 +1438,11 @@ def build_team_roster(
         gs_share = float(snap.get("gs_share", 0.0) or 0.0)
         gf = float(snap.get("gf", 0.0) or 0.0)
         saves = float(snap.get("saves", 0.0) or 0.0)
-        if gs >= 2.0:
+        if gs >= 2.0 and stamina < 65.0:
             return True
-        if gs >= 1.0 and stamina >= 35.0:
+        if gs >= 1.0 and stamina >= 35.0 and stamina < 55.0:
             return True
-        if stamina >= 45.0 and gs_share >= 0.20 and saves <= 2.0 and gf <= 8.0:
+        if stamina >= 45.0 and stamina < 65.0 and gs_share >= 0.20 and saves <= 2.0 and gf <= 8.0:
             return True
         return False
 
@@ -1417,8 +1457,8 @@ def build_team_roster(
             - 0.08 * float(snap.get("gf", 0.0) or 0.0)
         )
 
-    # Exclude clear rotation arms from the default bullpen, keep at most one swingman/LR,
-    # and only add additional starter-like arms back if the pen becomes too short.
+    # Exclude clear rotation arms from the bullpen entirely, and keep at most
+    # one swingman/long-relief arm from the starter-like fringe.
     dedicated_bullpen: List[PitcherProfile] = []
     swingman_candidates: List[PitcherProfile] = []
     excluded_rotation_arms: List[PitcherProfile] = []
@@ -1439,13 +1479,12 @@ def build_team_roster(
         selected_ids = {int(getattr(getattr(p, "player", None), "mlbam_id", 0) or 0) for p in bullpen}
         fallback_pool = [
             p
-            for p in (swingman_candidates + excluded_rotation_arms)
+            for p in swingman_candidates
             if int(getattr(getattr(p, "player", None), "mlbam_id", 0) or 0) not in selected_ids
         ]
         fallback_pool = sorted(
             fallback_pool,
             key=lambda p: (
-                0 if _is_clear_rotation_arm(p) else 1,
                 _avail_mult(p),
                 _long_relief_score(p),
             ),
@@ -1477,7 +1516,7 @@ def build_team_roster(
         p
         for p in bullpen
         if int(p.player.mlbam_id or 0) not in set([pid for pid in ([closer_id] + setup_ids) if pid])
-        and (_is_swingman_candidate(p) or _is_clear_rotation_arm(p))
+        and _is_swingman_candidate(p)
     ]
     if long_relief_pool:
         long_relief_id = max(long_relief_pool, key=_long_relief_score).player.mlbam_id
