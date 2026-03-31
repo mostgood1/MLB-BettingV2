@@ -975,6 +975,22 @@ def _same_daily_card_path(left: Optional[Path], right: Optional[Path]) -> bool:
     return bool(left_logical and right_logical and left_logical == right_logical)
 
 
+def _prefer_newer_file(primary: Optional[Path], challenger: Optional[Path]) -> Optional[Path]:
+    if challenger and challenger.exists() and challenger.is_file():
+        if not primary or not primary.exists() or not primary.is_file():
+            return challenger
+        try:
+            primary_stat = primary.stat()
+            challenger_stat = challenger.stat()
+        except Exception:
+            return primary
+        primary_mtime = int(getattr(primary_stat, "st_mtime_ns", 0) or 0)
+        challenger_mtime = int(getattr(challenger_stat, "st_mtime_ns", 0) or 0)
+        if challenger_mtime > primary_mtime:
+            return challenger
+    return primary
+
+
 def _synthetic_settlement_from_summary(summary: Dict[str, Any]) -> Dict[str, Any]:
     settlement: Dict[str, Any] = {
         "_settled_rows": [],
@@ -1235,16 +1251,19 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
     )
     settlement = _load_json_file(settlement_path)
 
+    tracked_locked_policy_path = tracked_daily_dir / f"daily_summary_{slug}_locked_policy.json"
+
     locked_policy_path = _find_candidate_file(
         preferred=[
             canonical_locked_policy_path,
-            tracked_daily_dir / f"daily_summary_{slug}_locked_policy.json",
+            tracked_locked_policy_path,
             data_dir / "_tmp_live_subcap_random_day" / f"daily_summary_{slug}_locked_policy.json",
             data_dir / "_tmp_live_subcap_smoke" / f"daily_summary_{slug}_locked_policy.json",
             data_dir / f"daily_summary_{slug}_locked_policy.json",
         ],
         recursive_pattern=f"**/daily_summary_{slug}_locked_policy.json",
     )
+    locked_policy_path = _prefer_newer_file(locked_policy_path, tracked_locked_policy_path)
     if not locked_policy_path and isinstance(profile_bundle, dict):
         locked_policy_path = _path_from_maybe_relative(
             ((profile_bundle.get("official_locked_policy") or {}).get("card_path"))
