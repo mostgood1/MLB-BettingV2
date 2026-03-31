@@ -56,16 +56,17 @@ PITCHER_MARKET_ALIASES: Dict[str, str] = {
 }
 
 DEFAULT_LOCK_POLICY: Dict[str, Any] = {
-    "totals_side": "over",
-    "totals_diff_min": 1.0,
-    "ml_side": "home",
+    "totals_side": "best_edge_side",
+    "totals_diff_min": 0.0,
+    "totals_edge_min": 0.01,
+    "ml_side": "best_edge_side",
     "ml_edge_min": 0.01,
     "hitter_edge_min": 0.0,
     "hitter_edge_min_by_market": dict(DEFAULT_HITTER_EDGE_MIN_BY_MARKET),
     "hitter_max_favorite_odds": -200,
     "hitter_hr_under_0_5_max_favorite_odds": -200,
     "pitcher_market": "best",
-    "pitcher_side": "over",
+    "pitcher_side": "best_edge_side",
     "pitcher_edge_min": 0.01,
     "pitcher_max_favorite_odds": -200,
 }
@@ -142,30 +143,35 @@ HITTER_MARKET_SPECS: Dict[str, Dict[str, Any]] = {
         "market": "hitter_home_runs",
         "label": "Hitter HRs",
         "prob_base": "hr",
+        "mean_key": "hr_mean",
         "primary_lines": (0.5,),
     },
     "batter_hits": {
         "market": "hitter_hits",
         "label": "Hitter Hits",
         "prob_base": "hits",
+        "mean_key": "h_mean",
         "primary_lines": (0.5,),
     },
     "batter_total_bases": {
         "market": "hitter_total_bases",
         "label": "Hitter Total Bases",
         "prob_base": "total_bases",
+        "mean_key": "tb_mean",
         "primary_lines": (1.5,),
     },
     "batter_runs_scored": {
         "market": "hitter_runs",
         "label": "Hitter Runs",
         "prob_base": "runs",
+        "mean_key": "r_mean",
         "primary_lines": (0.5,),
     },
     "batter_rbis": {
         "market": "hitter_rbis",
         "label": "Hitter RBIs",
         "prob_base": "rbi",
+        "mean_key": "rbi_mean",
         "primary_lines": (0.5,),
     },
 }
@@ -346,6 +352,179 @@ def _cap_text(value: Optional[int]) -> str:
     return "uncapped" if value is None else str(int(value))
 
 
+def _selection_allowed(selected: Any, requested: Any) -> bool:
+    selection = str(selected or "").strip().lower()
+    policy_side = str(requested or "").strip().lower()
+    if policy_side in {"", "best", "auto", "either", "both", "best_edge_side"}:
+        return True
+    return selection == policy_side
+
+
+def _selected_side_prob_from_over_prob(over_prob: Any, selection: Any) -> Optional[float]:
+    try:
+        prob = float(over_prob)
+    except Exception:
+        return None
+    choice = str(selection or "").strip().lower()
+    if choice == "under":
+        return float(1.0 - prob)
+    return float(prob)
+
+
+def _selected_side_prob_from_home_prob(home_prob: Any, selection: Any) -> Optional[float]:
+    try:
+        prob = float(home_prob)
+    except Exception:
+        return None
+    choice = str(selection or "").strip().lower()
+    if choice == "away":
+        return float(1.0 - prob)
+    return float(prob)
+
+
+def _mean_support_for_selection(mean_value: Any, line_value: Any, selection: Any) -> Optional[float]:
+    try:
+        mean_float = float(mean_value)
+        line_float = float(line_value)
+    except Exception:
+        return None
+    choice = str(selection or "").strip().lower()
+    gap = float(mean_float - line_float)
+    if choice == "under":
+        return float(-gap)
+    if choice == "over":
+        return float(gap)
+    return None
+
+
+def _passes_mean_alignment(mean_value: Any, line_value: Any, selection: Any, min_gap: Any) -> bool:
+    support = _mean_support_for_selection(mean_value, line_value, selection)
+    if support is None:
+        return True
+    try:
+        threshold = float(min_gap)
+    except Exception:
+        threshold = 0.0
+    return float(support) >= float(threshold)
+
+
+def _select_moneyline_side(
+    home_prob: Any,
+    home_odds: Any,
+    away_odds: Any,
+    edge_min: Any,
+    requested_side: Any,
+) -> Optional[Dict[str, Any]]:
+    try:
+        model_home = float(home_prob)
+    except Exception:
+        return None
+    home_market_prob, away_market_prob = _no_vig_two_way(home_odds, away_odds)
+    if home_market_prob is None or away_market_prob is None:
+        return None
+    edge_floor = float(edge_min or 0.0)
+    candidates = [
+        {
+            "selection": "home",
+            "edge": float(model_home - home_market_prob),
+            "selected_side_model_prob": float(model_home),
+            "selected_side_market_prob": float(home_market_prob),
+            "market_no_vig_prob": float(home_market_prob),
+            "odds": home_odds,
+        },
+        {
+            "selection": "away",
+            "edge": float((1.0 - model_home) - away_market_prob),
+            "selected_side_model_prob": float(1.0 - model_home),
+            "selected_side_market_prob": float(away_market_prob),
+            "market_no_vig_prob": float(home_market_prob),
+            "odds": away_odds,
+        },
+    ]
+    allowed = [row for row in candidates if _selection_allowed(row.get("selection"), requested_side)]
+    if not allowed:
+        return None
+    best = max(allowed, key=lambda row: (float(row.get("edge") or 0.0), float(row.get("selected_side_model_prob") or 0.0)))
+    return best if float(best.get("edge") or 0.0) >= edge_floor else None
+
+
+def _format_reason_number(value: Any) -> str:
+    try:
+        num = float(value)
+    except Exception:
+        return "-"
+    if abs(num - round(num)) <= 1e-9:
+        return str(int(round(num)))
+    return f"{num:.1f}"
+
+
+def _format_reason_percent(value: Any) -> str:
+    try:
+        num = float(value)
+    except Exception:
+        return "-"
+    return f"{num * 100.0:.1f}%"
+
+
+def _build_recommendation_reasons(row: Dict[str, Any]) -> List[str]:
+    market = str(row.get("market") or "").strip().lower()
+    selection = str(row.get("selection") or "").strip().lower()
+    reasons: List[str] = []
+
+    selected_model_prob = row.get("selected_side_model_prob")
+    selected_market_prob = row.get("selected_side_market_prob")
+    if selected_model_prob is not None and selected_market_prob is not None:
+        reasons.append(
+            f"Sim likes the {selection or 'selected'} side {_format_reason_percent(selected_model_prob)} vs market {_format_reason_percent(selected_market_prob)}."
+        )
+
+    if market == "totals":
+        if row.get("model_mean_total") is not None and row.get("market_line") is not None:
+            reasons.append(
+                f"Projected total {_format_reason_number(row.get('model_mean_total'))} vs line {_format_reason_number(row.get('market_line'))}."
+            )
+    elif market == "ml":
+        team_label = str(row.get("home_abbr") or row.get("home") or "Home") if selection == "home" else str(row.get("away_abbr") or row.get("away") or "Away")
+        if row.get("selected_side_model_prob") is not None:
+            reasons.append(f"Sim win rate for {team_label} is {_format_reason_percent(row.get('selected_side_model_prob'))}.")
+    elif market == "pitcher_props":
+        prop_label = str(row.get("prop") or "prop").replace("_", " ")
+        mean_key = str(PITCHER_MARKET_SPECS.get(str(row.get("prop") or ""), {}).get("mean_key") or "")
+        if mean_key and row.get(mean_key) is not None and row.get("market_line") is not None:
+            reasons.append(
+                f"Projected {prop_label} {_format_reason_number(row.get(mean_key))} vs line {_format_reason_number(row.get('market_line'))}."
+            )
+        opponent = row.get("away_abbr") if str(row.get("team_side") or "") == "home" else row.get("home_abbr")
+        if opponent:
+            reasons.append(f"Starter path stays live against {opponent}.")
+    else:
+        prop_label = str(row.get("prop") or "prop").replace("_", " ")
+        mean_key = str(HITTER_MARKET_SPECS.get(str(row.get("prop_market_key") or ""), {}).get("mean_key") or "")
+        if mean_key and row.get(mean_key) is not None and row.get("market_line") is not None:
+            reasons.append(
+                f"Projected {prop_label} {_format_reason_number(row.get(mean_key))} vs line {_format_reason_number(row.get('market_line'))}."
+            )
+        lineup_order = row.get("lineup_order")
+        pa_mean = row.get("pa_mean")
+        if isinstance(lineup_order, int) and pa_mean is not None:
+            reasons.append(
+                f"Projected lineup spot {int(lineup_order)} with {_format_reason_number(pa_mean)} PA mean."
+            )
+        elif pa_mean is not None:
+            reasons.append(f"Projected {_format_reason_number(pa_mean)} PA mean supports volume.")
+
+    return reasons
+
+
+def _annotate_recommendation(row: Dict[str, Any]) -> Dict[str, Any]:
+    item = dict(row)
+    reasons = _build_recommendation_reasons(item)
+    if reasons:
+        item["reasons"] = reasons
+        item["reason_summary"] = " | ".join(reasons[:2])
+    return item
+
+
 def _official_cap_profile_name(
     caps: Dict[str, Optional[int]],
     hitter_subcaps: Optional[Dict[str, Any]] = None,
@@ -493,24 +672,44 @@ def _collect_game_recommendations(sim_dir: Path, game_lines_path: Path, policy: 
         totals_market = ((market_game.get("markets") or {}).get("totals") or {})
         total_line = totals_market.get("line")
         mean_total = _mean_from_dist(full.get("total_runs_dist") or {})
-        if total_line is not None and mean_total is not None:
-            edge = float(mean_total) - float(total_line)
-            if edge >= float(policy["totals_diff_min"]):
-                out["totals"].append(
-                    {
-                        **base,
-                        "market": "totals",
-                        "selection": str(policy["totals_side"]),
-                        "edge": float(edge),
-                        "market_line": float(total_line),
-                        "model_mean_total": float(mean_total),
-                        "odds": totals_market.get("over_odds"),
-                        "stake_u": float(DEFAULT_STANDARD_STAKE_U),
-                        "market_no_vig_prob": no_vig_over_prob(
-                            totals_market.get("over_odds"), totals_market.get("under_odds")
-                        ),
-                    }
-                )
+        p_over_total = None
+        if total_line is not None:
+            p_over_total = _prob_over_line_from_dist(full.get("total_runs_dist") or {}, float(total_line))
+        if total_line is not None and mean_total is not None and p_over_total is not None:
+            side_pick = _select_market_side(
+                float(p_over_total),
+                totals_market.get("over_odds"),
+                totals_market.get("under_odds"),
+                float(policy.get("totals_edge_min") or 0.0),
+            )
+            if side_pick is not None and _selection_allowed(side_pick.get("selection"), policy.get("totals_side")):
+                selection = str(side_pick.get("selection") or "")
+                if _passes_mean_alignment(mean_total, total_line, selection, policy.get("totals_diff_min")):
+                    out["totals"].append(
+                        _annotate_recommendation(
+                            {
+                                **base,
+                                "market": "totals",
+                                "selection": selection,
+                                "edge": float(side_pick["edge"]),
+                                "market_line": float(total_line),
+                                "model_mean_total": float(mean_total),
+                                "model_prob_over": float(p_over_total),
+                                "market_prob_over": side_pick.get("market_prob_over"),
+                                "market_prob_under": side_pick.get("market_prob_under"),
+                                "market_prob_mode": side_pick.get("market_prob_mode"),
+                                "market_no_vig_prob_over": side_pick.get("market_no_vig_prob_over"),
+                                "selected_side_market_prob": side_pick.get("selected_side_market_prob"),
+                                "selected_side_model_prob": _selected_side_prob_from_over_prob(p_over_total, selection),
+                                "mean_support": _mean_support_for_selection(mean_total, total_line, selection),
+                                "odds": side_pick.get("odds"),
+                                "stake_u": float(DEFAULT_STANDARD_STAKE_U),
+                                "market_no_vig_prob": no_vig_over_prob(
+                                    totals_market.get("over_odds"), totals_market.get("under_odds")
+                                ),
+                            }
+                        )
+                    )
 
         h2h_market = ((market_game.get("markets") or {}).get("h2h") or {})
         home_prob = float(full.get("home_win_prob") or 0.0)
@@ -518,22 +717,30 @@ def _collect_game_recommendations(sim_dir: Path, game_lines_path: Path, policy: 
         denom = float(home_prob + away_prob)
         if denom > 0.0:
             home_prob /= denom
-            home_nv, _ = _no_vig_two_way(h2h_market.get("home_odds"), h2h_market.get("away_odds"))
-            if home_nv is not None:
-                edge = float(home_prob) - float(home_nv)
-                if edge >= float(policy["ml_edge_min"]):
-                    out["ml"].append(
+            side_pick = _select_moneyline_side(
+                home_prob,
+                h2h_market.get("home_odds"),
+                h2h_market.get("away_odds"),
+                float(policy["ml_edge_min"]),
+                policy.get("ml_side"),
+            )
+            if side_pick is not None:
+                out["ml"].append(
+                    _annotate_recommendation(
                         {
                             **base,
                             "market": "ml",
-                            "selection": str(policy["ml_side"]),
-                            "edge": float(edge),
+                            "selection": str(side_pick.get("selection") or "home"),
+                            "edge": float(side_pick["edge"]),
                             "model_prob": float(home_prob),
-                            "market_no_vig_prob": float(home_nv),
-                            "odds": h2h_market.get("home_odds"),
+                            "selected_side_model_prob": side_pick.get("selected_side_model_prob"),
+                            "selected_side_market_prob": side_pick.get("selected_side_market_prob"),
+                            "market_no_vig_prob": side_pick.get("market_no_vig_prob"),
+                            "odds": side_pick.get("odds"),
                             "stake_u": float(DEFAULT_STANDARD_STAKE_U),
                         }
                     )
+                )
 
     return out
 
@@ -855,28 +1062,44 @@ def _collect_hitter_recommendations(sim_dir: Path, hitter_lines_path: Path, poli
                     odds=side_pick.get("odds"),
                 ):
                     continue
+                mean_value = rec.get(str(market_spec.get("mean_key") or ""))
+                if not _passes_mean_alignment(mean_value, line_value, side_pick["selection"], 0.0):
+                    continue
                 rows.append(
-                    {
-                        **base,
-                        "market": str(market_spec["market"]),
-                        "market_label": str(market_spec["label"]),
-                        "market_group": "hitter_props",
-                        "player_name": rec.get("name"),
-                        "team": rec.get("team"),
-                        "prop": market_key,
-                        "selection": side_pick["selection"],
-                        "edge": float(side_pick["edge"]),
-                        "market_line": float(line_value),
-                        "model_prob_over": float(p_over),
-                        "market_prob_over": side_pick["market_prob_over"],
-                        "market_prob_under": side_pick["market_prob_under"],
-                        "market_prob_mode": side_pick["market_prob_mode"],
-                        "market_no_vig_prob_over": side_pick["market_no_vig_prob_over"],
-                        "selected_side_market_prob": float(side_pick["selected_side_market_prob"]),
-                        "market_alternates": list(props_market.get("alternates") or []),
-                        "odds": side_pick["odds"],
-                        "stake_u": float(DEFAULT_HITTER_STAKE_U),
-                    }
+                    _annotate_recommendation(
+                        {
+                            **base,
+                            "market": str(market_spec["market"]),
+                            "market_label": str(market_spec["label"]),
+                            "market_group": "hitter_props",
+                            "player_name": rec.get("name"),
+                            "team": rec.get("team"),
+                            "prop": market_key,
+                            "prop_market_key": market_key,
+                            "selection": side_pick["selection"],
+                            "edge": float(side_pick["edge"]),
+                            "market_line": float(line_value),
+                            "model_prob_over": float(p_over),
+                            "market_prob_over": side_pick["market_prob_over"],
+                            "market_prob_under": side_pick["market_prob_under"],
+                            "market_prob_mode": side_pick["market_prob_mode"],
+                            "market_no_vig_prob_over": side_pick["market_no_vig_prob_over"],
+                            "selected_side_market_prob": float(side_pick["selected_side_market_prob"]),
+                            "selected_side_model_prob": _selected_side_prob_from_over_prob(p_over, side_pick["selection"]),
+                            "mean_support": _mean_support_for_selection(
+                                mean_value,
+                                line_value,
+                                side_pick["selection"],
+                            ),
+                            str(market_spec.get("mean_key") or ""): mean_value,
+                            "pa_mean": rec.get("pa_mean"),
+                            "ab_mean": rec.get("ab_mean"),
+                            "lineup_order": rec.get("lineup_order"),
+                            "market_alternates": list(props_market.get("alternates") or []),
+                            "odds": side_pick["odds"],
+                            "stake_u": float(DEFAULT_HITTER_STAKE_U),
+                        }
+                    )
                 )
 
     return rows
@@ -933,42 +1156,49 @@ def _collect_pitcher_recommendations(
                     props_market.get("under_odds"),
                     float(policy["pitcher_edge_min"]),
                 )
-                if side_pick is None or str(side_pick.get("selection") or "") != str(policy["pitcher_side"]):
+                if side_pick is None or not _selection_allowed(side_pick.get("selection"), policy.get("pitcher_side")):
                     continue
                 if not _pitcher_price_allowed(policy, odds=side_pick.get("odds")):
                     continue
                 mean_key = str(market_spec.get("mean_key") or "")
+                if not _passes_mean_alignment(pred.get(mean_key), line_value, side_pick.get("selection"), 0.0):
+                    continue
                 rows.append(
-                    {
-                        **base,
-                        "market": "pitcher_props",
-                        "pitcher_name": starter_name,
-                        "team": (sim_obj.get(side) or {}).get("abbreviation"),
-                        "team_side": side,
-                        "prop": str(market_name),
-                        "selection": str(policy["pitcher_side"]),
-                        "edge": float(side_pick["edge"]),
-                        "market_line": float(line_value),
-                        "model_prob_over": float(p_over),
-                        "market_prob_over": side_pick.get("market_prob_over"),
-                        "market_prob_under": side_pick.get("market_prob_under"),
-                        "market_prob_mode": side_pick.get("market_prob_mode"),
-                        "market_no_vig_prob_over": side_pick.get("market_no_vig_prob_over"),
-                        "selected_side_market_prob": side_pick.get("selected_side_market_prob"),
-                        mean_key: pred.get(mean_key),
-                        "market_alternates": list(props_market.get("alternates") or []),
-                        "odds": side_pick.get("odds"),
-                        "stake_u": float(DEFAULT_STANDARD_STAKE_U),
-                    }
+                    _annotate_recommendation(
+                        {
+                            **base,
+                            "market": "pitcher_props",
+                            "pitcher_name": starter_name,
+                            "team": (sim_obj.get(side) or {}).get("abbreviation"),
+                            "team_side": side,
+                            "prop": str(market_name),
+                            "selection": str(side_pick.get("selection") or ""),
+                            "edge": float(side_pick["edge"]),
+                            "market_line": float(line_value),
+                            "model_prob_over": float(p_over),
+                            "market_prob_over": side_pick.get("market_prob_over"),
+                            "market_prob_under": side_pick.get("market_prob_under"),
+                            "market_prob_mode": side_pick.get("market_prob_mode"),
+                            "market_no_vig_prob_over": side_pick.get("market_no_vig_prob_over"),
+                            "selected_side_market_prob": side_pick.get("selected_side_market_prob"),
+                            "selected_side_model_prob": _selected_side_prob_from_over_prob(p_over, side_pick.get("selection")),
+                            "mean_support": _mean_support_for_selection(pred.get(mean_key), line_value, side_pick.get("selection")),
+                            mean_key: pred.get(mean_key),
+                            "market_alternates": list(props_market.get("alternates") or []),
+                            "odds": side_pick.get("odds"),
+                            "stake_u": float(DEFAULT_STANDARD_STAKE_U),
+                        }
+                    )
                 )
 
     return rows
 
 
-def _row_rank_key(row: Dict[str, Any]) -> Tuple[float, float]:
+def _row_rank_key(row: Dict[str, Any]) -> Tuple[float, float, float]:
     return (
+        float(row.get("selected_side_model_prob") or row.get("model_prob") or row.get("model_prob_over") or 0.0),
+        float(row.get("mean_support") or row.get("edge") or row.get("model_mean_total") or 0.0),
         float(row.get("edge") or 0.0),
-        float(row.get("model_prob") or row.get("model_prob_over") or row.get("model_mean_total") or 0.0),
     )
 
 
@@ -1284,7 +1514,7 @@ def _build_locked_policy_card(
         }
 
     cap_note = (
-        "Current live defaults run totals at 2/day with a 1.0 mean-minus-line gate, keep ml at 1 and pitcher props at 3, and add one high-edge runs slot to the HR/Hits/TB hitter mix."
+        "Current live defaults run totals at 2/day, keep ml at 1 and pitcher props at 3, and add one runs slot to the HR/Hits/TB hitter mix while ranking sides from the sim first."
         if cap_profile == DEFAULT_OFFICIAL_CAP_PROFILE
         else "This card uses a custom cap overlay."
     )
@@ -1310,8 +1540,12 @@ def _build_locked_policy_card(
         "selection_source": _rel(best_selection_path),
         "best_selection": best_selection,
         "policy": {
-            "totals": {"side": "over", "mean_minus_line_min": float(policy["totals_diff_min"])},
-            "ml": {"side": "home", "no_vig_edge_min": float(policy["ml_edge_min"])},
+            "totals": {
+                "side": str(policy.get("totals_side") or "best_edge_side"),
+                "calibrated_no_vig_edge_min": float(policy.get("totals_edge_min") or 0.0),
+                "mean_support_min": float(policy["totals_diff_min"]),
+            },
+            "ml": {"side": str(policy.get("ml_side") or "best_edge_side"), "no_vig_edge_min": float(policy["ml_edge_min"])},
             "hitter_props": hitter_policy,
             "pitcher_props": {
                 "market": str(_normalized_pitcher_market(policy.get("pitcher_market"))),
@@ -1340,7 +1574,9 @@ def _build_locked_policy_card(
             cap_note,
             hitter_cap_note,
             "Official player props are limited to one selected lane per player; additional qualified lanes remain available as playable candidates.",
-            "Pitcher props rank the best qualified outs/strikeouts over lanes into the shared pitcher bucket.",
+            "Official sides are now picked from the sim distribution first, with market edge used as a secondary ranking input.",
+            "Totals and player props must keep their projected mean on the same side of the betting line before they can be promoted.",
+            "Pitcher props rank the best qualified outs/strikeouts lanes into the shared pitcher bucket.",
             "Prop price guardrails drop overly juiced favorites before official and other playable candidates are ranked.",
             "Totals, moneyline, and pitcher props are graded at 1.0u; hitter props are graded at 0.25u.",
         ],
@@ -1482,7 +1718,7 @@ def main() -> int:
         "--official-totals-diff-min",
         type=float,
         default=float(DEFAULT_LOCK_POLICY["totals_diff_min"]),
-        help="Minimum mean-minus-line edge for official totals picks.",
+        help="Minimum mean support gap that must agree with the selected totals side.",
     )
     ap.add_argument(
         "--official-ml-cap",

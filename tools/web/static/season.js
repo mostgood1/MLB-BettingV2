@@ -1659,13 +1659,16 @@
   }
 
   function bettingDetailText(reco) {
+    const reasonSummary = String(reco?.reason_summary || "").trim();
+    if (reasonSummary) return reasonSummary;
     const market = String(reco?.market || "").toLowerCase();
     const bits = [];
     if (market === "totals" && toNumber(reco?.model_mean_total) != null) {
       bits.push(`Model total ${formatLine(reco?.model_mean_total)}`);
     }
-    if (market === "pitcher_props" && toNumber(reco?.outs_mean) != null) {
-      bits.push(`Mean ${formatLine(reco?.outs_mean)} outs`);
+    if (market === "pitcher_props") {
+      if (toNumber(reco?.outs_mean) != null) bits.push(`Mean ${formatLine(reco?.outs_mean)} outs`);
+      if (toNumber(reco?.so_mean) != null) bits.push(`Mean ${formatLine(reco?.so_mean)} strikeouts`);
     }
     const modelProb = bettingSelectedModelProb(reco);
     if (modelProb != null) bits.push(`Model ${formatPercent(modelProb, 1)}`);

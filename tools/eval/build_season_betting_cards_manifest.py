@@ -26,23 +26,32 @@ from tools.daily_update_multi_profile import (
     HITTER_MARKET_ORDER,
     HITTER_MARKET_SPECS,
     HITTER_PREDICTION_FIELDS,
+    PITCHER_MARKET_SPECS,
     _cap_text,
+    _annotate_recommendation,
     _get_hitter_prob,
     _has_hitter_subcaps,
     _hitter_edge_min_for_market,
     _hitter_edge_min_overrides,
     _is_hitter_prediction_eligible,
+    _iter_pitcher_market_names,
     _locked_policy_selected_counts,
+    _mean_support_for_selection,
     _no_vig_two_way,
     _normalized_hitter_subcaps,
     _normalized_official_caps,
+    _normalized_pitcher_market,
     _official_cap_profile_name,
+    _passes_mean_alignment,
     _policy_with_overrides,
     _prob_over_line_from_dist,
     _rank_and_cap,
     _rank_and_cap_unique_players,
+    _selected_side_prob_from_over_prob,
+    _selection_allowed,
     _select_hitter_props_market,
     _select_hitter_recommendations,
+    _select_moneyline_side,
     _select_market_side,
     _selected_player_keys,
     _subtract_selected_rows,
@@ -249,6 +258,30 @@ def _iter_report_paths(batch_dir: Path, selected_dates: Sequence[str], max_days:
     return paths
 
 
+def _date_slug(date_str: str) -> str:
+    return str(date_str or "").strip().replace("-", "_")
+
+
+def _canonical_daily_card_path(date_str: str) -> Optional[Path]:
+    candidate = (_ROOT / "data" / "daily" / f"daily_summary_{_date_slug(date_str)}_locked_policy.json").resolve()
+    if candidate.exists() and candidate.is_file():
+        return candidate
+    return None
+
+
+def _authoritative_source_mode(preferred_canonical: bool, source_modes: Sequence[str]) -> str:
+    unique = {str(mode or "").strip() for mode in source_modes if str(mode or "").strip()}
+    if not unique:
+        return "season_eval_batch_reconstruction"
+    if unique == {"canonical_daily_locked_policy"}:
+        return "canonical_daily_locked_policy"
+    if unique == {"season_eval_batch_reconstruction"}:
+        return "season_eval_batch_reconstruction"
+    if preferred_canonical:
+        return "mixed_authoritative_daily"
+    return "mixed_source"
+
+
 def _day_token(date_str: str) -> str:
     return str(date_str).strip().replace("-", "_")
 
@@ -436,21 +469,41 @@ def _collect_report_game_recommendations(
         totals_market = ((market_game.get("markets") or {}).get("totals") or {})
         total_line = _safe_float(totals_market.get("line"))
         mean_total = _safe_float(full.get("mean_total_runs"))
-        if total_line is not None and mean_total is not None:
-            edge = float(mean_total) - float(total_line)
-            if edge >= float(policy["totals_diff_min"]):
-                out["totals"].append(
-                    {
-                        **base,
-                        "market": "totals",
-                        "selection": str(policy["totals_side"]),
-                        "edge": float(edge),
-                        "market_line": float(total_line),
-                        "model_mean_total": float(mean_total),
-                        "odds": totals_market.get("over_odds"),
-                        "stake_u": float(DEFAULT_STANDARD_STAKE_U),
-                    }
-                )
+        p_over_total = None
+        if total_line is not None:
+            p_over_total = _prob_over_line_from_dist(full.get("total_runs_dist") or {}, float(total_line))
+        if total_line is not None and mean_total is not None and p_over_total is not None:
+            side_pick = _select_market_side(
+                float(p_over_total),
+                totals_market.get("over_odds"),
+                totals_market.get("under_odds"),
+                float(policy.get("totals_edge_min") or 0.0),
+            )
+            if side_pick is not None and _selection_allowed(side_pick.get("selection"), policy.get("totals_side")):
+                selection = str(side_pick.get("selection") or "")
+                if _passes_mean_alignment(mean_total, total_line, selection, policy.get("totals_diff_min")):
+                    out["totals"].append(
+                        _annotate_recommendation(
+                            {
+                                **base,
+                                "market": "totals",
+                                "selection": selection,
+                                "edge": float(side_pick["edge"]),
+                                "market_line": float(total_line),
+                                "model_mean_total": float(mean_total),
+                                "model_prob_over": float(p_over_total),
+                                "market_prob_over": side_pick.get("market_prob_over"),
+                                "market_prob_under": side_pick.get("market_prob_under"),
+                                "market_prob_mode": side_pick.get("market_prob_mode"),
+                                "market_no_vig_prob_over": side_pick.get("market_no_vig_prob_over"),
+                                "selected_side_market_prob": side_pick.get("selected_side_market_prob"),
+                                "selected_side_model_prob": _selected_side_prob_from_over_prob(p_over_total, selection),
+                                "mean_support": _mean_support_for_selection(mean_total, total_line, selection),
+                                "odds": side_pick.get("odds"),
+                                "stake_u": float(DEFAULT_STANDARD_STAKE_U),
+                            }
+                        )
+                    )
 
         h2h_market = ((market_game.get("markets") or {}).get("h2h") or {})
         home_prob = _safe_float(full.get("home_win_prob"))
@@ -461,22 +514,29 @@ def _collect_report_game_recommendations(
         if denom <= 0.0:
             continue
         home_prob = float(home_prob) / denom
-        home_nv, _ = _no_vig_two_way(h2h_market.get("home_odds"), h2h_market.get("away_odds"))
-        if home_nv is None:
-            continue
-        edge = float(home_prob) - float(home_nv)
-        if edge >= float(policy["ml_edge_min"]):
+        side_pick = _select_moneyline_side(
+            home_prob,
+            h2h_market.get("home_odds"),
+            h2h_market.get("away_odds"),
+            float(policy["ml_edge_min"]),
+            policy.get("ml_side"),
+        )
+        if side_pick is not None:
             out["ml"].append(
-                {
-                    **base,
-                    "market": "ml",
-                    "selection": str(policy["ml_side"]),
-                    "edge": float(edge),
-                    "model_prob": float(home_prob),
-                    "market_no_vig_prob": float(home_nv),
-                    "odds": h2h_market.get("home_odds"),
-                    "stake_u": float(DEFAULT_STANDARD_STAKE_U),
-                }
+                _annotate_recommendation(
+                    {
+                        **base,
+                        "market": "ml",
+                        "selection": str(side_pick.get("selection") or "home"),
+                        "edge": float(side_pick["edge"]),
+                        "model_prob": float(home_prob),
+                        "selected_side_model_prob": side_pick.get("selected_side_model_prob"),
+                        "selected_side_market_prob": side_pick.get("selected_side_market_prob"),
+                        "market_no_vig_prob": side_pick.get("market_no_vig_prob"),
+                        "odds": side_pick.get("odds"),
+                        "stake_u": float(DEFAULT_STANDARD_STAKE_U),
+                    }
+                )
             )
 
     return out
@@ -491,6 +551,7 @@ def _collect_report_pitcher_recommendations(
     if not date_str:
         return rows
     outs_prob_calibration = ((report_obj.get("meta") or {}).get("outs_prob_calibration") or {})
+    so_prob_calibration = ((report_obj.get("meta") or {}).get("so_prob_calibration") or {})
 
     for game in report_obj.get("games") or []:
         if not isinstance(game, dict):
@@ -503,42 +564,58 @@ def _collect_report_pitcher_recommendations(
             side_props = pitcher_props.get(side) or {}
             pred = side_props.get("pred") or {}
             market = side_props.get("market") or {}
-            outs_market = market.get("outs") or {}
-            line_value = _safe_float(outs_market.get("line"))
-            if line_value is None:
-                continue
-            p_raw = _prob_over_line_from_dist(pred.get("outs_dist") or {}, float(line_value))
-            if p_raw is None:
-                continue
-            p_over = float(apply_prob_calibration(float(p_raw), outs_prob_calibration))
-            over_odds = outs_market.get("over_odds")
-            under_odds = outs_market.get("under_odds")
-            side_pick = _select_market_side(p_over, over_odds, under_odds, float(policy["pitcher_edge_min"]))
-            if side_pick is None or str(side_pick.get("selection") or "") != str(policy["pitcher_side"]):
-                continue
-            rows.append(
-                {
-                    **base,
-                    "market": "pitcher_props",
-                    "pitcher_name": str(starter_names.get(side) or ""),
-                    "team": str(((game.get(side) or {}).get("abbr") or (game.get(side) or {}).get("name") or "")),
-                    "team_side": str(side),
-                    "prop": str(policy["pitcher_market"]),
-                    "selection": str(policy["pitcher_side"]),
-                    "edge": float(side_pick["edge"]),
-                    "market_line": float(line_value),
-                    "model_prob_over": float(p_over),
-                    "market_prob_over": side_pick.get("market_prob_over"),
-                    "market_prob_under": side_pick.get("market_prob_under"),
-                    "market_prob_mode": side_pick.get("market_prob_mode"),
-                    "market_no_vig_prob_over": side_pick.get("market_no_vig_prob_over"),
-                    "selected_side_market_prob": side_pick.get("selected_side_market_prob"),
-                    "outs_mean": pred.get("outs_mean"),
-                    "market_alternates": list(outs_market.get("alternates") or []),
-                    "odds": side_pick.get("odds"),
-                    "stake_u": float(DEFAULT_STANDARD_STAKE_U),
-                }
-            )
+            for market_name in _iter_pitcher_market_names(policy):
+                market_spec = PITCHER_MARKET_SPECS.get(str(market_name)) or {}
+                market_key = str(market_spec.get("market_key") or "")
+                props_market = market.get(market_key) or {}
+                line_value = _safe_float(props_market.get("line"))
+                if line_value is None:
+                    continue
+                dist_key = str(market_spec.get("dist_key") or "")
+                p_raw = _prob_over_line_from_dist(pred.get(dist_key) or {}, float(line_value))
+                if p_raw is None:
+                    continue
+                calibration = so_prob_calibration if str(market_name) == "strikeouts" else outs_prob_calibration
+                p_over = float(apply_prob_calibration(float(p_raw), calibration))
+                side_pick = _select_market_side(
+                    p_over,
+                    props_market.get("over_odds"),
+                    props_market.get("under_odds"),
+                    float(policy["pitcher_edge_min"]),
+                )
+                if side_pick is None or not _selection_allowed(side_pick.get("selection"), policy.get("pitcher_side")):
+                    continue
+                mean_key = str(market_spec.get("mean_key") or "")
+                mean_value = pred.get(mean_key)
+                if not _passes_mean_alignment(mean_value, line_value, side_pick.get("selection"), 0.0):
+                    continue
+                rows.append(
+                    _annotate_recommendation(
+                        {
+                            **base,
+                            "market": "pitcher_props",
+                            "pitcher_name": str(starter_names.get(side) or ""),
+                            "team": str(((game.get(side) or {}).get("abbr") or (game.get(side) or {}).get("name") or "")),
+                            "team_side": str(side),
+                            "prop": str(market_name),
+                            "selection": str(side_pick.get("selection") or ""),
+                            "edge": float(side_pick["edge"]),
+                            "market_line": float(line_value),
+                            "model_prob_over": float(p_over),
+                            "market_prob_over": side_pick.get("market_prob_over"),
+                            "market_prob_under": side_pick.get("market_prob_under"),
+                            "market_prob_mode": side_pick.get("market_prob_mode"),
+                            "market_no_vig_prob_over": side_pick.get("market_no_vig_prob_over"),
+                            "selected_side_market_prob": side_pick.get("selected_side_market_prob"),
+                            "selected_side_model_prob": _selected_side_prob_from_over_prob(p_over, side_pick.get("selection")),
+                            "mean_support": _mean_support_for_selection(mean_value, line_value, side_pick.get("selection")),
+                            mean_key: mean_value,
+                            "market_alternates": list(props_market.get("alternates") or []),
+                            "odds": side_pick.get("odds"),
+                            "stake_u": float(DEFAULT_STANDARD_STAKE_U),
+                        }
+                    )
+                )
 
     return rows
 
@@ -602,30 +679,42 @@ def _collect_report_hitter_recommendations(
                 )
                 if side_pick is None:
                     continue
+                mean_value = rec.get(str(market_spec.get("mean_key") or ""))
+                if not _passes_mean_alignment(mean_value, line_value, side_pick["selection"], 0.0):
+                    continue
                 rows.append(
-                    {
-                        **base,
-                        "market": str(market_spec["market"]),
-                        "market_label": str(market_spec["label"]),
-                        "market_group": "hitter_props",
-                        "player_name": rec.get("name"),
-                        "team": rec.get("team"),
-                        "team_side": rec.get("team_side"),
-                        "batter_id": rec.get("batter_id"),
-                        "prop": str(market_key),
-                        "selection": side_pick["selection"],
-                        "edge": float(side_pick["edge"]),
-                        "market_line": float(line_value),
-                        "model_prob_over": float(p_over),
-                        "market_prob_over": side_pick["market_prob_over"],
-                        "market_prob_under": side_pick["market_prob_under"],
-                        "market_prob_mode": side_pick["market_prob_mode"],
-                        "market_no_vig_prob_over": side_pick["market_no_vig_prob_over"],
-                        "selected_side_market_prob": float(side_pick["selected_side_market_prob"]),
-                        "market_alternates": list(props_market.get("alternates") or []),
-                        "odds": side_pick["odds"],
-                        "stake_u": float(DEFAULT_HITTER_STAKE_U),
-                    }
+                    _annotate_recommendation(
+                        {
+                            **base,
+                            "market": str(market_spec["market"]),
+                            "market_label": str(market_spec["label"]),
+                            "market_group": "hitter_props",
+                            "player_name": rec.get("name"),
+                            "team": rec.get("team"),
+                            "team_side": rec.get("team_side"),
+                            "batter_id": rec.get("batter_id"),
+                            "prop": str(market_key),
+                            "prop_market_key": str(market_key),
+                            "selection": side_pick["selection"],
+                            "edge": float(side_pick["edge"]),
+                            "market_line": float(line_value),
+                            "model_prob_over": float(p_over),
+                            "market_prob_over": side_pick["market_prob_over"],
+                            "market_prob_under": side_pick["market_prob_under"],
+                            "market_prob_mode": side_pick["market_prob_mode"],
+                            "market_no_vig_prob_over": side_pick["market_no_vig_prob_over"],
+                            "selected_side_market_prob": float(side_pick["selected_side_market_prob"]),
+                            "selected_side_model_prob": _selected_side_prob_from_over_prob(p_over, side_pick["selection"]),
+                            "mean_support": _mean_support_for_selection(mean_value, line_value, side_pick["selection"]),
+                            str(market_spec.get("mean_key") or ""): mean_value,
+                            "pa_mean": rec.get("pa_mean"),
+                            "ab_mean": rec.get("ab_mean"),
+                            "lineup_order": rec.get("lineup_order"),
+                            "market_alternates": list(props_market.get("alternates") or []),
+                            "odds": side_pick["odds"],
+                            "stake_u": float(DEFAULT_HITTER_STAKE_U),
+                        }
+                    )
                 )
 
     if skipped_unmapped > 0:
@@ -767,11 +856,15 @@ def _build_card_from_report(
         "source_batch": _relative_path_str(batch_dir),
         "source_mode": "season_eval_batch_reconstruction",
         "policy": {
-            "totals": {"side": "over", "mean_minus_line_min": float(policy["totals_diff_min"])},
-            "ml": {"side": "home", "no_vig_edge_min": float(policy["ml_edge_min"])},
+            "totals": {
+                "side": str(policy.get("totals_side") or "best_edge_side"),
+                "calibrated_no_vig_edge_min": float(policy.get("totals_edge_min") or 0.0),
+                "mean_support_min": float(policy["totals_diff_min"]),
+            },
+            "ml": {"side": str(policy.get("ml_side") or "best_edge_side"), "no_vig_edge_min": float(policy["ml_edge_min"])},
             "hitter_props": hitter_policy,
             "pitcher_props": {
-                "market": str(policy["pitcher_market"]),
+                "market": str(_normalized_pitcher_market(policy.get("pitcher_market"))),
                 "side": str(policy["pitcher_side"]),
                 "one_prop_per_player": True,
                 "calibrated_no_vig_edge_min": float(policy["pitcher_edge_min"]),
@@ -791,6 +884,8 @@ def _build_card_from_report(
         },
         "notes": [
             "This card was reconstructed from the finished season-eval batch using the current official locked-policy thresholds and caps.",
+            "Official sides are picked from the sim distribution first, with market edge used as a secondary ranking input.",
+            "Totals and player props must keep their projected mean on the same side of the betting line before they can be promoted.",
             "Totals, moneyline, and pitcher props are graded at 1.0u; hitter props are graded at 0.25u.",
             (
                 "Hitter submarkets are capped independently at "
@@ -802,7 +897,8 @@ def _build_card_from_report(
                 f"with a {_cap_text(caps.get('hitter_props'))}-pick aggregate hitter ceiling."
             )
             if hitter_selection_mode == "submarket_caps"
-            else "Hitter submarkets share one aggregate hitter_props cap."
+            else "Hitter submarkets share one aggregate hitter_props cap.",
+            "Pitcher props rank the best qualified outs/strikeouts lanes into the shared pitcher bucket."
         ],
         "inputs": {
             "report": _relative_path_str(report_path),
@@ -1013,6 +1109,12 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--hitter-tb-cap", type=int, default=None, help="Override hitter total bases daily subcap")
     ap.add_argument("--hitter-runs-cap", type=int, default=None, help="Override hitter runs daily subcap")
     ap.add_argument("--hitter-rbi-cap", type=int, default=None, help="Override hitter RBI daily subcap")
+    ap.add_argument(
+        "--prefer-canonical-daily",
+        default="off",
+        choices=("on", "off"),
+        help="When on, use canonical data/daily locked-policy cards when they already exist instead of reconstructing those dates from eval reports.",
+    )
     return ap.parse_args()
 
 
@@ -1079,11 +1181,31 @@ def main() -> int:
             },
         )
     )
+    prefer_canonical_daily = str(args.prefer_canonical_daily or "off").strip().lower() == "on"
 
     settled_cards: List[Dict[str, Any]] = []
     day_entries: List[Dict[str, Any]] = []
+    source_modes: List[str] = []
 
     for report_path in report_paths:
+        date_str = str(report_path.stem.replace("sim_vs_actual_", "")).strip()
+        if prefer_canonical_daily:
+            canonical_card_path = _canonical_daily_card_path(date_str)
+            if canonical_card_path is not None:
+                canonical_card = _read_json_dict(canonical_card_path)
+                if canonical_card:
+                    settled_card = _settle_card(canonical_card_path)
+                    settled_cards.append(settled_card)
+                    day_entries.append(
+                        _manifest_day_entry(
+                            card_path=canonical_card_path,
+                            report_path=report_path,
+                            card=canonical_card,
+                            settled_card=settled_card,
+                        )
+                    )
+                    source_modes.append("canonical_daily_locked_policy")
+                    continue
         report_obj = _read_json_dict(report_path)
         if not report_obj:
             continue
@@ -1100,6 +1222,7 @@ def main() -> int:
         settled_card = _settle_card(card_path)
         settled_cards.append(settled_card)
         day_entries.append(_manifest_day_entry(card_path=card_path, report_path=report_path, card=card, settled_card=settled_card))
+        source_modes.append("season_eval_batch_reconstruction")
 
     all_rows: List[Dict[str, Any]] = []
     for card in settled_cards:
@@ -1131,7 +1254,8 @@ def main() -> int:
             "title": str(args.title).strip() or f"MLB {season} Betting Card Recap",
             "batch_dir": _relative_path_str(batch_dir),
             "cards_dir": _relative_path_str(cards_dir),
-            "source_mode": "season_eval_batch_reconstruction",
+            "source_mode": _authoritative_source_mode(prefer_canonical_daily, source_modes),
+            "prefer_canonical_daily": bool(prefer_canonical_daily),
             "cap_profile": _official_cap_profile_name(caps, hitter_subcaps),
             "policy": dict(policy),
             "caps": dict(caps),

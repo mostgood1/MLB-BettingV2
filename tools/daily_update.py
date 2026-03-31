@@ -1012,6 +1012,8 @@ def _publish_live_season_manifests(
         "--title",
         f"MLB {int(season)} Betting Card Recap",
     ]
+    if normalized_profile == "retuned":
+        cmd.extend(["--prefer-canonical-daily", "on"])
     betting_rc = subprocess.run(cmd, check=False).returncode
 
     return {
