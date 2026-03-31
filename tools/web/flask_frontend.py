@@ -4256,6 +4256,74 @@ def _empty_game_betting() -> Dict[str, Any]:
     }
 
 
+def _pending_settlement_from_card(
+    card_path: Optional[Path],
+    card_obj: Dict[str, Any],
+    *,
+    reason: str,
+) -> Dict[str, Any]:
+    date_str = str(card_obj.get("date") or "").strip()
+    selected_counts = _betting_selected_counts_with_defaults(card_obj.get("selected_counts") or {})
+    playable_selected_counts = _betting_selected_counts_with_defaults(card_obj.get("playable_selected_counts") or {})
+    all_selected_counts = _betting_selected_counts_with_defaults(card_obj.get("all_selected_counts") or {})
+
+    unresolved_rows: List[Dict[str, Any]] = []
+    playable_unresolved_rows: List[Dict[str, Any]] = []
+    markets = (card_obj.get("markets") or {}) if isinstance(card_obj, dict) else {}
+    for market_name, market_info in markets.items():
+        if not isinstance(market_info, dict):
+            continue
+        for reco_key, tier_name, target_rows in (
+            ("recommendations", "official", unresolved_rows),
+            ("other_playable_candidates", "candidate", playable_unresolved_rows),
+        ):
+            recs = market_info.get(reco_key) or []
+            if not isinstance(recs, list):
+                continue
+            for rec in recs:
+                if not isinstance(rec, dict):
+                    continue
+                player_label = rec.get("player_name") or rec.get("pitcher_name") or None
+                target_rows.append(
+                    {
+                        "path": str(card_path) if card_path else None,
+                        "date": date_str,
+                        "game_pk": _safe_int(rec.get("game_pk")) or 0,
+                        "market": str(rec.get("market") or market_name),
+                        "player_name": player_label,
+                        "selection": rec.get("selection"),
+                        "market_line": rec.get("market_line"),
+                        "reason": str(reason),
+                        "recommendation_tier": tier_name,
+                    }
+                )
+
+    all_unresolved_rows = list(unresolved_rows) + list(playable_unresolved_rows)
+    return {
+        "path": str(card_path) if card_path else None,
+        "date": date_str,
+        "cap_profile": card_obj.get("cap_profile"),
+        "selected_counts": selected_counts,
+        "playable_selected_counts": playable_selected_counts,
+        "all_selected_counts": all_selected_counts,
+        "results": {"combined": _blank_settled_summary()},
+        "playable_results": {"combined": _blank_settled_summary()},
+        "all_results": {"combined": _blank_settled_summary()},
+        "settled_n": 0,
+        "playable_settled_n": 0,
+        "all_settled_n": 0,
+        "unresolved_n": int(len(unresolved_rows)),
+        "playable_unresolved_n": int(len(playable_unresolved_rows)),
+        "all_unresolved_n": int(len(all_unresolved_rows)),
+        "unresolved_recommendations": unresolved_rows,
+        "playable_unresolved_recommendations": playable_unresolved_rows,
+        "all_unresolved_recommendations": all_unresolved_rows,
+        "_settled_rows": [],
+        "_playable_settled_rows": [],
+        "_all_settled_rows": [],
+    }
+
+
 def _fallback_recommendation_from_settled_row(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not isinstance(row, dict):
         return None
@@ -4459,6 +4527,7 @@ def _season_betting_day_payload(season: int, date_str: str, requested_profile: s
     canonical_settlement_path = daily_artifacts.get("settlement_path")
     canonical_settlement = daily_artifacts.get("settlement")
     embedded_settlement_summary = daily_artifacts.get("embedded_settlement_summary")
+    historical_date = _is_historical_date(str(date_str))
 
     def _finalize_from_card(
         *,
@@ -4474,6 +4543,33 @@ def _season_betting_day_payload(season: int, date_str: str, requested_profile: s
         effective_card_obj = card_obj
         effective_source_kind = str(source_kind)
         settled_card: Optional[Dict[str, Any]] = None
+
+        def _improve_historical_settlement(
+            current_settlement: Optional[Dict[str, Any]],
+            target_card_path: Optional[Path],
+        ) -> Optional[Dict[str, Any]]:
+            if not historical_date or not target_card_path or not isinstance(current_settlement, dict):
+                return current_settlement
+            current_unresolved = _season_betting_unresolved_count(current_settlement)
+            if current_unresolved <= 0:
+                return current_settlement
+            current_all_settled_n = int(current_settlement.get("all_settled_n") or 0)
+            try:
+                exact_settlement = _settle_card(target_card_path)
+            except Exception:
+                return current_settlement
+            exact_unresolved = _season_betting_unresolved_count(exact_settlement)
+            exact_all_settled_n = int(exact_settlement.get("all_settled_n") or 0)
+            if (
+                exact_unresolved < current_unresolved
+                or (
+                    exact_unresolved == current_unresolved
+                    and exact_all_settled_n > current_all_settled_n
+                )
+            ):
+                return exact_settlement
+            return current_settlement
+
         if (
             canonical_settlement_path
             and canonical_card_path
@@ -4492,18 +4588,27 @@ def _season_betting_day_payload(season: int, date_str: str, requested_profile: s
         if not isinstance(settled_card, dict) and isinstance(embedded_settlement, dict):
             settled_card = embedded_settlement
 
+        settled_card = _improve_historical_settlement(settled_card, card_path)
+
         if not isinstance(settled_card, dict):
-            try:
-                settled_card = _settle_card(card_path)
-            except Exception as exc:
-                if manifest_source is not None:
-                    payload["manifest_source"] = _relative_path_str(manifest_source)
-                payload["card_source"] = _relative_path_str(card_path)
-                if isinstance(summary, dict):
-                    payload["summary"] = summary
-                payload["error"] = "season_betting_day_settle_failed"
-                payload["detail"] = str(exc)
-                return payload
+            if historical_date:
+                try:
+                    settled_card = _settle_card(card_path)
+                except Exception as exc:
+                    if manifest_source is not None:
+                        payload["manifest_source"] = _relative_path_str(manifest_source)
+                    payload["card_source"] = _relative_path_str(card_path)
+                    if isinstance(summary, dict):
+                        payload["summary"] = summary
+                    payload["error"] = "season_betting_day_settle_failed"
+                    payload["detail"] = str(exc)
+                    return payload
+            else:
+                settled_card = _pending_settlement_from_card(
+                    effective_card_path,
+                    effective_card_obj,
+                    reason="game not final",
+                )
 
         if not isinstance(settled_card, dict):
             if manifest_source is not None:
@@ -4529,33 +4634,6 @@ def _season_betting_day_payload(season: int, date_str: str, requested_profile: s
         settled_counts = _betting_selected_counts_with_defaults(settled_card.get("selected_counts") or {})
         settled_preview = _merge_settled_results_blocks([settled_card.get("results") or {}])
         settled_combined_preview = settled_preview.get("combined") or _blank_settled_summary()
-        settled_n_preview = int(settled_combined_preview.get("n") or 0)
-        unresolved_preview = _season_betting_unresolved_count(settled_card)
-        if (
-            int(settled_counts.get("combined") or 0) > 0
-            and (unresolved_preview > 0 or settled_n_preview < int(settled_counts.get("combined") or 0))
-        ):
-            try:
-                exact_settled = _settle_card(card_path)
-            except Exception:
-                exact_settled = None
-            if isinstance(exact_settled, dict):
-                exact_counts = _betting_selected_counts_with_defaults(exact_settled.get("selected_counts") or {})
-                exact_preview = _merge_settled_results_blocks([exact_settled.get("results") or {}])
-                exact_combined_preview = exact_preview.get("combined") or _blank_settled_summary()
-                exact_settled_n = int(exact_combined_preview.get("n") or 0)
-                exact_unresolved = _season_betting_unresolved_count(exact_settled)
-                if (
-                    int(exact_counts.get("combined") or 0) > int(settled_counts.get("combined") or 0)
-                    or exact_settled_n > settled_n_preview
-                    or exact_unresolved < unresolved_preview
-                ):
-                    settled_card = exact_settled
-                    settled_counts = exact_counts
-                    settled_preview = exact_preview
-                    settled_combined_preview = exact_combined_preview
-                    settled_n_preview = exact_settled_n
-                    unresolved_preview = exact_unresolved
 
         if canonical_card_path and not _same_daily_card_path(canonical_card_path, card_path):
             if (
@@ -4565,41 +4643,38 @@ def _season_betting_day_payload(season: int, date_str: str, requested_profile: s
             ):
                 canonical_settled = canonical_settlement
             else:
-                try:
-                    canonical_settled = _settle_card(canonical_card_path)
-                except Exception:
-                    canonical_settled = None
-            if isinstance(canonical_settled, dict):
-                canonical_preview = _merge_settled_results_blocks([canonical_settled.get("results") or {}])
-                canonical_combined_preview = canonical_preview.get("combined") or _blank_settled_summary()
-                canonical_unresolved = _season_betting_unresolved_count(canonical_settled)
-                canonical_counts_preview = _betting_selected_counts_with_defaults(canonical_settled.get("selected_counts") or {})
-                if (
-                    int(canonical_counts_preview.get("combined") or 0) > 0
-                    and (
-                        canonical_unresolved > 0
-                        or int(canonical_combined_preview.get("n") or 0) < int(canonical_counts_preview.get("combined") or 0)
-                    )
-                ):
+                canonical_settled = None
+                if historical_date:
                     try:
-                        canonical_exact = _settle_card(canonical_card_path)
+                        canonical_settled = _settle_card(canonical_card_path)
                     except Exception:
-                        canonical_exact = None
-                    if isinstance(canonical_exact, dict):
-                        canonical_exact_preview = _merge_settled_results_blocks([canonical_exact.get("results") or {}])
-                        canonical_exact_combined = canonical_exact_preview.get("combined") or _blank_settled_summary()
-                        canonical_exact_counts = _betting_selected_counts_with_defaults(canonical_exact.get("selected_counts") or {})
-                        canonical_exact_unresolved = _season_betting_unresolved_count(canonical_exact)
-                        if (
-                            int(canonical_exact_counts.get("combined") or 0) > int(canonical_counts_preview.get("combined") or 0)
-                            or int(canonical_exact_combined.get("n") or 0) > int(canonical_combined_preview.get("n") or 0)
-                            or canonical_exact_unresolved < canonical_unresolved
-                        ):
-                            canonical_settled = canonical_exact
+                        canonical_settled = None
+                elif isinstance(canonical_card_obj, dict):
+                    canonical_settled = _pending_settlement_from_card(
+                        canonical_card_path,
+                        canonical_card_obj,
+                        reason="game not final",
+                    )
+            canonical_settled = _improve_historical_settlement(canonical_settled, canonical_card_path)
+            if isinstance(canonical_settled, dict):
+                canonical_counts_preview = _betting_selected_counts_with_defaults(canonical_settled.get("selected_counts") or {})
             canonical_counts = _betting_selected_counts_with_defaults(
                 ((canonical_settled or {}).get("selected_counts") if isinstance(canonical_settled, dict) else None) or {}
             )
-            if int(canonical_counts.get("combined") or 0) > int(settled_counts.get("combined") or 0):
+            canonical_should_override = int(canonical_counts.get("combined") or 0) > int(settled_counts.get("combined") or 0)
+            if not canonical_should_override and isinstance(canonical_settled, dict):
+                canonical_unresolved = _season_betting_unresolved_count(canonical_settled)
+                settled_unresolved = _season_betting_unresolved_count(settled_card)
+                canonical_all_settled_n = int(canonical_settled.get("all_settled_n") or 0)
+                settled_all_settled_n = int(settled_card.get("all_settled_n") or 0)
+                canonical_should_override = (
+                    canonical_unresolved < settled_unresolved
+                    or (
+                        canonical_unresolved == settled_unresolved
+                        and canonical_all_settled_n > settled_all_settled_n
+                    )
+                )
+            if canonical_should_override:
                 settled_card = canonical_settled
                 settled_counts = canonical_counts
                 effective_card_path = canonical_card_path

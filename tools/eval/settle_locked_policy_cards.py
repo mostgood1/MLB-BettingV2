@@ -104,6 +104,15 @@ def _american_profit(odds: Any, stake_u: float) -> float:
     raise ValueError(f"invalid odds: {odds}")
 
 
+def _safe_float(value: Any) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
 def _read_feed_file(path: Path) -> Optional[Dict[str, Any]]:
     if not path.exists() or not path.is_file():
         return None
@@ -207,6 +216,68 @@ HITTER_STAT_KEYS: Dict[str, str] = {
     "hitter_rbis": "rbi",
 }
 
+PITCHER_PROP_STAT_KEYS: Dict[str, str] = {
+    "strikeouts": "strikeOuts",
+    "outs": "outs",
+    "earned_runs": "earnedRuns",
+    "walks": "baseOnBalls",
+    "batters_faced": "battersFaced",
+    "pitches": "pitchesThrown",
+    "hits": "hits",
+}
+
+
+def _normalize_pitcher_prop(value: Any) -> str:
+    token = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "": "strikeouts",
+        "k": "strikeouts",
+        "ks": "strikeouts",
+        "so": "strikeouts",
+        "strikeout": "strikeouts",
+        "strikeouts": "strikeouts",
+        "out": "outs",
+        "outs": "outs",
+        "er": "earned_runs",
+        "earned_run": "earned_runs",
+        "earned_runs": "earned_runs",
+        "earnedruns": "earned_runs",
+        "bb": "walks",
+        "walk": "walks",
+        "walks": "walks",
+        "bf": "batters_faced",
+        "batter_faced": "batters_faced",
+        "batters_faced": "batters_faced",
+        "battersfaced": "batters_faced",
+        "pitch": "pitches",
+        "pitches": "pitches",
+        "hit": "hits",
+        "hits": "hits",
+    }
+    normalized = aliases.get(token, token)
+    return normalized if normalized in PITCHER_PROP_STAT_KEYS else ""
+
+
+def _resolve_pitcher_prop(rec: Dict[str, Any]) -> str:
+    prop_key = _normalize_pitcher_prop(rec.get("prop"))
+    if prop_key:
+        return prop_key
+    if _safe_float(rec.get("outs_mean")) is not None:
+        return "outs"
+    if _safe_float(rec.get("so_mean")) is not None:
+        return "strikeouts"
+    if _safe_float(rec.get("er_mean")) is not None:
+        return "earned_runs"
+    if _safe_float(rec.get("walks_mean")) is not None:
+        return "walks"
+    if _safe_float(rec.get("batters_faced_mean")) is not None:
+        return "batters_faced"
+    if _safe_float(rec.get("pitches_mean")) is not None:
+        return "pitches"
+    if _safe_float(rec.get("hits_mean")) is not None:
+        return "hits"
+    return ""
+
 
 def _summary(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     stake_u = sum(float(row.get("stake_u") or 0.0) for row in rows)
@@ -273,6 +344,7 @@ def _settle_card(path: Path) -> Dict[str, Any]:
                 stake_u = float(rec.get("stake_u") or 0.0)
                 odds = rec.get("odds")
                 player_label = rec.get("player_name") or rec.get("pitcher_name") or None
+                prop_key = _resolve_pitcher_prop(rec)
                 try:
                     feed = feed_cache.setdefault(game_pk, _load_feed(date, game_pk))
                     if not _feed_is_final(feed):
@@ -296,9 +368,10 @@ def _settle_card(path: Path) -> Dict[str, Any]:
                         if not side:
                             raise LookupError("missing pitcher team side")
                         pitching = _player_stats(feed, side, str(rec.get("pitcher_name") or ""), "pitching")
-                        if str(rec.get("prop") or "") != "outs":
+                        stat_key = PITCHER_PROP_STAT_KEYS.get(prop_key)
+                        if not stat_key:
                             raise LookupError(f"unsupported pitcher prop: {rec.get('prop')}")
-                        actual_value = float((pitching or {}).get("outs") or 0.0)
+                        actual_value = float((pitching or {}).get(stat_key) or 0.0)
                         won = _settle_over_under(float(actual_value), line, selection)
                     elif market in HITTER_STAT_KEYS:
                         side = _team_side(feed, str(rec.get("team") or ""))
@@ -319,6 +392,9 @@ def _settle_card(path: Path) -> Dict[str, Any]:
                             "game_pk": game_pk,
                             "market": market,
                             "player_name": player_label,
+                            "pitcher_name": rec.get("pitcher_name") or player_label,
+                            "team": rec.get("team"),
+                            "prop": prop_key or rec.get("prop"),
                             "selection": selection,
                             "market_line": line,
                             "odds": odds,
@@ -337,6 +413,9 @@ def _settle_card(path: Path) -> Dict[str, Any]:
                             "game_pk": game_pk,
                             "market": market,
                             "player_name": player_label,
+                            "pitcher_name": rec.get("pitcher_name") or player_label,
+                            "team": rec.get("team"),
+                            "prop": prop_key or rec.get("prop"),
                             "selection": selection,
                             "market_line": line,
                             "reason": str(exc),

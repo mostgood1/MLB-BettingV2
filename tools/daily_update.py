@@ -59,7 +59,7 @@ from sim_engine.data.roster_artifact import read_game_roster_artifact, write_gam
 from sim_engine.data.roster_registry import build_roster_events_for_date, update_team_roster_registry
 from tools.eval.build_season_eval_manifest import build_manifest as build_season_eval_manifest
 from tools.eval.build_season_eval_manifest import write_manifest_artifacts as write_season_eval_manifest_artifacts
-from tools.eval.settle_locked_policy_cards import _settle_card
+from tools.eval.settle_locked_policy_cards import _feed_is_final, _load_feed, _settle_card
 from tools.oddsapi.fetch_daily_oddsapi_markets import fetch_and_write_live_odds_for_date
 
 
@@ -1219,6 +1219,49 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
             git_push_enabled = False
     report["git_push"] = git_push_stage
 
+    def _prior_day_settlement_diagnostics(settled_card: Dict[str, Any], date_str: str) -> Dict[str, Any]:
+        unresolved_rows = [
+            row
+            for row in (settled_card.get("all_unresolved_recommendations") or [])
+            if isinstance(row, dict)
+        ]
+        unresolved_game_pks = sorted(
+            {
+                int(row.get("game_pk") or 0)
+                for row in unresolved_rows
+                if int(row.get("game_pk") or 0) > 0
+            }
+        )
+        reason_counts: Dict[str, int] = {}
+        final_game_pks: List[int] = []
+        non_final_game_pks: List[int] = []
+        unknown_game_pks: List[int] = []
+
+        for row in unresolved_rows:
+            reason = str(row.get("reason") or "unknown")
+            reason_counts[reason] = int(reason_counts.get(reason, 0) + 1)
+
+        for game_pk in unresolved_game_pks:
+            try:
+                feed = _load_feed(str(date_str), int(game_pk))
+            except Exception:
+                unknown_game_pks.append(int(game_pk))
+                continue
+            if _feed_is_final(feed):
+                final_game_pks.append(int(game_pk))
+            else:
+                non_final_game_pks.append(int(game_pk))
+
+        all_games_final = bool(unresolved_rows) and not non_final_game_pks and not unknown_game_pks
+        return {
+            "unresolved_reason_counts": reason_counts,
+            "unresolved_game_pks": unresolved_game_pks,
+            "final_game_pks": final_game_pks,
+            "non_final_game_pks": non_final_game_pks,
+            "unknown_game_pks": unknown_game_pks,
+            "all_unresolved_games_final": bool(all_games_final),
+        }
+
     refresh_stage: Dict[str, Any]
     if str(getattr(args, "refresh_prior_feed_live", "on") or "on") == "on":
         print(f"[ui-daily] Refreshing prior-day StatsAPI feed/live cache for {prior_date}...")
@@ -1278,9 +1321,18 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
                     "all_unresolved_n": int(settled_card.get("all_unresolved_n") or 0),
                 }
                 if int(settlement_stage.get("all_unresolved_n") or 0) > 0:
-                    report["warnings"].append(
-                        f"prior-day card settlement left {int(settlement_stage.get('all_unresolved_n') or 0)} unresolved recommendation(s)"
-                    )
+                    diagnostics = _prior_day_settlement_diagnostics(settled_card, str(prior_date))
+                    settlement_stage.update(diagnostics)
+                    unresolved_count = int(settlement_stage.get("all_unresolved_n") or 0)
+                    if bool(diagnostics.get("all_unresolved_games_final")):
+                        settlement_stage["status"] = "error"
+                        report["errors"].append(
+                            f"prior-day card settlement left {unresolved_count} unresolved recommendation(s) even though all affected games are final"
+                        )
+                    else:
+                        report["warnings"].append(
+                            f"prior-day card settlement left {unresolved_count} unresolved recommendation(s)"
+                        )
             except Exception as exc:
                 settlement_stage = {
                     "status": "error",
