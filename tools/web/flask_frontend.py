@@ -393,10 +393,14 @@ def _live_lens_loop_status_payload() -> Dict[str, Any]:
     latest_tick_path = _cron_meta_dir() / "latest_live_lens_tick.json"
     status = _load_json_file(status_path) or {}
     latest_tick = _load_json_file(latest_tick_path) or {}
+    werkzeug_run_main = str(os.environ.get("WERKZEUG_RUN_MAIN") or "").strip()
+    flask_debug = str(os.environ.get("FLASK_DEBUG") or "").strip()
     return {
         "enabled": _is_live_lens_loop_enabled(),
         "intervalSeconds": int(_live_lens_loop_interval_seconds()),
         "threadAlive": _live_lens_loop_thread_alive(),
+        "werkzeugRunMain": werkzeug_run_main,
+        "flaskDebug": flask_debug,
         "statusPath": _relative_path_str(status_path),
         "latestTickPath": _relative_path_str(latest_tick_path),
         "status": status,
@@ -7700,7 +7704,8 @@ def start_live_lens_background_loop() -> bool:
     global _LIVE_LENS_LOOP_THREAD
     if not _is_live_lens_loop_enabled():
         return False
-    if str(os.environ.get("WERKZEUG_RUN_MAIN") or "").strip().lower() == "false":
+    werkzeug_run_main = str(os.environ.get("WERKZEUG_RUN_MAIN") or "").strip().lower()
+    if werkzeug_run_main == "false" and _env_bool("FLASK_DEBUG", default=False):
         return False
     with _LIVE_LENS_LOOP_LOCK:
         if _LIVE_LENS_LOOP_THREAD is not None and _LIVE_LENS_LOOP_THREAD.is_alive():
