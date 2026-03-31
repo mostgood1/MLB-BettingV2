@@ -68,5 +68,6 @@ The season republish workflow is what keeps `/opt/render/project/data/eval/seaso
 
 - The Flask app now resolves template and static directories with `pathlib`, so it works on Linux hosts such as Render.
 - The web app now prefers `MLB_BETTING_DATA_ROOT` for mutable live data and falls back to tracked repo data for historical files.
+- Daily cards artifacts can exist in both places (persistent disk and repo-tracked `data/`). The cards API prefers the newest artifact by mtime to avoid stale daily JSON when the disk lags behind git pushes.
 - Live-lens writes now come from the in-process Render loop every 30 seconds; `/api/cron/live-lens-tick` remains available for manual or recovery use.
 - The local runner in `tools/web/flask_frontend.py` also honors `HOST`, `PORT`, and `FLASK_DEBUG`.

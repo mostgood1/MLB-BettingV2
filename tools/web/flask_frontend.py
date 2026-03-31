@@ -1230,15 +1230,18 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
     canonical_snapshot_dir = canonical_daily_dir / "snapshots" / str(d)
     tracked_daily_dir = _TRACKED_DATA_DIR / "daily"
 
+    tracked_profile_bundle_path = tracked_daily_dir / f"daily_summary_{slug}_profile_bundle.json"
+
     profile_bundle_path = _find_candidate_file(
         preferred=[
             canonical_profile_bundle_path,
-            tracked_daily_dir / f"daily_summary_{slug}_profile_bundle.json",
+            tracked_profile_bundle_path,
             data_dir / "_tmp_live_subcap_random_day" / f"daily_summary_{slug}_profile_bundle.json",
             data_dir / "_tmp_live_subcap_smoke" / f"daily_summary_{slug}_profile_bundle.json",
         ],
         recursive_pattern=f"**/daily_summary_{slug}_profile_bundle.json",
     )
+    profile_bundle_path = _prefer_newer_file(profile_bundle_path, tracked_profile_bundle_path)
     profile_bundle = _load_json_file(profile_bundle_path)
 
     settlement_path = _find_candidate_file(
