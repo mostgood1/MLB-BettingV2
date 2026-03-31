@@ -89,6 +89,42 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return bool(default)
 
 
+def _live_lens_optimization_regime(d: Any) -> Dict[str, Any]:
+    date_str = str(d or "").strip()
+    regime = {
+        "date": date_str,
+        "kind": "unclassified",
+        "label": "Unclassified",
+        "isLegacyComparison": False,
+        "isCleanBaseline": False,
+        "baselineStartDate": "2026-03-31",
+        "legacyWindowStartDate": "2026-03-25",
+        "recommendedUse": "inspect_only",
+    }
+    if not date_str:
+        return regime
+    if "2026-03-25" <= date_str < "2026-03-31":
+        regime.update(
+            {
+                "kind": "legacy_comparison",
+                "label": "Legacy comparison",
+                "isLegacyComparison": True,
+                "recommendedUse": "diagnostic_comparison_only",
+            }
+        )
+        return regime
+    if date_str >= "2026-03-31":
+        regime.update(
+            {
+                "kind": "clean_baseline",
+                "label": "Clean baseline",
+                "isCleanBaseline": True,
+                "recommendedUse": "optimization_baseline",
+            }
+        )
+    return regime
+
+
 _DEMO_DATE = "2025-06-04"
 _CARDS_PRESEASON_DEFAULT_WINDOW_DAYS = 21
 _LIVE_PROP_MARKET_MAX_AGE_SECONDS = 15
@@ -3721,7 +3757,16 @@ def _season_betting_aggregate_selected_counts(day_rows: Sequence[Dict[str, Any]]
 def _season_betting_unresolved_count(settled_card: Any) -> int:
     if not isinstance(settled_card, dict):
         return 0
-    return int(len([row for row in (settled_card.get("unresolved_recommendations") or []) if isinstance(row, dict)]))
+    unresolved_rows = [row for row in (settled_card.get("unresolved_recommendations") or []) if isinstance(row, dict)]
+    if unresolved_rows:
+        return int(len(unresolved_rows))
+    unresolved_n = _safe_int(settled_card.get("unresolved_n"))
+    if unresolved_n is not None and int(unresolved_n) > 0:
+        return int(unresolved_n)
+    selected_counts = _betting_selected_counts_with_defaults(settled_card.get("selected_counts") or {})
+    combined = _merge_settled_results_blocks([settled_card.get("results") or {}]).get("combined") or _blank_settled_summary()
+    missing = int(selected_counts.get("combined") or 0) - int(combined.get("n") or 0)
+    return max(int(missing), 0)
 
 
 def _normalized_season_betting_summary(
@@ -4139,8 +4184,16 @@ def _settlement_line_key(value: Any) -> Optional[float]:
     return round(float(line), 4)
 
 
-def _settlement_lookup_key(item: Dict[str, Any]) -> Tuple[Optional[int], str, str, Optional[float], str]:
+def _settlement_market_key(item: Dict[str, Any]) -> str:
     market = str(item.get("market") or "").strip().lower()
+    prop = str(item.get("prop") or "").strip().lower()
+    if market == "hitter_props" and prop in _SETTLED_HITTER_MARKETS:
+        return prop
+    return market
+
+
+def _settlement_lookup_key(item: Dict[str, Any]) -> Tuple[Optional[int], str, str, Optional[float], str]:
+    market = _settlement_market_key(item)
     line_key = _settlement_line_key(item.get("market_line"))
     player_key = _settlement_player_key(item.get("player_name") or item.get("pitcher_name"))
     if market == "ml":
@@ -7534,6 +7587,7 @@ def _live_lens_payload(d: str, *, persist: bool = False) -> Dict[str, Any]:
         "generatedAt": _local_timestamp_text(),
         "dataRoot": _relative_path_str(_DATA_DIR),
         "liveLensDir": _relative_path_str(_LIVE_LENS_DIR),
+        "optimizationRegime": _live_lens_optimization_regime(d),
         "counts": counts,
         "performance": {
             "marketsRefreshed": bool(markets_refreshed),
@@ -7644,6 +7698,7 @@ def _live_lens_reports_payload(d: str) -> Dict[str, Any]:
     return {
         "ok": True,
         "date": str(d),
+        "optimizationRegime": _live_lens_optimization_regime(d),
         "logPath": _relative_path_str(log_path),
         "propObservationLogPath": _relative_path_str(observation_log_path),
         "reportPath": _relative_path_str(_live_lens_report_path(d)),
