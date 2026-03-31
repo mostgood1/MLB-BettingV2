@@ -27,9 +27,9 @@ This repo is configured for a Render Python web service with a persistent disk f
 - Python version: `3.11.9`
 - Data root: `/opt/render/project/data`
 - Live lens dir: `/opt/render/project/data/live_lens`
-- Background live-lens loop: disabled on the Render web worker; GitHub Actions should hit `/api/cron/live-lens-tick` instead
+- Background live-lens loop: enabled on the Render web worker
 - Inline season manifest rebuilds: disabled on the Render web worker; scheduled republish should keep `/opt/render/project/data/eval/seasons/...` fresh instead of rebuilding on user reads
-- Background live-lens interval: `MLB_LIVE_LENS_LOOP_INTERVAL_SECONDS=15`
+- Background live-lens interval: `MLB_LIVE_LENS_LOOP_INTERVAL_SECONDS=30`
 - JSON file cache size: `MLB_JSON_FILE_CACHE_MAXSIZE=256`
 
 ## Cron Endpoints
@@ -48,15 +48,17 @@ All cron endpoints accept either:
 
 ## GitHub Actions
 
-The included workflows are intended to run from GitHub Actions and hit the Render cron endpoints. Configure these repository secrets:
+The included workflows are intended to run from GitHub Actions and hit the Render cron endpoints where scheduled server-side work is still desired. Configure these repository secrets:
 
 - `MLB_BETTING_BASE_URL` or `RENDER_URL`
 - `MLB_BETTING_CRON_TOKEN` or `CRON_TOKEN`
 
-Scheduled workflows in this repo now cover both live-market refreshes and season recap maintenance on the Render disk:
+Scheduled workflows in this repo now cover pregame market refreshes and season recap maintenance on the Render disk:
 
 - `.github/workflows/mlb-pregame-odds-refresh.yml`: refreshes Render OddsAPI snapshots throughout the day
 - `.github/workflows/mlb-season-republish.yml`: runs daily at `11:30 UTC`, rebuilds the prior Chicago-date season day report on Render, then republishes rolling season manifests for that season
+
+The live-lens tick workflow is manual-only because GitHub Actions cron cannot schedule every 30 seconds. Live-lens persistence now runs from the in-process Render loop instead.
 
 The season republish workflow is what keeps `/opt/render/project/data/eval/seasons/...` current without relying on a user request to trigger a rebuild.
 
@@ -64,5 +66,5 @@ The season republish workflow is what keeps `/opt/render/project/data/eval/seaso
 
 - The Flask app now resolves template and static directories with `pathlib`, so it works on Linux hosts such as Render.
 - The web app now prefers `MLB_BETTING_DATA_ROOT` for mutable live data and falls back to tracked repo data for historical files.
-- Render should keep the web worker focused on serving requests; live-lens ticks are driven by the existing GitHub workflow against `/api/cron/live-lens-tick` instead of an in-process background loop.
+- Live-lens writes now come from the in-process Render loop every 30 seconds; `/api/cron/live-lens-tick` remains available for manual or recovery use.
 - The local runner in `tools/web/flask_frontend.py` also honors `HOST`, `PORT`, and `FLASK_DEBUG`.

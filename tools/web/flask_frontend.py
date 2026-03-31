@@ -568,19 +568,21 @@ def _enrich_live_prop_rows_with_registry(
             changed = True
 
         if write_observation_log:
-            _append_jsonl(
-                _live_prop_observation_log_path(d),
-                _live_prop_observation_event(
-                    item,
-                    d=str(d),
-                    key=key,
-                    recorded_at=stamp_text,
-                    snapshot=snapshot,
-                    previous_snapshot=previous_snapshot,
-                    previous_seen_at=previous_seen_at,
-                    entry=entry,
-                ),
+            observation_event = _live_prop_observation_event(
+                item,
+                d=str(d),
+                key=key,
+                recorded_at=stamp_text,
+                snapshot=snapshot,
+                previous_snapshot=previous_snapshot,
+                previous_seen_at=previous_seen_at,
+                entry=entry,
             )
+            if previous_snapshot and observation_event.get("snapshotChanged"):
+                _append_jsonl(
+                    _live_prop_observation_log_path(d),
+                    observation_event,
+                )
 
         first_snapshot = entry.get("firstSeenSnapshot") if isinstance(entry.get("firstSeenSnapshot"), dict) else {}
         item["first_seen_at"] = entry.get("firstSeenAt")
@@ -810,6 +812,19 @@ def _maybe_refresh_live_oddsapi_markets(d: str, *, max_age_seconds: int = _LIVE_
         return True
     except Exception:
         return False
+
+
+def _load_live_lens_feed(game_pk: int, d: str) -> Optional[Dict[str, Any]]:
+    try:
+        use_archive = _is_historical_date(d)
+        feed = _load_game_feed_for_date(int(game_pk), d) if use_archive else None
+        if not isinstance(feed, dict) or not feed:
+            feed = fetch_game_feed_live(_client(), int(game_pk))
+        if isinstance(feed, dict) and feed:
+            return feed
+    except Exception:
+        return None
+    return None
 
 
 def _find_candidate_file(*, preferred: List[Path], recursive_pattern: str) -> Optional[Path]:
@@ -6420,6 +6435,7 @@ def _current_live_prop_rows(
     d: str,
     *,
     write_observation_log: bool = False,
+    ensure_market_fresh: bool = True,
 ) -> List[Dict[str, Any]]:
     if not isinstance(snapshot, dict) or not isinstance(sim_context, dict) or not sim_context.get("found"):
         return []
@@ -6431,7 +6447,8 @@ def _current_live_prop_rows(
     if abstract != "live":
         return []
 
-    _maybe_refresh_live_oddsapi_markets(d)
+    if ensure_market_fresh:
+        _maybe_refresh_live_oddsapi_markets(d)
 
     progress_fraction = float((_live_game_progress(snapshot, card).get("fraction") or 0.0))
     actual_teams = ((snapshot or {}).get("teams") or {})
@@ -6882,6 +6899,7 @@ def _load_sim_context_for_game(
     *,
     artifacts: Optional[Dict[str, Any]] = None,
     archive: Optional[Dict[str, Any]] = None,
+    feed: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     artifacts = artifacts or _load_cards_artifacts(d)
     sim_dir = artifacts.get("sim_dir")
@@ -6926,9 +6944,9 @@ def _load_sim_context_for_game(
 
     name_lookup: Dict[int, str] = {}
     try:
-        feed = _load_game_feed_for_date(int(game_pk), d) if _is_historical_date(d) else None
-        if not isinstance(feed, dict) or not feed:
-            feed = fetch_game_feed_live(_client(), int(game_pk))
+        game_feed = feed if isinstance(feed, dict) and feed else _load_live_lens_feed(int(game_pk), d)
+        if isinstance(game_feed, dict) and game_feed:
+            feed = game_feed
         if isinstance(feed, dict) and feed:
             box = (feed.get("liveData") or {}).get("boxscore") or {}
             teams = box.get("teams") or {}
@@ -7102,14 +7120,11 @@ def _load_live_lens_cards(
         outputs_by_game=outputs_by_game,
         recos_by_game=recos_by_game,
     )
-
-
-def _load_live_lens_snapshot(game_pk: int, d: str) -> Optional[Dict[str, Any]]:
+def _load_live_lens_snapshot(game_pk: int, d: str, *, feed: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     try:
-        use_archive = _is_historical_date(d)
-        feed = _load_game_feed_for_date(int(game_pk), d) if use_archive else None
-        if not isinstance(feed, dict) or not feed:
-            feed = fetch_game_feed_live(_client(), int(game_pk))
+        game_feed = feed if isinstance(feed, dict) and feed else _load_live_lens_feed(int(game_pk), d)
+        if isinstance(game_feed, dict) and game_feed:
+            feed = game_feed
         if not isinstance(feed, dict) or not feed:
             return None
         away_sp = _get_box_starting_pitcher_id(feed, "away")
@@ -7374,11 +7389,16 @@ def _normalize_live_lens_live_prop_row(row: Dict[str, Any], snapshot: Optional[D
 
 
 def _live_lens_payload(d: str, *, persist: bool = False) -> Dict[str, Any]:
+    started_at = time.perf_counter()
+    market_refresh_started_at = time.perf_counter()
+    markets_refreshed = _maybe_refresh_live_oddsapi_markets(d)
+    market_refresh_ms = round((time.perf_counter() - market_refresh_started_at) * 1000.0, 1)
     artifacts = _load_cards_artifacts(d)
     archive = _load_cards_archive_context(d) if _should_load_cards_archive_context(d, artifacts) else {}
     schedule_games = _schedule_games_for_date(d)
     cards = _load_live_lens_cards(d, artifacts=artifacts, archive=archive, schedule_games=schedule_games)
     game_line_index = _load_game_line_market_index(d)
+    feed_cache: Dict[int, Optional[Dict[str, Any]]] = {}
     games_out: List[Dict[str, Any]] = []
     counts = {
         "games": 0,
@@ -7386,16 +7406,30 @@ def _live_lens_payload(d: str, *, persist: bool = False) -> Dict[str, Any]:
         "final": 0,
         "pregame": 0,
         "props": 0,
+        "archivedLiveProps": 0,
     }
+    snapshot_ms_total = 0.0
+    sim_context_ms_total = 0.0
+    prop_eval_ms_total = 0.0
+    game_lens_ms_total = 0.0
     for card in cards:
         game_pk = _safe_int(card.get("gamePk"))
         if not game_pk:
             continue
-        snapshot = _load_live_lens_snapshot(int(game_pk), d)
-        sim_context = _load_sim_context_for_game(int(game_pk), d, artifacts=artifacts, archive=archive)
+        game_feed = feed_cache.get(int(game_pk))
+        if int(game_pk) not in feed_cache:
+            game_feed = _load_live_lens_feed(int(game_pk), d)
+            feed_cache[int(game_pk)] = game_feed
+        snapshot_started_at = time.perf_counter()
+        snapshot = _load_live_lens_snapshot(int(game_pk), d, feed=game_feed)
+        snapshot_ms_total += (time.perf_counter() - snapshot_started_at) * 1000.0
+        sim_context_started_at = time.perf_counter()
+        sim_context = _load_sim_context_for_game(int(game_pk), d, artifacts=artifacts, archive=archive, feed=game_feed)
+        sim_context_ms_total += (time.perf_counter() - sim_context_started_at) * 1000.0
         status = ((snapshot or {}).get("status") or {})
         status_abstract = str(status.get("abstractGameState") or ((card.get("status") or {}).get("abstract") or ""))
         tracked_prop_rows = _prop_lens_rows(card, snapshot, sim_context if sim_context.get("found") else None)
+        prop_eval_started_at = time.perf_counter()
         live_prop_rows = [
             _normalize_live_lens_live_prop_row(row, snapshot, card)
             for row in _current_live_prop_rows(
@@ -7404,10 +7438,18 @@ def _live_lens_payload(d: str, *, persist: bool = False) -> Dict[str, Any]:
                 sim_context if sim_context.get("found") else None,
                 d,
                 write_observation_log=bool(persist),
+                ensure_market_fresh=False,
             )
             if isinstance(row, dict)
         ]
+        archived_live_prop_rows: List[Dict[str, Any]] = []
+        if status_abstract.lower() == "final" and live_prop_rows:
+            archived_live_prop_rows = list(live_prop_rows)
+            live_prop_rows = []
+        prop_eval_ms_total += (time.perf_counter() - prop_eval_started_at) * 1000.0
+        game_lens_started_at = time.perf_counter()
         game_lens = _build_game_lens(card, snapshot, sim_context if sim_context.get("found") else None, _game_line_market_for_card(card, game_line_index))
+        game_lens_ms_total += (time.perf_counter() - game_lens_started_at) * 1000.0
         if status_abstract.lower() == "live":
             counts["live"] += 1
         elif status_abstract.lower() == "final":
@@ -7416,6 +7458,7 @@ def _live_lens_payload(d: str, *, persist: bool = False) -> Dict[str, Any]:
             counts["pregame"] += 1
         counts["games"] += 1
         counts["props"] += len(live_prop_rows) if live_prop_rows else len(tracked_prop_rows)
+        counts["archivedLiveProps"] += len(archived_live_prop_rows)
         away_totals = ((((snapshot or {}).get("teams") or {}).get("away") or {}).get("totals") or {})
         home_totals = ((((snapshot or {}).get("teams") or {}).get("home") or {}).get("totals") or {})
         games_out.append(
@@ -7443,6 +7486,7 @@ def _live_lens_payload(d: str, *, persist: bool = False) -> Dict[str, Any]:
                 "gameLens": game_lens,
                 "props": live_prop_rows if live_prop_rows else tracked_prop_rows,
                 "liveProps": live_prop_rows,
+                "archivedLiveProps": archived_live_prop_rows,
                 "trackedProps": tracked_prop_rows,
                 "simContextAvailable": bool(sim_context.get("found")),
                 "snapshotAvailable": bool(snapshot),
@@ -7455,14 +7499,33 @@ def _live_lens_payload(d: str, *, persist: bool = False) -> Dict[str, Any]:
         "dataRoot": _relative_path_str(_DATA_DIR),
         "liveLensDir": _relative_path_str(_LIVE_LENS_DIR),
         "counts": counts,
+        "performance": {
+            "marketsRefreshed": bool(markets_refreshed),
+            "marketRefreshMs": market_refresh_ms,
+            "totalMs": round((time.perf_counter() - started_at) * 1000.0, 1),
+            "snapshotLoadMs": round(snapshot_ms_total, 1),
+            "simContextLoadMs": round(sim_context_ms_total, 1),
+            "propEvalMs": round(prop_eval_ms_total, 1),
+            "gameLensMs": round(game_lens_ms_total, 1),
+            "gameCount": int(counts["games"]),
+            "liveGameCount": int(counts["live"]),
+            "feedFetchCount": int(len(feed_cache)),
+        },
         "games": games_out,
     }
 
     if persist:
+        persist_started_at = time.perf_counter()
+        perf = payload.get("performance") if isinstance(payload.get("performance"), dict) else {}
+        perf["persistMs"] = None
+        payload["performance"] = perf
+        perf["persistMs"] = round((time.perf_counter() - persist_started_at) * 1000.0, 1)
+        payload["performance"] = perf
         log_entry = {
             "recordedAt": payload.get("generatedAt"),
             "date": payload.get("date"),
             "counts": counts,
+            "performance": payload.get("performance"),
             "games": [
                 {
                     "gamePk": game.get("gamePk"),
