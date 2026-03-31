@@ -104,17 +104,39 @@ def _american_profit(odds: Any, stake_u: float) -> float:
     raise ValueError(f"invalid odds: {odds}")
 
 
+def _read_feed_file(path: Path) -> Optional[Dict[str, Any]]:
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        with gzip.open(path, "rt", encoding="utf-8") as fh:
+            loaded = json.load(fh)
+    except Exception:
+        return None
+    return loaded if isinstance(loaded, dict) and loaded else None
+
+
 def _load_feed(date: str, game_pk: int) -> Dict[str, Any]:
     primary_path = _feed_live_path(date, game_pk)
     candidate_paths = [primary_path]
     fallback_path = (REPO_ROOT / "data" / "raw" / "statsapi" / "feed_live" / str(date).split("-", 1)[0] / str(date) / f"{int(game_pk)}.json.gz").resolve()
     if fallback_path not in candidate_paths:
         candidate_paths.append(fallback_path)
+    stale_feed: Optional[Dict[str, Any]] = None
     for path in candidate_paths:
-        if not path.exists() or not path.is_file():
+        loaded = _read_feed_file(path)
+        if not isinstance(loaded, dict):
             continue
-        with gzip.open(path, "rt", encoding="utf-8") as fh:
-            return json.load(fh)
+        if _feed_is_final(loaded):
+            if path != primary_path:
+                try:
+                    primary_path.parent.mkdir(parents=True, exist_ok=True)
+                    with gzip.open(primary_path, "wt", encoding="utf-8") as fh:
+                        json.dump(loaded, fh)
+                except Exception:
+                    pass
+            return loaded
+        if stale_feed is None:
+            stale_feed = loaded
     client = StatsApiClient.with_default_cache(ttl_seconds=15 * 60)
     fetched = fetch_game_feed_live(client, int(game_pk))
     if isinstance(fetched, dict) and fetched:
@@ -125,6 +147,8 @@ def _load_feed(date: str, game_pk: int) -> Dict[str, Any]:
         except Exception:
             pass
         return fetched
+    if isinstance(stale_feed, dict) and stale_feed:
+        return stale_feed
     raise FileNotFoundError(str(primary_path))
 
 
