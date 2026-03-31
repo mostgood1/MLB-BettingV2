@@ -383,6 +383,38 @@ def _live_lens_loop_interval_seconds() -> int:
     return max(_LIVE_LENS_LOOP_MIN_INTERVAL_SECONDS, int(value))
 
 
+def _live_lens_loop_thread_alive() -> bool:
+    thread = _LIVE_LENS_LOOP_THREAD
+    return bool(thread is not None and thread.is_alive())
+
+
+def _live_lens_loop_status_payload() -> Dict[str, Any]:
+    status_path = _cron_meta_dir() / "live_lens_loop_status.json"
+    latest_tick_path = _cron_meta_dir() / "latest_live_lens_tick.json"
+    status = _load_json_file(status_path) or {}
+    latest_tick = _load_json_file(latest_tick_path) or {}
+    return {
+        "enabled": _is_live_lens_loop_enabled(),
+        "intervalSeconds": int(_live_lens_loop_interval_seconds()),
+        "threadAlive": _live_lens_loop_thread_alive(),
+        "statusPath": _relative_path_str(status_path),
+        "latestTickPath": _relative_path_str(latest_tick_path),
+        "status": status,
+        "latestTick": latest_tick,
+    }
+
+
+def _ensure_live_lens_background_loop_running() -> Dict[str, Any]:
+    was_alive = _live_lens_loop_thread_alive()
+    started = False
+    if not was_alive:
+        started = start_live_lens_background_loop()
+    out = _live_lens_loop_status_payload()
+    out["restartAttempted"] = bool(not was_alive)
+    out["restartStarted"] = bool(started)
+    return out
+
+
 def _live_lens_log_path(d: str) -> Path:
     return _LIVE_LENS_DIR / f"live_lens_{_date_slug(d)}.jsonl"
 
@@ -7936,6 +7968,7 @@ def season_live_lens_view(season: int) -> str:
 
 @app.get("/api/live-lens")
 def api_live_lens() -> Response:
+    _ensure_live_lens_background_loop_running()
     d = str(request.args.get("date") or "").strip() or _default_cards_date()
     persist = str(request.args.get("persist") or "off").strip().lower() == "on"
     return jsonify(_live_lens_payload(d, persist=persist))
@@ -7974,6 +8007,7 @@ def api_cron_config() -> Response:
     auth_error = _require_cron_auth()
     if auth_error is not None:
         return auth_error
+    loop_status = _ensure_live_lens_background_loop_running()
     return jsonify(
         _with_app_build(
             {
@@ -7983,6 +8017,7 @@ def api_cron_config() -> Response:
                 "marketDir": _relative_path_str(_MARKET_DIR),
                 "dailyDir": _relative_path_str(_DAILY_DIR),
                 "liveLensDir": _relative_path_str(_LIVE_LENS_DIR),
+                "liveLensLoop": loop_status,
                 "seasonRebuildEndpoint": "/api/cron/rebuild-season-report?season=YYYY&date=YYYY-MM-DD",
                 "seasonRepublishEndpoint": "/api/cron/republish-season?season=YYYY&profile=retuned",
             }
@@ -8008,6 +8043,7 @@ def api_cron_live_lens_tick() -> Response:
     auth_error = _require_cron_auth()
     if auth_error is not None:
         return auth_error
+    _ensure_live_lens_background_loop_running()
     d = str(request.args.get("date") or "").strip() or _today_iso()
     try:
         return jsonify(_persist_live_lens_tick(d, trigger="api"))
@@ -8020,8 +8056,17 @@ def api_cron_live_lens_reports() -> Response:
     auth_error = _require_cron_auth()
     if auth_error is not None:
         return auth_error
+    _ensure_live_lens_background_loop_running()
     d = str(request.args.get("date") or "").strip() or _today_iso()
     return jsonify(_live_lens_reports_payload(d))
+
+
+@app.get("/api/cron/live-lens-loop-status")
+def api_cron_live_lens_loop_status() -> Response:
+    auth_error = _require_cron_auth()
+    if auth_error is not None:
+        return auth_error
+    return jsonify(_with_app_build({"ok": True, "liveLensLoop": _ensure_live_lens_background_loop_running()}))
 
 
 @app.get("/api/cron/republish-season")
