@@ -41,6 +41,20 @@
     hitter_rbis: "Hitter RBIs",
   };
 
+  const BETTING_PROP_LABELS = {
+    strikeouts: "Strikeouts",
+    outs: "Outs",
+    earned_runs: "Earned runs",
+    walks: "Walks",
+    batters_faced: "Batters faced",
+    pitches: "Pitches",
+    hits: "Hits",
+    home_runs: "HR",
+    total_bases: "TB",
+    rbis: "RBI",
+    runs_scored: "Runs",
+  };
+
   const BETTING_PROFILE_LABELS = {
     baseline: "Baseline recap",
     retuned: "Retuned live recap",
@@ -1037,12 +1051,12 @@
   function bettingMetricLabel(reco) {
     const market = String(reco?.market || "").toLowerCase();
     const prop = String(reco?.prop || "").toLowerCase();
+    if (BETTING_PROP_LABELS[prop]) return BETTING_PROP_LABELS[prop];
     if (market.includes("home_runs") || prop.includes("home_runs")) return "HR";
     if (market.includes("total_bases") || prop.includes("total_bases")) return "TB";
     if (market.includes("rbis") || prop.includes("rbi")) return "RBI";
     if (market.includes("hitter_runs") || prop.includes("runs_scored")) return "Runs";
     if (market.includes("hitter_hits") || prop.endsWith("hits")) return "Hits";
-    if (prop === "outs") return "Outs";
     return BETTING_MARKET_LABELS[market] || String(reco?.market_label || reco?.market || "Prop");
   }
 

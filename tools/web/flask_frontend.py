@@ -1507,6 +1507,117 @@ def _load_hitter_prop_market_lines(d: str) -> Tuple[Optional[Path], Dict[str, Di
     return path, _extract_hitter_prop_market_lines(doc)
 
 
+_MARKET_NAME_FIRST_TOKEN_ALIASES: Dict[str, Tuple[str, ...]] = {
+    "chris": ("christopher",),
+    "christopher": ("chris",),
+    "isiah": ("isaiah",),
+    "isaiah": ("isiah",),
+    "jeff": ("jeffrey",),
+    "jeffrey": ("jeff",),
+    "matt": ("matthew",),
+    "matthew": ("matt",),
+    "mike": ("michael",),
+    "michael": ("mike",),
+    "nate": ("nathaniel",),
+    "nathaniel": ("nate",),
+    "nick": ("nicholas",),
+    "nicholas": ("nick",),
+}
+
+
+def _market_name_lookup_variants(name: Any) -> List[str]:
+    base = normalize_pitcher_name(str(name or ""))
+    if not base:
+        return []
+
+    out: List[str] = []
+    seen: set[str] = set()
+
+    def _add(value: Any) -> None:
+        token = normalize_pitcher_name(str(value or ""))
+        if token and token not in seen:
+            seen.add(token)
+            out.append(token)
+
+    _add(base)
+    tokens = base.split()
+    if len(tokens) >= 2:
+        compact_tokens: List[str] = []
+        compacted = False
+        idx = 0
+        while idx < len(tokens):
+            token = tokens[idx]
+            if len(token) == 1:
+                letters: List[str] = []
+                inner = idx
+                while inner < len(tokens) and len(tokens[inner]) == 1:
+                    letters.append(tokens[inner])
+                    inner += 1
+                if len(letters) >= 2:
+                    compact_tokens.append("".join(letters))
+                    compacted = True
+                    idx = inner
+                    continue
+            compact_tokens.append(token)
+            idx += 1
+        if compacted:
+            _add(" ".join(compact_tokens))
+        first_token = tokens[0]
+        if len(first_token) == 2 and first_token.isalpha():
+            _add(" ".join(list(first_token) + tokens[1:]))
+
+    for variant in list(out):
+        variant_tokens = variant.split()
+        if not variant_tokens:
+            continue
+        for alias in _MARKET_NAME_FIRST_TOKEN_ALIASES.get(variant_tokens[0], ()):
+            _add(" ".join([alias] + variant_tokens[1:]))
+    return out
+
+
+def _market_lines_for_name(all_lines: Any, name: Any) -> Dict[str, Dict[str, Any]]:
+    if not isinstance(all_lines, dict):
+        return {}
+    for variant in _market_name_lookup_variants(name):
+        candidate = all_lines.get(variant)
+        if isinstance(candidate, dict) and candidate:
+            return candidate
+    return {}
+
+
+@lru_cache(maxsize=64)
+def _schedule_status_counts(date_str: str) -> Dict[str, Any]:
+    counts: Dict[str, Any] = {
+        "known": False,
+        "games": 0,
+        "live": 0,
+        "final": 0,
+        "pregame": 0,
+    }
+    d = str(date_str or "").strip()
+    if not d:
+        return counts
+    try:
+        schedule_games = fetch_schedule_for_date(_client(), d) or []
+    except Exception:
+        return counts
+
+    counts["known"] = True
+    for game in schedule_games:
+        if not isinstance(game, dict):
+            continue
+        status = game.get("status") or {}
+        abstract = str(status.get("abstractGameState") or "")
+        if _status_is_live(abstract):
+            counts["live"] += 1
+        elif _status_is_final(abstract):
+            counts["final"] += 1
+        else:
+            counts["pregame"] += 1
+        counts["games"] += 1
+    return counts
+
+
 def _market_line_stage_entry(market: Any, *, stage: str, source: Optional[str] = None) -> Optional[Dict[str, Any]]:
     if not isinstance(market, dict):
         return None
@@ -1622,13 +1733,62 @@ def _load_pitcher_ladder_market_context(d: str) -> Dict[str, Any]:
         if pregame_lines:
             pregame_source = "live_registry_first_seen"
 
+    effective_mode = current_mode
+    schedule_counts = _schedule_status_counts(d) if current_mode == "live" else {"known": False, "live": 0}
+    if current_mode == "live" and bool(schedule_counts.get("known")) and int(schedule_counts.get("live") or 0) <= 0:
+        effective_mode = "pregame"
+    display_lines = pregame_lines if effective_mode != "live" and pregame_lines else current_lines
+    display_source = pregame_source if effective_mode != "live" and pregame_lines else _relative_path_str(current_path)
+
     return {
         "currentPath": current_path,
         "currentMode": current_mode,
+        "effectiveMode": effective_mode,
         "currentLines": current_lines,
+        "displayLines": display_lines,
+        "displaySource": display_source,
         "pregamePath": pregame_path,
         "pregameLines": pregame_lines,
         "pregameSource": pregame_source,
+        "scheduleCounts": schedule_counts,
+    }
+
+
+def _load_hitter_ladder_market_context(d: str) -> Dict[str, Any]:
+    current_path = _resolve_oddsapi_market_file(d, "oddsapi_hitter_props")
+    current_doc = _load_json_file(current_path)
+    current_mode = str((current_doc or {}).get("mode") or "").strip().lower()
+    current_lines = _extract_hitter_prop_market_lines(current_doc)
+
+    pregame_path = _resolve_pregame_oddsapi_market_file(d, "oddsapi_hitter_props")
+    pregame_doc = _load_json_file(pregame_path) if pregame_path else None
+    pregame_lines = _extract_hitter_prop_market_lines(pregame_doc) if isinstance(pregame_doc, dict) else {}
+    pregame_source = _relative_path_str(pregame_path) if pregame_path else None
+    if not pregame_lines:
+        archived_path = _resolve_earliest_archived_oddsapi_market_file(d, "oddsapi_hitter_props")
+        archived_doc = _load_json_file(archived_path) if archived_path else None
+        pregame_lines = _extract_hitter_prop_market_lines(archived_doc) if isinstance(archived_doc, dict) else {}
+        if pregame_lines:
+            pregame_source = _relative_path_str(archived_path)
+
+    effective_mode = current_mode
+    schedule_counts = _schedule_status_counts(d) if current_mode == "live" else {"known": False, "live": 0}
+    if current_mode == "live" and bool(schedule_counts.get("known")) and int(schedule_counts.get("live") or 0) <= 0:
+        effective_mode = "pregame"
+    display_lines = pregame_lines if effective_mode != "live" and pregame_lines else current_lines
+    display_source = pregame_source if effective_mode != "live" and pregame_lines else _relative_path_str(current_path)
+
+    return {
+        "currentPath": current_path,
+        "currentMode": current_mode,
+        "effectiveMode": effective_mode,
+        "currentLines": current_lines,
+        "displayLines": display_lines,
+        "displaySource": display_source,
+        "pregamePath": pregame_path,
+        "pregameLines": pregame_lines,
+        "pregameSource": pregame_source,
+        "scheduleCounts": schedule_counts,
     }
 
 
@@ -1868,9 +2028,10 @@ def _pitcher_ladders_payload(d: str, prop_value: Any, sort_value: Any) -> Dict[s
     sim_dir = artifacts.get("sim_dir") if isinstance(artifacts.get("sim_dir"), Path) else None
     market_ctx = _load_pitcher_ladder_market_context(d)
     market_path = market_ctx.get("currentPath") if isinstance(market_ctx.get("currentPath"), Path) else None
-    market_lines = market_ctx.get("currentLines") if isinstance(market_ctx.get("currentLines"), dict) else {}
+    market_lines = market_ctx.get("displayLines") if isinstance(market_ctx.get("displayLines"), dict) else {}
+    current_market_lines = market_ctx.get("currentLines") if isinstance(market_ctx.get("currentLines"), dict) else {}
     pregame_market_lines = market_ctx.get("pregameLines") if isinstance(market_ctx.get("pregameLines"), dict) else {}
-    market_mode = str(market_ctx.get("currentMode") or "")
+    market_mode = str(market_ctx.get("effectiveMode") or market_ctx.get("currentMode") or "")
     pregame_market_source = str(market_ctx.get("pregameSource") or "")
     nav = _cards_nav_from_schedule(d) or {"season": _season_from_date_str(d)}
 
@@ -1889,7 +2050,7 @@ def _pitcher_ladders_payload(d: str, prop_value: Any, sort_value: Any) -> Dict[s
         "defaultSims": 1000,
         "found": False,
         "sourceDir": _relative_path_str(sim_dir),
-        "marketSource": _relative_path_str(market_path),
+        "marketSource": str(market_ctx.get("displaySource") or _relative_path_str(market_path) or ""),
         "marketMode": market_mode,
         "pregameMarketSource": pregame_market_source,
         "nav": nav,
@@ -1929,9 +2090,9 @@ def _pitcher_ladders_payload(d: str, prop_value: Any, sort_value: Any) -> Dict[s
             opponent = home_abbr if side == "away" else away_abbr
             team_id = away_team_id if side == "away" else home_team_id
             opponent_team_id = home_team_id if side == "away" else away_team_id
-            starter_key = normalize_pitcher_name(starter_name)
-            player_market_lines = market_lines.get(starter_key) or {}
-            player_pregame_market_lines = pregame_market_lines.get(starter_key) or {}
+            player_market_lines = _market_lines_for_name(market_lines, starter_name)
+            player_current_market_lines = _market_lines_for_name(current_market_lines, starter_name)
+            player_pregame_market_lines = _market_lines_for_name(pregame_market_lines, starter_name)
             market = {}
             market_key = prop_cfg.get("market_key")
             if market_key:
@@ -1974,7 +2135,7 @@ def _pitcher_ladders_payload(d: str, prop_value: Any, sort_value: Any) -> Dict[s
                     "marketLinesByStat": _pitcher_market_lines_by_stat(
                         player_market_lines,
                         pregame_markets=player_pregame_market_lines,
-                        live_markets=player_market_lines if market_mode == "live" else None,
+                        live_markets=player_current_market_lines if market_mode == "live" else None,
                         current_mode=market_mode,
                     ),
                     "overLineCount": over_line_count,
@@ -2064,7 +2225,9 @@ def _hitter_ladders_payload(d: str, prop_value: Any) -> Dict[str, Any]:
     prop_cfg = _HITTER_LADDER_PROPS[prop]
     artifacts = _load_cards_artifacts(d)
     sim_dir = artifacts.get("sim_dir") if isinstance(artifacts.get("sim_dir"), Path) else None
-    market_path, market_lines = _load_hitter_prop_market_lines(d)
+    market_ctx = _load_hitter_ladder_market_context(d)
+    market_path = market_ctx.get("currentPath") if isinstance(market_ctx.get("currentPath"), Path) else None
+    market_lines = market_ctx.get("displayLines") if isinstance(market_ctx.get("displayLines"), dict) else {}
     nav = _cards_nav_from_schedule(d) or {"season": _season_from_date_str(d)}
 
     payload: Dict[str, Any] = {
@@ -2085,7 +2248,8 @@ def _hitter_ladders_payload(d: str, prop_value: Any) -> Dict[str, Any]:
         "found": False,
         "ladderShape": "threshold",
         "sourceDir": _relative_path_str(sim_dir),
-        "marketSource": _relative_path_str(market_path),
+        "marketSource": str(market_ctx.get("displaySource") or _relative_path_str(market_path) or ""),
+        "marketMode": str(market_ctx.get("effectiveMode") or market_ctx.get("currentMode") or ""),
         "nav": nav,
         "rows": [],
     }
@@ -2140,7 +2304,7 @@ def _hitter_ladders_payload(d: str, prop_value: Any) -> Dict[str, Any]:
                 opponent = home_abbr if side == "away" else (away_abbr if side == "home" else "")
                 team_id = away_team_id if side == "away" else (home_team_id if side == "home" else None)
                 opponent_team_id = home_team_id if side == "away" else (away_team_id if side == "home" else None)
-                player_market_lines = market_lines.get(normalize_pitcher_name(hitter_name)) or {}
+                player_market_lines = _market_lines_for_name(market_lines, hitter_name)
                 market = {}
                 market_key = prop_cfg.get("market_key")
                 if market_key:
@@ -2214,7 +2378,7 @@ def _hitter_ladders_payload(d: str, prop_value: Any) -> Dict[str, Any]:
                 opponent = home_abbr if side == "away" else (away_abbr if side == "home" else "")
                 team_id = away_team_id if side == "away" else (home_team_id if side == "home" else None)
                 opponent_team_id = home_team_id if side == "away" else (away_team_id if side == "home" else None)
-                player_market_lines = market_lines.get(normalize_pitcher_name(hitter_name)) or {}
+                player_market_lines = _market_lines_for_name(market_lines, hitter_name)
                 market = (player_market_lines.get("batter_home_runs") or {})
                 market_line = _safe_float(market.get("line")) if isinstance(market, dict) else None
                 hit_prob = float(_safe_float(raw_row.get("p_hr_1plus")) or 0.0)
@@ -3625,6 +3789,35 @@ def _betting_selected_counts_with_defaults(counts: Any) -> Dict[str, int]:
     return out
 
 
+def _infer_betting_selected_counts_from_card(card_obj: Any, reco_key: str) -> Dict[str, int]:
+    counts: Dict[str, int] = {key: 0 for key in _BETTING_COUNT_KEYS}
+    markets = (card_obj or {}).get("markets") if isinstance(card_obj, dict) else {}
+    if not isinstance(markets, dict):
+        return counts
+
+    for raw_market_name, market_info in markets.items():
+        if not isinstance(market_info, dict):
+            continue
+        market_name = str(raw_market_name or "").strip().lower()
+        if market_name not in counts:
+            continue
+        recs = market_info.get(reco_key) or []
+        if not isinstance(recs, list):
+            continue
+        counts[market_name] += int(sum(1 for rec in recs if isinstance(rec, dict)))
+
+    if counts["hitter_props"] <= 0:
+        counts["hitter_props"] = int(
+            counts["hitter_home_runs"]
+            + counts["hitter_hits"]
+            + counts["hitter_total_bases"]
+            + counts["hitter_runs"]
+            + counts["hitter_rbis"]
+        )
+    counts["combined"] = int(counts["totals"] + counts["ml"] + counts["pitcher_props"] + counts["hitter_props"])
+    return counts
+
+
 def _blank_settled_summary() -> Dict[str, Any]:
     return {
         "n": 0,
@@ -4266,6 +4459,19 @@ def _pending_settlement_from_card(
     selected_counts = _betting_selected_counts_with_defaults(card_obj.get("selected_counts") or {})
     playable_selected_counts = _betting_selected_counts_with_defaults(card_obj.get("playable_selected_counts") or {})
     all_selected_counts = _betting_selected_counts_with_defaults(card_obj.get("all_selected_counts") or {})
+    inferred_selected_counts = _infer_betting_selected_counts_from_card(card_obj, "recommendations")
+    inferred_playable_counts = _infer_betting_selected_counts_from_card(card_obj, "other_playable_candidates")
+    if int(selected_counts.get("combined") or 0) <= 0:
+        selected_counts = inferred_selected_counts
+    if int(playable_selected_counts.get("combined") or 0) <= 0:
+        playable_selected_counts = inferred_playable_counts
+    if int(all_selected_counts.get("combined") or 0) <= 0:
+        all_selected_counts = _betting_selected_counts_with_defaults(
+            {
+                key: int(selected_counts.get(key) or 0) + int(playable_selected_counts.get(key) or 0)
+                for key in _BETTING_COUNT_KEYS
+            }
+        )
 
     unresolved_rows: List[Dict[str, Any]] = []
     playable_unresolved_rows: List[Dict[str, Any]] = []
