@@ -2,7 +2,7 @@ services:
   - type: web
     name: mlb-betting-v2
     env: python
-    plan: free
+    plan: starter
     autoDeploy: true
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn wsgi:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120 --max-requests 200 --max-requests-jitter 25

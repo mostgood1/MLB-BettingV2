@@ -2,6 +2,8 @@
 
 This repo is configured for a Render Python web service with a persistent disk for live market snapshots and live-lens logs.
 
+Because the service uses a persistent disk, the Blueprint must target a paid web-service plan. Free Render web services do not support persistent disks, so `render.yaml` uses the `starter` plan instead of `free`.
+
 ## Files
 
 - `render.yaml`: Render service definition, persistent disk mount, and runtime env vars
@@ -14,7 +16,7 @@ This repo is configured for a Render Python web service with a persistent disk f
 
 1. Push this repo to GitHub.
 2. In Render, create a new Blueprint instance from the GitHub repo.
-3. Render will read `render.yaml` and create the `mlb-betting-v2` web service with a disk mounted at `/opt/render/project/data`.
+3. Render will read `render.yaml` and create the `mlb-betting-v2` web service on the `starter` plan with a disk mounted at `/opt/render/project/data`.
 4. In Render, set these secrets before using the cron endpoints or scheduled workflows:
 	- `MLB_CRON_TOKEN`
 	- `ODDS_API_KEY`
