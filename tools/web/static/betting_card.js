@@ -322,6 +322,13 @@
   }
 
   function bettingDetailText(reco) {
+    const reasons = Array.isArray(reco?.reasons) ? reco.reasons : null;
+    if (reasons && reasons.length) {
+      const cleaned = reasons
+        .map((row) => String(row == null ? "" : row).trim())
+        .filter(Boolean);
+      if (cleaned.length) return cleaned.slice(0, 3).join(" | ");
+    }
     const reasonSummary = String(reco?.reason_summary || "").trim();
     if (reasonSummary) return reasonSummary;
     const market = String(reco?.market || "").toLowerCase();

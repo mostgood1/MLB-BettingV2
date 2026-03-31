@@ -153,6 +153,32 @@
     return !!(value && typeof value === "object" && Object.keys(value).length);
   }
 
+  function recoReasonLines(reco) {
+    const reasons = Array.isArray(reco?.reasons) ? reco.reasons : [];
+    const cleaned = reasons
+      .map((row) => String(row == null ? "" : row).trim())
+      .filter(Boolean);
+    if (cleaned.length) return cleaned;
+    const summary = String(reco?.reason_summary || "").trim();
+    if (!summary) return [];
+    return summary
+      .split("|")
+      .map((part) => part.trim())
+      .filter(Boolean);
+  }
+
+  function renderRecoReasons(reco) {
+    const lines = recoReasonLines(reco);
+    if (!lines.length) return "";
+    return `
+      <div class="cards-panel-card cards-prop-stack">
+        <div class="cards-table-head"><div class="cards-table-title">Reasons</div></div>
+        <div class="cards-live-lens-reasons">
+          ${lines.map((line) => `<div class="cards-live-lens-reason">${escapeHtml(line)}</div>`).join("")}
+        </div>
+      </div>`;
+  }
+
   function normalizeName(value) {
     return String(value || "")
       .normalize("NFD")
@@ -1755,6 +1781,7 @@
 
       const actualColumns = rows.isPitcher ? ACTUAL_PITCHING_COLUMNS : ACTUAL_BATTING_COLUMNS;
       const simColumns = rows.isPitcher ? simPitchingColumns(detail.sim) : simBattingColumns(detail.sim);
+      const reasonsPanel = renderRecoReasons(selected);
 
       lensNode.innerHTML = `
         <div class="cards-lens-head">
@@ -1775,6 +1802,8 @@
               </div>`)
             .join("")}
         </div>
+
+        ${reasonsPanel}
 
         <div class="cards-box-grid">
           <div class="cards-panel-card cards-prop-stack">
@@ -1930,6 +1959,7 @@
 
     const actualColumns = rows.isPitcher ? ACTUAL_PITCHING_COLUMNS : ACTUAL_BATTING_COLUMNS;
     const simColumns = rows.isPitcher ? simPitchingColumns(detail.sim) : simBattingColumns(detail.sim);
+    const reasonsPanel = renderRecoReasons(selected);
 
     lensNode.innerHTML = `
       <div class="cards-lens-head">
@@ -1950,6 +1980,8 @@
             </div>`)
           .join("")}
       </div>
+
+      ${reasonsPanel}
 
       <div class="cards-box-grid">
         <div class="cards-panel-card cards-prop-stack">
