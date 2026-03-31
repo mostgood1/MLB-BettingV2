@@ -227,6 +227,10 @@
     return liveLensOfficialPropRows(card).concat(liveLensExtraPropRows(card));
   }
 
+  function isPitcherPropRow(reco) {
+    return String(reco?.market || "") === "pitcher_props";
+  }
+
   function allPropRows(card) {
     return officialPropRows(card).concat(extraPropRows(card));
   }
@@ -1603,10 +1607,10 @@
     if (!groupsNode || !lensNode || !filtersNode || !summaryChip) return;
 
     const currentLiveRows = livePropRows(detail);
-    const pitcherRows = liveLensOfficialPropRows(card);
-    const extraPitcherRows = liveLensExtraPropRows(card);
-    const officialCount = pitcherRows.length;
-    const extraCount = extraPitcherRows.length;
+    const officialRows = officialPropRows(card);
+    const extraRows = extraPropRows(card);
+    const officialCount = officialRows.length;
+    const extraCount = extraRows.length;
     const hasPregameRows = (officialCount + extraCount) > 0;
     const liveBoardAvailable = hasLivePropPayload(detail);
     const effectiveBoard = filters.board === "auto"
@@ -1622,15 +1626,15 @@
 
     if (hasLivePropPayload(detail)) {
       if (effectiveBoard === "pregame" && hasPregameRows) {
-        filtersNode.innerHTML = renderPropFilterControls(liveLensAllPropRows(card), detail, { boardOptions });
+        filtersNode.innerHTML = renderPropFilterControls(allPropRows(card), detail, { boardOptions });
       } else {
-      const filteredPitcherRows = filteredPropRows(pitcherRows, filters);
-      const filteredExtraPitcherRows = filteredPropRows(extraPitcherRows, filters);
-      const filteredOfficialCount = filteredPitcherRows.length;
-      const filteredExtraCount = filteredExtraPitcherRows.length;
+      const filteredOfficialRows = filteredPropRows(officialRows, filters);
+      const filteredExtraRows = filteredPropRows(extraRows, filters);
+      const filteredOfficialCount = filteredOfficialRows.length;
+      const filteredExtraCount = filteredExtraRows.length;
       const filteredLiveRows = filteredPropRows(currentLiveRows, filters);
       const filtersApplied = filters.side !== "all" || filters.type !== "all";
-      filtersNode.innerHTML = renderPropFilterControls(currentLiveRows.length ? currentLiveRows : liveLensAllPropRows(card), detail, { boardOptions });
+      filtersNode.innerHTML = renderPropFilterControls(currentLiveRows.length ? currentLiveRows : allPropRows(card), detail, { boardOptions });
       summaryChip.textContent = filtersApplied
         ? ((filteredLiveRows.length || filteredOfficialCount || filteredExtraCount)
           ? `${filteredLiveRows.length} live · ${filteredOfficialCount} official${filteredExtraCount ? ` · +${filteredExtraCount}` : ""}`
@@ -1654,15 +1658,20 @@
       }
 
       const visibleRows = filteredLiveRows
-        .concat(filteredPitcherRows)
-        .concat(filteredExtraPitcherRows);
+        .concat(filteredOfficialRows)
+        .concat(filteredExtraRows);
       let selected = visibleRows.find((row) => propKey(row) === detail.selectedPropKey)
         || filteredLiveRows[0]
-        || filteredPitcherRows[0]
-        || filteredExtraPitcherRows[0]
+        || filteredOfficialRows[0]
+        || filteredExtraRows[0]
         || null;
       const selectedKey = selected ? propKey(selected) : detail.selectedPropKey;
       if (selected) detail.selectedPropKey = selectedKey;
+
+      const filteredOfficialPitcherRows = filteredOfficialRows.filter((row) => isPitcherPropRow(row));
+      const filteredOfficialHitterRows = filteredOfficialRows.filter((row) => !isPitcherPropRow(row));
+      const filteredExtraPitcherRows = filteredExtraRows.filter((row) => isPitcherPropRow(row));
+      const filteredExtraHitterRows = filteredExtraRows.filter((row) => !isPitcherPropRow(row));
 
       groupsNode.innerHTML = `
         ${filteredLiveRows.length ? `
@@ -1680,10 +1689,15 @@
               <div class="cards-table-title"><strong>Official picks</strong></div>
               <span class="cards-chip is-official">${escapeHtml(String(filteredOfficialCount))} plays</span>
             </div>
-            ${filteredPitcherRows.length ? `
+            ${filteredOfficialPitcherRows.length ? `
               <div class="cards-prop-stack">
                 <div class="cards-section-label">Pitcher props</div>
-                ${propButtonMarkup(filteredPitcherRows, selectedKey, "official")}
+                ${propButtonMarkup(filteredOfficialPitcherRows, selectedKey, "official")}
+              </div>` : ""}
+            ${filteredOfficialHitterRows.length ? `
+              <div class="cards-prop-stack">
+                <div class="cards-section-label">Hitter props</div>
+                ${propButtonMarkup(filteredOfficialHitterRows, selectedKey, "official")}
               </div>` : ""}
           </div>` : ""}
         ${filteredExtraCount ? `
@@ -1697,6 +1711,11 @@
               <div class="cards-prop-stack">
                 <div class="cards-section-label">Pitcher props</div>
                 ${propButtonMarkup(filteredExtraPitcherRows, selectedKey, "candidate")}
+              </div>` : ""}
+            ${filteredExtraHitterRows.length ? `
+              <div class="cards-prop-stack">
+                <div class="cards-section-label">Hitter props</div>
+                ${propButtonMarkup(filteredExtraHitterRows, selectedKey, "candidate")}
               </div>` : ""}
           </div>` : ""}`;
 
@@ -1771,15 +1790,15 @@
       }
     }
 
-    const filteredPitcherRows = filteredPropRows(pitcherRows, filters);
-    const filteredExtraPitcherRows = filteredPropRows(extraPitcherRows, filters);
-    const filteredOfficialCount = filteredPitcherRows.length;
-    const filteredExtraCount = filteredExtraPitcherRows.length;
-    const visibleRows = filteredPitcherRows
-      .concat(filteredExtraPitcherRows);
+    const filteredOfficialRows = filteredPropRows(officialRows, filters);
+    const filteredExtraRows = filteredPropRows(extraRows, filters);
+    const filteredOfficialCount = filteredOfficialRows.length;
+    const filteredExtraCount = filteredExtraRows.length;
+    const visibleRows = filteredOfficialRows
+      .concat(filteredExtraRows);
     const filtersApplied = filters.side !== "all" || filters.type !== "all";
 
-    filtersNode.innerHTML = officialCount || extraCount ? renderPropFilterControls(liveLensAllPropRows(card), detail, { boardOptions }) : "";
+    filtersNode.innerHTML = officialCount || extraCount ? renderPropFilterControls(allPropRows(card), detail, { boardOptions }) : "";
     summaryChip.textContent = filtersApplied
       ? (filteredOfficialCount || filteredExtraCount ? propCountBadge(filteredOfficialCount, filteredExtraCount) : "No matches")
       : propCountBadge(officialCount, extraCount);
@@ -1814,11 +1833,16 @@
     }
 
     let selected = visibleRows.find((row) => propKey(row) === detail.selectedPropKey)
-      || filteredPitcherRows[0]
-      || filteredExtraPitcherRows[0]
+      || filteredOfficialRows[0]
+      || filteredExtraRows[0]
       || null;
     const selectedKey = selected ? propKey(selected) : detail.selectedPropKey;
     if (selected) detail.selectedPropKey = selectedKey;
+
+    const filteredOfficialPitcherRows = filteredOfficialRows.filter((row) => isPitcherPropRow(row));
+    const filteredOfficialHitterRows = filteredOfficialRows.filter((row) => !isPitcherPropRow(row));
+    const filteredExtraPitcherRows = filteredExtraRows.filter((row) => isPitcherPropRow(row));
+    const filteredExtraHitterRows = filteredExtraRows.filter((row) => !isPitcherPropRow(row));
 
     groupsNode.innerHTML = `
       ${filteredOfficialCount ? `
@@ -1827,10 +1851,15 @@
             <div class="cards-table-title"><strong>Official picks</strong></div>
             <span class="cards-chip is-official">${escapeHtml(String(filteredOfficialCount))} plays</span>
           </div>
-          ${filteredPitcherRows.length ? `
+          ${filteredOfficialPitcherRows.length ? `
             <div class="cards-prop-stack">
               <div class="cards-section-label">Pitcher props</div>
-              ${propButtonMarkup(filteredPitcherRows, selectedKey, "official")}
+              ${propButtonMarkup(filteredOfficialPitcherRows, selectedKey, "official")}
+            </div>` : ""}
+          ${filteredOfficialHitterRows.length ? `
+            <div class="cards-prop-stack">
+              <div class="cards-section-label">Hitter props</div>
+              ${propButtonMarkup(filteredOfficialHitterRows, selectedKey, "official")}
             </div>` : ""}
         </div>` : ""}
       ${filteredExtraCount ? `
@@ -1844,6 +1873,11 @@
             <div class="cards-prop-stack">
               <div class="cards-section-label">Pitcher props</div>
               ${propButtonMarkup(filteredExtraPitcherRows, selectedKey, "candidate")}
+            </div>` : ""}
+          ${filteredExtraHitterRows.length ? `
+            <div class="cards-prop-stack">
+              <div class="cards-section-label">Hitter props</div>
+              ${propButtonMarkup(filteredExtraHitterRows, selectedKey, "candidate")}
             </div>` : ""}
         </div>` : ""}`;
 
