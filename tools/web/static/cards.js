@@ -559,7 +559,7 @@
   }
 
   function renderGameLens(card, detail) {
-    const rows = buildGameLensRows(card, detail);
+    const rows = buildGameLensRows(card, detail).filter((row) => row?.key !== "live");
     if (!rows.length) return '<div class="cards-empty-copy">No live game lens available.</div>';
     function pickSummary(label, pick, edge, kind) {
       if (!pick || edge == null) return `${label}: -`;
@@ -898,9 +898,9 @@
 
   function probabilityRows(card) {
     const entries = [
-      { label: "Full game", row: card?.predictions?.full || null },
-      { label: "First 5", row: card?.predictions?.first5 || null },
       { label: "First 3", row: card?.predictions?.first3 || null },
+      { label: "First 5", row: card?.predictions?.first5 || null },
+      { label: "Full game", row: card?.predictions?.full || null },
     ];
     return entries
       .map((entry) => {
@@ -1029,35 +1029,34 @@
         ${marketTiles(card)}
       </div>
 
-      <div class="cards-tabs">
-        <button class="cards-tab is-active" type="button" data-tab-target="overview">Game</button>
-        <button class="cards-tab" type="button" data-tab-target="boxscore">Box Score</button>
-        <button class="cards-tab" type="button" data-tab-target="props">Props</button>
+      <div class="cards-tabs-rail">
+        <div class="cards-tabs">
+          <button class="cards-tab is-active" type="button" data-tab-target="overview">Game</button>
+          <button class="cards-tab" type="button" data-tab-target="boxscore">Box Score</button>
+          <button class="cards-tab" type="button" data-tab-target="props">Props</button>
+        </div>
+        <div class="cards-mini-metrics cards-mini-metrics--rail">
+          <div class="cards-mini-metric">
+            <span class="cards-section-label">Away starter</span>
+            <strong>${escapeHtml(card?.probable?.away?.fullName || "TBD")}</strong>
+          </div>
+          <div class="cards-mini-metric">
+            <span class="cards-section-label">Home starter</span>
+            <strong>${escapeHtml(card?.probable?.home?.fullName || "TBD")}</strong>
+          </div>
+        </div>
       </div>
 
       <section class="cards-panel is-active" data-panel-id="overview">
         <div class="cards-overview-grid">
-          <div class="cards-panel-card">
+          <div class="cards-panel-card cards-panel-card--overview-main">
             <div class="cards-box-head">
               <div class="cards-table-title"><strong>Game lens</strong></div>
               <span class="cards-overview-badge">${escapeHtml(card.gameType || "MLB")}</span>
             </div>
-            <div class="cards-live-lens-grid" data-role="game-lens"></div>
-            <div class="cards-prob-grid">${probabilityRows(card)}</div>
-            <div class="cards-mini-metrics">
-              <div class="cards-mini-metric">
-                <span class="cards-section-label">Away starter</span>
-                <strong>${escapeHtml(card?.probable?.away?.fullName || "TBD")}</strong>
-              </div>
-              <div class="cards-mini-metric">
-                <span class="cards-section-label">Home starter</span>
-                <strong>${escapeHtml(card?.probable?.home?.fullName || "TBD")}</strong>
-              </div>
-              <div class="cards-mini-metric">
-                <span class="cards-section-label">Official props</span>
-                <strong>${escapeHtml(String(officialPropCount || 0))}</strong>
-                <div class="cards-mini-copy">${escapeHtml(extraPropCount ? `+${extraPropCount} more playable` : "No extra playable props")}</div>
-              </div>
+            <div class="cards-overview-main-grid">
+              <div class="cards-live-lens-grid" data-role="game-lens"></div>
+              <div class="cards-prob-grid">${probabilityRows(card)}</div>
             </div>
           </div>
 
