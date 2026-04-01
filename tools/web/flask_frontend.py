@@ -3567,6 +3567,9 @@ def _cards_nav_from_schedule(date_str: str) -> Dict[str, Any]:
     current = str(date_str or "").strip()
     min_date = schedule_dates[0]
     max_date = schedule_dates[-1]
+    today = _today_iso()
+    if _season_from_date_str(today) == int(season) and today > max_date:
+        max_date = today
     idx = bisect_left(schedule_dates, current)
 
     if current and current < min_date:
