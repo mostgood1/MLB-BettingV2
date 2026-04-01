@@ -1,61 +1,22 @@
 [CmdletBinding()]
 param(
-    [Parameter()]
     [string]$Date = (Get-Date).ToString('yyyy-MM-dd'),
-
-    [Parameter()]
     [int]$Season = [int](Get-Date).Year,
-
-    [Parameter()]
     [string]$NextDate = '',
-
-    [Parameter()]
     [int]$Sims = 1000,
-
-    [Parameter()]
     [int]$Workers = 4,
-
-    [Parameter()]
-    [ValidateSet('off', 'pa', 'pitch')]
     [string]$Pbp = 'off',
-
-    [Parameter()]
     [int]$PbpMaxEvents = 250,
-
-    [Parameter()]
-    [ValidateSet('on', 'off')]
     [string]$UseRosterArtifacts = 'on',
-
-    [Parameter()]
-    [ValidateSet('on', 'off')]
     [string]$WriteRosterArtifacts = 'on',
-
-    [Parameter()]
-    [ValidateSet('on', 'off')]
     [string]$GitPush = 'on',
-
-    [Parameter()]
     [string]$GitPushRemote = 'origin',
-
-    [Parameter()]
     [string]$GitPushBranch = '',
-
-    [Parameter()]
     [string]$GitCommitMessage = 'Daily end-to-end {date} + {next_date}',
-
-    [Parameter()]
     [switch]$SpringMode,
-
-    [Parameter()]
     [switch]$SkipPriorReconcile,
-
-    [Parameter()]
     [string]$PythonExe = '',
-
-    [Parameter()]
     [switch]$AllowDirtyGit,
-
-    [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$ExtraArgs
 )
 
