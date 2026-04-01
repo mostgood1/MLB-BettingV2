@@ -3051,6 +3051,7 @@ def _season_report_outputs_by_game(day_report: Optional[Dict[str, Any]]) -> Dict
             "away": _first_text(away.get("name"), away_abbr),
             "home": _first_text(home.get("name"), home_abbr),
             "full": _normalized_full_game_probs(full),
+            "first1": dict(segments.get("first1") or {}),
             "first5": dict(segments.get("first5") or {}),
             "first3": dict(segments.get("first3") or {}),
             "probable": {
@@ -3136,6 +3137,47 @@ def _cards_list_from_sources(
     recos_by_game: Dict[int, Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
     cards_by_game: Dict[int, Dict[str, Any]] = {}
+    sim_segment_cache: Dict[int, Dict[str, Any]] = {}
+
+    def _sim_segments_for_game(game_pk: int) -> Dict[str, Any]:
+        cached = sim_segment_cache.get(int(game_pk))
+        if cached is not None:
+            return cached
+        out: Dict[str, Any] = {}
+        sim_path = _find_sim_file(game_pk=int(game_pk), d=d)
+        if sim_path is not None:
+            try:
+                sim_obj = json.loads(sim_path.read_text(encoding="utf-8"))
+            except Exception:
+                sim_obj = {}
+            sim_segments = (((sim_obj.get("sim") or {}).get("segments") or {})) if isinstance(sim_obj, dict) else {}
+            if isinstance(sim_segments, dict):
+                out = {
+                    str(key): dict(value)
+                    for key, value in sim_segments.items()
+                    if isinstance(value, dict)
+                }
+        sim_segment_cache[int(game_pk)] = out
+        return out
+
+    def _merge_prediction_row(base_row: Any, sim_segments: Dict[str, Any], key: str, *, normalize_full: bool = False) -> Dict[str, Any]:
+        base = dict(base_row) if isinstance(base_row, dict) else {}
+        sim_row = dict(sim_segments.get(str(key)) or {}) if isinstance(sim_segments.get(str(key)), dict) else {}
+        merged = dict(base)
+        for field in (
+            "home_win_prob",
+            "away_win_prob",
+            "tie_prob",
+            "away_runs_mean",
+            "home_runs_mean",
+            "total_runs_dist",
+            "run_margin_dist",
+            "samples",
+        ):
+            if field not in merged or merged.get(field) in (None, {}, []):
+                if sim_row.get(field) not in (None, {}, []):
+                    merged[field] = sim_row.get(field)
+        return _normalized_full_game_probs(merged) if normalize_full else merged
 
     def _card_sort_key(card: Dict[str, Any]) -> Tuple[int, int, str, int]:
         status = str(((card.get("status") or {}).get("abstract")) or "").strip().lower()
@@ -3203,6 +3245,7 @@ def _cards_list_from_sources(
 
     for idx, (game_pk, row) in enumerate(outputs_by_game.items()):
         card = _ensure_card(int(game_pk), 1000 + idx)
+        sim_segments = _sim_segments_for_game(int(game_pk))
         away_abbr = _first_text(row.get("away_abbr"), row.get("away"), card["away"].get("abbr"))
         home_abbr = _first_text(row.get("home_abbr"), row.get("home"), card["home"].get("abbr"))
         if not card["away"].get("name") or card["away"].get("name") == "Away":
@@ -3242,9 +3285,10 @@ def _cards_list_from_sources(
             card["startTime"] = _format_start_time_local(card["gameDate"])
 
         card["predictions"] = {
-            "full": _normalized_full_game_probs(row.get("full") or {}),
-            "first5": row.get("first5") or {},
-            "first3": row.get("first3") or {},
+            "full": _merge_prediction_row(row.get("full") or {}, sim_segments, "full", normalize_full=True),
+            "first1": _merge_prediction_row(row.get("first1") or {}, sim_segments, "first1"),
+            "first5": _merge_prediction_row(row.get("first5") or {}, sim_segments, "first5"),
+            "first3": _merge_prediction_row(row.get("first3") or {}, sim_segments, "first3"),
         }
 
     for idx, (game_pk, bucket) in enumerate(recos_by_game.items()):
@@ -3348,7 +3392,8 @@ def _report_player_meta(report_game: Optional[Dict[str, Any]]) -> Dict[int, Dict
 
 
 def _report_game_to_sim_obj(report_game: Dict[str, Any], sim_count: Optional[int]) -> Dict[str, Any]:
-    full = ((report_game.get("segments") or {}).get("full") or {})
+    report_segments = report_game.get("segments") if isinstance(report_game.get("segments"), dict) else {}
+    full = (report_segments.get("full") or {})
     mean_total = _safe_float(full.get("mean_total_runs"))
     margin = _safe_float(full.get("mean_run_margin_home_minus_away"))
     away_runs_mean: Optional[float] = None
@@ -3356,6 +3401,16 @@ def _report_game_to_sim_obj(report_game: Dict[str, Any], sim_count: Optional[int
     if mean_total is not None and margin is not None:
         home_runs_mean = round((float(mean_total) + float(margin)) / 2.0, 3)
         away_runs_mean = round(float(mean_total) - float(home_runs_mean), 3)
+
+    segments_out = {
+        key: dict(report_segments.get(key) or {})
+        for key in ("full", "first1", "first3", "first5")
+    }
+    full_out = segments_out.get("full") if isinstance(segments_out.get("full"), dict) else {}
+    if away_runs_mean is not None and full_out.get("away_runs_mean") is None:
+        full_out["away_runs_mean"] = away_runs_mean
+    if home_runs_mean is not None and full_out.get("home_runs_mean") is None:
+        full_out["home_runs_mean"] = home_runs_mean
 
     pitcher_props_out: Dict[str, Dict[str, Optional[float]]] = {}
     pitcher_props = report_game.get("pitcher_props") or {}
@@ -3382,12 +3437,7 @@ def _report_game_to_sim_obj(report_game: Dict[str, Any], sim_count: Optional[int
         "starter_names": report_game.get("starter_names") or {},
         "sim": {
             "sims": _safe_int(sim_count),
-            "segments": {
-                "full": {
-                    "away_runs_mean": away_runs_mean,
-                    "home_runs_mean": home_runs_mean,
-                }
-            },
+            "segments": segments_out,
             "pitcher_props": pitcher_props_out,
             "hitter_props_likelihood_topn": report_game.get("hitter_props_likelihood") or {},
             "hitter_hr_likelihood_topn": {"overall": []},
@@ -5448,6 +5498,7 @@ def _season_day_payload(
         "summary": {
             "aggregate": {
                 "full": aggregate.get("full") or {},
+                "first1": aggregate.get("first1") or {},
                 "first5": aggregate.get("first5") or {},
                 "first3": aggregate.get("first3") or {},
             },
@@ -7740,6 +7791,7 @@ def _load_sim_context_for_game(
         "away": sim_obj.get("away") or {},
         "home": sim_obj.get("home") or {},
         "predicted": _sim_predicted_score(sim_obj),
+        "segments": sim_data.get("segments") or {},
         "predictedMode": "aggregate_mean",
         "hasPbp": bool(has_pbp),
         "note": None if has_pbp else "sim_output_has_no_pbp",
@@ -7869,6 +7921,7 @@ def _build_game_lens(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], s
 
     lanes = [
         {"key": "live", "label": progress.get("label") or "Live", "innings": 9, "baseline": False},
+        {"key": "first1", "label": "F1", "innings": 1, "baseline": True},
         {"key": "first3", "label": "F3", "innings": 3, "baseline": True},
         {"key": "first5", "label": "F5", "innings": 5, "baseline": True},
         {"key": "first7", "label": "F7", "innings": 7, "baseline": False},

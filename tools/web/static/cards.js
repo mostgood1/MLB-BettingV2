@@ -62,6 +62,13 @@
     return `${(num * 100).toFixed(digits == null ? 1 : digits)}%`;
   }
 
+  function formatNumber(value, digits) {
+    const num = toNumber(value);
+    if (num == null) return "-";
+    const precision = digits == null ? 1 : digits;
+    return num.toFixed(precision);
+  }
+
   function formatSigned(value, digits) {
     const num = toNumber(value);
     if (num == null) return "-";
@@ -490,6 +497,7 @@
     ).first;
     const segments = [
       { key: "live", label: progress.label || "Live", innings: 9 },
+      { key: "first1", label: "F1", innings: 1 },
       { key: "first3", label: "F3", innings: 3 },
       { key: "first5", label: "F5", innings: 5 },
       { key: "first7", label: "F7", innings: 7 },
@@ -898,6 +906,7 @@
 
   function probabilityRows(card) {
     const entries = [
+      { label: "First 1", row: card?.predictions?.first1 || null },
       { label: "First 3", row: card?.predictions?.first3 || null },
       { label: "First 5", row: card?.predictions?.first5 || null },
       { label: "Full game", row: card?.predictions?.full || null },
@@ -925,6 +934,137 @@
           </div>`;
       })
       .join("");
+  }
+
+  function hasRunDistribution(row) {
+    if (!row || typeof row !== "object") return false;
+    const dist = row.total_runs_dist;
+    if (dist && typeof dist === "object" && Object.keys(dist).length) return true;
+    return Array.isArray(row.samples) && row.samples.length > 0;
+  }
+
+  function segmentPrediction(card, detail, key) {
+    const cardRow = card?.predictions?.[key];
+    const simRow = detail?.sim?.segments?.[key];
+    const safeCardRow = cardRow && typeof cardRow === "object" ? cardRow : null;
+    const safeSimRow = simRow && typeof simRow === "object" ? simRow : null;
+    if (hasRunDistribution(safeSimRow)) {
+      return { ...(safeCardRow || {}), ...safeSimRow };
+    }
+    if (hasRunDistribution(safeCardRow)) {
+      return safeCardRow;
+    }
+    if (safeSimRow && Object.keys(safeSimRow).length) {
+      return { ...(safeCardRow || {}), ...safeSimRow };
+    }
+    if (safeCardRow && Object.keys(safeCardRow).length) return safeCardRow;
+    return null;
+  }
+
+  function totalRunBuckets(row) {
+    const rawDist = row?.total_runs_dist;
+    const counts = [];
+    if (rawDist && typeof rawDist === "object") {
+      Object.entries(rawDist).forEach(([bucket, count]) => {
+        const total = Number(bucket);
+        const freq = Number(count);
+        if (Number.isFinite(total) && Number.isFinite(freq) && freq > 0) {
+          counts.push({ total, count: freq });
+        }
+      });
+    }
+    if (!counts.length && Array.isArray(row?.samples)) {
+      const sampleCounts = new Map();
+      row.samples.forEach((sample) => {
+        const total = toNumber(sample?.away) + toNumber(sample?.home);
+        if (Number.isFinite(total)) {
+          sampleCounts.set(total, (sampleCounts.get(total) || 0) + 1);
+        }
+      });
+      sampleCounts.forEach((count, total) => counts.push({ total, count }));
+    }
+    counts.sort((left, right) => left.total - right.total);
+    const totalCount = counts.reduce((sum, entry) => sum + entry.count, 0);
+    if (!totalCount) return [];
+    return counts.map((entry) => ({
+      total: entry.total,
+      count: entry.count,
+      prob: entry.count / totalCount,
+    }));
+  }
+
+  function runDistributionSummary(row, buckets) {
+    if (!buckets.length) return "Distribution unavailable";
+    const sorted = buckets.slice().sort((left, right) => {
+      if (right.prob !== left.prob) return right.prob - left.prob;
+      return left.total - right.total;
+    });
+    const mode = sorted[0] || null;
+    const mean = buckets.reduce((sum, bucket) => sum + (bucket.total * bucket.prob), 0);
+    const topBuckets = sorted.slice(0, 3)
+      .map((bucket) => `${formatNumber(bucket.total, 0)} ${formatPercent(bucket.prob, 1)}`)
+      .join(" | ");
+    const awayRunsMean = toNumber(row?.away_runs_mean);
+    const homeRunsMean = toNumber(row?.home_runs_mean);
+    const meanText = Number.isFinite(mean)
+      ? formatNumber(mean, 2)
+      : (awayRunsMean != null && homeRunsMean != null ? formatNumber(awayRunsMean + homeRunsMean, 2) : "-");
+    return [
+      mode ? `Mode ${formatNumber(mode.total, 0)} (${formatPercent(mode.prob, 1)})` : "",
+      `Mean ${meanText}`,
+      topBuckets,
+    ].filter(Boolean).join(" | ");
+  }
+
+  function runDistributionBar(buckets) {
+    if (!buckets.length) return '<div class="cards-run-dist-bar is-empty"></div>';
+    const peak = Math.max(...buckets.map((bucket) => bucket.prob), 0);
+    return `
+      <div class="cards-run-dist-bar">
+        ${buckets
+          .map((bucket) => {
+            const width = Math.max(bucket.prob * 100, 1.5);
+            const alpha = peak > 0 ? (0.28 + ((bucket.prob / peak) * 0.72)) : 0.4;
+            return `<span class="cards-run-dist-bin" style="width:${width.toFixed(2)}%; opacity:${alpha.toFixed(3)};" title="${escapeHtml(`${formatNumber(bucket.total, 0)} runs: ${formatPercent(bucket.prob, 1)}`)}"></span>`;
+          })
+          .join("")}
+      </div>`;
+  }
+
+  function runProjectionRows(card, detail) {
+    const entries = [
+      { key: "first1", label: "First 1" },
+      { key: "first3", label: "First 3" },
+      { key: "first5", label: "First 5" },
+      { key: "full", label: "Full game" },
+    ];
+    return entries
+      .map((entry) => {
+        const row = segmentPrediction(card, detail, entry.key);
+        const buckets = totalRunBuckets(row);
+        const meta = runDistributionSummary(row, buckets);
+        return `
+          <div class="cards-prob-row">
+            <div class="cards-prob-label">${escapeHtml(entry.label)}</div>
+            ${runDistributionBar(buckets)}
+            <div class="cards-mini-copy">${escapeHtml(meta)}</div>
+          </div>`;
+      })
+      .join("");
+  }
+
+  function overviewBarGroups(card, detail) {
+    return `
+      <div class="cards-prob-groups">
+        <section class="cards-prob-group">
+          <div class="cards-table-title"><strong>Win Probability</strong></div>
+          <div class="cards-prob-grid">${probabilityRows(card)}</div>
+        </section>
+        <section class="cards-prob-group">
+          <div class="cards-table-title"><strong>Run Projections</strong></div>
+          <div class="cards-prob-grid">${runProjectionRows(card, detail)}</div>
+        </section>
+      </div>`;
   }
 
   function calloutMarkup(card) {
@@ -1056,7 +1196,7 @@
             </div>
             <div class="cards-overview-main-grid">
               <div class="cards-live-lens-grid" data-role="game-lens"></div>
-              <div class="cards-prob-grid">${probabilityRows(card)}</div>
+              <div data-role="overview-bars">${overviewBarGroups(card, detail)}</div>
             </div>
           </div>
 
@@ -2373,6 +2513,7 @@
     const liveLine = node.querySelector('[data-role="live-line"]');
     const simLine = node.querySelector('[data-role="sim-line"]');
     const gameLens = node.querySelector('[data-role="game-lens"]');
+    const overviewBars = node.querySelector('[data-role="overview-bars"]');
     const propOverviewLens = node.querySelector('[data-role="prop-overview-lens"]');
     const snapshot = detail.snapshot;
     const sim = detail.sim;
@@ -2388,6 +2529,7 @@
     if (liveLine) liveLine.textContent = liveSummary(snapshot, card);
     if (simLine) simLine.textContent = simSummary(sim, card);
     if (gameLens) gameLens.innerHTML = renderGameLens(card, detail);
+    if (overviewBars) overviewBars.innerHTML = overviewBarGroups(card, detail);
     if (propOverviewLens) propOverviewLens.innerHTML = renderPropOverviewLens(card, detail);
 
     renderActualBox(card, detail, node);

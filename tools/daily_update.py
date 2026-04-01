@@ -408,6 +408,7 @@ def _simw_chunk(start_i: int, n: int) -> Dict[str, Any]:
         }
 
     seg_full = init_seg()
+    seg_f1 = init_seg()
     seg_f5 = init_seg()
     seg_f3 = init_seg()
 
@@ -544,10 +545,11 @@ def _simw_chunk(start_i: int, n: int) -> Dict[str, Any]:
                     _inc_ge("sb_1plus", pid)
 
         full = {"away": int(r.away_score), "home": int(r.home_score)}
+        f1 = seg_score(r, 1)
         f5 = seg_score(r, 5)
         f3 = seg_score(r, 3)
 
-        for seg, score in ((seg_full, full), (seg_f5, f5), (seg_f3, f3)):
+        for seg, score in ((seg_full, full), (seg_f5, f5), (seg_f3, f3), (seg_f1, f1)):
             if len(seg["samples"]) < 50:
                 seg["samples"].append(score)
             seg["away_runs_sum"] = float(seg.get("away_runs_sum", 0.0)) + float(score["away"])
@@ -565,6 +567,7 @@ def _simw_chunk(start_i: int, n: int) -> Dict[str, Any]:
 
     return {
         "seg_full": seg_full,
+        "seg_f1": seg_f1,
         "seg_f5": seg_f5,
         "seg_f3": seg_f3,
         "sum_stats": sum_stats,
@@ -2302,6 +2305,7 @@ def _sim_many(
         }
 
     seg_full = init_seg()
+    seg_f1 = init_seg()
     seg_f5 = init_seg()
     seg_f3 = init_seg()
 
@@ -2408,6 +2412,7 @@ def _sim_many(
             for fut in futures:
                 res = fut.result()
                 _merge_seg(seg_full, res.get("seg_full") or {})
+                _merge_seg(seg_f1, res.get("seg_f1") or {})
                 _merge_seg(seg_f5, res.get("seg_f5") or {})
                 _merge_seg(seg_f3, res.get("seg_f3") or {})
                 _merge_sum_stats(res.get("sum_stats") or {})
@@ -2510,10 +2515,11 @@ def _sim_many(
                         _inc_ge("sb_1plus", pid)
 
             full = {"away": int(r.away_score), "home": int(r.home_score)}
+            f1 = seg_score(r, 1)
             f5 = seg_score(r, 5)
             f3 = seg_score(r, 3)
 
-            for seg, score in ((seg_full, full), (seg_f5, f5), (seg_f3, f3)):
+            for seg, score in ((seg_full, full), (seg_f1, f1), (seg_f5, f5), (seg_f3, f3)):
                 if len(seg["samples"]) < 50:
                     seg["samples"].append(score)
                 seg["away_runs_sum"] = float(seg.get("away_runs_sum", 0.0)) + float(score["away"])
@@ -2547,6 +2553,7 @@ def _sim_many(
         "sims": sims,
         "segments": {
             "full": finalize(seg_full),
+            "first1": finalize(seg_f1),
             "first5": finalize(seg_f5),
             "first3": finalize(seg_f3),
         },
@@ -5057,6 +5064,18 @@ def main() -> int:
         _write_json(sim_path, record)
 
     # Summary index
+    def _summary_segment(segment: Any) -> Dict[str, Any]:
+        seg = segment if isinstance(segment, dict) else {}
+        return {
+            "home_win_prob": seg.get("home_win_prob"),
+            "away_win_prob": seg.get("away_win_prob"),
+            "tie_prob": seg.get("tie_prob"),
+            "away_runs_mean": seg.get("away_runs_mean"),
+            "home_runs_mean": seg.get("home_runs_mean"),
+            "total_runs_dist": dict(seg.get("total_runs_dist") or {}),
+            "run_margin_dist": dict(seg.get("run_margin_dist") or {}),
+        }
+
     summary = {
         "date": args.date,
         "season": args.season,
@@ -5072,21 +5091,10 @@ def main() -> int:
                 "away": o["away"]["abbreviation"],
                 "home": o["home"]["abbreviation"],
                 "starter_names": o.get("starter_names"),
-                "full": {
-                    "home_win_prob": (o.get("sim") or {}).get("segments", {}).get("full", {}).get("home_win_prob"),
-                    "away_win_prob": (o.get("sim") or {}).get("segments", {}).get("full", {}).get("away_win_prob"),
-                    "tie_prob": (o.get("sim") or {}).get("segments", {}).get("full", {}).get("tie_prob"),
-                },
-                "first5": {
-                    "home_win_prob": (o.get("sim") or {}).get("segments", {}).get("first5", {}).get("home_win_prob"),
-                    "away_win_prob": (o.get("sim") or {}).get("segments", {}).get("first5", {}).get("away_win_prob"),
-                    "tie_prob": (o.get("sim") or {}).get("segments", {}).get("first5", {}).get("tie_prob"),
-                },
-                "first3": {
-                    "home_win_prob": (o.get("sim") or {}).get("segments", {}).get("first3", {}).get("home_win_prob"),
-                    "away_win_prob": (o.get("sim") or {}).get("segments", {}).get("first3", {}).get("away_win_prob"),
-                    "tie_prob": (o.get("sim") or {}).get("segments", {}).get("first3", {}).get("tie_prob"),
-                },
+                "full": _summary_segment((o.get("sim") or {}).get("segments", {}).get("full")),
+                "first1": _summary_segment((o.get("sim") or {}).get("segments", {}).get("first1")),
+                "first5": _summary_segment((o.get("sim") or {}).get("segments", {}).get("first5")),
+                "first3": _summary_segment((o.get("sim") or {}).get("segments", {}).get("first3")),
                 "hitter_hr_likelihood_topn": (o.get("sim") or {}).get("hitter_hr_likelihood_topn"),
                 "hitter_props_likelihood_topn": (o.get("sim") or {}).get("hitter_props_likelihood_topn"),
                 "pitcher_props": (o.get("sim") or {}).get("pitcher_props"),
