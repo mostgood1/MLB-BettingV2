@@ -99,11 +99,11 @@ body.cards-body {
 }
 
 .cards-control-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  justify-items: center;
   gap: 12px;
-  flex-wrap: wrap;
   padding: 11px 13px;
   border: 1px solid var(--cards-line);
   border-radius: var(--cards-radius-lg);
@@ -113,12 +113,32 @@ body.cards-body {
 
 .cards-date-form {
   display: flex;
-  gap: 10px;
+  min-width: 0;
+  width: fit-content;
+  max-width: 100%;
+  gap: 8px;
   align-items: center;
-  flex-wrap: wrap;
+  justify-content: center;
+  flex-wrap: nowrap;
+  overflow-x: auto;
   padding: 0;
   border: 0;
   background: transparent;
+}
+
+.cards-date-form > * {
+  flex: 0 0 auto;
+}
+
+.cards-toolbar-rail {
+  display: flex;
+  min-width: 0;
+  width: 100%;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 8px 12px;
+  flex-wrap: wrap;
 }
 
 .cards-date-form input,
@@ -194,35 +214,26 @@ body.cards-body {
   font-weight: 700;
 }
 
-.cards-toolbar {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  justify-content: flex-start;
-  flex-wrap: wrap;
-  margin-top: 10px;
-}
-
 .cards-source-meta {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   align-items: center;
-  justify-content: flex-end;
-  flex: 1 1 320px;
+  justify-content: center;
+  flex: 0 1 auto;
   flex-wrap: wrap;
   padding: 0;
   border: 0;
   background: transparent;
   color: var(--cards-text-soft);
-  font-size: 12.5px;
+  font-size: 11px;
 }
 
 .cards-source-meta span {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 30px;
-  padding: 0 12px;
+  min-height: 24px;
+  padding: 0 9px;
   border: 1px solid var(--cards-line);
   border-radius: 999px;
   background: rgba(8, 18, 30, 0.82);
@@ -276,8 +287,11 @@ body.cards-body {
 
 .cards-filters {
   display: flex;
-  gap: 10px;
+  gap: 6px;
   flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
 }
 
 .cards-filter-pill {
@@ -285,6 +299,9 @@ body.cards-body {
   background: rgba(8, 18, 30, 0.78);
   color: var(--cards-text-soft);
   cursor: pointer;
+  min-height: 24px;
+  padding: 0 10px;
+  font-size: 11px;
 }
 
 .cards-filter-pill.is-active {
@@ -299,7 +316,7 @@ body.cards-body {
   grid-auto-columns: minmax(320px, 1fr);
   gap: 10px;
   overflow-x: auto;
-  margin-top: 14px;
+  margin-top: 10px;
   padding-bottom: 2px;
 }
 
@@ -502,6 +519,29 @@ body.cards-body {
   flex-wrap: wrap;
 }
 
+.cards-head-matchup {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.cards-head-team {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.cards-head-team-score {
+  min-width: 22px;
+  text-align: right;
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 22px;
+  line-height: 1;
+  color: var(--cards-text);
+}
+
 .cards-logo,
 .cards-logo-fallback {
   width: 40px;
@@ -526,8 +566,10 @@ body.cards-body {
 }
 
 .cards-team-meta {
-  display: grid;
-  gap: 4px;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
 }
 
 .cards-team-code {
@@ -550,9 +592,11 @@ body.cards-body {
 }
 
 .cards-status-cluster {
-  display: grid;
-  justify-items: end;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .cards-game-time-row {
@@ -600,8 +644,8 @@ body.cards-body {
 
 .cards-start-time {
   color: var(--cards-text-soft);
-  font-size: 12px;
-  line-height: 1.25;
+  font-size: 11px;
+  line-height: 1.15;
   text-align: right;
 }
 
@@ -613,32 +657,16 @@ body.cards-body {
 }
 
 .cards-score-ribbon {
-  display: grid;
-  grid-template-columns: 1fr auto 1fr minmax(210px, 1.05fr);
-  gap: 10px;
+  display: flex;
   align-items: center;
-  padding: 10px 11px;
+  justify-content: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+  padding: 7px 9px;
   border: 1px solid var(--cards-line);
   border-radius: 18px;
   background: rgba(5, 14, 24, 0.65);
-}
-
-.cards-score-side {
-  display: grid;
-  gap: 2px;
-}
-
-.cards-score-label {
-  color: var(--cards-text-dim);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.cards-score-number {
-  font-size: 28px;
-  line-height: 1;
 }
 
 .cards-score-divider {
@@ -650,15 +678,19 @@ body.cards-body {
 }
 
 .cards-score-meta {
-  display: grid;
-  gap: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
 .cards-live-line,
 .cards-sim-line {
   color: var(--cards-text-soft);
-  font-size: 11.5px;
-  line-height: 1.35;
+  font-size: 10px;
+  line-height: 1.2;
   overflow-wrap: anywhere;
 }
 
@@ -808,43 +840,20 @@ body.cards-body {
 }
 
 .cards-overview-grid > .cards-panel-card:first-child {
-  grid-template-columns: minmax(0, 1.5fr) minmax(250px, 0.72fr);
-  grid-template-areas:
-    "head head"
-    "lens probs"
-    "lens mini";
-  column-gap: 10px;
-  row-gap: 10px;
-}
-
-.cards-overview-grid > .cards-panel-card:first-child .cards-box-head {
-  grid-area: head;
-}
-
-.cards-overview-grid > .cards-panel-card:first-child .cards-live-lens-grid {
-  grid-area: lens;
-}
-
-.cards-overview-grid > .cards-panel-card:first-child .cards-prob-grid {
-  grid-area: probs;
-  align-content: start;
-}
-
-.cards-overview-grid > .cards-panel-card:first-child .cards-mini-metrics {
-  grid-area: mini;
   grid-template-columns: 1fr;
-  align-content: start;
+  gap: 8px;
 }
 
 .cards-prob-grid {
   display: grid;
-  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
 }
 
 .cards-live-lens-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 6px;
 }
 
 .cards-live-lens-card {
@@ -946,7 +955,7 @@ body.cards-body {
   padding: 0;
   list-style: none;
   display: grid;
-  gap: 8px;
+  gap: 6px;
 }
 
 .cards-prop-overview-grid {
@@ -1005,15 +1014,17 @@ body.cards-body {
 }
 
 .cards-callout {
-  padding: 9px 11px;
+  padding: 7px 9px;
   border: 1px solid rgba(132, 166, 196, 0.12);
   border-radius: 14px;
   background: rgba(10, 21, 34, 0.9);
 }
 
 .cards-callout-button {
-  display: grid;
-  gap: 4px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
   width: 100%;
   color: var(--cards-text);
   background: rgba(10, 21, 34, 0.9);
@@ -1033,15 +1044,15 @@ body.cards-body {
 .cards-mini-metrics {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
+  gap: 6px;
 }
 
 .cards-mini-metric {
-  padding: 8px 10px;
+  padding: 7px 8px;
   border: 1px solid var(--cards-line);
   border-radius: 14px;
   background: rgba(10, 21, 34, 0.88);
-  min-height: 58px;
+  min-height: 0;
 }
 
 .cards-box-panel {
@@ -1343,7 +1354,222 @@ body.cards-body {
   }
 }
 
+@media (min-width: 1280px) {
+  .cards-shell {
+    width: min(1760px, calc(100vw - 8px));
+    padding: 12px 0 18px;
+  }
+
+  .cards-header {
+    margin-bottom: 8px;
+  }
+
+  .cards-title-row h1 {
+    font-size: clamp(20px, 2vw, 28px);
+  }
+
+  .cards-header-meta,
+  .cards-source-meta,
+  .cards-source-meta span,
+  .cards-filter-pill,
+  .cards-source-pill,
+  .cards-chip,
+  .cards-status-badge,
+  .cards-lens-badge,
+  .cards-overview-badge {
+    font-size: 11px;
+  }
+
+  .cards-control-card {
+    padding: 9px 11px;
+  }
+
+  .cards-toolbar {
+    margin-top: 8px;
+  }
+
+  .cards-scoreboard {
+    grid-auto-columns: minmax(280px, 1fr);
+    gap: 8px;
+    margin-top: 10px;
+  }
+
+  .cards-strip-card {
+    gap: 8px;
+    padding: 9px;
+  }
+
+  .cards-grid {
+    gap: 10px;
+    margin-top: 10px;
+  }
+
+  .cards-game-card {
+    gap: 10px;
+    width: min(100%, 1700px);
+    padding: 11px;
+  }
+
+  .cards-team-code {
+    font-size: 17px;
+  }
+
+  .cards-team-name,
+  .cards-start-time,
+  .cards-game-link,
+  .cards-strip-meta,
+  .cards-strip-live {
+    font-size: 10px;
+  }
+
+  .cards-score-ribbon {
+    padding: 8px 9px;
+  }
+
+  .cards-score-number {
+    font-size: 24px;
+  }
+
+  .cards-live-line,
+  .cards-sim-line {
+    font-size: 10.5px;
+    line-height: 1.25;
+  }
+
+  .cards-market-row {
+    gap: 6px;
+  }
+
+  .cards-market-tile {
+    gap: 3px;
+    min-height: 64px;
+    padding: 6px 7px;
+  }
+
+  .cards-market-main {
+    font-size: 12px;
+    line-height: 1.02;
+  }
+
+  .cards-market-sub,
+  .cards-market-note,
+  .cards-mini-copy,
+  .cards-callout-copy {
+    font-size: 10px;
+    line-height: 1.18;
+  }
+
+  .cards-tabs {
+    padding: 2px;
+  }
+
+  .cards-tab {
+    padding: 6px 10px;
+    font-size: 9px;
+  }
+
+  .cards-overview-grid,
+  .cards-box-grid,
+  .cards-props-grid,
+  .cards-detail-grid,
+  .cards-live-lens-grid,
+  .cards-prop-overview-grid {
+    gap: 8px;
+  }
+
+  .cards-panel-card,
+  .cards-lens-shell {
+    gap: 8px;
+    padding: 9px 10px;
+  }
+
+  .cards-live-lens-card,
+  .cards-prop-overview-card,
+  .cards-callout,
+  .cards-mini-metric,
+  .cards-data-pair {
+    padding: 7px 8px;
+  }
+
+  .cards-live-lens-subtitle,
+  .cards-live-lens-market,
+  .cards-live-lens-margin,
+  .cards-live-lens-reason,
+  .cards-prop-overview-foot,
+  .cards-prop-button small {
+    font-size: 9.5px;
+    line-height: 1.15;
+  }
+
+  .cards-live-lens-pick,
+  .cards-prop-button,
+  .cards-table,
+  .cards-callout-button,
+  .cards-prop-filter-pill {
+    font-size: 10px;
+  }
+
+  .cards-live-lens-grid .cards-data-pair strong,
+  .cards-prop-overview-card .cards-data-pair strong,
+  .cards-data-pair strong,
+  .cards-box-totals .cards-mini-metric strong {
+    font-size: 13px;
+  }
+
+  .cards-prop-list {
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 5px;
+  }
+
+  .cards-prop-button {
+    min-height: 46px;
+    padding: 7px 8px;
+    line-height: 1.1;
+  }
+
+  .cards-prop-filter-pills {
+    gap: 5px;
+  }
+
+  .cards-prop-filter-pill {
+    min-height: 30px;
+    gap: 5px;
+    padding: 0 8px 0 9px;
+  }
+
+  .cards-prop-filter-count {
+    min-width: 18px;
+    min-height: 18px;
+    font-size: 9px;
+  }
+
+  .cards-table th,
+  .cards-table td {
+    padding: 5px 6px;
+  }
+}
+
 @media (max-width: 1100px) {
+  .cards-control-card {
+    grid-template-columns: 1fr;
+  }
+
+  .cards-date-form {
+    flex-wrap: wrap;
+    overflow-x: visible;
+  }
+
+  .cards-toolbar-rail {
+    min-width: 0;
+    align-items: flex-start;
+    justify-content: center;
+  }
+
+  .cards-source-meta,
+  .cards-filters {
+    justify-content: center;
+  }
+
   .cards-overview-grid,
   .cards-box-grid,
   .cards-props-grid,

@@ -995,10 +995,16 @@
     article.dataset.gamePk = String(card.gamePk);
     article.innerHTML = `
       <div class="cards-strip-head">
-        <div class="cards-head-left">
-          ${teamMarkup(card.away)}
+        <div class="cards-head-left cards-head-matchup">
+          <div class="cards-head-team">
+            ${teamMarkup(card.away)}
+            <div class="cards-head-team-score" data-role="away-score">-</div>
+          </div>
           <span class="cards-score-divider">@</span>
-          ${teamMarkup(card.home)}
+          <div class="cards-head-team">
+            ${teamMarkup(card.home)}
+            <div class="cards-head-team-score" data-role="home-score">-</div>
+          </div>
         </div>
         <div class="cards-status-cluster">
           <div class="cards-game-time-row">
@@ -1012,17 +1018,6 @@
       </div>
 
       <div class="cards-score-ribbon">
-        <div class="cards-score-side">
-          <div class="cards-score-label">Away</div>
-          <div class="cards-score-number" data-role="away-score">-</div>
-          <strong>${escapeHtml(card.away?.abbr || "AWY")}</strong>
-        </div>
-        <div class="cards-score-divider">at</div>
-        <div class="cards-score-side">
-          <div class="cards-score-label">Home</div>
-          <div class="cards-score-number" data-role="home-score">-</div>
-          <strong>${escapeHtml(card.home?.abbr || "HME")}</strong>
-        </div>
         <div class="cards-score-meta">
           <div class="cards-live-line" data-role="live-line">Loading live box...</div>
           <div class="cards-sim-line" data-role="sim-line">Loading sim box...</div>
@@ -2190,51 +2185,55 @@
     const workflow = payload.workflow || {};
     const marketWarnings = Array.isArray(marketAvailability.warnings) ? marketAvailability.warnings : [];
 
-    if (currentDate) pills.push(`<span class="cards-source-pill">${escapeHtml(currentDate)}</span>`);
-    pills.push(sourceMetaPill(`${String(state.cards.length)} games`));
-
     const statusBits = [];
     if (counts.upcomingCount) statusBits.push(`${counts.upcomingCount} upcoming`);
     if (counts.liveCount) statusBits.push(`${counts.liveCount} live`);
     if (counts.finalCount) statusBits.push(`${counts.finalCount} final`);
-    if (statusBits.length) pills.push(sourceMetaPill(statusBits.join(" / ")));
-    if (counts.officialCount) pills.push(sourceMetaPill(`${counts.officialCount} with official plays`));
-    if (counts.simCount) pills.push(sourceMetaPill(`${counts.simCount} ${counts.simCount === 1 ? "game" : "games"} with sim projections`));
-    if (Number(workflow.simsPerGame || 0) > 0) pills.push(sourceMetaPill(`${workflow.simsPerGame} sims/game`));
+    const slateParts = [`${String(state.cards.length)} games`];
+    if (statusBits.length) slateParts.push(statusBits.join(" / "));
+    pills.push(sourceMetaPill(slateParts.join(" | ")));
 
+    const boardBits = [];
+    if (counts.officialCount) boardBits.push(`${counts.officialCount} official plays`);
+    if (counts.simCount) boardBits.push(`${counts.simCount} sim boards`);
+    if (Number(workflow.simsPerGame || 0) > 0) boardBits.push(`${workflow.simsPerGame} sims/game`);
+    if (boardBits.length) pills.push(sourceMetaPill(boardBits.join(" | ")));
+
+    const marketBits = [];
     if (gameLines.exists) {
       const lineCounts = gameLines.counts || {};
-      const lineParts = [];
-      if (Number(lineCounts.h2h_games || 0) > 0) lineParts.push(`ML ${lineCounts.h2h_games}`);
-      if (Number(lineCounts.totals_games || 0) > 0) lineParts.push(`Tot ${lineCounts.totals_games}`);
-      if (Number(lineCounts.spreads_games || 0) > 0) lineParts.push(`Spr ${lineCounts.spreads_games}`);
-      pills.push(sourceMetaPill(lineParts.join(" / ") || "Lines file present", gameLines.available ? "success" : "warning"));
+      if (Number(lineCounts.h2h_games || 0) > 0) marketBits.push(`ML ${lineCounts.h2h_games}`);
+      if (Number(lineCounts.totals_games || 0) > 0) marketBits.push(`Tot ${lineCounts.totals_games}`);
+      if (Number(lineCounts.spreads_games || 0) > 0) marketBits.push(`Spr ${lineCounts.spreads_games}`);
     } else if (payload.hasSampleData) {
-      pills.push(sourceMetaPill("Markets pending", "warning"));
+      marketBits.push("Markets pending");
     }
 
     if (pitcherProps.exists) {
       const players = Number((pitcherProps.counts || {}).players || 0);
-      pills.push(sourceMetaPill(`Pitcher props ${players}`, players > 0 ? "success" : "warning"));
+      marketBits.push(`Pitcher props ${players}`);
     }
     if (hitterProps.exists) {
       const players = Number((hitterProps.counts || {}).players || 0);
-      pills.push(sourceMetaPill(`Hitter props ${players}`, players > 0 ? "success" : "warning"));
+      marketBits.push(`Hitter props ${players}`);
     }
-    if (marketWarnings.length) pills.push(sourceMetaPill(marketWarnings[0], "warning"));
+    if (marketBits.length) pills.push(sourceMetaPill(marketBits.join(" | "), gameLines.available ? "success" : "warning"));
 
+    const warningBits = [];
+    if (marketWarnings.length) warningBits.push(marketWarnings[0]);
     if (Number(lineupHealth.adjustedTeams || 0) > 0) {
-      pills.push(sourceMetaPill(`Lineups adjusted ${lineupHealth.adjustedTeams}`, "warning"));
+      warningBits.push(`Lineups adjusted ${lineupHealth.adjustedTeams}`);
     }
     if (Number(lineupHealth.partialTeams || 0) > 0) {
-      pills.push(sourceMetaPill(`Lineups partial ${lineupHealth.partialTeams}`, "warning"));
+      warningBits.push(`Lineups partial ${lineupHealth.partialTeams}`);
     }
     if (Number(workflow.warningCount || 0) > 0) {
-      pills.push(sourceMetaPill(`Workflow warnings ${workflow.warningCount}`, "warning"));
+      warningBits.push(`Workflow warnings ${workflow.warningCount}`);
     }
     if (Number(workflow.errorCount || 0) > 0) {
-      pills.push(sourceMetaPill(`Workflow errors ${workflow.errorCount}`, "danger"));
+      warningBits.push(`Workflow errors ${workflow.errorCount}`);
     }
+    if (warningBits.length) pills.push(sourceMetaPill(warningBits.join(" | "), Number(workflow.errorCount || 0) > 0 ? "danger" : "warning"));
 
     if (payload?.view?.mode === "season_archive") pills.push(sourceMetaPill("Season archive", "soft"));
     if (!payload.hasSampleData) pills.push(sourceMetaPill("Schedule only", "soft"));
