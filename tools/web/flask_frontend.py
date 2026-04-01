@@ -739,6 +739,106 @@ def _load_live_prop_registry(d: str) -> Dict[str, Any]:
     }
 
 
+def _live_prop_registry_result(selection: Any, market_line: Any, actual_value: Any) -> str:
+    line = _safe_float(market_line)
+    actual = _safe_float(actual_value)
+    side = str(selection or "over").strip().lower()
+    if line is None or actual is None:
+        return "pending"
+    if abs(float(actual) - float(line)) < 1e-9:
+        return "push"
+    did_win = float(actual) < float(line) if side == "under" else float(actual) > float(line)
+    return "win" if did_win else "loss"
+
+
+def _live_prop_registry_summary(d: str) -> Dict[str, Any]:
+    registry = _load_live_prop_registry(d)
+    entries = registry.get("entries") if isinstance(registry.get("entries"), dict) else {}
+    by_prop: Dict[str, int] = {}
+    by_selection: Dict[str, int] = {}
+    result_counts: Dict[str, int] = {"win": 0, "loss": 0, "push": 0, "pending": 0}
+    unique_games: set[int] = set()
+    unique_owners: set[str] = set()
+    summarized_rows: List[Dict[str, Any]] = []
+
+    for entry in entries.values():
+        if not isinstance(entry, dict):
+            continue
+        prop = str(entry.get("prop") or "").strip().lower()
+        selection = str(entry.get("selection") or "").strip().lower()
+        owner = str(entry.get("owner") or "").strip()
+        game_pk = _safe_int(entry.get("gamePk"))
+        seen_count = int(_safe_int(entry.get("seenCount")) or 0)
+        first_snapshot = entry.get("firstSeenSnapshot") if isinstance(entry.get("firstSeenSnapshot"), dict) else {}
+        last_snapshot = entry.get("lastSeenSnapshot") if isinstance(entry.get("lastSeenSnapshot"), dict) else {}
+        market_line = _safe_float(entry.get("marketLine"))
+        first_live_edge = _safe_float(first_snapshot.get("liveEdge"))
+        last_live_edge = _safe_float(last_snapshot.get("liveEdge"))
+        actual_value = _safe_float(last_snapshot.get("actual"))
+        result = _live_prop_registry_result(selection, market_line, actual_value)
+
+        if prop:
+            by_prop[prop] = int(by_prop.get(prop, 0) + 1)
+        if selection:
+            by_selection[selection] = int(by_selection.get(selection, 0) + 1)
+        result_counts[result] = int(result_counts.get(result, 0) + 1)
+        if game_pk is not None:
+            unique_games.add(int(game_pk))
+        if owner:
+            unique_owners.add(owner)
+
+        summarized_rows.append(
+            {
+                "gamePk": int(game_pk) if game_pk is not None else None,
+                "owner": owner,
+                "market": str(entry.get("market") or "").strip().lower(),
+                "prop": prop,
+                "selection": selection,
+                "marketLine": market_line,
+                "seenCount": seen_count,
+                "firstSeenAt": entry.get("firstSeenAt"),
+                "lastSeenAt": entry.get("lastSeenAt"),
+                "firstSeenLiveEdge": first_live_edge,
+                "lastSeenLiveEdge": last_live_edge,
+                "actual": actual_value,
+                "result": result,
+            }
+        )
+
+    top_stable = sorted(
+        summarized_rows,
+        key=lambda row: (
+            -int(row.get("seenCount") or 0),
+            -abs(float(_safe_float(row.get("lastSeenLiveEdge")) or 0.0)),
+            str(row.get("firstSeenAt") or ""),
+            str(row.get("owner") or ""),
+        ),
+    )[:5]
+    top_edges = sorted(
+        summarized_rows,
+        key=lambda row: (
+            -abs(float(_safe_float(row.get("lastSeenLiveEdge")) or 0.0)),
+            -int(row.get("seenCount") or 0),
+            str(row.get("firstSeenAt") or ""),
+            str(row.get("owner") or ""),
+        ),
+    )[:5]
+
+    return {
+        "date": str(registry.get("date") or d),
+        "updatedAt": registry.get("updatedAt"),
+        "totalEntries": int(len(summarized_rows)),
+        "uniqueGames": int(len(unique_games)),
+        "uniqueOwners": int(len(unique_owners)),
+        "settledEntries": int(result_counts.get("win", 0) + result_counts.get("loss", 0) + result_counts.get("push", 0)),
+        "resultCounts": result_counts,
+        "byProp": dict(sorted(by_prop.items(), key=lambda item: (-int(item[1]), str(item[0])))),
+        "bySelection": dict(sorted(by_selection.items(), key=lambda item: (-int(item[1]), str(item[0])))),
+        "topStable": top_stable,
+        "topEdges": top_edges,
+    }
+
+
 def _enrich_live_prop_rows_with_registry(
     rows: List[Dict[str, Any]],
     d: str,
@@ -8162,7 +8262,10 @@ def _refresh_oddsapi_markets(d: str, *, overwrite: bool = True) -> Dict[str, Any
 def _live_lens_reports_payload(d: str) -> Dict[str, Any]:
     log_path = _live_lens_log_path(d)
     observation_log_path = _live_prop_observation_log_path(d)
+    registry_path = _live_prop_registry_path(d)
+    registry_log_path = _live_prop_registry_log_path(d)
     latest_report = _load_json_file(_live_lens_report_path(d)) or {}
+    registry_summary = _live_prop_registry_summary(d)
     entries = 0
     latest_entry: Optional[Dict[str, Any]] = None
     if log_path.exists() and log_path.is_file():
@@ -8185,10 +8288,13 @@ def _live_lens_reports_payload(d: str) -> Dict[str, Any]:
         "optimizationRegime": _live_lens_optimization_regime(d),
         "logPath": _relative_path_str(log_path),
         "propObservationLogPath": _relative_path_str(observation_log_path),
+        "registryPath": _relative_path_str(registry_path),
+        "registryLogPath": _relative_path_str(registry_log_path),
         "reportPath": _relative_path_str(_live_lens_report_path(d)),
         "entries": int(entries),
         "latestEntry": latest_entry,
         "latestReport": latest_report,
+        "registrySummary": registry_summary,
     }
 
 

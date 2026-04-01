@@ -12,6 +12,9 @@ import shutil
 import subprocess
 import sys
 import unicodedata
+import urllib.error
+import urllib.parse
+import urllib.request
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict
 from datetime import datetime, timedelta
@@ -659,6 +662,343 @@ def _season_from_date_str(date_str: str, fallback: int) -> int:
         return int(text.split("-", 1)[0])
     except Exception:
         return int(fallback)
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    try:
+        if value is None or str(value).strip() == "":
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _safe_int(value: Any) -> Optional[int]:
+    try:
+        if value is None or str(value).strip() == "":
+            return None
+        return int(float(value))
+    except Exception:
+        return None
+
+
+def _load_json_if_exists(path: Path) -> Dict[str, Any]:
+    try:
+        if path.exists() and path.is_file():
+            with open(path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+    return {}
+
+
+def _env_first(*names: str) -> str:
+    for name in names:
+        value = str(os.environ.get(name) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _format_metric_number(value: Any, *, decimals: int = 1) -> str:
+    number = _safe_float(value)
+    if number is None:
+        return "n/a"
+    if abs(number - round(number)) < 1e-9:
+        return str(int(round(number)))
+    return f"{number:.{int(decimals)}f}"
+
+
+def _live_lens_entry_result(selection: Any, market_line: Any, actual_value: Any) -> str:
+    line = _safe_float(market_line)
+    actual = _safe_float(actual_value)
+    side = str(selection or "over").strip().lower()
+    if line is None or actual is None:
+        return "pending"
+    if abs(float(actual) - float(line)) < 1e-9:
+        return "push"
+    did_win = float(actual) < float(line) if side == "under" else float(actual) > float(line)
+    return "win" if did_win else "loss"
+
+
+def _summarize_live_lens_registry_doc(doc: Dict[str, Any], *, date_str: str) -> Dict[str, Any]:
+    entries = doc.get("entries") if isinstance(doc.get("entries"), dict) else {}
+    by_prop: Dict[str, int] = {}
+    by_selection: Dict[str, int] = {}
+    result_counts: Dict[str, int] = {"win": 0, "loss": 0, "push": 0, "pending": 0}
+    unique_games: set[int] = set()
+    unique_owners: set[str] = set()
+    summarized_rows: List[Dict[str, Any]] = []
+
+    for entry in entries.values():
+        if not isinstance(entry, dict):
+            continue
+        prop = str(entry.get("prop") or "").strip().lower()
+        selection = str(entry.get("selection") or "").strip().lower()
+        owner = str(entry.get("owner") or "").strip()
+        game_pk = _safe_int(entry.get("gamePk"))
+        seen_count = int(_safe_int(entry.get("seenCount")) or 0)
+        first_snapshot = entry.get("firstSeenSnapshot") if isinstance(entry.get("firstSeenSnapshot"), dict) else {}
+        last_snapshot = entry.get("lastSeenSnapshot") if isinstance(entry.get("lastSeenSnapshot"), dict) else {}
+        market_line = _safe_float(entry.get("marketLine"))
+        first_live_edge = _safe_float(first_snapshot.get("liveEdge"))
+        last_live_edge = _safe_float(last_snapshot.get("liveEdge"))
+        actual_value = _safe_float(last_snapshot.get("actual"))
+        result = _live_lens_entry_result(selection, market_line, actual_value)
+
+        if prop:
+            by_prop[prop] = int(by_prop.get(prop, 0) + 1)
+        if selection:
+            by_selection[selection] = int(by_selection.get(selection, 0) + 1)
+        result_counts[result] = int(result_counts.get(result, 0) + 1)
+        if game_pk is not None:
+            unique_games.add(int(game_pk))
+        if owner:
+            unique_owners.add(owner)
+
+        summarized_rows.append(
+            {
+                "gamePk": int(game_pk) if game_pk is not None else None,
+                "owner": owner,
+                "market": str(entry.get("market") or "").strip().lower(),
+                "prop": prop,
+                "selection": selection,
+                "marketLine": market_line,
+                "seenCount": seen_count,
+                "firstSeenAt": entry.get("firstSeenAt"),
+                "lastSeenAt": entry.get("lastSeenAt"),
+                "firstSeenLiveEdge": first_live_edge,
+                "lastSeenLiveEdge": last_live_edge,
+                "actual": actual_value,
+                "result": result,
+            }
+        )
+
+    top_stable = sorted(
+        summarized_rows,
+        key=lambda row: (
+            -int(row.get("seenCount") or 0),
+            -abs(float(_safe_float(row.get("lastSeenLiveEdge")) or 0.0)),
+            str(row.get("firstSeenAt") or ""),
+            str(row.get("owner") or ""),
+        ),
+    )[:5]
+    top_edges = sorted(
+        summarized_rows,
+        key=lambda row: (
+            -abs(float(_safe_float(row.get("lastSeenLiveEdge")) or 0.0)),
+            -int(row.get("seenCount") or 0),
+            str(row.get("firstSeenAt") or ""),
+            str(row.get("owner") or ""),
+        ),
+    )[:5]
+
+    return {
+        "date": str(doc.get("date") or date_str),
+        "updatedAt": doc.get("updatedAt"),
+        "totalEntries": int(len(summarized_rows)),
+        "uniqueGames": int(len(unique_games)),
+        "uniqueOwners": int(len(unique_owners)),
+        "settledEntries": int(result_counts.get("win", 0) + result_counts.get("loss", 0) + result_counts.get("push", 0)),
+        "resultCounts": result_counts,
+        "byProp": dict(sorted(by_prop.items(), key=lambda item: (-int(item[1]), str(item[0])))),
+        "bySelection": dict(sorted(by_selection.items(), key=lambda item: (-int(item[1]), str(item[0])))),
+        "topStable": top_stable,
+        "topEdges": top_edges,
+    }
+
+
+def _format_live_lens_entry_label(row: Dict[str, Any]) -> str:
+    owner = str(row.get("owner") or "Unknown").strip()
+    prop = str(row.get("prop") or "prop").strip().replace("_", " ")
+    selection = str(row.get("selection") or "").strip().lower()
+    line = _safe_float(row.get("marketLine"))
+    line_text = _format_metric_number(line, decimals=1) if line is not None else "?"
+    return f"{owner} {prop} {selection} {line_text}".strip()
+
+
+def _build_live_lens_readout(
+    *,
+    date_str: str,
+    latest_report: Dict[str, Any],
+    registry_summary: Dict[str, Any],
+    source: str,
+) -> Dict[str, Any]:
+    counts = latest_report.get("counts") if isinstance(latest_report.get("counts"), dict) else {}
+    performance = latest_report.get("performance") if isinstance(latest_report.get("performance"), dict) else {}
+    total_entries = int(registry_summary.get("totalEntries") or 0)
+    unique_games = int(registry_summary.get("uniqueGames") or 0)
+    unique_owners = int(registry_summary.get("uniqueOwners") or 0)
+    result_counts = registry_summary.get("resultCounts") if isinstance(registry_summary.get("resultCounts"), dict) else {}
+    by_prop = registry_summary.get("byProp") if isinstance(registry_summary.get("byProp"), dict) else {}
+    top_stable = registry_summary.get("topStable") if isinstance(registry_summary.get("topStable"), list) else []
+    top_edges = registry_summary.get("topEdges") if isinstance(registry_summary.get("topEdges"), list) else []
+    wins = int(result_counts.get("win") or 0)
+    losses = int(result_counts.get("loss") or 0)
+    pushes = int(result_counts.get("push") or 0)
+    settled = int(wins + losses + pushes)
+    graded = int(wins + losses)
+    win_rate = round((float(wins) / float(graded)) * 100.0, 1) if graded > 0 else None
+
+    headline = f"No prior-day live-lens activity found for {date_str}."
+    if total_entries > 0:
+        prop_summary = ", ".join(f"{prop}:{count}" for prop, count in list(by_prop.items())[:3]) or "no active lanes"
+        headline = (
+            f"Prior-day live lens tracked {total_entries} opportunities across {unique_games} games and "
+            f"{unique_owners} owners; active lanes were {prop_summary}."
+        )
+
+    learnings: List[str] = []
+    performance_lines: List[str] = []
+    if total_entries > 0:
+        if settled > 0 and win_rate is not None:
+            learnings.append(
+                f"Resolved prior-day live spots finished {wins}-{losses}-{pushes} with a {win_rate:.1f}% win rate excluding pushes."
+            )
+        strongest_prop = next(iter(by_prop.keys()), "")
+        if strongest_prop:
+            learnings.append(
+                f"The most active live lane was {strongest_prop.replace('_', ' ')} with {int(by_prop.get(strongest_prop) or 0)} tracked opportunities."
+            )
+        if top_stable:
+            stable_row = top_stable[0] if isinstance(top_stable[0], dict) else {}
+            learnings.append(
+                f"Most persistent opportunity: {_format_live_lens_entry_label(stable_row)} stayed on the board for {int(stable_row.get('seenCount') or 0)} observations."
+            )
+        if top_edges:
+            edge_row = top_edges[0] if isinstance(top_edges[0], dict) else {}
+            learnings.append(
+                f"Largest closing live edge: {_format_live_lens_entry_label(edge_row)} at {_format_metric_number(edge_row.get('lastSeenLiveEdge'), decimals=2)}."
+            )
+
+    total_ms = _safe_float(performance.get("totalMs"))
+    market_refresh_ms = _safe_float(performance.get("marketRefreshMs"))
+    game_count = _safe_int(performance.get("gameCount") or counts.get("games"))
+    archived_props = _safe_int(counts.get("archivedLiveProps"))
+    if total_ms is not None or market_refresh_ms is not None:
+        performance_lines.append(
+            f"{source} processed {int(game_count or 0)} games in {_format_metric_number(total_ms, decimals=1)} ms with {_format_metric_number(market_refresh_ms, decimals=1)} ms spent refreshing markets."
+        )
+    if archived_props:
+        performance_lines.append(
+            f"The latest persisted live-lens report archived {int(archived_props)} finalized live prop rows for {date_str}."
+        )
+
+    return {
+        "headline": headline,
+        "learnings": learnings,
+        "performance": performance_lines,
+    }
+
+
+def _fetch_live_lens_reports_payload(
+    *,
+    base_url: str,
+    token: str,
+    date_str: str,
+    timeout_seconds: int,
+) -> Dict[str, Any]:
+    query = urllib.parse.urlencode({"date": str(date_str)})
+    url = f"{str(base_url).rstrip('/')}/api/cron/live-lens-reports?{query}"
+    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    with urllib.request.urlopen(request, timeout=max(1, int(timeout_seconds))) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    if not isinstance(payload, dict):
+        raise RuntimeError("live-lens reports response was not a JSON object")
+    return payload
+
+
+def _prior_day_live_lens_stage(args: argparse.Namespace, date_str: str) -> Dict[str, Any]:
+    slug = str(date_str).strip().replace("-", "_")
+    default_sync_path = (_DATA_DIR / "live_lens" / "render_sync" / f"live_lens_reports_{slug}.json").resolve()
+    sync_out_arg = str(getattr(args, "live_lens_sync_out", "") or "").strip()
+    sync_out_path = _resolve_path_arg(sync_out_arg, default=default_sync_path)
+    live_lens_dir = (_DATA_DIR / "live_lens").resolve()
+    local_report_path = live_lens_dir / f"live_lens_report_{slug}.json"
+    local_registry_path = live_lens_dir / "prop_registry" / f"live_prop_registry_{slug}.json"
+    stage: Dict[str, Any] = {
+        "status": "skipped",
+        "date": str(date_str),
+        "sync_requested": bool(str(getattr(args, "sync_live_lens", "on") or "on") == "on"),
+        "sync_out_path": _relative_path_str(sync_out_path),
+        "local_report_path": _relative_path_str(local_report_path),
+        "local_registry_path": _relative_path_str(local_registry_path),
+    }
+
+    payload: Dict[str, Any] = {}
+    if stage["sync_requested"]:
+        base_url = str(getattr(args, "live_lens_base_url", "") or "").strip() or _env_first(
+            "MLB_BETTING_BASE_URL",
+            "BASE_URL",
+            "RENDER_URL",
+            "RENDER_EXTERNAL_URL",
+        )
+        token = str(getattr(args, "live_lens_cron_token", "") or "").strip() or _env_first(
+            "MLB_BETTING_CRON_TOKEN",
+            "CRON_TOKEN",
+        )
+        stage["render_base_url"] = str(base_url or "")
+        if base_url and token:
+            try:
+                payload = _fetch_live_lens_reports_payload(
+                    base_url=base_url,
+                    token=token,
+                    date_str=str(date_str),
+                    timeout_seconds=int(getattr(args, "live_lens_timeout_seconds", 45) or 45),
+                )
+                _ensure_dir(sync_out_path.parent)
+                _write_json(sync_out_path, payload)
+                stage["status"] = "ok"
+                stage["source"] = "render_api"
+                stage["synced_report_path"] = _relative_path_str(sync_out_path)
+            except urllib.error.HTTPError as exc:
+                stage["status"] = "warning"
+                stage["error"] = f"HTTPError: {exc.code} {exc.reason}"
+            except Exception as exc:
+                stage["status"] = "warning"
+                stage["error"] = f"{type(exc).__name__}: {exc}"
+        else:
+            stage["status"] = "warning"
+            stage["error"] = "live-lens sync requested but Render base URL or cron token is unavailable"
+    else:
+        stage["reason"] = "sync_live_lens=off"
+
+    latest_report = payload.get("latestReport") if isinstance(payload.get("latestReport"), dict) else {}
+    registry_summary = payload.get("registrySummary") if isinstance(payload.get("registrySummary"), dict) else {}
+    source_label = "Render live-lens report"
+
+    if not latest_report:
+        latest_report = _load_json_if_exists(local_report_path)
+        if latest_report:
+            stage["used_local_report"] = True
+            if str(stage.get("source") or "") != "render_api":
+                stage["source"] = "local_files"
+            source_label = "Local live-lens report"
+
+    if not registry_summary:
+        local_registry_doc = _load_json_if_exists(local_registry_path)
+        if local_registry_doc:
+            registry_summary = _summarize_live_lens_registry_doc(local_registry_doc, date_str=str(date_str))
+            stage["used_local_registry"] = True
+            if str(stage.get("source") or "") not in {"render_api", "local_files"}:
+                stage["source"] = "local_files"
+
+    if latest_report or registry_summary:
+        stage["status"] = "ok" if str(stage.get("status") or "") in {"", "skipped", "ok"} else stage["status"]
+        if not stage.get("source"):
+            stage["source"] = "local_files"
+        stage["registry_summary"] = registry_summary
+        stage["readout"] = _build_live_lens_readout(
+            date_str=str(date_str),
+            latest_report=latest_report,
+            registry_summary=registry_summary,
+            source=source_label,
+        )
+    elif str(stage.get("status") or "") == "skipped":
+        stage["reason"] = "no prior-day live-lens report or registry data found"
+
+    return stage
 
 
 def _default_ui_profile_out_dirs(game_out: Path) -> Tuple[Path, Path]:
@@ -1360,6 +1700,26 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
         }
     report["stages"]["prior_day_card_settlement"] = settlement_stage
 
+    live_lens_stage = _prior_day_live_lens_stage(args, str(prior_date))
+    report["stages"]["prior_day_live_lens"] = live_lens_stage
+    live_lens_readout = live_lens_stage.get("readout") if isinstance(live_lens_stage.get("readout"), dict) else {}
+    report["prior_day"]["live_lens"] = {
+        "status": str(live_lens_stage.get("status") or "skipped"),
+        "source": live_lens_stage.get("source"),
+        "sync_out_path": live_lens_stage.get("synced_report_path") or live_lens_stage.get("sync_out_path"),
+        "headline": live_lens_readout.get("headline"),
+    }
+    if live_lens_readout.get("headline"):
+        print(f"[ui-daily] Live-lens readout for {prior_date}: {live_lens_readout.get('headline')}")
+        for line in (live_lens_readout.get("learnings") or []):
+            print(f"[ui-daily]   learning: {line}")
+        for line in (live_lens_readout.get("performance") or []):
+            print(f"[ui-daily]   performance: {line}")
+    if str(live_lens_stage.get("status") or "") == "warning":
+        report["warnings"].append(
+            f"prior-day live-lens sync/readout warning: {str(live_lens_stage.get('error') or live_lens_stage.get('reason') or 'unknown')}"
+        )
+
     prior_eval_stage: Dict[str, Any]
     publish_stage: Dict[str, Any]
     if str(getattr(args, "refresh_season_manifests", "on") or "on") == "on":
@@ -1539,6 +1899,11 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
             "--settle-prior-card",
             "--prior-card-settlement-out",
             "--ops-report-out",
+            "--sync-live-lens",
+            "--live-lens-base-url",
+            "--live-lens-cron-token",
+            "--live-lens-timeout-seconds",
+            "--live-lens-sync-out",
             "--refresh-current-oddsapi",
             "--current-oddsapi-overwrite",
             "--current-oddsapi-regions",
@@ -2691,6 +3056,33 @@ def main() -> int:
         "--ops-report-out",
         default="",
         help="Optional workflow report JSON path for --workflow ui-daily.",
+    )
+    ap.add_argument(
+        "--sync-live-lens",
+        choices=["on", "off"],
+        default="on",
+        help="If on, fetch the prior-day live-lens report summary from Render during --workflow ui-daily and write a compact readout into the ops report.",
+    )
+    ap.add_argument(
+        "--live-lens-base-url",
+        default="",
+        help="Optional Render base URL override for the prior-day live-lens sync (defaults to MLB_BETTING_BASE_URL, BASE_URL, RENDER_URL, or RENDER_EXTERNAL_URL).",
+    )
+    ap.add_argument(
+        "--live-lens-cron-token",
+        default="",
+        help="Optional cron token override for the prior-day live-lens sync (defaults to MLB_BETTING_CRON_TOKEN or CRON_TOKEN).",
+    )
+    ap.add_argument(
+        "--live-lens-timeout-seconds",
+        type=int,
+        default=45,
+        help="HTTP timeout used when syncing the prior-day live-lens report summary during --workflow ui-daily.",
+    )
+    ap.add_argument(
+        "--live-lens-sync-out",
+        default="",
+        help="Optional local JSON snapshot path for the synced prior-day live-lens report payload during --workflow ui-daily.",
     )
     ap.add_argument(
         "--refresh-current-oddsapi",
