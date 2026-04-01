@@ -474,6 +474,39 @@ def _format_reason_ratio(value: Any) -> str:
     return f"{num:.2f}x"
 
 
+_PITCH_TYPE_REASON_LABELS = {
+    "FF": "four-seam fastball",
+    "SI": "sinker",
+    "FC": "cutter",
+    "SL": "slider",
+    "CH": "changeup",
+    "CU": "curveball",
+    "KC": "knuckle-curve",
+    "SV": "sweeper",
+    "FS": "splitter",
+    "FO": "forkball",
+    "CS": "slow curve",
+    "KN": "knuckleball",
+    "OTHER": "secondary mix",
+}
+
+
+def _pitch_type_reason_label(raw_pitch: Any) -> str:
+    code = str(raw_pitch or "").strip().upper()
+    return str(_PITCH_TYPE_REASON_LABELS.get(code) or code or "secondary mix")
+
+
+def _join_reason_labels(labels: Sequence[str]) -> str:
+    cleaned = [str(label or "").strip() for label in labels if str(label or "").strip()]
+    if not cleaned:
+        return ""
+    if len(cleaned) == 1:
+        return cleaned[0]
+    if len(cleaned) == 2:
+        return f"{cleaned[0]} and {cleaned[1]}"
+    return ", ".join(cleaned[:-1]) + f", and {cleaned[-1]}"
+
+
 def _pitch_mix_reason(profile: Dict[str, Any]) -> Optional[str]:
     arsenal = profile.get("arsenal")
     if not isinstance(arsenal, dict) or not arsenal:
@@ -491,15 +524,12 @@ def _pitch_mix_reason(profile: Dict[str, Any]) -> Optional[str]:
     if not parts:
         return None
     parts.sort(key=lambda item: item[1], reverse=True)
-    top = parts[:4]
-    mix = ", ".join(f"{pitch} {share * 100.0:.0f}%" for pitch, share in top)
-    sample_size = profile.get("arsenal_sample_size")
-    sample_label = ""
-    if isinstance(sample_size, (int, float)) and float(sample_size) > 0:
-        sample_label = f" (n={int(sample_size)})"
-    throw_hand = str(profile.get("throw") or "").strip().upper()
-    prefix = f"{throw_hand}HP" if throw_hand in ("L", "R") else "Pitch mix"
-    return f"{prefix} pitch mix{sample_label}: {mix}."
+    top = parts[:3]
+    pitch_names = [_pitch_type_reason_label(pitch) for pitch, _ in top]
+    lead_share = float(top[0][1]) if top else 0.0
+    if lead_share >= 0.45:
+        return f"He leans heavily on his {pitch_names[0]}, with { _join_reason_labels(pitch_names[1:]) } working as the main support." if len(pitch_names) > 1 else f"He leans heavily on his {pitch_names[0]}."
+    return f"He mixes { _join_reason_labels(pitch_names) } often enough that hitters have to cover multiple looks."
 
 
 def _opponent_lineup_reason(
@@ -592,12 +622,56 @@ def _opponent_lineup_reason(
         if count > 0:
             mix_avg = float(weighted_sum / float(count))
 
-    bits = [f"Opp bats {opp_label}"]
+    handedness_bits: List[str] = []
+    if bats.get("L"):
+        handedness_bits.append(f"{int(bats['L'])} left-handed")
+    if bats.get("R"):
+        handedness_bits.append(f"{int(bats['R'])} right-handed")
+    if bats.get("S"):
+        handedness_bits.append(f"{int(bats['S'])} switch-hitting")
+    handedness_sentence = ""
+    handedness_label = _join_reason_labels(handedness_bits)
+    if handedness_label:
+        handedness_sentence = f"The opposing lineup is mostly {handedness_label}."
+
+    matchup_bits: List[str] = []
     if mix_avg is not None:
-        bits.append(f"lineup vs mix {_format_reason_ratio(mix_avg)}")
-    if platoon_bits:
-        bits.append("platoon " + ", ".join(platoon_bits))
-    return "; ".join(bits) + "."
+        if mix_avg <= 0.97:
+            matchup_bits.append("That group grades a little below average against this pitch mix")
+        elif mix_avg >= 1.03:
+            matchup_bits.append("That group grades a little better than average against this pitch mix")
+        else:
+            matchup_bits.append("That group looks fairly neutral against this pitch mix")
+    if k_mult is not None:
+        if k_mult >= 1.03:
+            matchup_bits.append("the handedness split gives him a small strikeout boost")
+        elif k_mult <= 0.97:
+            matchup_bits.append("the handedness split trims some strikeout upside")
+    if hr_mult is not None:
+        if hr_mult <= 0.97:
+            matchup_bits.append("the power risk also comes in a bit lower than average")
+        elif hr_mult >= 1.03:
+            matchup_bits.append("the power risk is a little higher than average")
+
+    matchup_sentence = ""
+    if matchup_bits:
+        first = matchup_bits[0]
+        rest = matchup_bits[1:]
+        if rest:
+            matchup_sentence = first + ", and " + ", and ".join(rest) + "."
+        else:
+            matchup_sentence = first + "."
+
+    combined = " ".join(part for part in (handedness_sentence, matchup_sentence) if part)
+    return combined.strip() or None
+
+
+def _reason_paragraph(reasons: Sequence[str], *, max_sentences: int = 3) -> str:
+    cleaned = [str(item or "").strip() for item in reasons if str(item or "").strip()]
+    if not cleaned:
+        return ""
+    limited = cleaned[: max(1, int(max_sentences))]
+    return " ".join(limited)
 
 
 def _build_recommendation_reasons(row: Dict[str, Any]) -> List[str]:
@@ -609,18 +683,18 @@ def _build_recommendation_reasons(row: Dict[str, Any]) -> List[str]:
     selected_market_prob = row.get("selected_side_market_prob")
     if selected_model_prob is not None and selected_market_prob is not None:
         reasons.append(
-            f"Sim likes the {selection or 'selected'} side {_format_reason_percent(selected_model_prob)} vs market {_format_reason_percent(selected_market_prob)}."
+            f"The model lands on the {selection or 'selected'} side in {_format_reason_percent(selected_model_prob)} of sims, while the market is pricing it closer to {_format_reason_percent(selected_market_prob)}."
         )
 
     if market == "totals":
         if row.get("model_mean_total") is not None and row.get("market_line") is not None:
             reasons.append(
-                f"Projected total {_format_reason_number(row.get('model_mean_total'))} vs line {_format_reason_number(row.get('market_line'))}."
+                f"The game is projecting around {_format_reason_number(row.get('model_mean_total'))} runs against a line of {_format_reason_number(row.get('market_line'))}."
             )
     elif market == "ml":
         team_label = str(row.get("home_abbr") or row.get("home") or "Home") if selection == "home" else str(row.get("away_abbr") or row.get("away") or "Away")
         if row.get("selected_side_model_prob") is not None:
-            reasons.append(f"Sim win rate for {team_label} is {_format_reason_percent(row.get('selected_side_model_prob'))}.")
+            reasons.append(f"{team_label} wins this matchup in about {_format_reason_percent(row.get('selected_side_model_prob'))} of model runs.")
     elif market == "pitcher_props":
         baseball_reasons = row.get("baseball_reasons")
         if isinstance(baseball_reasons, list):
@@ -632,26 +706,26 @@ def _build_recommendation_reasons(row: Dict[str, Any]) -> List[str]:
         mean_key = str(PITCHER_MARKET_SPECS.get(str(row.get("prop") or ""), {}).get("mean_key") or "")
         if mean_key and row.get(mean_key) is not None and row.get("market_line") is not None:
             reasons.append(
-                f"Projected {prop_label} {_format_reason_number(row.get(mean_key))} vs line {_format_reason_number(row.get('market_line'))}."
+                f"The model baseline sits around {_format_reason_number(row.get(mean_key))} {prop_label} against a line of {_format_reason_number(row.get('market_line'))}."
             )
         opponent = row.get("away_abbr") if str(row.get("team_side") or "") == "home" else row.get("home_abbr")
         if opponent:
-            reasons.append(f"Starter path stays live against {opponent}.")
+            reasons.append(f"If he stays on his normal starter path, the matchup against {opponent} gives him a fair shot to reach full workload volume.")
     else:
         prop_label = str(row.get("prop") or "prop").replace("_", " ")
         mean_key = str(HITTER_MARKET_SPECS.get(str(row.get("prop_market_key") or ""), {}).get("mean_key") or "")
         if mean_key and row.get(mean_key) is not None and row.get("market_line") is not None:
             reasons.append(
-                f"Projected {prop_label} {_format_reason_number(row.get(mean_key))} vs line {_format_reason_number(row.get('market_line'))}."
+                f"The model baseline comes in around {_format_reason_number(row.get(mean_key))} {prop_label} against a line of {_format_reason_number(row.get('market_line'))}."
             )
         lineup_order = row.get("lineup_order")
         pa_mean = row.get("pa_mean")
         if isinstance(lineup_order, int) and pa_mean is not None:
             reasons.append(
-                f"Projected lineup spot {int(lineup_order)} with {_format_reason_number(pa_mean)} PA mean."
+                f"He is projected to hit in the {int(lineup_order)} spot, which points to about {_format_reason_number(pa_mean)} plate appearances."
             )
         elif pa_mean is not None:
-            reasons.append(f"Projected {_format_reason_number(pa_mean)} PA mean supports volume.")
+            reasons.append(f"The playing-time outlook points to about {_format_reason_number(pa_mean)} plate appearances, which keeps the volume case in play.")
 
     return reasons
 
@@ -661,8 +735,9 @@ def _annotate_recommendation(row: Dict[str, Any]) -> Dict[str, Any]:
     reasons = _build_recommendation_reasons(item)
     item.pop("baseball_reasons", None)
     if reasons:
-        item["reasons"] = reasons
-        item["reason_summary"] = " | ".join(reasons[:2])
+        paragraph = _reason_paragraph(reasons)
+        item["reasons"] = ([paragraph] if paragraph else reasons)
+        item["reason_summary"] = paragraph or reasons[0]
     return item
 
 

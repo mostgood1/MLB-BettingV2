@@ -153,30 +153,30 @@
     return !!(value && typeof value === "object" && Object.keys(value).length);
   }
 
-  function recoReasonLines(reco) {
+  function recoReasonText(reco) {
     const reasons = Array.isArray(reco?.reasons) ? reco.reasons : [];
     const cleaned = reasons
       .map((row) => String(row == null ? "" : row).trim())
       .filter(Boolean);
-    if (cleaned.length) return cleaned;
+    if (cleaned.length) return cleaned[0];
     const summary = String(reco?.reason_summary || "").trim();
-    if (!summary) return [];
-    return summary
-      .split("|")
-      .map((part) => part.trim())
-      .filter(Boolean);
+    return summary || "";
   }
 
   function renderRecoReasons(reco) {
-    const lines = recoReasonLines(reco);
-    if (!lines.length) return "";
+    const text = recoReasonText(reco);
+    if (!text) return "";
     return `
       <div class="cards-panel-card cards-prop-stack">
         <div class="cards-table-head"><div class="cards-table-title">Reasons</div></div>
         <div class="cards-live-lens-reasons">
-          ${lines.map((line) => `<div class="cards-live-lens-reason">${escapeHtml(line)}</div>`).join("")}
+          <div class="cards-live-lens-reason">${escapeHtml(text)}</div>
         </div>
       </div>`;
+  }
+
+  function recoReasonPreview(reco) {
+    return recoReasonText(reco);
   }
 
   function normalizeName(value) {
@@ -813,6 +813,7 @@
         <div class="cards-market-main">${escapeHtml(config.main || "No play")}</div>
         <div class="cards-market-bottom">
           <div class="cards-market-sub">${escapeHtml(config.sub || "Off card")}</div>
+          ${config.note ? `<div class="cards-market-note">${escapeHtml(config.note)}</div>` : ""}
         </div>
       </div>`;
   }
@@ -870,7 +871,7 @@
         })
       : tileMarkup({ label: "Moneyline", main: "No ML play", sub: "Off card" });
 
-    const pitcherTop = pitcherRows[0] || pitcherExtraRows[0] || null;
+    const pitcherTop = pitcherRows[0] || null;
     const pitcherTile = pitcherTop
       ? tileMarkup({
           label: "Pitcher Props",
@@ -879,11 +880,12 @@
           sub: pitcherRows.length
             ? `${pitcherExtraRows.length ? `${pitcherExtraRows.length} more playable | ` : ""}Mean ${formatLine(pitcherTop.outs_mean)} | Edge ${formatPropEdge(pitcherTop)}`
             : `Playable only | Mean ${formatLine(pitcherTop.outs_mean)} | Edge ${formatPropEdge(pitcherTop)}`,
+          note: recoReasonPreview(pitcherTop),
           tabTarget: "props",
         })
-      : tileMarkup({ label: "Pitcher Props", main: "No pitcher props", sub: "Off card", tabTarget: "props" });
+      : tileMarkup({ label: "Pitcher Props", main: "No locked pitcher prop", sub: "Off card", tabTarget: "props" });
 
-    const hitterTop = hitterRows[0] || hitterExtraRows[0] || null;
+    const hitterTop = hitterRows[0] || null;
     const hitterTile = hitterTop
       ? tileMarkup({
           label: "Hitter Props",
@@ -892,9 +894,10 @@
           sub: hitterRows.length
             ? (summarizeHitterMarkets(hitterRows) || `Edge ${formatPropEdge(hitterTop)}`)
             : `Playable only | ${summarizeHitterMarkets(hitterExtraRows) || `Edge ${formatPropEdge(hitterTop)}`}`,
+          note: recoReasonPreview(hitterTop),
           tabTarget: "props",
         })
-      : tileMarkup({ label: "Hitter Props", main: "No hitter props", sub: "Off card", tabTarget: "props" });
+      : tileMarkup({ label: "Hitter Props", main: "No locked hitter prop", sub: "Off card", tabTarget: "props" });
 
     return `${totalsTile}${mlTile}${pitcherTile}${hitterTile}`;
   }

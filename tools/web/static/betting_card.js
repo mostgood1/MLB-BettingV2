@@ -327,7 +327,7 @@
       const cleaned = reasons
         .map((row) => String(row == null ? "" : row).trim())
         .filter(Boolean);
-      if (cleaned.length) return cleaned.slice(0, 3).join(" | ");
+      if (cleaned.length) return cleaned[0];
     }
     const reasonSummary = String(reco?.reason_summary || "").trim();
     if (reasonSummary) return reasonSummary;
