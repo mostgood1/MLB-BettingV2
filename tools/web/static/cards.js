@@ -175,10 +175,6 @@
       </div>`;
   }
 
-  function recoReasonPreview(reco) {
-    return recoReasonText(reco);
-  }
-
   function normalizeName(value) {
     return String(value || "")
       .normalize("NFD")
@@ -880,7 +876,6 @@
           sub: pitcherRows.length
             ? `${pitcherExtraRows.length ? `${pitcherExtraRows.length} more playable | ` : ""}Mean ${formatLine(pitcherTop.outs_mean)} | Edge ${formatPropEdge(pitcherTop)}`
             : `Playable only | Mean ${formatLine(pitcherTop.outs_mean)} | Edge ${formatPropEdge(pitcherTop)}`,
-          note: recoReasonPreview(pitcherTop),
           tabTarget: "props",
         })
       : tileMarkup({ label: "Pitcher Props", main: "No locked pitcher prop", sub: "Off card", tabTarget: "props" });
@@ -894,7 +889,6 @@
           sub: hitterRows.length
             ? (summarizeHitterMarkets(hitterRows) || `Edge ${formatPropEdge(hitterTop)}`)
             : `Playable only | ${summarizeHitterMarkets(hitterExtraRows) || `Edge ${formatPropEdge(hitterTop)}`}`,
-          note: recoReasonPreview(hitterTop),
           tabTarget: "props",
         })
       : tileMarkup({ label: "Hitter Props", main: "No locked hitter prop", sub: "Off card", tabTarget: "props" });

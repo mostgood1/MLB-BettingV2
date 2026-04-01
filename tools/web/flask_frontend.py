@@ -8631,41 +8631,16 @@ def season_betting_card_view(season: int) -> str:
     return render_template("betting_card.html", season=int(season), date=d, profile=profile)
 
 
-@app.get("/api/cards")
-def api_cards() -> Response:
-    d = str(request.args.get("date") or "").strip() or _default_cards_date()
-    artifacts = _load_cards_artifacts(d)
-    archive = _load_cards_archive_context(d) if _should_load_cards_archive_context(d, artifacts) else {}
-    game_line_index = _load_game_line_market_index(d)
-
-    if isinstance(artifacts.get("locked_policy"), dict):
-        recos_by_game = _recommendations_by_game(artifacts.get("locked_policy"))
-    elif isinstance(archive.get("card"), dict):
-        recos_by_game = _recommendations_by_game(archive.get("card"))
-    else:
-        recos_by_game = {}
-
-    if isinstance(artifacts.get("game_summary"), dict):
-        outputs_by_game = _game_outputs_by_game(artifacts.get("game_summary"))
-    elif isinstance(archive.get("report"), dict):
-        outputs_by_game = _season_report_outputs_by_game(archive.get("report"))
-    else:
-        outputs_by_game = {}
-
-    schedule_games = _schedule_games_for_date(d)
-
-    cards = _cards_list_from_sources(
-        d=d,
-        schedule_games=schedule_games,
-        outputs_by_game=outputs_by_game,
-        recos_by_game=recos_by_game,
-    )
-    for card in cards:
-        if not isinstance(card, dict):
-            continue
-        market_row = _game_line_market_for_card(card, game_line_index)
-        card["trackedGameLines"] = (market_row.get("markets") or {}) if isinstance(market_row, dict) else None
-
+def _cards_api_payload(
+    d: str,
+    *,
+    artifacts: Optional[Dict[str, Any]],
+    archive: Optional[Dict[str, Any]],
+    cards: List[Dict[str, Any]],
+    fallback_error: Optional[str] = None,
+) -> Dict[str, Any]:
+    artifacts = artifacts if isinstance(artifacts, dict) else {}
+    archive = archive if isinstance(archive, dict) else {}
     has_legacy_data = bool(artifacts.get("locked_policy") or artifacts.get("game_summary"))
     has_archive_data = bool(archive.get("report") or archive.get("card"))
     view_mode = "legacy_daily" if has_legacy_data else ("season_archive" if has_archive_data else "schedule_only")
@@ -8681,38 +8656,97 @@ def api_cards() -> Response:
             "nextDate": _shift_iso_date_str(d, 1),
         }
 
-    return jsonify(
-        {
-            "date": d,
-            "hasSampleData": bool(has_legacy_data or has_archive_data),
-            "view": {
-                "mode": view_mode,
-                "season": archive.get("season"),
-                "profile": archive.get("profile"),
-            },
-            "nav": nav,
-            "sources": {
-                "mode": view_mode,
-                "locked_policy": _relative_path_str(artifacts.get("locked_policy_path")),
-                "game_summary": _relative_path_str(artifacts.get("game_summary_path")),
-                "sim_dir": _relative_path_str(artifacts.get("sim_dir")),
-                "snapshot_dir": _relative_path_str(artifacts.get("snapshot_dir")),
-                "lineups": _relative_path_str(artifacts.get("lineups_path")),
-                "ops_report": _relative_path_str(artifacts.get("ops_report_path")),
-                "oddsapi_game_lines": ((artifacts.get("market_availability") or {}).get("gameLines") or {}).get("path"),
-                "oddsapi_pitcher_props": ((artifacts.get("market_availability") or {}).get("pitcherProps") or {}).get("path"),
-                "oddsapi_hitter_props": ((artifacts.get("market_availability") or {}).get("hitterProps") or {}).get("path"),
-                "season_manifest": _relative_path_str(archive.get("manifest_path")),
-                "season_report": _relative_path_str(archive.get("report_path")),
-                "season_betting_manifest": _relative_path_str(archive.get("betting_manifest_path")),
-                "season_card": _relative_path_str(archive.get("card_path")),
-            },
-            "marketAvailability": artifacts.get("market_availability") or {},
-            "lineupHealth": _lineup_health_summary(artifacts.get("lineups_path"), artifacts.get("lineups")),
-            "workflow": _workflow_summary(artifacts.get("ops_report_path"), artifacts.get("ops_report")),
-            "cards": cards,
-        }
-    )
+    payload = {
+        "date": d,
+        "hasSampleData": bool(has_legacy_data or has_archive_data),
+        "view": {
+            "mode": view_mode,
+            "season": archive.get("season"),
+            "profile": archive.get("profile"),
+        },
+        "nav": nav,
+        "sources": {
+            "mode": view_mode,
+            "locked_policy": _relative_path_str(artifacts.get("locked_policy_path")),
+            "game_summary": _relative_path_str(artifacts.get("game_summary_path")),
+            "sim_dir": _relative_path_str(artifacts.get("sim_dir")),
+            "snapshot_dir": _relative_path_str(artifacts.get("snapshot_dir")),
+            "lineups": _relative_path_str(artifacts.get("lineups_path")),
+            "ops_report": _relative_path_str(artifacts.get("ops_report_path")),
+            "oddsapi_game_lines": ((artifacts.get("market_availability") or {}).get("gameLines") or {}).get("path"),
+            "oddsapi_pitcher_props": ((artifacts.get("market_availability") or {}).get("pitcherProps") or {}).get("path"),
+            "oddsapi_hitter_props": ((artifacts.get("market_availability") or {}).get("hitterProps") or {}).get("path"),
+            "season_manifest": _relative_path_str(archive.get("manifest_path")),
+            "season_report": _relative_path_str(archive.get("report_path")),
+            "season_betting_manifest": _relative_path_str(archive.get("betting_manifest_path")),
+            "season_card": _relative_path_str(archive.get("card_path")),
+        },
+        "marketAvailability": artifacts.get("market_availability") or {},
+        "lineupHealth": _lineup_health_summary(artifacts.get("lineups_path"), artifacts.get("lineups")),
+        "workflow": _workflow_summary(artifacts.get("ops_report_path"), artifacts.get("ops_report")),
+        "cards": cards,
+    }
+    if fallback_error:
+        payload["warning"] = fallback_error
+    return payload
+
+
+@app.get("/api/cards")
+def api_cards() -> Response:
+    d = str(request.args.get("date") or "").strip() or _default_cards_date()
+    try:
+        artifacts = _load_cards_artifacts(d)
+        archive = _load_cards_archive_context(d) if _should_load_cards_archive_context(d, artifacts) else {}
+        game_line_index = _load_game_line_market_index(d)
+
+        if isinstance(artifacts.get("locked_policy"), dict):
+            recos_by_game = _recommendations_by_game(artifacts.get("locked_policy"))
+        elif isinstance(archive.get("card"), dict):
+            recos_by_game = _recommendations_by_game(archive.get("card"))
+        else:
+            recos_by_game = {}
+
+        if isinstance(artifacts.get("game_summary"), dict):
+            outputs_by_game = _game_outputs_by_game(artifacts.get("game_summary"))
+        elif isinstance(archive.get("report"), dict):
+            outputs_by_game = _season_report_outputs_by_game(archive.get("report"))
+        else:
+            outputs_by_game = {}
+
+        schedule_games = _schedule_games_for_date(d)
+
+        cards = _cards_list_from_sources(
+            d=d,
+            schedule_games=schedule_games,
+            outputs_by_game=outputs_by_game,
+            recos_by_game=recos_by_game,
+        )
+        for card in cards:
+            if not isinstance(card, dict):
+                continue
+            market_row = _game_line_market_for_card(card, game_line_index)
+            card["trackedGameLines"] = (market_row.get("markets") or {}) if isinstance(market_row, dict) else None
+        return jsonify(_cards_api_payload(d, artifacts=artifacts, archive=archive, cards=cards))
+    except Exception as exc:
+        app.logger.exception("cards api failed for %s", d)
+        try:
+            schedule_games = _schedule_games_for_date(d)
+        except Exception:
+            schedule_games = []
+        fallback_cards = _cards_list_from_sources(
+            d=d,
+            schedule_games=schedule_games,
+            outputs_by_game={},
+            recos_by_game={},
+        )
+        payload = _cards_api_payload(
+            d,
+            artifacts={},
+            archive={},
+            cards=fallback_cards,
+            fallback_error=f"cards_api_fallback: {type(exc).__name__}: {exc}",
+        )
+        return jsonify(payload)
 
 
 @app.get("/api/pitcher-ladders")
