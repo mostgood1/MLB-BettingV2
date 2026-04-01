@@ -421,6 +421,8 @@ def _player_history_summary(person_id: Any, season: Any, group: str, prop: str, 
         return []
 
     current_logs = list(_fetch_person_gamelog_cached(int(pid), int(season_i), str(group)))
+    previous_season = int(season_i) - 1
+    previous_logs = list(_fetch_person_gamelog_cached(int(pid), int(previous_season), str(group))) if previous_season > 0 else []
     out: List[Dict[str, Any]] = []
 
     def _append(label: str, value: Optional[float], games: int) -> None:
@@ -432,7 +434,9 @@ def _player_history_summary(person_id: Any, season: Any, group: str, prop: str, 
     _append("L5", _average_metric_from_logs(group, prop, tail5), len(tail5))
     tail10 = current_logs[-10:]
     _append("L10", _average_metric_from_logs(group, prop, tail10), len(tail10))
-    _append("Season avg", _season_average_metric(int(pid), int(season_i), str(group), prop), len(current_logs))
+    _append(f"{int(season_i)} avg", _season_average_metric(int(pid), int(season_i), str(group), prop), len(current_logs))
+    if previous_season > 0:
+        _append(f"{int(previous_season)} avg", _season_average_metric(int(pid), int(previous_season), str(group), prop), len(previous_logs))
 
     if opp_id is not None:
         opp_logs: List[Dict[str, Any]] = []
@@ -467,6 +471,10 @@ def _attach_history_summary(row: Dict[str, Any], *, season: int, group: str, pro
             history_row["trend"] = "neutral"
     item["historyRows"] = history_rows
     return item
+
+
+def _attach_history_summary_rows(rows: List[Dict[str, Any]], *, season: int, group: str, prop: str) -> List[Dict[str, Any]]:
+    return [_attach_history_summary(row, season=season, group=group, prop=prop) for row in rows if isinstance(row, dict)]
 
 
 def _date_slug(d: str) -> str:
@@ -2473,6 +2481,8 @@ def _pitcher_ladders_payload(d: str, prop_value: Any, sort_value: Any) -> Dict[s
             target_name = normalize_pitcher_name(selected_pitcher)
             rows = [row for row in rows if normalize_pitcher_name(row.get("pitcherName")) == target_name]
 
+    rows = _attach_history_summary_rows(rows, season=_season_from_date_str(d), group="pitching", prop=prop)
+
     if not rows:
         payload["error"] = "pitcher_ladders_missing"
         if selected_game:
@@ -2867,6 +2877,8 @@ def _hitter_ladders_payload(d: str, prop_value: Any) -> Dict[str, Any]:
         else:
             target_name = normalize_pitcher_name(selected_hitter)
             rows = [row for row in rows if normalize_pitcher_name(row.get("hitterName")) == target_name]
+
+    rows = _attach_history_summary_rows(rows, season=_season_from_date_str(d), group="hitting", prop=prop)
 
     if not rows:
         payload["error"] = "hitter_ladders_missing"

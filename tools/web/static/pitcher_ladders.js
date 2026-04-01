@@ -186,57 +186,43 @@
     pitcherInputEl.value = currentValue;
   }
 
-  function renderSelectedPitcher(payload) {
-    const options = Array.isArray(payload.pitcherOptions) ? payload.pitcherOptions : [];
-    const currentValue = String(payload.selectedPitcher || state.pitcher || "");
-    const featured = payload.featuredRow || null;
-    if (!currentValue && !featured) {
-      selectedPitcherEl.innerHTML = "";
-      selectedPitcherEl.style.display = "none";
-      return;
-    }
+  function historyCalloutsForTotal(row, total) {
+    const historyRows = Array.isArray(row.historyRows) ? row.historyRows : [];
+    const targetTotal = Number(total);
+    if (!Number.isFinite(targetTotal)) return [];
+    return historyRows.filter((historyRow) => {
+      const value = Number(historyRow && historyRow.value);
+      return Number.isFinite(value) && Math.round(value) === Math.round(targetTotal);
+    });
+  }
 
-    const selected = options.find((option) => String(option.value || "") === currentValue)
-      || featured
-      || (Array.isArray(payload.rows) ? payload.rows.find((row) => String(row.pitcherId || "") === currentValue) : null);
-
-    if (!selected) {
-      selectedPitcherEl.innerHTML = "";
-      selectedPitcherEl.style.display = "none";
-      return;
-    }
-
-    const headshotUrl = selected.headshotUrl || "";
-    const teamLogoUrl = selected.teamLogoUrl || "";
-    const pitcherName = selected.pitcherName || selected.label || currentValue;
-    const label = selected.label || pitcherName;
-    const clearHref = pageHref(state.date, state.prop, state.game, "", state.sort);
-    const historyRows = Array.isArray(selected.historyRows) ? selected.historyRows : [];
-
-    selectedPitcherEl.style.display = "block";
-    selectedPitcherEl.innerHTML = `
-      <div class="ladder-selected-card">
-        <div class="ladder-selected-identity">
-          ${teamLogoUrl ? `<img class="ladder-selected-team-logo" src="${escapeHtml(teamLogoUrl)}" alt="team logo" loading="lazy" />` : ""}
-          ${headshotUrl ? `<img class="ladder-selected-headshot" src="${escapeHtml(headshotUrl)}" alt="${escapeHtml(pitcherName)} headshot" loading="lazy" />` : ""}
-          <div>
-            <div class="ladder-selected-kicker">Selected pitcher</div>
-            <div class="ladder-selected-name">${escapeHtml(pitcherName)}</div>
-            <div class="ladder-selected-meta">${escapeHtml(label)}</div>
-          </div>
-        </div>
-        <div class="ladder-selected-sidecar">
-          ${historyRows.length ? `<div class="ladder-history-strip">${historyRows.map((row) => `
-            <span class="ladder-history-chip is-${escapeHtml(String(row.trend || 'neutral'))}">
-              <span class="ladder-history-chip-label">${escapeHtml(row.label || '')}</span>
-              <strong>${escapeHtml(formatNumber(row.value, 2))}</strong>
-              <span class="ladder-history-chip-meta">${escapeHtml(formatCount(row.games))} G</span>
-            </span>
-          `).join("")}</div>` : ""}
-          <a class="ladder-selected-clear" href="${clearHref}">Show all</a>
-        </div>
+  function renderHistoryCallouts(row, total) {
+    const callouts = historyCalloutsForTotal(row, total);
+    if (!callouts.length) return "";
+    return `
+      <div class="ladder-row-history-callouts">
+        ${callouts.map((historyRow) => `
+          <span class="ladder-row-history-chip is-${escapeHtml(String(historyRow.trend || 'neutral'))}" title="${escapeHtml(`${historyRow.label || ''}: ${formatNumber(historyRow.value, 2)} over ${formatCount(historyRow.games)} G`)}">
+            <span class="ladder-row-history-chip-label">${escapeHtml(historyRow.label || "")}</span>
+            <strong>${escapeHtml(formatNumber(historyRow.value, 2))}</strong>
+          </span>
+        `).join("")}
       </div>
     `;
+  }
+
+  function renderTotalCell(row, total) {
+    return `
+      <div class="ladder-total-cell">
+        <span class="ladder-total-value">${escapeHtml(formatCount(total))}</span>
+        ${renderHistoryCallouts(row, total)}
+      </div>
+    `;
+  }
+
+  function renderSelectedPitcher(payload) {
+    selectedPitcherEl.innerHTML = "";
+    selectedPitcherEl.style.display = "none";
   }
 
   function renderSummary(payload) {
@@ -303,7 +289,7 @@
       : `<div class="ladder-player-headshot ladder-player-headshot-fallback">${escapeHtml(String((row.pitcherName || "?").slice(0, 1) || "?"))}</div>`;
     const ladderTableRows = ladderRows.map((ladderRow) => `
       <tr>
-        <td>${escapeHtml(formatCount(ladderRow.total))}</td>
+        <td>${renderTotalCell(row, ladderRow.total)}</td>
         <td>${escapeHtml(formatCount(ladderRow.hitCount))}</td>
         <td>${escapeHtml(formatPercent(ladderRow.hitProb))}</td>
         <td>${escapeHtml(thresholdBookOdds(row, payload, ladderRow.total))}</td>
