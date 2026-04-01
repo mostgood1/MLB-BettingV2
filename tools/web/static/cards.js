@@ -2022,8 +2022,15 @@
     return 1;
   }
 
+  function scheduledStartSortValue(card) {
+    const text = String(card?.gameDate || "").trim();
+    if (!text) return Number.POSITIVE_INFINITY;
+    const parsed = Date.parse(text);
+    return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
+  }
+
   function stripSortValue(card) {
-    return 0;
+    return scheduledStartSortValue(card);
   }
 
   function sortCardsForStrip(cards) {

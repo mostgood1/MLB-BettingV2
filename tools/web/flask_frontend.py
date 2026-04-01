@@ -3025,6 +3025,18 @@ def _cards_list_from_sources(
 ) -> List[Dict[str, Any]]:
     cards_by_game: Dict[int, Dict[str, Any]] = {}
 
+    def _card_sort_key(card: Dict[str, Any]) -> Tuple[int, int, str, int]:
+        status = str(((card.get("status") or {}).get("abstract")) or "").strip().lower()
+        if status == "live":
+            status_weight = 0
+        elif status == "final":
+            status_weight = 2
+        else:
+            status_weight = 1
+        game_date = str(card.get("gameDate") or "").strip()
+        has_game_date = 0 if game_date else 1
+        return (status_weight, has_game_date, game_date, int(card.get("gamePk") or 0))
+
     def _ensure_card(game_pk: int, sort_order: int) -> Dict[str, Any]:
         card = cards_by_game.get(int(game_pk))
         if card is None:
@@ -3152,7 +3164,7 @@ def _cards_list_from_sources(
             "extraHitterProps": bucket.get("extra_hitter_props") or [],
         }
 
-    cards = sorted(cards_by_game.values(), key=lambda row: (int(row.get("sortOrder") or 999999), int(row.get("gamePk") or 0)))
+    cards = sorted(cards_by_game.values(), key=_card_sort_key)
     for card in cards:
         card.pop("sortOrder", None)
         card["flags"] = {
