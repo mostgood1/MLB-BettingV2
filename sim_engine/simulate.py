@@ -913,6 +913,21 @@ def _simulate_pitch(
                 mult = mm.get(pid)
                 if isinstance(mult, (int, float)):
                     batter_hr = _clamp_rate(float(batter_hr) * float(mult), 0.002, 0.12)
+            mm = getattr(batter, "vs_pitcher_k_mult", None)
+            if isinstance(mm, dict):
+                mult = mm.get(pid)
+                if isinstance(mult, (int, float)):
+                    batter_k = _clamp_rate(float(batter_k) * float(mult), 0.05, 0.55)
+            mm = getattr(batter, "vs_pitcher_bb_mult", None)
+            if isinstance(mm, dict):
+                mult = mm.get(pid)
+                if isinstance(mult, (int, float)):
+                    batter_bb = _clamp_rate(float(batter_bb) * float(mult), 0.01, 0.22)
+            mm = getattr(batter, "vs_pitcher_inplay_mult", None)
+            if isinstance(mm, dict):
+                mult = mm.get(pid)
+                if isinstance(mult, (int, float)):
+                    batter_inplay = _clamp_rate(float(batter_inplay) * float(mult), 0.10, 0.45)
     except Exception:
         pass
 
@@ -2001,6 +2016,21 @@ def simulate_game(away: TeamRoster, home: TeamRoster, config: Optional[GameConfi
                 mult = mm.get(int(pitcher_id))
                 if isinstance(mult, (int, float)):
                     batter_hr = _clamp_rate(float(batter_hr) * float(mult), 0.002, 0.12)
+            mm = getattr(batter_prof, "vs_pitcher_k_mult", None)
+            if isinstance(mm, dict):
+                mult = mm.get(int(pitcher_id))
+                if isinstance(mult, (int, float)):
+                    batter_k = _clamp_rate(float(batter_k) * float(mult), 0.05, 0.55)
+            mm = getattr(batter_prof, "vs_pitcher_bb_mult", None)
+            if isinstance(mm, dict):
+                mult = mm.get(int(pitcher_id))
+                if isinstance(mult, (int, float)):
+                    batter_bb = _clamp_rate(float(batter_bb) * float(mult), 0.01, 0.22)
+            mm = getattr(batter_prof, "vs_pitcher_inplay_mult", None)
+            if isinstance(mm, dict):
+                mult = mm.get(int(pitcher_id))
+                if isinstance(mult, (int, float)):
+                    batter_inplay = _clamp_rate(float(batter_inplay) * float(mult), 0.10, 0.45)
         except Exception:
             pass
 

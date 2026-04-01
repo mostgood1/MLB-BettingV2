@@ -188,13 +188,15 @@
   function renderSelectedHitter(payload) {
     const options = Array.isArray(payload.hitterOptions) ? payload.hitterOptions : [];
     const currentValue = String(payload.selectedHitter || state.hitter || "");
-    if (!currentValue) {
+    const featured = payload.featuredRow || null;
+    if (!currentValue && !featured) {
       selectedHitterEl.innerHTML = "";
       selectedHitterEl.style.display = "none";
       return;
     }
 
     const selected = options.find((option) => String(option.value || "") === currentValue)
+      || featured
       || (Array.isArray(payload.rows) ? payload.rows.find((row) => String(row.hitterId || "") === currentValue) : null);
 
     if (!selected) {
@@ -208,6 +210,7 @@
     const hitterName = selected.hitterName || selected.playerName || selected.label || currentValue;
     const label = selected.label || hitterName;
     const clearHref = pageHref(state.date, state.prop, state.game, state.team, "", state.sort);
+    const historyRows = Array.isArray(selected.historyRows) ? selected.historyRows : [];
 
     selectedHitterEl.style.display = "block";
     selectedHitterEl.innerHTML = `
@@ -221,7 +224,16 @@
             <div class="ladder-selected-meta">${escapeHtml(label)}</div>
           </div>
         </div>
-        <a class="ladder-selected-clear" href="${clearHref}">Show all</a>
+        <div class="ladder-selected-sidecar">
+          ${historyRows.length ? `<div class="ladder-history-strip">${historyRows.map((row) => `
+            <span class="ladder-history-chip is-${escapeHtml(String(row.trend || 'neutral'))}">
+              <span class="ladder-history-chip-label">${escapeHtml(row.label || '')}</span>
+              <strong>${escapeHtml(formatNumber(row.value, 2))}</strong>
+              <span class="ladder-history-chip-meta">${escapeHtml(formatCount(row.games))} G</span>
+            </span>
+          `).join("")}</div>` : ""}
+          <a class="ladder-selected-clear" href="${clearHref}">Show all</a>
+        </div>
       </div>
     `;
   }

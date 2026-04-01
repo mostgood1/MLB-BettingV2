@@ -666,6 +666,273 @@ def _opponent_lineup_reason(
     return combined.strip() or None
 
 
+def _pitcher_bvp_reason(
+    pitcher_profile: Dict[str, Any],
+    opponent_lineup: List[Dict[str, Any]],
+) -> Optional[str]:
+    if not isinstance(pitcher_profile, dict) or not isinstance(opponent_lineup, list) or not opponent_lineup:
+        return None
+    try:
+        pitcher_id = int(pitcher_profile.get("id") or 0)
+    except Exception:
+        pitcher_id = 0
+    if pitcher_id <= 0:
+        return None
+
+    total_pa = 0.0
+    hitter_matches = 0
+    weighted_k = 0.0
+    weighted_hr = 0.0
+    weighted_inplay = 0.0
+
+    for batter in opponent_lineup:
+        if not isinstance(batter, dict):
+            continue
+        history_map = batter.get("vs_pitcher_history")
+        if not isinstance(history_map, dict):
+            continue
+        history = history_map.get(str(pitcher_id)) if str(pitcher_id) in history_map else history_map.get(pitcher_id)
+        if not isinstance(history, dict):
+            continue
+        try:
+            pa = float(history.get("pa") or 0.0)
+        except Exception:
+            pa = 0.0
+        if pa <= 0.0:
+            continue
+        hitter_matches += 1
+        total_pa += float(pa)
+        try:
+            weighted_k += float(pa) * float(history.get("k_mult") or 1.0)
+        except Exception:
+            weighted_k += float(pa)
+        try:
+            weighted_hr += float(pa) * float(history.get("hr_mult") or 1.0)
+        except Exception:
+            weighted_hr += float(pa)
+        try:
+            weighted_inplay += float(pa) * float(history.get("inplay_mult") or 1.0)
+        except Exception:
+            weighted_inplay += float(pa)
+
+    if total_pa < 12.0 or hitter_matches < 2:
+        return None
+
+    avg_k = float(weighted_k / total_pa) if total_pa > 0.0 else 1.0
+    avg_hr = float(weighted_hr / total_pa) if total_pa > 0.0 else 1.0
+    avg_inplay = float(weighted_inplay / total_pa) if total_pa > 0.0 else 1.0
+
+    bits: List[str] = []
+    if avg_k >= 1.05:
+        bits.append("their prior looks against him have come with a little more swing-and-miss than baseline")
+    elif avg_k <= 0.95:
+        bits.append("their prior looks against him have produced a little less swing-and-miss than baseline")
+    if avg_inplay <= 0.95:
+        bits.append("the contact they have made has turned into fewer hits than expected")
+    elif avg_inplay >= 1.05:
+        bits.append("the contact they have made has turned into hits a bit more often than expected")
+    if avg_hr <= 0.94:
+        bits.append("the damage profile has also come in lighter than a neutral matchup")
+    elif avg_hr >= 1.06:
+        bits.append("the damage profile has also come in a little hotter than a neutral matchup")
+
+    if not bits:
+        return None
+
+    lead = bits[0]
+    rest = bits[1:]
+    sentence = f"There is some real lineup-level history here ({int(round(total_pa))} plate appearances across {int(hitter_matches)} hitters), and {lead}"
+    if rest:
+        sentence += ", while " + ", while ".join(rest)
+    return sentence + "."
+
+
+def _hitter_pitch_mix_reason(batter_profile: Dict[str, Any], pitcher_profile: Dict[str, Any]) -> Optional[str]:
+    vs_pitch_type = batter_profile.get("vs_pitch_type") if isinstance(batter_profile, dict) else None
+    arsenal = pitcher_profile.get("arsenal") if isinstance(pitcher_profile, dict) else None
+    if not isinstance(vs_pitch_type, dict) or not isinstance(arsenal, dict):
+        return None
+
+    pitch_rows: List[Tuple[str, float, float]] = []
+    weighted = 0.0
+    share_total = 0.0
+    for raw_pitch, raw_share in arsenal.items():
+        try:
+            pitch = str(raw_pitch).strip().upper()
+            share = float(raw_share)
+            mult = float(vs_pitch_type.get(pitch, 1.0))
+        except Exception:
+            continue
+        if not pitch or share <= 0.0:
+            continue
+        pitch_rows.append((pitch, share, mult))
+        weighted += float(share) * float(mult)
+        share_total += float(share)
+    if not pitch_rows or share_total <= 0.0:
+        return None
+
+    mix_score = float(weighted / share_total)
+    pitch_rows.sort(key=lambda item: item[1], reverse=True)
+    strong = [
+        _pitch_type_reason_label(pitch)
+        for pitch, share, mult in pitch_rows
+        if share >= 0.12 and mult >= 1.05
+    ][:2]
+    weak = [
+        _pitch_type_reason_label(pitch)
+        for pitch, share, mult in pitch_rows
+        if share >= 0.12 and mult <= 0.95
+    ][:2]
+
+    if mix_score >= 1.04:
+        if strong:
+            return f"His profile lines up well with this starter's { _join_reason_labels(strong) }, so the overall pitch mix looks favorable for hard contact." 
+        return "His profile matches this starter's mix well enough to give the at-bat quality a small boost."
+    if mix_score <= 0.96:
+        if weak:
+            return f"The tougher part of this matchup is the starter's { _join_reason_labels(weak) }, which pulls the pitch-mix look a bit below his usual baseline." 
+        return "The starter's pitch mix grades a little less favorable than this hitter's usual baseline."
+    return None
+
+
+def _hitter_platoon_reason(batter_profile: Dict[str, Any], pitcher_profile: Dict[str, Any]) -> Optional[str]:
+    if not isinstance(batter_profile, dict) or not isinstance(pitcher_profile, dict):
+        return None
+    throw_hand = str(pitcher_profile.get("throw") or pitcher_profile.get("handedness") or "").strip().upper()
+    if throw_hand not in {"L", "R"}:
+        return None
+    platoon_key = "platoon_mult_vs_lhp" if throw_hand == "L" else "platoon_mult_vs_rhp"
+    platoon = batter_profile.get(platoon_key)
+    if not isinstance(platoon, dict):
+        return None
+
+    inplay = platoon.get("inplay")
+    hr_mult = platoon.get("hr")
+    k_mult = platoon.get("k")
+    try:
+        inplay_v = float(inplay) if inplay is not None else None
+    except Exception:
+        inplay_v = None
+    try:
+        hr_v = float(hr_mult) if hr_mult is not None else None
+    except Exception:
+        hr_v = None
+    try:
+        k_v = float(k_mult) if k_mult is not None else None
+    except Exception:
+        k_v = None
+
+    if (inplay_v is not None and inplay_v >= 1.05) or (hr_v is not None and hr_v >= 1.05):
+        return f"The handedness matchup leans his way here, with his expected damage against {throw_hand}-handed pitching grading above baseline."
+    if (inplay_v is not None and inplay_v <= 0.95) or (k_v is not None and k_v >= 1.05):
+        return f"The handedness matchup is a little tougher than usual, so this spot comes with more swing-and-miss risk against {throw_hand}-handed pitching."
+    return None
+
+
+def _hitter_bvp_reason(batter_profile: Dict[str, Any], pitcher_profile: Dict[str, Any]) -> Optional[str]:
+    if not isinstance(batter_profile, dict) or not isinstance(pitcher_profile, dict):
+        return None
+    try:
+        pitcher_id = int(pitcher_profile.get("id") or 0)
+    except Exception:
+        pitcher_id = 0
+    if pitcher_id <= 0:
+        return None
+    history_map = batter_profile.get("vs_pitcher_history")
+    if not isinstance(history_map, dict):
+        return None
+    history = history_map.get(str(pitcher_id)) if str(pitcher_id) in history_map else history_map.get(pitcher_id)
+    if not isinstance(history, dict):
+        return None
+
+    try:
+        pa = int(round(float(history.get("pa") or 0)))
+    except Exception:
+        pa = 0
+    if pa < 5:
+        return None
+
+    bits: List[str] = []
+    try:
+        inplay_mult = float(history.get("inplay_mult") or 1.0)
+        if inplay_mult >= 1.06:
+            bits.append("he has turned balls in play against this starter into hits a little more often than his normal rate")
+        elif inplay_mult <= 0.94:
+            bits.append("he has not converted many balls in play into hits against this starter")
+    except Exception:
+        pass
+    try:
+        hr_mult = float(history.get("hr_mult") or 1.0)
+        if hr_mult >= 1.08:
+            bits.append("the head-to-head sample has shown a bit more extra-base damage than baseline")
+    except Exception:
+        pass
+    try:
+        k_mult = float(history.get("k_mult") or 1.0)
+        if k_mult <= 0.94:
+            bits.append("he has also managed the strikeout risk well in prior meetings")
+        elif k_mult >= 1.08:
+            bits.append("the prior meetings have come with elevated strikeout pressure")
+    except Exception:
+        pass
+
+    if not bits:
+        return None
+    return f"There is at least a real head-to-head sample here ({pa} plate appearances), and {bits[0]}" + (f", while {', while '.join(bits[1:])}." if len(bits) > 1 else ".")
+
+
+def _lookup_hitter_matchup_context(
+    sim_obj: Dict[str, Any],
+    rec: Dict[str, Any],
+    roster_snapshot: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    if not isinstance(roster_snapshot, dict):
+        return {}
+    team = str(rec.get("team") or "").strip().upper()
+    if not team:
+        return {}
+
+    away_abbr = str(((sim_obj.get("away") or {}).get("abbreviation") or "")).strip().upper()
+    home_abbr = str(((sim_obj.get("home") or {}).get("abbreviation") or "")).strip().upper()
+    if team == away_abbr:
+        side = "away"
+        opp_side = "home"
+    elif team == home_abbr:
+        side = "home"
+        opp_side = "away"
+    else:
+        return {}
+
+    side_doc = roster_snapshot.get(side)
+    opp_doc = roster_snapshot.get(opp_side)
+    if not isinstance(side_doc, dict) or not isinstance(opp_doc, dict):
+        return {}
+
+    lineup = side_doc.get("lineup") if isinstance(side_doc.get("lineup"), list) else []
+    target_name = normalize_pitcher_name(str(rec.get("name") or ""))
+    target_order = rec.get("lineup_order")
+    batter_profile = None
+    for row in lineup:
+        if not isinstance(row, dict):
+            continue
+        if target_name and normalize_pitcher_name(str(row.get("name") or "")) == target_name:
+            batter_profile = row
+            break
+        try:
+            if batter_profile is None and target_order is not None and int(row.get("lineup_order") or 0) == int(target_order):
+                batter_profile = row
+        except Exception:
+            pass
+    pitcher_profile = opp_doc.get("starter_profile") if isinstance(opp_doc.get("starter_profile"), dict) else None
+    if not isinstance(batter_profile, dict) or not isinstance(pitcher_profile, dict):
+        return {}
+    return {
+        "batter_profile": batter_profile,
+        "pitcher_profile": pitcher_profile,
+        "opponent": str((sim_obj.get(opp_side) or {}).get("abbreviation") or "").strip(),
+    }
+
+
 def _reason_paragraph(reasons: Sequence[str], *, max_sentences: int = 3) -> str:
     cleaned = [str(item or "").strip() for item in reasons if str(item or "").strip()]
     if not cleaned:
@@ -712,6 +979,12 @@ def _build_recommendation_reasons(row: Dict[str, Any]) -> List[str]:
         if opponent:
             reasons.append(f"If he stays on his normal starter path, the matchup against {opponent} gives him a fair shot to reach full workload volume.")
     else:
+        baseball_reasons = row.get("baseball_reasons")
+        if isinstance(baseball_reasons, list):
+            for item in baseball_reasons:
+                text = str(item or "").strip()
+                if text:
+                    reasons.append(text)
         prop_label = str(row.get("prop") or "prop").replace("_", " ")
         mean_key = str(HITTER_MARKET_SPECS.get(str(row.get("prop_market_key") or ""), {}).get("mean_key") or "")
         if mean_key and row.get(mean_key) is not None and row.get("market_line") is not None:
@@ -1233,19 +1506,54 @@ def _iter_pitcher_market_names(policy: Optional[Dict[str, Any]]) -> List[str]:
     return [configured]
 
 
-def _collect_hitter_recommendations(sim_dir: Path, hitter_lines_path: Path, policy: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _collect_hitter_recommendations(
+    sim_dir: Path,
+    hitter_lines_path: Path,
+    policy: Dict[str, Any],
+    snapshots_dir: Optional[Path] = None,
+) -> List[Dict[str, Any]]:
     if not hitter_lines_path.exists():
         return []
 
     hitter_odds_raw = (_read_json(hitter_lines_path).get("hitter_props") or {})
     hitter_odds = {normalize_pitcher_name(str(name)): markets for name, markets in hitter_odds_raw.items()}
     rows: List[Dict[str, Any]] = []
+    roster_cache: Dict[Tuple[int, int], Optional[Dict[str, Any]]] = {}
+
+    def _roster_for(sim_obj: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if snapshots_dir is None or not snapshots_dir.exists():
+            return None
+        try:
+            game_pk = int(sim_obj.get("game_pk") or 0)
+        except Exception:
+            return None
+        try:
+            game_number = int(((sim_obj.get("schedule") or {}).get("game_number") or 1))
+        except Exception:
+            game_number = 1
+        cache_key = (game_pk, int(game_number or 1))
+        if cache_key in roster_cache:
+            return roster_cache[cache_key]
+        doc = None
+        pattern = f"roster_*_pk{game_pk}_g{int(game_number or 1)}.json"
+        matches = sorted(snapshots_dir.glob(pattern))
+        if not matches:
+            matches = sorted(snapshots_dir.glob(f"roster_*_pk{game_pk}_g*.json"))
+        if matches:
+            try:
+                raw = _read_json(matches[0])
+                doc = raw if isinstance(raw, dict) else None
+            except Exception:
+                doc = None
+        roster_cache[cache_key] = doc
+        return doc
 
     for sim_obj in _iter_sim_records(sim_dir):
         pred = _extract_hitter_predictions(sim_obj)
         if not pred:
             continue
         base = _base_game_row(sim_obj)
+        roster_snapshot = _roster_for(sim_obj)
 
         for player_key, rec in pred.items():
             if not _is_hitter_prediction_eligible(rec):
@@ -1253,6 +1561,20 @@ def _collect_hitter_recommendations(sim_dir: Path, hitter_lines_path: Path, poli
             markets = hitter_odds.get(player_key)
             if not isinstance(markets, dict):
                 continue
+            matchup_ctx = _lookup_hitter_matchup_context(sim_obj, rec, roster_snapshot)
+            baseball_reasons: List[str] = []
+            batter_profile = matchup_ctx.get("batter_profile") if isinstance(matchup_ctx.get("batter_profile"), dict) else None
+            pitcher_profile = matchup_ctx.get("pitcher_profile") if isinstance(matchup_ctx.get("pitcher_profile"), dict) else None
+            if isinstance(batter_profile, dict) and isinstance(pitcher_profile, dict):
+                mix_reason = _hitter_pitch_mix_reason(batter_profile, pitcher_profile)
+                if mix_reason:
+                    baseball_reasons.append(mix_reason)
+                platoon_reason = _hitter_platoon_reason(batter_profile, pitcher_profile)
+                if platoon_reason:
+                    baseball_reasons.append(platoon_reason)
+                bvp_reason = _hitter_bvp_reason(batter_profile, pitcher_profile)
+                if bvp_reason:
+                    baseball_reasons.append(bvp_reason)
             for market_key, market_spec in HITTER_MARKET_SPECS.items():
                 props_market = _select_hitter_props_market(market_key, markets.get(market_key) or {})
                 line = props_market.get("line")
@@ -1314,6 +1636,7 @@ def _collect_hitter_recommendations(sim_dir: Path, hitter_lines_path: Path, poli
                             "market_alternates": list(props_market.get("alternates") or []),
                             "odds": side_pick["odds"],
                             "stake_u": float(DEFAULT_HITTER_STAKE_U),
+                            "baseball_reasons": list(baseball_reasons),
                         }
                     )
                 )
@@ -1428,6 +1751,9 @@ def _collect_pitcher_recommendations(
                         opp_reason = _opponent_lineup_reason(pitcher_profile, opponent_lineup)
                         if opp_reason:
                             baseball_reasons.append(opp_reason)
+                        bvp_reason = _pitcher_bvp_reason(pitcher_profile, opponent_lineup)
+                        if bvp_reason:
+                            baseball_reasons.append(bvp_reason)
 
                 rows.append(
                     _annotate_recommendation(
@@ -1678,7 +2004,12 @@ def _build_locked_policy_card(
         outs_prob_calibration,
         _ROOT / "data" / "daily" / "snapshots" / str(date),
     )
-    hitter_rows = _collect_hitter_recommendations(hitter_sim_dir, hitter_lines_path, policy)
+    hitter_rows = _collect_hitter_recommendations(
+        hitter_sim_dir,
+        hitter_lines_path,
+        policy,
+        _ROOT / "data" / "daily" / "snapshots" / str(date),
+    )
 
     raw_rows: Dict[str, List[Dict[str, Any]]] = {
         "totals": list(game_rows.get("totals") or []),

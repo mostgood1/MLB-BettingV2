@@ -88,6 +88,46 @@ def _de_intkey_map(m: Optional[Dict[str, Any]]) -> Dict[int, float]:
     return out
 
 
+def _ser_intkey_nested_map(m: Optional[Dict[Any, Any]]) -> Dict[str, Dict[str, float]]:
+    out: Dict[str, Dict[str, float]] = {}
+    for k, inner in (m or {}).items():
+        try:
+            kk = str(int(k))
+        except Exception:
+            continue
+        if not isinstance(inner, dict):
+            continue
+        inner_out: Dict[str, float] = {}
+        for inner_key, inner_value in inner.items():
+            try:
+                inner_out[str(inner_key)] = float(inner_value)
+            except Exception:
+                continue
+        if inner_out:
+            out[kk] = inner_out
+    return out
+
+
+def _de_intkey_nested_map(m: Optional[Dict[str, Any]]) -> Dict[int, Dict[str, float]]:
+    out: Dict[int, Dict[str, float]] = {}
+    for k, inner in (m or {}).items():
+        try:
+            kk = int(k)
+        except Exception:
+            continue
+        if not isinstance(inner, dict):
+            continue
+        inner_out: Dict[str, float] = {}
+        for inner_key, inner_value in inner.items():
+            try:
+                inner_out[str(inner_key)] = float(inner_value)
+            except Exception:
+                continue
+        if inner_out:
+            out[kk] = inner_out
+    return out
+
+
 def roster_to_dict(roster: TeamRoster) -> Dict[str, Any]:
     """Serialize a TeamRoster to a JSON-friendly dict."""
 
@@ -117,6 +157,10 @@ def roster_to_dict(roster: TeamRoster) -> Dict[str, Any]:
             "platoon_mult_vs_rhp": {str(k): float(v) for k, v in (b.platoon_mult_vs_rhp or {}).items()},
             "statcast_quality_mult": {str(k): float(v) for k, v in (b.statcast_quality_mult or {}).items()},
             "vs_pitcher_hr_mult": _ser_intkey_map(b.vs_pitcher_hr_mult),
+            "vs_pitcher_k_mult": _ser_intkey_map(b.vs_pitcher_k_mult),
+            "vs_pitcher_bb_mult": _ser_intkey_map(b.vs_pitcher_bb_mult),
+            "vs_pitcher_inplay_mult": _ser_intkey_map(b.vs_pitcher_inplay_mult),
+            "vs_pitcher_history": _ser_intkey_nested_map(b.vs_pitcher_history),
             "bb_gb_rate": float(b.bb_gb_rate),
             "bb_fb_rate": float(b.bb_fb_rate),
             "bb_ld_rate": float(b.bb_ld_rate),
@@ -218,6 +262,10 @@ def roster_from_dict(d: Dict[str, Any]) -> TeamRoster:
         prof.platoon_mult_vs_rhp = {str(k): float(v) for k, v in (b.get("platoon_mult_vs_rhp") or {}).items()}
         prof.statcast_quality_mult = {str(k): float(v) for k, v in (b.get("statcast_quality_mult") or {}).items()}
         prof.vs_pitcher_hr_mult = _de_intkey_map(b.get("vs_pitcher_hr_mult") or {})
+        prof.vs_pitcher_k_mult = _de_intkey_map(b.get("vs_pitcher_k_mult") or {})
+        prof.vs_pitcher_bb_mult = _de_intkey_map(b.get("vs_pitcher_bb_mult") or {})
+        prof.vs_pitcher_inplay_mult = _de_intkey_map(b.get("vs_pitcher_inplay_mult") or {})
+        prof.vs_pitcher_history = _de_intkey_nested_map(b.get("vs_pitcher_history") or {})
         return prof
 
     def de_pitcher(p: Dict[str, Any]) -> PitcherProfile:

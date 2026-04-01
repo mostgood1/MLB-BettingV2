@@ -31,7 +31,11 @@ if str(_ROOT) not in sys.path:
 
 from sim_engine.data.statsapi import (
     StatsApiClient,
+    fetch_person,
     fetch_game_feed_live,
+    fetch_person_gamelog,
+    fetch_person_season_hitting,
+    fetch_person_season_pitching,
     fetch_schedule_date_buckets,
     fetch_schedule_for_date,
 )
@@ -305,6 +309,164 @@ def _round_stat(x: Any, digits: int = 2) -> Optional[float]:
     if value is None:
         return None
     return round(float(value), int(digits))
+
+
+@lru_cache(maxsize=1)
+def _statsapi_client_cached() -> StatsApiClient:
+    return StatsApiClient.with_default_cache()
+
+
+@lru_cache(maxsize=4096)
+def _fetch_person_cached(person_id: int) -> Dict[str, Any]:
+    try:
+        return fetch_person(_statsapi_client_cached(), int(person_id)) or {}
+    except Exception:
+        return {}
+
+
+@lru_cache(maxsize=8192)
+def _fetch_person_gamelog_cached(person_id: int, season: int, group: str) -> Tuple[Dict[str, Any], ...]:
+    try:
+        rows = fetch_person_gamelog(_statsapi_client_cached(), int(person_id), int(season), str(group)) or []
+    except Exception:
+        rows = []
+    return tuple(row for row in rows if isinstance(row, dict))
+
+
+@lru_cache(maxsize=4096)
+def _fetch_person_season_cached(person_id: int, season: int, group: str) -> Dict[str, Any]:
+    try:
+        if str(group) == "pitching":
+            return fetch_person_season_pitching(_statsapi_client_cached(), int(person_id), int(season)) or {}
+        return fetch_person_season_hitting(_statsapi_client_cached(), int(person_id), int(season)) or {}
+    except Exception:
+        return {}
+
+
+def _career_start_season(person_id: int, fallback_season: int) -> int:
+    person = _fetch_person_cached(int(person_id))
+    debut = str(person.get("mlbDebutDate") or "").strip()
+    try:
+        if debut:
+            return max(2000, min(int(fallback_season), int(debut[:4])))
+    except Exception:
+        pass
+    draft_year = _safe_int(person.get("draftYear"))
+    if draft_year is not None:
+        return max(2000, min(int(fallback_season), int(draft_year)))
+    return max(2000, int(fallback_season) - 6)
+
+
+def _history_metric_value(group: str, prop: str, stat: Dict[str, Any]) -> Optional[float]:
+    if not isinstance(stat, dict):
+        return None
+    if str(group) == "pitching":
+        mapping = {
+            "strikeouts": "strikeOuts",
+            "outs": "outs",
+            "pitches": "numberOfPitches",
+            "hits": "hits",
+            "earned_runs": "earnedRuns",
+            "walks": "baseOnBalls",
+            "batters_faced": "battersFaced",
+        }
+    else:
+        mapping = {
+            "hits": "hits",
+            "home_runs": "homeRuns",
+            "total_bases": "totalBases",
+            "runs": "runs",
+            "rbi": "rbi",
+            "doubles": "doubles",
+            "triples": "triples",
+            "stolen_bases": "stolenBases",
+        }
+    stat_key = mapping.get(str(prop or "").strip().lower())
+    if not stat_key:
+        return None
+    return _safe_float(stat.get(stat_key))
+
+
+def _average_metric_from_logs(group: str, prop: str, rows: Sequence[Dict[str, Any]]) -> Optional[float]:
+    values: List[float] = []
+    for row in rows:
+        stat = (row.get("stat") or {}) if isinstance(row, dict) else {}
+        metric = _history_metric_value(group, prop, stat)
+        if metric is None:
+            continue
+        values.append(float(metric))
+    if not values:
+        return None
+    return float(sum(values) / float(len(values)))
+
+
+def _season_average_metric(person_id: int, season: int, group: str, prop: str) -> Optional[float]:
+    stat = _fetch_person_season_cached(int(person_id), int(season), str(group))
+    if not isinstance(stat, dict) or not stat:
+        return None
+    metric = _history_metric_value(group, prop, stat)
+    if metric is None:
+        return None
+    games = _safe_float(stat.get("gamesPlayed"))
+    if games is None or games <= 0:
+        return float(metric)
+    return float(metric / games)
+
+
+def _player_history_summary(person_id: Any, season: Any, group: str, prop: str, opponent_team_id: Any, opponent_label: Any) -> List[Dict[str, Any]]:
+    pid = _safe_int(person_id)
+    season_i = _safe_int(season)
+    opp_id = _safe_int(opponent_team_id)
+    if pid is None or season_i is None:
+        return []
+
+    current_logs = list(_fetch_person_gamelog_cached(int(pid), int(season_i), str(group)))
+    out: List[Dict[str, Any]] = []
+
+    def _append(label: str, value: Optional[float], games: int) -> None:
+        if value is None or games <= 0:
+            return
+        out.append({"label": str(label), "value": round(float(value), 2), "games": int(games)})
+
+    tail5 = current_logs[-5:]
+    _append("L5", _average_metric_from_logs(group, prop, tail5), len(tail5))
+    tail10 = current_logs[-10:]
+    _append("L10", _average_metric_from_logs(group, prop, tail10), len(tail10))
+    _append("Season avg", _season_average_metric(int(pid), int(season_i), str(group), prop), len(current_logs))
+
+    if opp_id is not None:
+        opp_logs: List[Dict[str, Any]] = []
+        for yr in range(_career_start_season(int(pid), int(season_i)), int(season_i) + 1):
+            for row in _fetch_person_gamelog_cached(int(pid), int(yr), str(group)):
+                opponent = (row.get("opponent") or {}) if isinstance(row, dict) else {}
+                if _safe_int(opponent.get("id")) == int(opp_id):
+                    opp_logs.append(row)
+        _append(f"Vs {str(opponent_label or 'opp').strip() or 'opp'}", _average_metric_from_logs(group, prop, opp_logs), len(opp_logs))
+
+    return out
+
+
+def _attach_history_summary(row: Dict[str, Any], *, season: int, group: str, prop: str) -> Dict[str, Any]:
+    item = dict(row)
+    person_id = row.get("pitcherId") if str(group) == "pitching" else row.get("hitterId")
+    history_rows = _player_history_summary(person_id, season, group, prop, row.get("opponentTeamId"), row.get("opponent"))
+    if not history_rows:
+        return item
+    reference = _safe_float(row.get("marketLine"))
+    if reference is None:
+        reference = _safe_float(row.get("mean"))
+    for history_row in history_rows:
+        value = _safe_float(history_row.get("value"))
+        if value is None or reference is None:
+            history_row["trend"] = "neutral"
+        elif value >= reference + 0.15:
+            history_row["trend"] = "above"
+        elif value <= reference - 0.15:
+            history_row["trend"] = "below"
+        else:
+            history_row["trend"] = "neutral"
+    item["historyRows"] = history_rows
+    return item
 
 
 def _date_slug(d: str) -> str:
@@ -2228,6 +2390,8 @@ def _pitcher_ladders_payload(d: str, prop_value: Any, sort_value: Any) -> Dict[s
 
     payload["found"] = True
     payload["rows"] = rows
+    if rows:
+        payload["featuredRow"] = _attach_history_summary(rows[0], season=_season_from_date_str(d), group="pitching", prop=prop)
     payload["summary"] = {
         "games": int(len(sim_files)),
         "starters": int(len(rows)),
@@ -2626,6 +2790,8 @@ def _hitter_ladders_payload(d: str, prop_value: Any) -> Dict[str, Any]:
     payload["found"] = True
     payload["rows"] = rows
     payload["ladderShape"] = "exact" if any(str(row.get("ladderShape") or "") == "exact" for row in rows) else "threshold"
+    if rows:
+        payload["featuredRow"] = _attach_history_summary(rows[0], season=_season_from_date_str(d), group="hitting", prop=prop)
     payload["summary"] = {
         "games": int(len(sim_files)),
         "hitters": int(len(rows)),

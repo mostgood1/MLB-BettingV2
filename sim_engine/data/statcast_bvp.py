@@ -15,6 +15,12 @@ from .disk_cache import DiskCache
 class BvPCounts:
     pa: int
     hr: int
+    hits: int = 0
+    so: int = 0
+    bb: int = 0
+    hbp: int = 0
+    inplay_pa: int = 0
+    inplay_hits: int = 0
 
 
 def _root() -> Path:
@@ -103,15 +109,41 @@ def pitcher_vs_batters_counts(
                     try:
                         pa = int(v.get("pa") or 0)
                         hr = int(v.get("hr") or 0)
+                        hits = int(v.get("hits") or 0)
+                        so = int(v.get("so") or 0)
+                        bb = int(v.get("bb") or 0)
+                        hbp = int(v.get("hbp") or 0)
+                        inplay_pa = int(v.get("inplay_pa") or 0)
+                        inplay_hits = int(v.get("inplay_hits") or 0)
                     except Exception:
                         continue
                     if pa > 0:
-                        out[bid] = BvPCounts(pa=pa, hr=hr)
+                        out[bid] = BvPCounts(
+                            pa=pa,
+                            hr=hr,
+                            hits=hits,
+                            so=so,
+                            bb=bb,
+                            hbp=hbp,
+                            inplay_pa=inplay_pa,
+                            inplay_hits=inplay_hits,
+                        )
             if out:
                 return out
 
     out_pa: Dict[int, int] = {}
     out_hr: Dict[int, int] = {}
+    out_hits: Dict[int, int] = {}
+    out_so: Dict[int, int] = {}
+    out_bb: Dict[int, int] = {}
+    out_hbp: Dict[int, int] = {}
+    out_inplay_pa: Dict[int, int] = {}
+    out_inplay_hits: Dict[int, int] = {}
+
+    hit_events = {"single", "double", "triple", "home_run"}
+    walk_events = {"walk", "intent_walk"}
+    hbp_events = {"hit_by_pitch"}
+    inplay_hit_events = {"single", "double", "triple"}
 
     for path in _iter_statcast_pitch_files(season, raw_root=raw_root):
         w = _file_window(path)
@@ -151,21 +183,86 @@ def pitcher_vs_batters_counts(
                     continue
 
                 out_pa[bid] = out_pa.get(bid, 0) + 1
+                if ev in hit_events:
+                    out_hits[bid] = out_hits.get(bid, 0) + 1
                 if ev == "home_run":
                     out_hr[bid] = out_hr.get(bid, 0) + 1
+                elif ev in walk_events:
+                    out_bb[bid] = out_bb.get(bid, 0) + 1
+                elif ev in hbp_events:
+                    out_hbp[bid] = out_hbp.get(bid, 0) + 1
+                elif ev.startswith("strikeout"):
+                    out_so[bid] = out_so.get(bid, 0) + 1
+                else:
+                    out_inplay_pa[bid] = out_inplay_pa.get(bid, 0) + 1
+                    if ev in inplay_hit_events:
+                        out_inplay_hits[bid] = out_inplay_hits.get(bid, 0) + 1
 
-    result: Dict[int, BvPCounts] = {bid: BvPCounts(pa=pa, hr=int(out_hr.get(bid, 0))) for bid, pa in out_pa.items() if pa > 0}
+    result: Dict[int, BvPCounts] = {
+        bid: BvPCounts(
+            pa=pa,
+            hr=int(out_hr.get(bid, 0)),
+            hits=int(out_hits.get(bid, 0)),
+            so=int(out_so.get(bid, 0)),
+            bb=int(out_bb.get(bid, 0)),
+            hbp=int(out_hbp.get(bid, 0)),
+            inplay_pa=int(out_inplay_pa.get(bid, 0)),
+            inplay_hits=int(out_inplay_hits.get(bid, 0)),
+        )
+        for bid, pa in out_pa.items()
+        if pa > 0
+    }
 
     if cache is not None:
         cache.set(
             "statcast_bvp_pitcher",
             parts,
             {
-                "by_batter": {str(bid): {"pa": c.pa, "hr": c.hr} for bid, c in result.items()},
+                "by_batter": {
+                    str(bid): {
+                        "pa": c.pa,
+                        "hr": c.hr,
+                        "hits": c.hits,
+                        "so": c.so,
+                        "bb": c.bb,
+                        "hbp": c.hbp,
+                        "inplay_pa": c.inplay_pa,
+                        "inplay_hits": c.inplay_hits,
+                    }
+                    for bid, c in result.items()
+                },
             },
         )
 
     return result
+
+
+def rate_multiplier_from_bvp(
+    *,
+    base_rate: float,
+    opportunities: int,
+    successes: int,
+    shrink_pa: float = 50.0,
+    clamp_lo: float = 0.80,
+    clamp_hi: float = 1.25,
+) -> float:
+    try:
+        base = float(base_rate)
+        if base <= 1e-9:
+            return 1.0
+        opp_i = int(opportunities)
+        succ_i = int(successes)
+        if opp_i <= 0:
+            return 1.0
+        emp = float(succ_i) / float(opp_i)
+        raw = emp / base
+        w = float(opp_i) / float(opp_i + max(1e-9, float(shrink_pa)))
+        mult = 1.0 + w * (raw - 1.0)
+        if not math.isfinite(mult):
+            return 1.0
+        return float(max(clamp_lo, min(clamp_hi, mult)))
+    except Exception:
+        return 1.0
 
 
 def hr_multiplier_from_bvp(
@@ -177,27 +274,14 @@ def hr_multiplier_from_bvp(
     clamp_lo: float = 0.80,
     clamp_hi: float = 1.25,
 ) -> float:
-    """Compute a shrunk HR-rate multiplier from head-to-head counts.
-
-    Multiplier is shrunk toward 1.0 with weight w = pa/(pa+shrink_pa).
-    """
-    try:
-        base = float(batter_hr_rate)
-        if base <= 1e-9:
-            return 1.0
-        pa_i = int(pa)
-        hr_i = int(hr)
-        if pa_i <= 0:
-            return 1.0
-        emp = float(hr_i) / float(pa_i)
-        raw = emp / base
-        w = float(pa_i) / float(pa_i + max(1e-9, float(shrink_pa)))
-        mult = 1.0 + w * (raw - 1.0)
-        if not math.isfinite(mult):
-            return 1.0
-        return float(max(clamp_lo, min(clamp_hi, mult)))
-    except Exception:
-        return 1.0
+    return rate_multiplier_from_bvp(
+        base_rate=batter_hr_rate,
+        opportunities=pa,
+        successes=hr,
+        shrink_pa=shrink_pa,
+        clamp_lo=clamp_lo,
+        clamp_hi=clamp_hi,
+    )
 
 
 def apply_starter_bvp_hr_multipliers(
@@ -242,10 +326,10 @@ def apply_starter_bvp_hr_multipliers(
             continue
 
         counts = by_batter.get(bid)
-        if counts is None or int(counts.pa) < min_pa_i:
+        if counts is None:
             continue
 
-        mult = hr_multiplier_from_bvp(
+        hr_mult = hr_multiplier_from_bvp(
             batter_hr_rate=float(getattr(batter, "hr_rate", 0.03) or 0.03),
             pa=int(counts.pa),
             hr=int(counts.hr),
@@ -253,9 +337,51 @@ def apply_starter_bvp_hr_multipliers(
             clamp_lo=float(clamp_lo),
             clamp_hi=float(clamp_hi),
         )
+        k_mult = rate_multiplier_from_bvp(
+            base_rate=float(getattr(batter, "k_rate", 0.22) or 0.22),
+            opportunities=int(counts.pa),
+            successes=int(counts.so),
+            shrink_pa=float(shrink_pa),
+            clamp_lo=float(clamp_lo),
+            clamp_hi=float(clamp_hi),
+        )
+        bb_mult = rate_multiplier_from_bvp(
+            base_rate=float(getattr(batter, "bb_rate", 0.08) or 0.08),
+            opportunities=int(counts.pa),
+            successes=int(counts.bb),
+            shrink_pa=float(shrink_pa),
+            clamp_lo=float(clamp_lo),
+            clamp_hi=float(clamp_hi),
+        )
+        inplay_mult = rate_multiplier_from_bvp(
+            base_rate=float(getattr(batter, "inplay_hit_rate", 0.28) or 0.28),
+            opportunities=int(counts.inplay_pa),
+            successes=int(counts.inplay_hits),
+            shrink_pa=float(shrink_pa),
+            clamp_lo=float(clamp_lo),
+            clamp_hi=float(clamp_hi),
+        )
         try:
-            batter.vs_pitcher_hr_mult[int(pid)] = float(mult)
-            applied += 1
+            batter.vs_pitcher_history[int(pid)] = {
+                "pa": float(counts.pa),
+                "hits": float(counts.hits),
+                "hr": float(counts.hr),
+                "so": float(counts.so),
+                "bb": float(counts.bb),
+                "hbp": float(counts.hbp),
+                "inplay_pa": float(counts.inplay_pa),
+                "inplay_hits": float(counts.inplay_hits),
+                "hr_mult": float(hr_mult),
+                "k_mult": float(k_mult),
+                "bb_mult": float(bb_mult),
+                "inplay_mult": float(inplay_mult),
+            }
+            if int(counts.pa) >= min_pa_i:
+                batter.vs_pitcher_hr_mult[int(pid)] = float(hr_mult)
+                batter.vs_pitcher_k_mult[int(pid)] = float(k_mult)
+                batter.vs_pitcher_bb_mult[int(pid)] = float(bb_mult)
+                batter.vs_pitcher_inplay_mult[int(pid)] = float(inplay_mult)
+                applied += 1
         except Exception:
             pass
 

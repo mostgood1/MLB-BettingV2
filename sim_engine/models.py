@@ -252,6 +252,10 @@ class BatterProfile:
     # Optional: batter-vs-pitcher head-to-head multipliers keyed by pitcher MLBAM id.
     # Intended to be applied only when the current pitcher matches.
     vs_pitcher_hr_mult: Dict[int, float] = field(default_factory=dict)
+    vs_pitcher_k_mult: Dict[int, float] = field(default_factory=dict)
+    vs_pitcher_bb_mult: Dict[int, float] = field(default_factory=dict)
+    vs_pitcher_inplay_mult: Dict[int, float] = field(default_factory=dict)
+    vs_pitcher_history: Dict[int, Dict[str, float]] = field(default_factory=dict)
 
     # Batted-ball type tendencies (share of balls in play).
     # Defaults match the pitch-model prior distribution.

@@ -135,6 +135,54 @@
   text-decoration: underline;
 }
 
+.ladder-selected-sidecar {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.ladder-history-strip {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.ladder-history-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: #f4f7fb;
+  font-size: 12px;
+}
+
+.ladder-history-chip.is-above {
+  border-color: rgba(118, 224, 172, 0.34);
+  background: rgba(118, 224, 172, 0.1);
+}
+
+.ladder-history-chip.is-below {
+  border-color: rgba(255, 210, 138, 0.3);
+  background: rgba(255, 210, 138, 0.08);
+}
+
+.ladder-history-chip-label {
+  color: rgba(230, 234, 239, 0.72);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 10px;
+}
+
+.ladder-history-chip-meta {
+  color: rgba(230, 234, 239, 0.68);
+  font-size: 11px;
+}
+
 .ladder-stat {
   border: 1px solid rgba(255, 255, 255, 0.09);
   border-radius: 18px;
@@ -419,5 +467,11 @@
   .ladder-selected-card {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .ladder-selected-sidecar,
+  .ladder-history-strip {
+    align-items: flex-start;
+    justify-content: flex-start;
   }
 }
