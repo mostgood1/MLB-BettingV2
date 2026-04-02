@@ -577,7 +577,7 @@ def _is_live_lens_loop_enabled() -> bool:
 
 
 def _is_inline_season_manifest_rebuild_enabled() -> bool:
-    return _env_bool("MLB_ENABLE_INLINE_SEASON_MANIFEST_REBUILD", default=True)
+    return _env_bool("MLB_ENABLE_INLINE_SEASON_MANIFEST_REBUILD", default=False)
 
 
 def _live_lens_loop_interval_seconds() -> int:
@@ -3628,38 +3628,67 @@ def _available_daily_locked_card_dates(season: int) -> Tuple[str, ...]:
     return tuple(sorted(out))
 
 
+def _lightweight_betting_cards_hint(season: int, daily_artifacts: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    artifacts = daily_artifacts if isinstance(daily_artifacts, dict) else {}
+    available_profiles = sorted(_available_season_betting_profiles(int(season)).keys())
+    locked_policy_path = artifacts.get("locked_policy_path") if isinstance(artifacts.get("locked_policy_path"), Path) else None
+    has_betting_card = bool(locked_policy_path and locked_policy_path.exists() and locked_policy_path.is_file())
+    default_profile = None
+    if available_profiles:
+        default_profile = "retuned" if "retuned" in available_profiles else available_profiles[0]
+    elif has_betting_card:
+        default_profile = "retuned"
+
+    profiles: Dict[str, Any] = {}
+    if has_betting_card and default_profile:
+        profiles[str(default_profile)] = {
+            "available": True,
+            "card_path": _relative_path_str(locked_policy_path),
+            "selected_counts": _betting_selected_counts_with_defaults({}),
+            "playable_counts": _betting_selected_counts_with_defaults({}),
+            "results": {"combined": _blank_settled_summary()},
+        }
+
+    return {
+        "available": bool(has_betting_card),
+        "available_profiles": available_profiles,
+        "default_profile": default_profile,
+        "profiles": profiles,
+    }
+
+
+def _daily_artifact_game_count(daily_artifacts: Optional[Dict[str, Any]] = None) -> int:
+    artifacts = daily_artifacts if isinstance(daily_artifacts, dict) else {}
+    game_summary = artifacts.get("game_summary") if isinstance(artifacts.get("game_summary"), dict) else {}
+    games = _safe_int(game_summary.get("games"))
+    if games is not None and int(games) >= 0:
+        return int(games)
+
+    sim_dir = artifacts.get("sim_dir") if isinstance(artifacts.get("sim_dir"), Path) else None
+    if sim_dir and sim_dir.exists() and sim_dir.is_dir():
+        try:
+            return int(sum(1 for path in sim_dir.glob("sim_*.json") if path.is_file()))
+        except OSError:
+            return 0
+    return 0
+
+
 def _supplemental_season_day_row(season: int, date_str: str) -> Optional[Dict[str, Any]]:
     daily_artifacts = _load_cards_artifacts(str(date_str))
     has_cards = bool(daily_artifacts.get("locked_policy") or daily_artifacts.get("game_summary"))
     if not has_cards:
         return None
+    game_count = _daily_artifact_game_count(daily_artifacts)
 
-    betting_payload = _season_betting_day_payload(int(season), str(date_str), "retuned")
-    betting_profiles: Dict[str, Any] = {}
-    if betting_payload.get("found"):
-        betting_profiles[str(betting_payload.get("profile") or "retuned")] = {
-            "available": True,
-            "card_path": betting_payload.get("card_source"),
-            "selected_counts": _betting_selected_counts_with_defaults(betting_payload.get("selected_counts") or {}),
-            "playable_counts": _betting_selected_counts_with_defaults(betting_payload.get("playable_selected_counts") or {}),
-            "results": _merge_settled_results_blocks([betting_payload.get("results") or {}]),
-        }
-
-    schedule_by_game = _schedule_context_by_game_pk(str(date_str))
     return {
         "date": str(date_str),
         "month": str(date_str)[:7],
-        "games": int(len(schedule_by_game)),
+        "games": int(game_count),
         "cards_available": bool(has_cards),
         "legacy_cards_available": bool(has_cards),
         "cards_url": f"/?date={date_str}" if has_cards else None,
         "legacy_cards_url": f"/?date={date_str}" if has_cards else None,
-        "betting_cards": {
-            "available": bool(betting_payload.get("found")),
-            "available_profiles": sorted(betting_profiles.keys()),
-            "default_profile": (str(betting_payload.get("profile") or "retuned") if betting_payload.get("found") else None),
-            "profiles": betting_profiles,
-        },
+        "betting_cards": _lightweight_betting_cards_hint(int(season), daily_artifacts),
         "full_game": {
             "moneyline": {},
             "totals": {},
@@ -3668,9 +3697,9 @@ def _supplemental_season_day_row(season: int, date_str: str) -> Optional[Dict[st
             "pitcher_props_at_market_lines": {},
         },
         "aggregate": {
-            "full": {"games": int(len(schedule_by_game))},
-            "first5": {"games": int(len(schedule_by_game))},
-            "first3": {"games": int(len(schedule_by_game))},
+            "full": {"games": int(game_count)},
+            "first5": {"games": int(game_count)},
+            "first3": {"games": int(game_count)},
         },
         "report_path": None,
     }
@@ -3690,17 +3719,54 @@ def _season_day_row_with_refreshed_cards(season: int, row: Dict[str, Any]) -> Di
     out["legacy_cards_available"] = bool(supplemental.get("legacy_cards_available"))
     out["cards_url"] = supplemental.get("cards_url")
     out["legacy_cards_url"] = supplemental.get("legacy_cards_url")
-    out["betting_cards"] = dict(supplemental.get("betting_cards") or {})
+    existing_betting_cards = dict(out.get("betting_cards") or {})
+    supplemental_betting_cards = dict(supplemental.get("betting_cards") or {})
+    if existing_betting_cards:
+        merged_profiles = dict(existing_betting_cards.get("profiles") or {})
+        for profile_name, profile_info in (supplemental_betting_cards.get("profiles") or {}).items():
+            if profile_name not in merged_profiles and isinstance(profile_info, dict):
+                merged_profiles[str(profile_name)] = dict(profile_info)
+        if merged_profiles:
+            existing_betting_cards["profiles"] = merged_profiles
+        if supplemental_betting_cards.get("available"):
+            existing_betting_cards["available"] = True
+        if not existing_betting_cards.get("available_profiles") and supplemental_betting_cards.get("available_profiles"):
+            existing_betting_cards["available_profiles"] = list(supplemental_betting_cards.get("available_profiles") or [])
+        if not existing_betting_cards.get("default_profile") and supplemental_betting_cards.get("default_profile"):
+            existing_betting_cards["default_profile"] = supplemental_betting_cards.get("default_profile")
+        out["betting_cards"] = existing_betting_cards
+    else:
+        out["betting_cards"] = supplemental_betting_cards
     return out
+
+
+def _should_refresh_season_day_row(season: int, row: Dict[str, Any]) -> bool:
+    date_str = str((row or {}).get("date") or "").strip()
+    if not date_str:
+        return False
+    if int(season) == int(_season_from_date_str(date_str) or 0) and date_str == _today_iso():
+        return True
+
+    if not bool(row.get("cards_available") or row.get("legacy_cards_available")):
+        return True
+
+    betting_cards = row.get("betting_cards") if isinstance(row.get("betting_cards"), dict) else {}
+    if not bool(betting_cards.get("available")):
+        return True
+
+    return False
 
 
 def _supplement_season_manifest_payload(season: int, payload: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(payload)
-    existing_days = [
-        _season_day_row_with_refreshed_cards(int(season), dict(row))
-        for row in (out.get("days") or [])
-        if isinstance(row, dict)
-    ]
+    existing_days: List[Dict[str, Any]] = []
+    for raw_row in out.get("days") or []:
+        if not isinstance(raw_row, dict):
+            continue
+        row = dict(raw_row)
+        if _should_refresh_season_day_row(int(season), row):
+            row = _season_day_row_with_refreshed_cards(int(season), row)
+        existing_days.append(row)
     seen_dates = {str(row.get("date") or "").strip() for row in existing_days if str(row.get("date") or "").strip()}
     manifest_floor = min(seen_dates) if seen_dates else None
     supplemental_dates = [

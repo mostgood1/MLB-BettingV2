@@ -1149,6 +1149,24 @@ def _build_prior_eval_command(
     daily_snapshots_root: Path,
     lineups_last_known_path: Optional[Path],
 ) -> List[str]:
+    reconcile_mode = str(getattr(args, "prior_reconcile_mode", "artifact") or "artifact").strip().lower()
+    if reconcile_mode == "artifact":
+        return [
+            str(Path(sys.executable).resolve()),
+            str((_ROOT / "tools" / "eval" / "reconcile_daily_sim_artifacts.py").resolve()),
+            "--date",
+            str(prior_date),
+            "--season",
+            str(int(prior_season)),
+            "--out",
+            str(out_path),
+            "--prop-lines-source",
+            str(getattr(args, "prior_eval_prop_lines_source", "auto") or "auto"),
+            "--hitter-hr-prob-calibration",
+            str(getattr(args, "hitter_hr_prob_calibration", "") or ""),
+            "--hitter-props-prob-calibration",
+            str(getattr(args, "hitter_props_prob_calibration", "") or ""),
+        ]
     cmd = [
         str(Path(sys.executable).resolve()),
         str((_ROOT / "tools" / "eval" / "eval_sim_day_vs_actual.py").resolve()),
@@ -3150,6 +3168,12 @@ def main() -> int:
         choices=["auto", "oddsapi", "last_known", "bovada", "off"],
         default="auto",
         help="Prop-lines source for the prior-day eval report used to refresh rolling season manifests.",
+    )
+    ap.add_argument(
+        "--prior-reconcile-mode",
+        choices=["artifact", "resim"],
+        default="artifact",
+        help="How --workflow ui-daily refreshes the prior-day sim_vs_actual report: artifact reuses saved daily sims, resim reruns the historical eval job.",
     )
     ap.add_argument(
         "--refresh-season-manifests",
