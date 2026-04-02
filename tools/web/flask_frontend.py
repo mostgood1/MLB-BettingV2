@@ -5027,6 +5027,66 @@ def _rebuild_season_betting_manifest_payload(
     return payload
 
 
+def _season_betting_manifest_static_payload(
+    season: int,
+    profile_name: str,
+    manifest_path: Path,
+    manifest: Dict[str, Any],
+    available_profiles: Sequence[str],
+) -> Dict[str, Any]:
+    payload = dict(manifest)
+    meta = dict(payload.get("meta") or {})
+    sources = dict(meta.get("sources") or {})
+    sources["manifest"] = _relative_path_str(manifest_path)
+    meta["sources"] = sources
+    payload["meta"] = meta
+    payload["profile"] = profile_name
+    payload["available_profiles"] = list(available_profiles)
+    payload["source_kind"] = "season_manifest_static"
+    payload["found"] = True
+    return payload
+
+
+def _official_betting_card_manifest_static_payload(
+    season: int,
+    profile_name: str,
+    manifest_path: Path,
+    manifest: Dict[str, Any],
+    available_profiles: Sequence[str],
+) -> Dict[str, Any]:
+    payload = _season_betting_manifest_static_payload(
+        int(season),
+        profile_name,
+        manifest_path,
+        manifest,
+        available_profiles,
+    )
+    active_days = _official_betting_card_active_days(payload.get("days") or [])
+    active_results = _merge_settled_results_blocks([row.get("results") or {} for row in active_days])
+    active_combined = active_results.get("combined") or _blank_settled_summary()
+
+    summary = dict(payload.get("summary") or {})
+    summary["cards"] = int(len(active_days))
+    summary["cards_processed"] = int(len(active_days))
+    summary["selected_counts"] = _season_betting_aggregate_selected_counts(active_days)
+    summary["settled_recommendations"] = int(active_combined.get("n") or 0)
+    summary["unresolved_recommendations"] = int(sum(int(row.get("unresolved_n") or 0) for row in active_days))
+    summary["results"] = active_results
+    summary["daily"] = _season_betting_daily_stats(active_days)
+    summary["combined"] = active_combined
+    summary["market_results"] = {
+        key: value
+        for key, value in active_results.items()
+        if key not in {"combined", "hitter_props"}
+    }
+
+    payload["summary"] = summary
+    payload["days"] = active_days
+    payload["months"] = _official_betting_card_month_rows(active_days)
+    payload["view"] = "official_betting_card"
+    return payload
+
+
 def _official_betting_card_active_days(day_rows: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for raw_row in day_rows:
@@ -9765,7 +9825,7 @@ def api_season_betting_cards(season: int) -> Response:
             )
         ), 404
 
-    payload = _rebuild_season_betting_manifest_payload(
+    payload = _season_betting_manifest_static_payload(
         int(season),
         profile_name,
         manifest_path,
@@ -9798,7 +9858,7 @@ def api_season_official_betting_card(season: int) -> Response:
             )
         ), 404
 
-    payload = _official_betting_card_manifest_payload(
+    payload = _official_betting_card_manifest_static_payload(
         int(season),
         profile_name,
         manifest_path,
