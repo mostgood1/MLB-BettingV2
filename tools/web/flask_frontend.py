@@ -5656,6 +5656,28 @@ def _season_betting_games_payload(card_obj: Dict[str, Any], settled_card: Dict[s
     return out
 
 
+def _payload_has_row_settlement(games: Any) -> bool:
+    if not isinstance(games, dict):
+        return False
+
+    def _has_settlement(item: Any) -> bool:
+        return isinstance(item, dict) and isinstance(item.get("settlement"), dict)
+
+    for game in games.values():
+        if not isinstance(game, dict):
+            continue
+        markets = game.get("markets") or {}
+        if not isinstance(markets, dict):
+            continue
+        if _has_settlement(markets.get("totals")) or _has_settlement(markets.get("ml")):
+            return True
+        for key in ("pitcherProps", "hitterProps", "extraPitcherProps", "extraHitterProps"):
+            rows = markets.get(key) or []
+            if isinstance(rows, list) and any(_has_settlement(row) for row in rows):
+                return True
+    return False
+
+
 def _season_betting_day_payload(season: int, date_str: str, requested_profile: str) -> Dict[str, Any]:
     profile_name, manifest_path, manifest, available_profiles = _load_season_betting_manifest(
         int(season),
@@ -5919,6 +5941,19 @@ def _season_betting_day_payload(season: int, date_str: str, requested_profile: s
     static_payload_path = _resolve_season_betting_day_payload_path(manifest, str(date_str))
     static_payload = _load_json_file(static_payload_path)
     if isinstance(static_payload, dict) and static_payload.get("found"):
+        static_card_path = _path_from_maybe_relative(static_payload.get("card_source"))
+        static_card_obj = _load_json_file(static_card_path)
+        static_summary = static_payload.get("summary") if isinstance(static_payload.get("summary"), dict) else None
+        static_source_kind = str(static_payload.get("source_kind") or "season_manifest_static")
+        if historical_date and not _payload_has_row_settlement(static_payload.get("games")):
+            if static_card_path and isinstance(static_card_obj, dict):
+                return _finalize_from_card(
+                    card_path=static_card_path,
+                    card_obj=static_card_obj,
+                    summary=static_summary,
+                    manifest_source=manifest_path,
+                    source_kind=f"{static_source_kind}_rebuilt",
+                )
         payload.update(dict(static_payload))
         payload["season"] = int(season)
         payload["date"] = str(date_str)
