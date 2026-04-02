@@ -506,6 +506,244 @@ def _append_jsonl(path: Path, payload: Any) -> None:
         handle.write(json.dumps(payload, sort_keys=False) + "\n")
 
 
+def _format_bytes(num_bytes: Any) -> str:
+    try:
+        value = float(num_bytes or 0)
+    except Exception:
+        value = 0.0
+    units = ["B", "KB", "MB", "GB", "TB"]
+    idx = 0
+    while value >= 1024.0 and idx < len(units) - 1:
+        value /= 1024.0
+        idx += 1
+    decimals = 0 if idx == 0 else 2
+    return f"{value:.{decimals}f} {units[idx]}"
+
+
+def _safe_file_mtime(path: Path) -> Optional[float]:
+    try:
+        return float(path.stat().st_mtime)
+    except Exception:
+        return None
+
+
+def _collect_tree_usage(root: Path, *, largest_file_limit: int = 20) -> Dict[str, Any]:
+    root = Path(root).resolve()
+    total_bytes = 0
+    total_files = 0
+    total_dirs = 0
+    largest_files: List[Dict[str, Any]] = []
+
+    if not root.exists():
+        return {
+            "path": _relative_path_str(root),
+            "exists": False,
+            "bytes": 0,
+            "bytes_text": _format_bytes(0),
+            "file_count": 0,
+            "dir_count": 0,
+            "largest_files": [],
+        }
+
+    for current_root, dir_names, file_names in os.walk(root, topdown=True):
+        total_dirs += len(dir_names)
+        current_dir = Path(current_root)
+        for file_name in file_names:
+            file_path = current_dir / file_name
+            try:
+                stat = file_path.stat()
+            except Exception:
+                continue
+            size = int(stat.st_size or 0)
+            total_bytes += size
+            total_files += 1
+            largest_files.append(
+                {
+                    "path": _relative_path_str(file_path),
+                    "bytes": size,
+                    "bytes_text": _format_bytes(size),
+                    "modified_at": datetime.fromtimestamp(float(stat.st_mtime), tz=_USER_TIMEZONE).isoformat(timespec="seconds"),
+                }
+            )
+
+    largest_files.sort(key=lambda item: (-int(item.get("bytes") or 0), str(item.get("path") or "")))
+    return {
+        "path": _relative_path_str(root),
+        "exists": True,
+        "bytes": int(total_bytes),
+        "bytes_text": _format_bytes(total_bytes),
+        "file_count": int(total_files),
+        "dir_count": int(total_dirs),
+        "largest_files": largest_files[: max(1, int(largest_file_limit))],
+    }
+
+
+def _data_disk_report(*, largest_file_limit: int = 20) -> Dict[str, Any]:
+    usage = shutil.disk_usage(_DATA_DIR)
+    roots = {
+        "data": _DATA_DIR,
+        "daily": _DAILY_DIR,
+        "market": _MARKET_DIR,
+        "live_lens": _LIVE_LENS_DIR,
+        "eval": _DATA_DIR / "eval",
+        "raw": _DATA_DIR / "raw",
+        "statcast": _DATA_DIR / "statcast",
+    }
+    sections: Dict[str, Any] = {}
+    for name, path in roots.items():
+        sections[name] = _collect_tree_usage(path, largest_file_limit=largest_file_limit)
+    top_level = sorted(
+        [
+            {
+                "name": name,
+                "path": section.get("path"),
+                "bytes": int(section.get("bytes") or 0),
+                "bytes_text": section.get("bytes_text"),
+                "file_count": int(section.get("file_count") or 0),
+            }
+            for name, section in sections.items()
+        ],
+        key=lambda item: (-int(item.get("bytes") or 0), str(item.get("name") or "")),
+    )
+    return {
+        "ok": True,
+        "time": _local_timestamp_text(),
+        "data_root": _relative_path_str(_DATA_DIR),
+        "disk": {
+            "total_bytes": int(usage.total),
+            "used_bytes": int(usage.used),
+            "free_bytes": int(usage.free),
+            "total_text": _format_bytes(usage.total),
+            "used_text": _format_bytes(usage.used),
+            "free_text": _format_bytes(usage.free),
+            "used_pct": round((float(usage.used) / float(usage.total) * 100.0), 2) if usage.total else 0.0,
+        },
+        "sections": sections,
+        "top_level": top_level,
+        "cleanup_targets": {
+            "live-lens": {
+                "path": _relative_path_str(_LIVE_LENS_DIR),
+                "description": "Daily live-lens logs, reports, prop registry, observation logs, and cron metadata.",
+            },
+            "market-refresh-history": {
+                "path": _relative_path_str(_market_refresh_archive_root()),
+                "description": "Archived OddsAPI refresh snapshots copied on each refresh event.",
+            },
+        },
+    }
+
+
+def _cleanup_target_paths(target: str) -> List[Path]:
+    normalized = str(target or "live-lens").strip().lower()
+    if normalized == "live-lens":
+        return [_LIVE_LENS_DIR]
+    if normalized == "market-refresh-history":
+        return [_market_refresh_archive_root()]
+    if normalized == "all":
+        return [_LIVE_LENS_DIR, _market_refresh_archive_root()]
+    raise ValueError(f"unsupported_cleanup_target: {normalized}")
+
+
+def _should_skip_cleanup_path(path: Path, *, root: Path, include_today: bool) -> bool:
+    resolved = path.resolve()
+    if resolved == root.resolve():
+        return True
+    try:
+        relative = resolved.relative_to(root.resolve())
+    except Exception:
+        return True
+    parts = tuple(str(part) for part in relative.parts)
+    if parts and parts[0] == "cron_meta":
+        return True
+    if include_today:
+        return False
+    today_slug = _date_slug(_today_iso())
+    return today_slug in resolved.name or today_slug in "/".join(parts)
+
+
+def _cleanup_old_files(
+    *,
+    target: str,
+    retention_days: int,
+    apply_changes: bool,
+    include_today: bool,
+    prune_empty_dirs: bool,
+    largest_file_limit: int = 20,
+) -> Dict[str, Any]:
+    cutoff = _local_now().timestamp() - max(0, int(retention_days)) * 86400
+    candidate_roots = _cleanup_target_paths(target)
+    deleted_files: List[Dict[str, Any]] = []
+    deleted_dirs: List[str] = []
+    bytes_reclaimed = 0
+    scanned_files = 0
+    kept_recent = 0
+    skipped_today = 0
+
+    for root in candidate_roots:
+        if not root.exists():
+            continue
+        for current_root, dir_names, file_names in os.walk(root, topdown=False):
+            current_dir = Path(current_root)
+            for file_name in file_names:
+                file_path = current_dir / file_name
+                if _should_skip_cleanup_path(file_path, root=root, include_today=include_today):
+                    skipped_today += 1
+                    continue
+                scanned_files += 1
+                modified = _safe_file_mtime(file_path)
+                if modified is None or modified >= cutoff:
+                    kept_recent += 1
+                    continue
+                try:
+                    size = int(file_path.stat().st_size or 0)
+                except Exception:
+                    size = 0
+                deleted_files.append(
+                    {
+                        "path": _relative_path_str(file_path),
+                        "bytes": size,
+                        "bytes_text": _format_bytes(size),
+                        "modified_at": datetime.fromtimestamp(float(modified), tz=_USER_TIMEZONE).isoformat(timespec="seconds"),
+                    }
+                )
+                bytes_reclaimed += size
+                if apply_changes:
+                    try:
+                        file_path.unlink(missing_ok=True)
+                    except Exception:
+                        continue
+            if prune_empty_dirs and current_dir != root and not any(current_dir.iterdir()):
+                if apply_changes:
+                    try:
+                        current_dir.rmdir()
+                        deleted_dirs.append(_relative_path_str(current_dir) or str(current_dir))
+                    except Exception:
+                        pass
+                else:
+                    deleted_dirs.append(_relative_path_str(current_dir) or str(current_dir))
+
+    deleted_files.sort(key=lambda item: (-int(item.get("bytes") or 0), str(item.get("path") or "")))
+    return {
+        "ok": True,
+        "target": str(target or "live-lens").strip().lower() or "live-lens",
+        "apply": bool(apply_changes),
+        "retention_days": int(retention_days),
+        "include_today": bool(include_today),
+        "prune_empty_dirs": bool(prune_empty_dirs),
+        "time": _local_timestamp_text(),
+        "data_root": _relative_path_str(_DATA_DIR),
+        "scanned_files": int(scanned_files),
+        "kept_recent_files": int(kept_recent),
+        "skipped_today_files": int(skipped_today),
+        "candidate_delete_count": int(len(deleted_files)),
+        "candidate_delete_bytes": int(bytes_reclaimed),
+        "candidate_delete_bytes_text": _format_bytes(bytes_reclaimed),
+        "deleted_files": deleted_files[: max(1, int(largest_file_limit))],
+        "deleted_dirs": deleted_dirs[: max(1, int(largest_file_limit))],
+        "post_cleanup_disk": _data_disk_report(largest_file_limit=10).get("disk"),
+    }
+
+
 def _local_now() -> datetime:
     return datetime.now(_USER_TIMEZONE)
 
@@ -8829,11 +9067,51 @@ def api_cron_config() -> Response:
                 "dailyDir": _relative_path_str(_DAILY_DIR),
                 "liveLensDir": _relative_path_str(_LIVE_LENS_DIR),
                 "liveLensLoop": loop_status,
+                "diskUsageEndpoint": "/api/cron/disk-usage",
+                "cleanupEndpoint": "/api/cron/cleanup-data?target=live-lens&retentionDays=3&apply=off",
                 "seasonRebuildEndpoint": "/api/cron/rebuild-season-report?season=YYYY&date=YYYY-MM-DD",
                 "seasonRepublishEndpoint": "/api/cron/republish-season?season=YYYY&profile=retuned",
             }
         )
     )
+
+
+@app.get("/api/cron/disk-usage")
+def api_cron_disk_usage() -> Response:
+    auth_error = _require_cron_auth()
+    if auth_error is not None:
+        return auth_error
+    largest_file_limit = max(1, int(_safe_int(request.args.get("largest")) or 20))
+    return jsonify(_with_app_build(_data_disk_report(largest_file_limit=largest_file_limit)))
+
+
+@app.get("/api/cron/cleanup-data")
+def api_cron_cleanup_data() -> Response:
+    auth_error = _require_cron_auth()
+    if auth_error is not None:
+        return auth_error
+
+    target = str(request.args.get("target") or "live-lens").strip().lower() or "live-lens"
+    retention_days = max(0, int(_safe_int(request.args.get("retentionDays")) or 3))
+    apply_changes = str(request.args.get("apply") or "off").strip().lower() == "on"
+    include_today = str(request.args.get("includeToday") or "off").strip().lower() == "on"
+    prune_empty_dirs = str(request.args.get("pruneEmptyDirs") or "on").strip().lower() != "off"
+    largest_file_limit = max(1, int(_safe_int(request.args.get("largest")) or 20))
+
+    try:
+        payload = _cleanup_old_files(
+            target=target,
+            retention_days=retention_days,
+            apply_changes=apply_changes,
+            include_today=include_today,
+            prune_empty_dirs=prune_empty_dirs,
+            largest_file_limit=largest_file_limit,
+        )
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc), "target": target}), 400
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}", "target": target}), 500
+    return jsonify(_with_app_build(payload))
 
 
 @app.get("/api/cron/refresh-oddsapi-markets")
