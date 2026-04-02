@@ -5034,7 +5034,7 @@ def _season_betting_manifest_static_payload(
     manifest: Dict[str, Any],
     available_profiles: Sequence[str],
 ) -> Dict[str, Any]:
-    payload = dict(manifest)
+    payload = _supplement_season_manifest_payload(int(season), dict(manifest))
     meta = dict(payload.get("meta") or {})
     sources = dict(meta.get("sources") or {})
     sources["manifest"] = _relative_path_str(manifest_path)
