@@ -4118,6 +4118,18 @@ def _resolve_season_betting_day_card_path(betting_manifest: Dict[str, Any], date
     return None
 
 
+def _resolve_season_betting_day_payload_path(betting_manifest: Dict[str, Any], date_str: str) -> Optional[Path]:
+    for row in betting_manifest.get("days") or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("date") or "").strip() != str(date_str or "").strip():
+            continue
+        candidate = _path_from_maybe_relative(row.get("payload_path"))
+        if candidate and candidate.exists() and candidate.is_file():
+            return candidate
+    return None
+
+
 def _resolve_season_day_report_path(season_manifest: Dict[str, Any], date_str: str) -> Optional[Path]:
     for row in season_manifest.get("days") or []:
         if not isinstance(row, dict):
@@ -5402,6 +5414,22 @@ def _season_betting_day_payload(season: int, date_str: str, requested_profile: s
                 source_kind="canonical_daily_fallback",
             )
         payload["error"] = "season_betting_cards_missing"
+        return payload
+
+    static_payload_path = _resolve_season_betting_day_payload_path(manifest, str(date_str))
+    static_payload = _load_json_file(static_payload_path)
+    if isinstance(static_payload, dict) and static_payload.get("found"):
+        payload.update(dict(static_payload))
+        payload["season"] = int(season)
+        payload["date"] = str(date_str)
+        payload["profile"] = profile_name
+        payload["available_profiles"] = available_profiles
+        payload["manifest_source"] = _relative_path_str(manifest_path)
+        payload["payload_source"] = _relative_path_str(static_payload_path)
+        if not payload.get("card_source"):
+            payload["card_source"] = _relative_path_str(_resolve_season_betting_day_card_path(manifest, str(date_str)))
+        payload["source_kind"] = str(payload.get("source_kind") or "season_manifest_static")
+        payload["found"] = True
         return payload
 
     day_row = None

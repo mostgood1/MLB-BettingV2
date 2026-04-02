@@ -1357,6 +1357,11 @@ def _publish_live_season_manifests(
         if normalized_profile == "retuned"
         else "locked_cards"
     )
+    betting_day_payload_dir = season_dir / (
+        "betting_day_payloads_retuned"
+        if normalized_profile == "retuned"
+        else "betting_day_payloads"
+    )
     cmd = [
         str(Path(sys.executable).resolve()),
         str((_ROOT / "tools" / "eval" / "build_season_betting_cards_manifest.py").resolve()),
@@ -1370,6 +1375,10 @@ def _publish_live_season_manifests(
         str(betting_recap_path),
         "--cards-dir",
         str(betting_cards_dir),
+        "--day-payload-dir",
+        str(betting_day_payload_dir),
+        "--profile-name",
+        str(normalized_profile),
         "--title",
         f"MLB {int(season)} Betting Card Recap",
     ]
@@ -1387,6 +1396,7 @@ def _publish_live_season_manifests(
         "season_betting_manifest": _relative_path_str(betting_manifest_path),
         "season_betting_recap": _relative_path_str(betting_recap_path),
         "season_betting_cards_dir": _relative_path_str(betting_cards_dir),
+        "season_betting_day_payload_dir": _relative_path_str(betting_day_payload_dir),
         "season_betting_exit_code": int(betting_rc),
         "season_betting_manifest_exists": bool(betting_manifest_path.exists()),
     }

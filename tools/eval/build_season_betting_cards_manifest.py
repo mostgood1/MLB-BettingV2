@@ -71,6 +71,245 @@ SETTLED_MARKET_ORDER: Tuple[str, ...] = (
 )
 
 
+def _settlement_player_key(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _settlement_line_key(value: Any) -> Optional[float]:
+    line = _safe_float(value)
+    if line is None:
+        return None
+    return round(float(line), 4)
+
+
+def _settlement_market_key(item: Dict[str, Any]) -> str:
+    market = str(item.get("market") or "").strip().lower()
+    prop = str(item.get("prop") or "").strip().lower()
+    if market == "hitter_props" and prop in HITTER_MARKET_ORDER:
+        return prop
+    return market
+
+
+def _settlement_lookup_key(item: Dict[str, Any]) -> Tuple[Optional[int], str, str, Optional[float], str]:
+    market = _settlement_market_key(item)
+    line_key = _settlement_line_key(item.get("market_line"))
+    player_key = _settlement_player_key(item.get("player_name") or item.get("pitcher_name"))
+    if market == "ml":
+        line_key = None
+        player_key = ""
+    elif market == "totals":
+        player_key = ""
+    return (
+        _safe_int(item.get("game_pk")),
+        market,
+        str(item.get("selection") or "").strip().lower(),
+        line_key,
+        player_key,
+    )
+
+
+def _annotated_reco(
+    reco: Dict[str, Any],
+    settled_lookup: Dict[Tuple[Optional[int], str, str, Optional[float], str], List[Dict[str, Any]]],
+) -> Dict[str, Any]:
+    item = dict(reco)
+    matches = settled_lookup.get(_settlement_lookup_key(item)) or []
+    if matches:
+        item["settlement"] = dict(matches.pop(0))
+    return item
+
+
+def _recommendations_by_game(card: Optional[Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
+    if not isinstance(card, dict):
+        return {}
+
+    grouped: Dict[int, Dict[str, Any]] = defaultdict(
+        lambda: {
+            "totals": None,
+            "ml": None,
+            "pitcher_props": [],
+            "hitter_props": [],
+            "extra_pitcher_props": [],
+            "extra_hitter_props": [],
+        }
+    )
+    markets = card.get("markets") or {}
+    if not isinstance(markets, dict):
+        return {}
+
+    def _append_reco(bucket: Dict[str, Any], market_name: str, reco: Dict[str, Any], *, tier: str) -> None:
+        item = dict(reco)
+        item["recommendation_tier"] = tier
+        if market_name == "totals":
+            bucket["totals"] = item
+        elif market_name == "ml":
+            bucket["ml"] = item
+        elif market_name == "pitcher_props":
+            bucket["extra_pitcher_props" if tier == "candidate" else "pitcher_props"].append(item)
+        else:
+            bucket["extra_hitter_props" if tier == "candidate" else "hitter_props"].append(item)
+
+    for market_name, section in markets.items():
+        if not isinstance(section, dict):
+            continue
+        recos = section.get("recommendations") or []
+        extra_recos = section.get("other_playable_candidates") or []
+        if isinstance(recos, list):
+            for reco in recos:
+                if not isinstance(reco, dict):
+                    continue
+                game_pk = _safe_int(reco.get("game_pk"))
+                if not game_pk or int(game_pk) <= 0:
+                    continue
+                _append_reco(grouped[int(game_pk)], str(market_name), reco, tier="official")
+        if isinstance(extra_recos, list):
+            for reco in extra_recos:
+                if not isinstance(reco, dict):
+                    continue
+                game_pk = _safe_int(reco.get("game_pk"))
+                if not game_pk or int(game_pk) <= 0:
+                    continue
+                _append_reco(grouped[int(game_pk)], str(market_name), reco, tier="candidate")
+
+    for bucket in grouped.values():
+        bucket["pitcher_props"].sort(key=lambda reco: (_safe_int(reco.get("rank")) or 9999, -(reco.get("edge") or 0.0)))
+        bucket["hitter_props"].sort(key=lambda reco: (_safe_int(reco.get("rank")) or 9999, -(reco.get("edge") or 0.0)))
+        bucket["extra_pitcher_props"].sort(key=lambda reco: (_safe_int(reco.get("rank")) or 9999, -(reco.get("edge") or 0.0)))
+        bucket["extra_hitter_props"].sort(key=lambda reco: (_safe_int(reco.get("rank")) or 9999, -(reco.get("edge") or 0.0)))
+    return dict(grouped)
+
+
+def _season_betting_games_payload(card: Dict[str, Any], settled_card: Dict[str, Any]) -> Dict[int, Dict[str, Any]]:
+    recos_by_game = _recommendations_by_game(card)
+    settled_rows_by_game: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+    playable_settled_rows_by_game: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+    unresolved_rows_by_game: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+    playable_unresolved_rows_by_game: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+    settled_lookup: Dict[Tuple[Optional[int], str, str, Optional[float], str], List[Dict[str, Any]]] = defaultdict(list)
+    playable_lookup: Dict[Tuple[Optional[int], str, str, Optional[float], str], List[Dict[str, Any]]] = defaultdict(list)
+
+    for row in settled_card.get("_settled_rows") or []:
+        if not isinstance(row, dict):
+            continue
+        game_pk = _safe_int(row.get("game_pk"))
+        if game_pk and int(game_pk) > 0:
+            settled_rows_by_game[int(game_pk)].append(dict(row))
+        settled_lookup[_settlement_lookup_key(row)].append(dict(row))
+
+    for row in settled_card.get("_playable_settled_rows") or []:
+        if not isinstance(row, dict):
+            continue
+        game_pk = _safe_int(row.get("game_pk"))
+        if game_pk and int(game_pk) > 0:
+            playable_settled_rows_by_game[int(game_pk)].append(dict(row))
+        playable_lookup[_settlement_lookup_key(row)].append(dict(row))
+
+    for row in settled_card.get("unresolved_recommendations") or []:
+        if not isinstance(row, dict):
+            continue
+        game_pk = _safe_int(row.get("game_pk"))
+        if game_pk and int(game_pk) > 0:
+            unresolved_rows_by_game[int(game_pk)].append(dict(row))
+
+    for row in settled_card.get("playable_unresolved_recommendations") or []:
+        if not isinstance(row, dict):
+            continue
+        game_pk = _safe_int(row.get("game_pk"))
+        if game_pk and int(game_pk) > 0:
+            playable_unresolved_rows_by_game[int(game_pk)].append(dict(row))
+
+    out: Dict[int, Dict[str, Any]] = {}
+    for game_pk, bucket in recos_by_game.items():
+        totals = bucket.get("totals")
+        ml = bucket.get("ml")
+        totals_item = _annotated_reco(totals, settled_lookup) if isinstance(totals, dict) else None
+        ml_item = _annotated_reco(ml, settled_lookup) if isinstance(ml, dict) else None
+        pitcher_props = [_annotated_reco(row, settled_lookup) for row in (bucket.get("pitcher_props") or [])]
+        hitter_props = [_annotated_reco(row, settled_lookup) for row in (bucket.get("hitter_props") or [])]
+        extra_pitcher_props = [_annotated_reco(row, playable_lookup) for row in (bucket.get("extra_pitcher_props") or [])]
+        extra_hitter_props = [_annotated_reco(row, playable_lookup) for row in (bucket.get("extra_hitter_props") or [])]
+        settled_rows = list(settled_rows_by_game.get(int(game_pk), []))
+        playable_settled_rows = list(playable_settled_rows_by_game.get(int(game_pk), []))
+        all_settled_rows = list(settled_rows) + list(playable_settled_rows)
+        unresolved_rows = list(unresolved_rows_by_game.get(int(game_pk), []))
+        playable_unresolved_rows = list(playable_unresolved_rows_by_game.get(int(game_pk), []))
+        all_unresolved_rows = list(unresolved_rows) + list(playable_unresolved_rows)
+        official_count = int(bool(totals_item)) + int(bool(ml_item)) + len(pitcher_props) + len(hitter_props)
+        playable_count = len(extra_pitcher_props) + len(extra_hitter_props)
+
+        out[int(game_pk)] = {
+            "markets": {
+                "totals": totals_item,
+                "ml": ml_item,
+                "pitcherProps": pitcher_props,
+                "hitterProps": hitter_props,
+                "extraPitcherProps": extra_pitcher_props,
+                "extraHitterProps": extra_hitter_props,
+            },
+            "results": _results_from_rows(settled_rows),
+            "playable_results": _results_from_rows(playable_settled_rows),
+            "all_results": _results_from_rows(all_settled_rows),
+            "settled_rows": settled_rows,
+            "playable_settled_rows": playable_settled_rows,
+            "all_settled_rows": all_settled_rows,
+            "unresolved_rows": unresolved_rows,
+            "playable_unresolved_rows": playable_unresolved_rows,
+            "all_unresolved_rows": all_unresolved_rows,
+            "counts": {
+                "official": int(official_count),
+                "playable": int(playable_count),
+                "pitcher": int(len(pitcher_props)),
+                "hitter": int(len(hitter_props)),
+                "extra_pitcher": int(len(extra_pitcher_props)),
+                "extra_hitter": int(len(extra_hitter_props)),
+            },
+            "flags": {
+                "hasAnyRecommendations": bool(official_count or playable_count),
+                "hasOfficialRecommendations": bool(official_count),
+                "hasPlayableCandidates": bool(playable_count),
+            },
+        }
+    return out
+
+
+def _day_payload_output_path(payload_dir: Path, date_str: str) -> Path:
+    token = str(date_str or "").replace("-", "_")
+    return payload_dir / f"season_betting_day_{token}.json"
+
+
+def _static_day_payload(
+    *,
+    season: int,
+    profile_name: str,
+    card_path: Path,
+    report_path: Path,
+    card: Dict[str, Any],
+    settled_card: Dict[str, Any],
+    summary: Dict[str, Any],
+    payload_path: Path,
+) -> Dict[str, Any]:
+    return {
+        "season": int(season),
+        "date": str(card.get("date") or ""),
+        "profile": str(profile_name or "retuned"),
+        "available_profiles": [str(profile_name or "retuned")],
+        "found": True,
+        "source_kind": "season_manifest_static",
+        "card_source": _relative_path_str(card_path),
+        "report_source": _relative_path_str(report_path),
+        "payload_source": _relative_path_str(payload_path),
+        "summary": dict(summary),
+        "cap_profile": card.get("cap_profile"),
+        "selected_counts": dict(settled_card.get("selected_counts") or summary.get("selected_counts") or {}),
+        "playable_selected_counts": dict(settled_card.get("playable_selected_counts") or {}),
+        "all_selected_counts": dict(settled_card.get("all_selected_counts") or {}),
+        "results": dict(settled_card.get("results") or {}),
+        "playable_results": dict(settled_card.get("playable_results") or {}),
+        "all_results": dict(settled_card.get("all_results") or {}),
+        "games": _season_betting_games_payload(card, settled_card),
+    }
+
+
 def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -933,6 +1172,7 @@ def _manifest_day_entry(
     report_path: Path,
     card: Dict[str, Any],
     settled_card: Dict[str, Any],
+    payload_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     rows = list(settled_card.get("_settled_rows") or [])
     results = _results_from_rows(rows)
@@ -941,6 +1181,7 @@ def _manifest_day_entry(
         "month": str(card.get("date") or "")[:7],
         "card_path": _relative_path_str(card_path),
         "report_path": _relative_path_str(report_path),
+        "payload_path": _relative_path_str(payload_path),
         "cap_profile": str(card.get("cap_profile") or DEFAULT_OFFICIAL_CAP_PROFILE),
         "selected_counts": _selected_counts_with_defaults(card),
         "results": results,
@@ -1091,6 +1332,8 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--out", default="", help="Output JSON manifest path")
     ap.add_argument("--recap-md", default="", help="Output markdown recap path")
     ap.add_argument("--cards-dir", default="", help="Directory to write reconstructed daily locked-policy cards")
+    ap.add_argument("--day-payload-dir", default="", help="Directory to write precomputed per-day betting payload JSON")
+    ap.add_argument("--profile-name", default="", choices=("", "baseline", "retuned"), help="Profile label recorded in per-day betting payloads")
     ap.add_argument("--title", default="", help="Optional title override")
     ap.add_argument("--date", action="append", default=[], help="Optional date filter; can be passed multiple times")
     ap.add_argument("--max-days", type=int, default=0, help="Optional cap for smoke runs")
@@ -1138,6 +1381,13 @@ def main() -> int:
     cards_dir = _resolve_path(
         str(args.cards_dir),
         default=season_dir / "locked_cards",
+    )
+    normalized_profile = str(args.profile_name or "").strip().lower()
+    if normalized_profile not in ("baseline", "retuned"):
+        normalized_profile = "retuned" if "retuned" in betting_manifest_path.name.lower() else "baseline"
+    day_payload_dir = _resolve_path(
+        str(args.day_payload_dir),
+        default=(season_dir / ("betting_day_payloads_retuned" if normalized_profile == "retuned" else "betting_day_payloads")),
     )
 
     report_paths = _iter_report_paths(batch_dir, list(args.date or []), int(args.max_days or 0))
@@ -1195,15 +1445,29 @@ def main() -> int:
                 canonical_card = _read_json_dict(canonical_card_path)
                 if canonical_card:
                     settled_card = _settle_card(canonical_card_path)
-                    settled_cards.append(settled_card)
-                    day_entries.append(
-                        _manifest_day_entry(
+                    payload_path = _day_payload_output_path(day_payload_dir, date_str)
+                    summary_row = _manifest_day_entry(
+                        card_path=canonical_card_path,
+                        report_path=report_path,
+                        card=canonical_card,
+                        settled_card=settled_card,
+                        payload_path=payload_path,
+                    )
+                    _write_json(
+                        payload_path,
+                        _static_day_payload(
+                            season=season,
+                            profile_name=normalized_profile,
                             card_path=canonical_card_path,
                             report_path=report_path,
                             card=canonical_card,
                             settled_card=settled_card,
-                        )
+                            summary=summary_row,
+                            payload_path=payload_path,
+                        ),
                     )
+                    settled_cards.append(settled_card)
+                    day_entries.append(summary_row)
                     source_modes.append("canonical_daily_locked_policy")
                     continue
         report_obj = _read_json_dict(report_path)
@@ -1220,8 +1484,29 @@ def main() -> int:
         )
         _write_json(card_path, card)
         settled_card = _settle_card(card_path)
+        payload_path = _day_payload_output_path(day_payload_dir, date_str)
+        summary_row = _manifest_day_entry(
+            card_path=card_path,
+            report_path=report_path,
+            card=card,
+            settled_card=settled_card,
+            payload_path=payload_path,
+        )
+        _write_json(
+            payload_path,
+            _static_day_payload(
+                season=season,
+                profile_name=normalized_profile,
+                card_path=card_path,
+                report_path=report_path,
+                card=card,
+                settled_card=settled_card,
+                summary=summary_row,
+                payload_path=payload_path,
+            ),
+        )
         settled_cards.append(settled_card)
-        day_entries.append(_manifest_day_entry(card_path=card_path, report_path=report_path, card=card, settled_card=settled_card))
+        day_entries.append(summary_row)
         source_modes.append("season_eval_batch_reconstruction")
 
     all_rows: List[Dict[str, Any]] = []
@@ -1254,6 +1539,7 @@ def main() -> int:
             "title": str(args.title).strip() or f"MLB {season} Betting Card Recap",
             "batch_dir": _relative_path_str(batch_dir),
             "cards_dir": _relative_path_str(cards_dir),
+            "day_payload_dir": _relative_path_str(day_payload_dir),
             "source_mode": _authoritative_source_mode(prefer_canonical_daily, source_modes),
             "prefer_canonical_daily": bool(prefer_canonical_daily),
             "cap_profile": _official_cap_profile_name(caps, hitter_subcaps),
