@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from functools import lru_cache
 import json
 import shutil
 import subprocess
@@ -22,6 +23,7 @@ from sim_engine.market_pitcher_props import (
     normalize_pitcher_name,
 )
 from sim_engine.prob_calibration import apply_prob_calibration
+from sim_engine.data.statsapi import StatsApiClient, fetch_person_gamelog
 
 
 HITTER_MARKET_ORDER: Tuple[str, ...] = (
@@ -472,6 +474,278 @@ def _format_reason_ratio(value: Any) -> str:
     except Exception:
         return "-"
     return f"{num:.2f}x"
+
+
+def _safe_int(value: Any) -> Optional[int]:
+    try:
+        if value is None:
+            return None
+        return int(float(value))
+    except Exception:
+        return None
+
+
+def _season_from_date_str(value: Any) -> Optional[int]:
+    token = str(value or "").strip()
+    if len(token) < 4:
+        return None
+    return _safe_int(token[:4])
+
+
+@lru_cache(maxsize=1)
+def _statsapi_reason_client_cached() -> StatsApiClient:
+    client = StatsApiClient.with_default_cache(ttl_seconds=24 * 3600)
+    client.timeout_sec = 4.0
+    client.max_retries = 0
+    return client
+
+
+@lru_cache(maxsize=8192)
+def _fetch_person_gamelog_cached(person_id: int, season: int, group: str) -> Tuple[Dict[str, Any], ...]:
+    try:
+        rows = fetch_person_gamelog(_statsapi_reason_client_cached(), int(person_id), int(season), str(group)) or []
+    except Exception:
+        rows = []
+    return tuple(row for row in rows if isinstance(row, dict))
+
+
+def _pitching_outs_from_stat(stat: Dict[str, Any]) -> Optional[float]:
+    if not isinstance(stat, dict):
+        return None
+    outs_value = _safe_int(stat.get("outs"))
+    if outs_value is not None:
+        return float(outs_value)
+    innings = str(stat.get("inningsPitched") or "").strip()
+    if not innings:
+        return None
+    whole, _, frac = innings.partition(".")
+    frac_outs = {"0": 0, "1": 1, "2": 2}.get(frac)
+    if frac_outs is None:
+        return None
+    whole_outs = _safe_int(whole)
+    if whole_outs is None:
+        return None
+    return float((int(whole_outs) * 3) + int(frac_outs))
+
+
+def _history_metric_value(group: str, prop: str, stat: Dict[str, Any]) -> Optional[float]:
+    if not isinstance(stat, dict):
+        return None
+    prop_key = str(prop or "").strip().lower()
+    if str(group) == "pitching":
+        if prop_key == "outs":
+            return _pitching_outs_from_stat(stat)
+        mapping = {
+            "strikeouts": "strikeOuts",
+            "earned_runs": "earnedRuns",
+            "walks": "baseOnBalls",
+            "hits": "hits",
+            "batters_faced": "battersFaced",
+            "pitches": "numberOfPitches",
+        }
+    else:
+        mapping = {
+            "hits": "hits",
+            "home_runs": "homeRuns",
+            "runs": "runs",
+            "rbis": "rbi",
+            "rbi": "rbi",
+            "total_bases": "totalBases",
+        }
+    stat_key = mapping.get(prop_key)
+    if not stat_key:
+        return None
+    try:
+        return float(stat.get(stat_key))
+    except Exception:
+        return None
+
+
+def _average_metric_from_logs(group: str, prop: str, rows: Sequence[Dict[str, Any]]) -> Optional[float]:
+    values: List[float] = []
+    for row in rows:
+        stat = row.get("stat") if isinstance(row, dict) else None
+        value = _history_metric_value(group, prop, stat if isinstance(stat, dict) else {})
+        if value is None:
+            continue
+        values.append(float(value))
+    if not values:
+        return None
+    return float(sum(values) / len(values))
+
+
+def _recent_season_logs(person_id: int, season: int, group: str, *, seasons_back: int = 1) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    start_season = max(2000, int(season) - max(0, int(seasons_back)))
+    for season_i in range(start_season, int(season) + 1):
+        out.extend(_fetch_person_gamelog_cached(int(person_id), int(season_i), str(group)))
+    return list(out)
+
+
+def _opponent_logs_recent_seasons(
+    person_id: int,
+    season: int,
+    group: str,
+    opponent_team_id: int,
+    *,
+    seasons_back: int = 1,
+) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for row in _recent_season_logs(int(person_id), int(season), str(group), seasons_back=seasons_back):
+        opponent = row.get("opponent") if isinstance(row, dict) else None
+        if not isinstance(opponent, dict):
+            continue
+        if _safe_int(opponent.get("id")) == int(opponent_team_id):
+            out.append(row)
+    return out
+
+
+def _prop_unit_label(prop: str) -> str:
+    labels = {
+        "strikeouts": "strikeouts",
+        "outs": "outs",
+        "earned_runs": "earned runs",
+        "hits": "hits",
+        "home_runs": "home runs",
+        "runs": "runs",
+        "rbis": "RBIs",
+        "rbi": "RBIs",
+        "total_bases": "total bases",
+    }
+    return str(labels.get(str(prop or "").strip().lower()) or str(prop or "").replace("_", " "))
+
+
+def _pitcher_recent_form_reason(
+    pitcher_profile: Dict[str, Any],
+    season: int,
+    prop: str,
+    *,
+    subject_name: Optional[str] = None,
+) -> Optional[str]:
+    pitcher_id = _safe_int((pitcher_profile or {}).get("id"))
+    if pitcher_id is None or int(pitcher_id) <= 0:
+        return None
+    logs = _recent_season_logs(int(pitcher_id), int(season), "pitching", seasons_back=1)[-5:]
+    if len(logs) < 3:
+        return None
+    avg_value = _average_metric_from_logs("pitching", str(prop), logs)
+    if avg_value is None:
+        return None
+    label = _prop_unit_label(str(prop))
+    subject = str(subject_name or "He").strip()
+    if str(prop) == "earned_runs":
+        if subject.lower() == "he":
+            return f"Across his last {int(len(logs))} starts, he has allowed about {_format_reason_number(avg_value)} {label} per outing."
+        return f"Across his last {int(len(logs))} starts, {subject} has allowed about {_format_reason_number(avg_value)} {label} per outing."
+    if subject.lower() == "he":
+        return f"Across his last {int(len(logs))} starts, he has averaged {_format_reason_number(avg_value)} {label}."
+    return f"Across his last {int(len(logs))} starts, {subject} has averaged {_format_reason_number(avg_value)} {label}."
+
+
+def _pitcher_opponent_team_reason(
+    pitcher_profile: Dict[str, Any],
+    opponent_team_id: Optional[int],
+    opponent_label: str,
+    season: int,
+    prop: str,
+    *,
+    subject_name: Optional[str] = None,
+) -> Optional[str]:
+    pitcher_id = _safe_int((pitcher_profile or {}).get("id"))
+    opponent_id = _safe_int(opponent_team_id)
+    if pitcher_id is None or int(pitcher_id) <= 0 or opponent_id is None or int(opponent_id) <= 0:
+        return None
+    logs = _opponent_logs_recent_seasons(int(pitcher_id), int(season), "pitching", int(opponent_id), seasons_back=1)
+    if len(logs) < 2:
+        return None
+    avg_value = _average_metric_from_logs("pitching", str(prop), logs)
+    if avg_value is None:
+        return None
+    subject = str(subject_name or "He").strip()
+    opponent = str(opponent_label or "this opponent").strip()
+    if str(prop) == "earned_runs":
+        if subject.lower() == "he":
+            return f"This season against {opponent}, he has allowed about {_format_reason_number(avg_value)} earned runs per outing across {int(len(logs))} starts."
+        return f"This season against {opponent}, {subject} has allowed about {_format_reason_number(avg_value)} earned runs per outing across {int(len(logs))} starts."
+    label = _prop_unit_label(str(prop))
+    if subject.lower() == "he":
+        return f"This season against {opponent}, he has averaged {_format_reason_number(avg_value)} {label} across {int(len(logs))} starts."
+    return f"This season against {opponent}, {subject} has averaged {_format_reason_number(avg_value)} {label} across {int(len(logs))} starts."
+
+
+def _hitter_recent_form_reason(
+    batter_profile: Dict[str, Any],
+    season: int,
+    prop: str,
+    *,
+    subject_name: Optional[str] = None,
+) -> Optional[str]:
+    batter_id = _safe_int((batter_profile or {}).get("id"))
+    if batter_id is None or int(batter_id) <= 0:
+        return None
+    logs = _recent_season_logs(int(batter_id), int(season), "hitting", seasons_back=1)[-10:]
+    if len(logs) < 5:
+        return None
+    label = _prop_unit_label(str(prop))
+    subject = str(subject_name or "He").strip()
+    if str(prop) == "home_runs":
+        total = sum(_history_metric_value("hitting", "home_runs", (row.get("stat") or {})) or 0.0 for row in logs)
+        if total <= 0:
+            if subject.lower() == "he":
+                return f"Over his last {int(len(logs))} games, he has not homered."
+            return f"Over his last {int(len(logs))} games, {subject} has not homered."
+        if subject.lower() == "he":
+            return f"Over his last {int(len(logs))} games, he has homered {int(round(total))} times."
+        return f"Over his last {int(len(logs))} games, {subject} has homered {int(round(total))} times."
+    avg_value = _average_metric_from_logs("hitting", str(prop), logs)
+    if avg_value is None:
+        return None
+    if subject.lower() == "he":
+        return f"Over his last {int(len(logs))} games, he has averaged {_format_reason_number(avg_value)} {label}."
+    return f"Over his last {int(len(logs))} games, {subject} has averaged {_format_reason_number(avg_value)} {label}."
+
+
+def _hitter_opponent_team_reason(
+    batter_profile: Dict[str, Any],
+    opponent_team_id: Optional[int],
+    opponent_label: str,
+    season: int,
+    prop: str,
+    *,
+    subject_name: Optional[str] = None,
+) -> Optional[str]:
+    batter_id = _safe_int((batter_profile or {}).get("id"))
+    opponent_id = _safe_int(opponent_team_id)
+    if batter_id is None or int(batter_id) <= 0 or opponent_id is None or int(opponent_id) <= 0:
+        return None
+    logs = _opponent_logs_recent_seasons(int(batter_id), int(season), "hitting", int(opponent_id), seasons_back=1)
+    if len(logs) < 3:
+        return None
+    subject = str(subject_name or "He").strip()
+    opponent = str(opponent_label or "this opponent").strip()
+    if str(prop) == "home_runs":
+        total = sum(_history_metric_value("hitting", "home_runs", (row.get("stat") or {})) or 0.0 for row in logs)
+        if total <= 0:
+            if subject.lower() == "he":
+                return f"This season against {opponent}, he has not homered in {int(len(logs))} games."
+            return f"This season against {opponent}, {subject} has not homered in {int(len(logs))} games."
+        if subject.lower() == "he":
+            return f"This season against {opponent}, he has homered {int(round(total))} times in {int(len(logs))} games."
+        return f"This season against {opponent}, {subject} has homered {int(round(total))} times in {int(len(logs))} games."
+    avg_value = _average_metric_from_logs("hitting", str(prop), logs)
+    if avg_value is None:
+        return None
+    label = _prop_unit_label(str(prop))
+    if subject.lower() == "he":
+        return f"This season against {opponent}, he has averaged {_format_reason_number(avg_value)} {label} across {int(len(logs))} games."
+    return f"This season against {opponent}, {subject} has averaged {_format_reason_number(avg_value)} {label} across {int(len(logs))} games."
+
+
+def _append_unique_reason(reasons: List[str], value: Optional[str]) -> None:
+    text = str(value or "").strip()
+    if not text or text in reasons:
+        return
+    reasons.append(text)
 
 
 _PITCH_TYPE_REASON_LABELS = {
@@ -953,6 +1227,13 @@ def _build_recommendation_reasons(row: Dict[str, Any]) -> List[str]:
             f"The model lands on the {selection or 'selected'} side in {_format_reason_percent(selected_model_prob)} of sims, while the market is pricing it closer to {_format_reason_percent(selected_market_prob)}."
         )
 
+    baseball_reasons = row.get("baseball_reasons")
+    if isinstance(baseball_reasons, list):
+        for item in baseball_reasons:
+            text = str(item or "").strip()
+            if text:
+                reasons.append(text)
+
     if market == "totals":
         if row.get("model_mean_total") is not None and row.get("market_line") is not None:
             reasons.append(
@@ -963,12 +1244,6 @@ def _build_recommendation_reasons(row: Dict[str, Any]) -> List[str]:
         if row.get("selected_side_model_prob") is not None:
             reasons.append(f"{team_label} wins this matchup in about {_format_reason_percent(row.get('selected_side_model_prob'))} of model runs.")
     elif market == "pitcher_props":
-        baseball_reasons = row.get("baseball_reasons")
-        if isinstance(baseball_reasons, list):
-            for item in baseball_reasons:
-                text = str(item or "").strip()
-                if text:
-                    reasons.append(text)
         prop_label = str(row.get("prop") or "prop").replace("_", " ")
         mean_key = str(PITCHER_MARKET_SPECS.get(str(row.get("prop") or ""), {}).get("mean_key") or "")
         if mean_key and row.get(mean_key) is not None and row.get("market_line") is not None:
@@ -979,12 +1254,6 @@ def _build_recommendation_reasons(row: Dict[str, Any]) -> List[str]:
         if opponent:
             reasons.append(f"If he stays on his normal starter path, the matchup against {opponent} gives him a fair shot to reach full workload volume.")
     else:
-        baseball_reasons = row.get("baseball_reasons")
-        if isinstance(baseball_reasons, list):
-            for item in baseball_reasons:
-                text = str(item or "").strip()
-                if text:
-                    reasons.append(text)
         prop_label = str(row.get("prop") or "prop").replace("_", " ")
         mean_key = str(HITTER_MARKET_SPECS.get(str(row.get("prop_market_key") or ""), {}).get("mean_key") or "")
         if mean_key and row.get(mean_key) is not None and row.get("market_line") is not None:
@@ -1141,6 +1410,36 @@ def _collect_game_recommendations(sim_dir: Path, game_lines_path: Path, policy: 
     if not game_lines_path.exists():
         return out
 
+    snapshots_dir = _ROOT / "data" / "daily" / "snapshots"
+    roster_cache: Dict[Tuple[int, int], Optional[Dict[str, Any]]] = {}
+
+    def _roster_for(sim_obj: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        date_str = str(sim_obj.get("date") or "").strip()
+        if not date_str:
+            return None
+        day_dir = snapshots_dir / date_str
+        if not day_dir.exists():
+            return None
+        game_pk = _safe_int(sim_obj.get("game_pk"))
+        if game_pk is None or int(game_pk) <= 0:
+            return None
+        game_number = _safe_int(((sim_obj.get("schedule") or {}).get("game_number") or 1)) or 1
+        cache_key = (int(game_pk), int(game_number))
+        if cache_key in roster_cache:
+            return roster_cache[cache_key]
+        doc = None
+        matches = sorted(day_dir.glob(f"roster_*_pk{int(game_pk)}_g{int(game_number)}.json"))
+        if not matches:
+            matches = sorted(day_dir.glob(f"roster_*_pk{int(game_pk)}_g*.json"))
+        if matches:
+            try:
+                raw = _read_json(matches[0])
+                doc = raw if isinstance(raw, dict) else None
+            except Exception:
+                doc = None
+        roster_cache[cache_key] = doc
+        return doc
+
     games = (_read_json(game_lines_path).get("games") or [])
     line_lookup = {
         (g.get("away_team"), g.get("home_team")): g
@@ -1156,6 +1455,8 @@ def _collect_game_recommendations(sim_dir: Path, game_lines_path: Path, policy: 
             continue
 
         base = _base_game_row(sim_obj, market_game)
+        roster_snapshot = _roster_for(sim_obj)
+        season_value = _season_from_date_str(base.get("date")) or _safe_int(sim_obj.get("season")) or datetime.now().year
         full = ((sim_obj.get("sim") or {}).get("segments") or {}).get("full") or {}
 
         totals_market = ((market_game.get("markets") or {}).get("totals") or {})
@@ -1174,6 +1475,47 @@ def _collect_game_recommendations(sim_dir: Path, game_lines_path: Path, policy: 
             if side_pick is not None and _selection_allowed(side_pick.get("selection"), policy.get("totals_side")):
                 selection = str(side_pick.get("selection") or "")
                 if _passes_mean_alignment(mean_total, total_line, selection, policy.get("totals_diff_min")):
+                    totals_reasons: List[str] = []
+                    if isinstance(roster_snapshot, dict):
+                        for pitcher_side, opponent_side in (("home", "away"), ("away", "home")):
+                            side_doc = roster_snapshot.get(pitcher_side) if isinstance(roster_snapshot.get(pitcher_side), dict) else {}
+                            opp_doc = roster_snapshot.get(opponent_side) if isinstance(roster_snapshot.get(opponent_side), dict) else {}
+                            pitcher_profile = side_doc.get("starter_profile") if isinstance(side_doc.get("starter_profile"), dict) else {}
+                            opponent_lineup = opp_doc.get("lineup") if isinstance(opp_doc.get("lineup"), list) else []
+                            opponent_team = sim_obj.get(opponent_side) if isinstance(sim_obj.get(opponent_side), dict) else {}
+                            opponent_id = _safe_int(opponent_team.get("id"))
+                            opponent_label = str(opponent_team.get("abbreviation") or opponent_team.get("name") or "opponent").strip()
+                            subject_name = str(pitcher_profile.get("name") or "").strip() or None
+                            _append_unique_reason(
+                                totals_reasons,
+                                _pitcher_opponent_team_reason(
+                                    pitcher_profile,
+                                    opponent_id,
+                                    opponent_label,
+                                    int(season_value),
+                                    "earned_runs",
+                                    subject_name=subject_name,
+                                ),
+                            )
+                            _append_unique_reason(totals_reasons, _pitcher_bvp_reason(pitcher_profile, opponent_lineup))
+                            if len(totals_reasons) >= 2:
+                                break
+                    if not totals_reasons and isinstance(roster_snapshot, dict):
+                        for pitcher_side in ("home", "away"):
+                            side_doc = roster_snapshot.get(pitcher_side) if isinstance(roster_snapshot.get(pitcher_side), dict) else {}
+                            pitcher_profile = side_doc.get("starter_profile") if isinstance(side_doc.get("starter_profile"), dict) else {}
+                            subject_name = str(pitcher_profile.get("name") or "").strip() or None
+                            _append_unique_reason(
+                                totals_reasons,
+                                _pitcher_recent_form_reason(
+                                    pitcher_profile,
+                                    int(season_value),
+                                    "earned_runs",
+                                    subject_name=subject_name,
+                                ),
+                            )
+                            if len(totals_reasons) >= 2:
+                                break
                     out["totals"].append(
                         _annotate_recommendation(
                             {
@@ -1196,6 +1538,7 @@ def _collect_game_recommendations(sim_dir: Path, game_lines_path: Path, policy: 
                                 "market_no_vig_prob": no_vig_over_prob(
                                     totals_market.get("over_odds"), totals_market.get("under_odds")
                                 ),
+                                "baseball_reasons": totals_reasons,
                             }
                         )
                     )
@@ -1214,6 +1557,40 @@ def _collect_game_recommendations(sim_dir: Path, game_lines_path: Path, policy: 
                 policy.get("ml_side"),
             )
             if side_pick is not None:
+                ml_reasons: List[str] = []
+                if isinstance(roster_snapshot, dict):
+                    selected_side = str(side_pick.get("selection") or "home")
+                    opponent_side = "away" if selected_side == "home" else "home"
+                    side_doc = roster_snapshot.get(selected_side) if isinstance(roster_snapshot.get(selected_side), dict) else {}
+                    opp_doc = roster_snapshot.get(opponent_side) if isinstance(roster_snapshot.get(opponent_side), dict) else {}
+                    pitcher_profile = side_doc.get("starter_profile") if isinstance(side_doc.get("starter_profile"), dict) else {}
+                    opponent_lineup = opp_doc.get("lineup") if isinstance(opp_doc.get("lineup"), list) else []
+                    opponent_team = sim_obj.get(opponent_side) if isinstance(sim_obj.get(opponent_side), dict) else {}
+                    opponent_id = _safe_int(opponent_team.get("id"))
+                    opponent_label = str(opponent_team.get("abbreviation") or opponent_team.get("name") or "opponent").strip()
+                    subject_name = str(pitcher_profile.get("name") or "").strip() or None
+                    _append_unique_reason(
+                        ml_reasons,
+                        _pitcher_opponent_team_reason(
+                            pitcher_profile,
+                            opponent_id,
+                            opponent_label,
+                            int(season_value),
+                            "earned_runs",
+                            subject_name=subject_name,
+                        ),
+                    )
+                    _append_unique_reason(ml_reasons, _pitcher_bvp_reason(pitcher_profile, opponent_lineup))
+                    if not ml_reasons:
+                        _append_unique_reason(
+                            ml_reasons,
+                            _pitcher_recent_form_reason(
+                                pitcher_profile,
+                                int(season_value),
+                                "earned_runs",
+                                subject_name=subject_name,
+                            ),
+                        )
                 out["ml"].append(
                     _annotate_recommendation(
                         {
@@ -1227,6 +1604,7 @@ def _collect_game_recommendations(sim_dir: Path, game_lines_path: Path, policy: 
                             "market_no_vig_prob": side_pick.get("market_no_vig_prob"),
                             "odds": side_pick.get("odds"),
                             "stake_u": float(DEFAULT_STANDARD_STAKE_U),
+                            "baseball_reasons": ml_reasons,
                         }
                     )
                 )
@@ -1554,6 +1932,7 @@ def _collect_hitter_recommendations(
             continue
         base = _base_game_row(sim_obj)
         roster_snapshot = _roster_for(sim_obj)
+        season_value = _season_from_date_str(sim_obj.get("date")) or _safe_int(sim_obj.get("season")) or datetime.now().year
 
         for player_key, rec in pred.items():
             if not _is_hitter_prediction_eligible(rec):
@@ -1565,16 +1944,13 @@ def _collect_hitter_recommendations(
             baseball_reasons: List[str] = []
             batter_profile = matchup_ctx.get("batter_profile") if isinstance(matchup_ctx.get("batter_profile"), dict) else None
             pitcher_profile = matchup_ctx.get("pitcher_profile") if isinstance(matchup_ctx.get("pitcher_profile"), dict) else None
+            opponent_label = str(matchup_ctx.get("opponent") or "").strip()
+            opponent_side = "home" if str(rec.get("team") or "").strip().upper() == str((sim_obj.get("away") or {}).get("abbreviation") or "").strip().upper() else "away"
+            opponent_team = sim_obj.get(opponent_side) if isinstance(sim_obj.get(opponent_side), dict) else {}
+            opponent_team_id = _safe_int(opponent_team.get("id"))
             if isinstance(batter_profile, dict) and isinstance(pitcher_profile, dict):
-                mix_reason = _hitter_pitch_mix_reason(batter_profile, pitcher_profile)
-                if mix_reason:
-                    baseball_reasons.append(mix_reason)
-                platoon_reason = _hitter_platoon_reason(batter_profile, pitcher_profile)
-                if platoon_reason:
-                    baseball_reasons.append(platoon_reason)
                 bvp_reason = _hitter_bvp_reason(batter_profile, pitcher_profile)
-                if bvp_reason:
-                    baseball_reasons.append(bvp_reason)
+                _append_unique_reason(baseball_reasons, bvp_reason)
             for market_key, market_spec in HITTER_MARKET_SPECS.items():
                 props_market = _select_hitter_props_market(market_key, markets.get(market_key) or {})
                 line = props_market.get("line")
@@ -1603,6 +1979,30 @@ def _collect_hitter_recommendations(
                 mean_value = rec.get(str(market_spec.get("mean_key") or ""))
                 if not _passes_mean_alignment(mean_value, line_value, side_pick["selection"], 0.0):
                     continue
+                reason_items: List[str] = list(baseball_reasons)
+                if isinstance(batter_profile, dict):
+                    _append_unique_reason(
+                        reason_items,
+                        _hitter_opponent_team_reason(
+                            batter_profile,
+                            opponent_team_id,
+                            opponent_label,
+                            int(season_value),
+                            str(market_key),
+                        ),
+                    )
+                    _append_unique_reason(
+                        reason_items,
+                        _hitter_recent_form_reason(
+                            batter_profile,
+                            int(season_value),
+                            str(market_key),
+                        ),
+                    )
+                if isinstance(batter_profile, dict) and isinstance(pitcher_profile, dict):
+                    _append_unique_reason(reason_items, _hitter_pitch_mix_reason(batter_profile, pitcher_profile))
+                    if len(reason_items) < 2:
+                        _append_unique_reason(reason_items, _hitter_platoon_reason(batter_profile, pitcher_profile))
                 rows.append(
                     _annotate_recommendation(
                         {
@@ -1636,7 +2036,7 @@ def _collect_hitter_recommendations(
                             "market_alternates": list(props_market.get("alternates") or []),
                             "odds": side_pick["odds"],
                             "stake_u": float(DEFAULT_HITTER_STAKE_U),
-                            "baseball_reasons": list(baseball_reasons),
+                            "baseball_reasons": list(reason_items[:3]),
                         }
                     )
                 )
@@ -1694,6 +2094,7 @@ def _collect_pitcher_recommendations(
     for sim_obj in _iter_sim_records(sim_dir):
         base = _base_game_row(sim_obj)
         roster_snapshot = _roster_for(sim_obj)
+        season_value = _season_from_date_str(sim_obj.get("date")) or _safe_int(sim_obj.get("season")) or datetime.now().year
         starter_names = sim_obj.get("starter_names") or {}
         starters = sim_obj.get("starters") or {}
         sim_pitcher_props = ((sim_obj.get("sim") or {}).get("pitcher_props") or {})
@@ -1744,16 +2145,33 @@ def _collect_pitcher_recommendations(
                     opp_doc = (roster_snapshot.get(opp_side) or {}) if isinstance(roster_snapshot.get(opp_side), dict) else {}
                     pitcher_profile = side_doc.get("starter_profile") if isinstance(side_doc.get("starter_profile"), dict) else {}
                     if pitcher_profile and int(pitcher_profile.get("id") or 0) == int(starter_id):
-                        mix_reason = _pitch_mix_reason(pitcher_profile)
-                        if mix_reason:
-                            baseball_reasons.append(mix_reason)
                         opponent_lineup = opp_doc.get("lineup") if isinstance(opp_doc.get("lineup"), list) else []
-                        opp_reason = _opponent_lineup_reason(pitcher_profile, opponent_lineup)
-                        if opp_reason:
-                            baseball_reasons.append(opp_reason)
                         bvp_reason = _pitcher_bvp_reason(pitcher_profile, opponent_lineup)
-                        if bvp_reason:
-                            baseball_reasons.append(bvp_reason)
+                        opponent_team = sim_obj.get(opp_side) if isinstance(sim_obj.get(opp_side), dict) else {}
+                        opponent_id = _safe_int(opponent_team.get("id"))
+                        opponent_label = str(opponent_team.get("abbreviation") or opponent_team.get("name") or "opponent").strip()
+                        _append_unique_reason(baseball_reasons, bvp_reason)
+                        _append_unique_reason(
+                            baseball_reasons,
+                            _pitcher_opponent_team_reason(
+                                pitcher_profile,
+                                opponent_id,
+                                opponent_label,
+                                int(season_value),
+                                str(market_name),
+                            ),
+                        )
+                        _append_unique_reason(
+                            baseball_reasons,
+                            _pitcher_recent_form_reason(
+                                pitcher_profile,
+                                int(season_value),
+                                str(market_name),
+                            ),
+                        )
+                        _append_unique_reason(baseball_reasons, _pitch_mix_reason(pitcher_profile))
+                        if len(baseball_reasons) < 2:
+                            _append_unique_reason(baseball_reasons, _opponent_lineup_reason(pitcher_profile, opponent_lineup))
 
                 rows.append(
                     _annotate_recommendation(
@@ -1780,7 +2198,7 @@ def _collect_pitcher_recommendations(
                             "market_alternates": list(props_market.get("alternates") or []),
                             "odds": side_pick.get("odds"),
                             "stake_u": float(DEFAULT_STANDARD_STAKE_U),
-                            "baseball_reasons": baseball_reasons,
+                            "baseball_reasons": baseball_reasons[:3],
                         }
                     )
                 )
