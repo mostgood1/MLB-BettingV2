@@ -4103,6 +4103,13 @@ def _supplemental_season_day_row(season: int, date_str: str) -> Optional[Dict[st
     if not has_cards:
         return None
     game_count = _daily_artifact_game_count(daily_artifacts)
+    betting_day_payload = _season_betting_day_payload(int(season), str(date_str), "")
+    betting_summary = betting_day_payload.get("summary") if isinstance(betting_day_payload.get("summary"), dict) else {}
+    selected_counts = _betting_selected_counts_with_defaults(
+        betting_day_payload.get("selected_counts") or betting_summary.get("selected_counts") or {}
+    )
+    results = _merge_settled_results_blocks([betting_day_payload.get("results") or {}])
+    combined = results.get("combined") or _blank_settled_summary()
 
     return {
         "date": str(date_str),
@@ -4125,6 +4132,15 @@ def _supplemental_season_day_row(season: int, date_str: str) -> Optional[Dict[st
             "first5": {"games": int(game_count)},
             "first3": {"games": int(game_count)},
         },
+        "cap_profile": betting_day_payload.get("cap_profile"),
+        "card_path": betting_day_payload.get("card_source"),
+        "selected_counts": selected_counts,
+        "results": results,
+        "profit_u": round(float(combined.get("profit_u") or 0.0), 4),
+        "roi": combined.get("roi"),
+        "settled_n": int(combined.get("n") or 0),
+        "unresolved_n": int(betting_summary.get("unresolved_n") or 0),
+        "source_kind": betting_day_payload.get("source_kind"),
         "report_path": None,
     }
 
