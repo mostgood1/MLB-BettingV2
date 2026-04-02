@@ -18,7 +18,7 @@ from sim_engine.models import (
 )
 
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 
 def _hand(x: Any, default: Handedness = Handedness.R) -> Handedness:
