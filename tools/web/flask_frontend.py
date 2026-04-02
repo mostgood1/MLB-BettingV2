@@ -653,7 +653,7 @@ def _should_skip_cleanup_path(path: Path, *, root: Path, include_today: bool) ->
     except Exception:
         return True
     parts = tuple(str(part) for part in relative.parts)
-    if parts and parts[0] == "cron_meta":
+    if parts and parts[0] in {"cron_meta", "recaps"}:
         return True
     if include_today:
         return False
@@ -740,6 +740,192 @@ def _cleanup_old_files(
         "candidate_delete_bytes_text": _format_bytes(bytes_reclaimed),
         "deleted_files": deleted_files[: max(1, int(largest_file_limit))],
         "deleted_dirs": deleted_dirs[: max(1, int(largest_file_limit))],
+        "post_cleanup_disk": _data_disk_report(largest_file_limit=10).get("disk"),
+    }
+
+
+def _live_lens_daily_recap_dir() -> Path:
+    return _ensure_dir(_LIVE_LENS_DIR / "recaps")
+
+
+def _live_lens_daily_recap_path(d: str) -> Path:
+    return _live_lens_daily_recap_dir() / f"live_lens_daily_recap_{_date_slug(d)}.json"
+
+
+def _file_stat_summary(path: Path) -> Dict[str, Any]:
+    try:
+        stat = path.stat()
+    except Exception:
+        return {
+            "path": _relative_path_str(path),
+            "exists": False,
+            "bytes": 0,
+            "bytes_text": _format_bytes(0),
+        }
+    return {
+        "path": _relative_path_str(path),
+        "exists": True,
+        "bytes": int(stat.st_size or 0),
+        "bytes_text": _format_bytes(int(stat.st_size or 0)),
+        "modified_at": datetime.fromtimestamp(float(stat.st_mtime), tz=_USER_TIMEZONE).isoformat(timespec="seconds"),
+    }
+
+
+def _live_lens_artifact_paths(d: str) -> Dict[str, Path]:
+    return {
+        "log": _live_lens_log_path(d),
+        "report": _live_lens_report_path(d),
+        "registry": _live_prop_registry_path(d),
+        "registry_log": _live_prop_registry_log_path(d),
+        "observation_log": _live_prop_observation_log_path(d),
+        "daily_recap": _live_lens_daily_recap_path(d),
+    }
+
+
+def _live_lens_log_snapshot(d: str) -> Tuple[int, Optional[Dict[str, Any]]]:
+    log_path = _live_lens_log_path(d)
+    entries = 0
+    latest_entry: Optional[Dict[str, Any]] = None
+    if not log_path.exists() or not log_path.is_file():
+        return entries, latest_entry
+    try:
+        with log_path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                text = str(line).strip()
+                if not text:
+                    continue
+                entries += 1
+                try:
+                    latest_entry = json.loads(text)
+                except Exception:
+                    continue
+    except Exception:
+        return 0, None
+    return int(entries), latest_entry if isinstance(latest_entry, dict) else None
+
+
+def _live_lens_daily_recap_payload(d: str) -> Dict[str, Any]:
+    artifact_paths = _live_lens_artifact_paths(d)
+    latest_report = _load_json_file(artifact_paths.get("report")) or {}
+    registry_summary: Dict[str, Any] = {}
+    registry_path = artifact_paths.get("registry")
+    if isinstance(registry_path, Path) and registry_path.exists():
+        registry_summary = _live_prop_registry_summary(d)
+    entries, latest_entry = _live_lens_log_snapshot(d)
+    files = {name: _file_stat_summary(path) for name, path in artifact_paths.items() if name != "daily_recap"}
+    total_bytes = sum(int((item or {}).get("bytes") or 0) for item in files.values())
+    latest_entry_games = []
+    if isinstance(latest_entry, dict):
+        latest_entry_games = [row for row in (latest_entry.get("games") or []) if isinstance(row, dict)][:20]
+    report_counts = (latest_report.get("counts") or {}) if isinstance(latest_report.get("counts"), dict) else {}
+    report_performance = (latest_report.get("performance") or {}) if isinstance(latest_report.get("performance"), dict) else {}
+    return {
+        "ok": True,
+        "date": str(d),
+        "generatedAt": _local_timestamp_text(),
+        "source": "daily_recap",
+        "optimizationRegime": _live_lens_optimization_regime(d),
+        "dailyRecapPath": _relative_path_str(_live_lens_daily_recap_path(d)),
+        "logPath": _relative_path_str(artifact_paths.get("log")),
+        "propObservationLogPath": _relative_path_str(artifact_paths.get("observation_log")),
+        "registryPath": _relative_path_str(artifact_paths.get("registry")),
+        "registryLogPath": _relative_path_str(artifact_paths.get("registry_log")),
+        "reportPath": _relative_path_str(artifact_paths.get("report")),
+        "entries": int(entries),
+        "latestEntry": latest_entry,
+        "latestReport": latest_report,
+        "registrySummary": registry_summary,
+        "summary": {
+            "counts": report_counts,
+            "performance": report_performance,
+            "topStable": list((registry_summary.get("topStable") or []))[:10] if isinstance(registry_summary, dict) else [],
+            "topEdges": list((registry_summary.get("topEdges") or []))[:10] if isinstance(registry_summary, dict) else [],
+            "latestGames": latest_entry_games,
+        },
+        "rawArtifacts": {
+            "total_bytes": int(total_bytes),
+            "total_bytes_text": _format_bytes(total_bytes),
+            "files": files,
+        },
+    }
+
+
+def _compact_live_lens_day(d: str, *, apply_changes: bool) -> Dict[str, Any]:
+    artifact_paths = _live_lens_artifact_paths(d)
+    recap_path = artifact_paths["daily_recap"]
+    recap_payload = _live_lens_daily_recap_payload(d)
+    reclaimable_bytes = int((((recap_payload.get("rawArtifacts") or {}).get("total_bytes")) or 0))
+    deleted_files: List[str] = []
+    if apply_changes:
+        _write_json_file(recap_path, recap_payload)
+        for key in ("log", "report", "registry", "registry_log", "observation_log"):
+            path = artifact_paths.get(key)
+            if not isinstance(path, Path) or not path.exists() or not path.is_file():
+                continue
+            try:
+                path.unlink(missing_ok=True)
+                deleted_files.append(_relative_path_str(path) or str(path))
+            except Exception:
+                continue
+    return {
+        "ok": True,
+        "date": str(d),
+        "apply": bool(apply_changes),
+        "dailyRecapPath": _relative_path_str(recap_path),
+        "reclaimable_bytes": int(reclaimable_bytes),
+        "reclaimable_bytes_text": _format_bytes(reclaimable_bytes),
+        "deleted_files": deleted_files,
+        "summary": recap_payload.get("summary") or {},
+    }
+
+
+def _compact_live_lens_days(
+    *,
+    retention_days: int,
+    apply_changes: bool,
+    include_today: bool,
+    max_days: int = 30,
+) -> Dict[str, Any]:
+    cutoff = _local_now().timestamp() - max(0, int(retention_days)) * 86400
+    candidate_dates: set[str] = set()
+    today_str = _today_iso()
+    artifact_roots = [_LIVE_LENS_DIR, _ensure_dir(_LIVE_LENS_DIR / "prop_registry")]
+    for root in artifact_roots:
+        if not root.exists():
+            continue
+        for path in root.iterdir():
+            if not path.is_file():
+                continue
+            stem = str(path.stem or "")
+            parts = stem.split("_")
+            if len(parts) < 4:
+                continue
+            maybe_date = "-".join(parts[-3:])
+            if not maybe_date[:4].isdigit():
+                continue
+            if not include_today and maybe_date == today_str:
+                continue
+            mtime = _safe_file_mtime(path)
+            if mtime is None or mtime >= cutoff:
+                continue
+            candidate_dates.add(maybe_date)
+
+    days_out: List[Dict[str, Any]] = []
+    total_reclaimable = 0
+    for date_str in sorted(candidate_dates)[: max(1, int(max_days))]:
+        day_result = _compact_live_lens_day(str(date_str), apply_changes=apply_changes)
+        total_reclaimable += int(day_result.get("reclaimable_bytes") or 0)
+        days_out.append(day_result)
+    return {
+        "ok": True,
+        "apply": bool(apply_changes),
+        "retention_days": int(retention_days),
+        "include_today": bool(include_today),
+        "candidate_days": int(len(candidate_dates)),
+        "processed_days": int(len(days_out)),
+        "reclaimable_bytes": int(total_reclaimable),
+        "reclaimable_bytes_text": _format_bytes(total_reclaimable),
+        "days": days_out,
         "post_cleanup_disk": _data_disk_report(largest_file_limit=10).get("disk"),
     }
 
@@ -8661,6 +8847,7 @@ def _live_lens_reports_payload(d: str) -> Dict[str, Any]:
     observation_log_path = _live_prop_observation_log_path(d)
     registry_path = _live_prop_registry_path(d)
     registry_log_path = _live_prop_registry_log_path(d)
+    recap_path = _live_lens_daily_recap_path(d)
     latest_report = _load_json_file(_live_lens_report_path(d)) or {}
     registry_summary = _live_prop_registry_summary(d)
     entries = 0
@@ -8679,6 +8866,25 @@ def _live_lens_reports_payload(d: str) -> Dict[str, Any]:
                         continue
         except Exception:
             pass
+    if not latest_report and not registry_summary and recap_path.exists():
+        recap_payload = _load_json_file(recap_path) or {}
+        if isinstance(recap_payload, dict) and recap_payload:
+            return {
+                "ok": True,
+                "date": str(d),
+                "optimizationRegime": recap_payload.get("optimizationRegime") or _live_lens_optimization_regime(d),
+                "logPath": recap_payload.get("logPath") or _relative_path_str(log_path),
+                "propObservationLogPath": recap_payload.get("propObservationLogPath") or _relative_path_str(observation_log_path),
+                "registryPath": recap_payload.get("registryPath") or _relative_path_str(registry_path),
+                "registryLogPath": recap_payload.get("registryLogPath") or _relative_path_str(registry_log_path),
+                "reportPath": recap_payload.get("reportPath") or _relative_path_str(_live_lens_report_path(d)),
+                "dailyRecapPath": _relative_path_str(recap_path),
+                "entries": int(recap_payload.get("entries") or 0),
+                "latestEntry": recap_payload.get("latestEntry") if isinstance(recap_payload.get("latestEntry"), dict) else None,
+                "latestReport": recap_payload.get("latestReport") if isinstance(recap_payload.get("latestReport"), dict) else {},
+                "registrySummary": recap_payload.get("registrySummary") if isinstance(recap_payload.get("registrySummary"), dict) else {},
+                "source": "daily_recap",
+            }
     return {
         "ok": True,
         "date": str(d),
@@ -8688,6 +8894,7 @@ def _live_lens_reports_payload(d: str) -> Dict[str, Any]:
         "registryPath": _relative_path_str(registry_path),
         "registryLogPath": _relative_path_str(registry_log_path),
         "reportPath": _relative_path_str(_live_lens_report_path(d)),
+        "dailyRecapPath": _relative_path_str(recap_path),
         "entries": int(entries),
         "latestEntry": latest_entry,
         "latestReport": latest_report,
@@ -9069,6 +9276,7 @@ def api_cron_config() -> Response:
                 "liveLensLoop": loop_status,
                 "diskUsageEndpoint": "/api/cron/disk-usage",
                 "cleanupEndpoint": "/api/cron/cleanup-data?target=live-lens&retentionDays=3&apply=off",
+                "compactLiveLensEndpoint": "/api/cron/compact-live-lens?retentionDays=3&apply=off",
                 "seasonRebuildEndpoint": "/api/cron/rebuild-season-report?season=YYYY&date=YYYY-MM-DD",
                 "seasonRepublishEndpoint": "/api/cron/republish-season?season=YYYY&profile=retuned",
             }
@@ -9111,6 +9319,29 @@ def api_cron_cleanup_data() -> Response:
         return jsonify({"ok": False, "error": str(exc), "target": target}), 400
     except Exception as exc:
         return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}", "target": target}), 500
+    return jsonify(_with_app_build(payload))
+
+
+@app.get("/api/cron/compact-live-lens")
+def api_cron_compact_live_lens() -> Response:
+    auth_error = _require_cron_auth()
+    if auth_error is not None:
+        return auth_error
+
+    retention_days = max(0, int(_safe_int(request.args.get("retentionDays")) or 3))
+    apply_changes = str(request.args.get("apply") or "off").strip().lower() == "on"
+    include_today = str(request.args.get("includeToday") or "off").strip().lower() == "on"
+    max_days = max(1, int(_safe_int(request.args.get("maxDays")) or 30))
+
+    try:
+        payload = _compact_live_lens_days(
+            retention_days=retention_days,
+            apply_changes=apply_changes,
+            include_today=include_today,
+            max_days=max_days,
+        )
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 500
     return jsonify(_with_app_build(payload))
 
 
