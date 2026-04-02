@@ -16,7 +16,6 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from sim_engine.market_pitcher_props import normalize_pitcher_name
-from sim_engine.data.statsapi import StatsApiClient, fetch_game_feed_live
 
 
 def _read_json(path: Path) -> Any:
@@ -146,6 +145,8 @@ def _load_feed(date: str, game_pk: int) -> Dict[str, Any]:
             return loaded
         if stale_feed is None:
             stale_feed = loaded
+    from sim_engine.data.statsapi import StatsApiClient, fetch_game_feed_live
+
     client = StatsApiClient.with_default_cache(ttl_seconds=15 * 60)
     fetched = fetch_game_feed_live(client, int(game_pk))
     if isinstance(fetched, dict) and fetched:
