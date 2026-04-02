@@ -23,6 +23,12 @@ from sim_engine.market_pitcher_props import (
     normalize_pitcher_name,
 )
 from sim_engine.prob_calibration import apply_prob_calibration
+from sim_engine.data.statcast_bvp import (
+    default_bvp_cache,
+    hr_multiplier_from_bvp,
+    pitcher_vs_batters_counts,
+    rate_multiplier_from_bvp,
+)
 from sim_engine.data.statsapi import StatsApiClient, fetch_person_gamelog
 
 
@@ -492,6 +498,18 @@ def _season_from_date_str(value: Any) -> Optional[int]:
     return _safe_int(token[:4])
 
 
+def _normalized_hitter_history_prop(prop: Any) -> str:
+    raw = str(prop or "").strip().lower()
+    mapping = {
+        "batter_home_runs": "home_runs",
+        "batter_hits": "hits",
+        "batter_total_bases": "total_bases",
+        "batter_runs_scored": "runs",
+        "batter_rbis": "rbis",
+    }
+    return str(mapping.get(raw, raw))
+
+
 @lru_cache(maxsize=1)
 def _statsapi_reason_client_cached() -> StatsApiClient:
     client = StatsApiClient.with_default_cache(ttl_seconds=24 * 3600)
@@ -507,6 +525,112 @@ def _fetch_person_gamelog_cached(person_id: int, season: int, group: str) -> Tup
     except Exception:
         rows = []
     return tuple(row for row in rows if isinstance(row, dict))
+
+
+@lru_cache(maxsize=1)
+def _statcast_bvp_reason_cache():
+    return default_bvp_cache(ttl_seconds=30 * 24 * 3600)
+
+
+@lru_cache(maxsize=2048)
+def _pitcher_bvp_counts_cached(pitcher_id: int, season: int) -> Dict[int, Dict[str, int]]:
+    try:
+        rows = pitcher_vs_batters_counts(
+            season=int(season),
+            pitcher_id=int(pitcher_id),
+            start_date=datetime(int(season), 1, 1).date(),
+            end_date=datetime(int(season), 12, 31).date(),
+            cache=_statcast_bvp_reason_cache(),
+        )
+    except Exception:
+        rows = {}
+    out: Dict[int, Dict[str, int]] = {}
+    for batter_id, counts in (rows or {}).items():
+        try:
+            bid = int(batter_id)
+        except Exception:
+            continue
+        out[bid] = {
+            "pa": int(getattr(counts, "pa", 0) or 0),
+            "hits": int(getattr(counts, "hits", 0) or 0),
+            "hr": int(getattr(counts, "hr", 0) or 0),
+            "so": int(getattr(counts, "so", 0) or 0),
+            "bb": int(getattr(counts, "bb", 0) or 0),
+            "hbp": int(getattr(counts, "hbp", 0) or 0),
+            "inplay_pa": int(getattr(counts, "inplay_pa", 0) or 0),
+            "inplay_hits": int(getattr(counts, "inplay_hits", 0) or 0),
+        }
+    return out
+
+
+def _derived_hitter_bvp_history(
+    batter_profile: Dict[str, Any],
+    pitcher_profile: Dict[str, Any],
+    season: Optional[int],
+) -> Optional[Dict[str, float]]:
+    batter_id = _safe_int((batter_profile or {}).get("id"))
+    pitcher_id = _safe_int((pitcher_profile or {}).get("id"))
+    season_i = _safe_int(season)
+    if batter_id is None or pitcher_id is None or season_i is None:
+        return None
+    merged: Dict[str, int] = {
+        "pa": 0,
+        "hits": 0,
+        "hr": 0,
+        "so": 0,
+        "bb": 0,
+        "hbp": 0,
+        "inplay_pa": 0,
+        "inplay_hits": 0,
+    }
+    for season_part in range(max(2015, int(season_i) - 1), int(season_i) + 1):
+        counts = (_pitcher_bvp_counts_cached(int(pitcher_id), int(season_part)) or {}).get(int(batter_id)) or {}
+        for key in list(merged.keys()):
+            merged[key] += int(counts.get(key) or 0)
+    if int(merged.get("pa") or 0) <= 0:
+        return None
+
+    pa = int(merged.get("pa") or 0)
+    inplay_pa = int(merged.get("inplay_pa") or 0)
+    history = {
+        "pa": float(pa),
+        "hits": float(merged.get("hits") or 0),
+        "hr": float(merged.get("hr") or 0),
+        "so": float(merged.get("so") or 0),
+        "bb": float(merged.get("bb") or 0),
+        "hbp": float(merged.get("hbp") or 0),
+        "inplay_pa": float(inplay_pa),
+        "inplay_hits": float(merged.get("inplay_hits") or 0),
+        "hr_mult": float(
+            hr_multiplier_from_bvp(
+                batter_hr_rate=float((batter_profile or {}).get("hr_rate") or 0.03),
+                pa=pa,
+                hr=int(merged.get("hr") or 0),
+            )
+        ),
+        "k_mult": float(
+            rate_multiplier_from_bvp(
+                base_rate=float((batter_profile or {}).get("k_rate") or 0.22),
+                opportunities=pa,
+                successes=int(merged.get("so") or 0),
+            )
+        ),
+        "bb_mult": float(
+            rate_multiplier_from_bvp(
+                base_rate=float((batter_profile or {}).get("bb_rate") or 0.08),
+                opportunities=pa,
+                successes=int(merged.get("bb") or 0),
+            )
+        ),
+        "inplay_mult": float(
+            rate_multiplier_from_bvp(
+                base_rate=float((batter_profile or {}).get("inplay_hit_rate") or 0.28),
+                opportunities=inplay_pa,
+                successes=int(merged.get("inplay_hits") or 0),
+            )
+        ) if inplay_pa > 0 else 1.0,
+    }
+    return history
 
 
 def _pitching_outs_from_stat(stat: Dict[str, Any]) -> Optional[float]:
@@ -544,6 +668,7 @@ def _history_metric_value(group: str, prop: str, stat: Dict[str, Any]) -> Option
             "pitches": "numberOfPitches",
         }
     else:
+        prop_key = _normalized_hitter_history_prop(prop_key)
         mapping = {
             "hits": "hits",
             "home_runs": "homeRuns",
@@ -601,6 +726,7 @@ def _opponent_logs_recent_seasons(
 
 
 def _prop_unit_label(prop: str) -> str:
+    prop_key = _normalized_hitter_history_prop(prop)
     labels = {
         "strikeouts": "strikeouts",
         "outs": "outs",
@@ -612,7 +738,81 @@ def _prop_unit_label(prop: str) -> str:
         "rbi": "RBIs",
         "total_bases": "total bases",
     }
-    return str(labels.get(str(prop or "").strip().lower()) or str(prop or "").replace("_", " "))
+    return str(labels.get(prop_key) or str(prop_key or "").replace("_", " "))
+
+
+def _hitter_line_history_clause(
+    prop: str,
+    values: Sequence[float],
+    *,
+    selection: Optional[str] = None,
+    line_value: Optional[float] = None,
+    subject_name: Optional[str] = None,
+) -> Optional[str]:
+    sample = [float(value) for value in values]
+    if not sample:
+        return None
+    choice = str(selection or "").strip().lower()
+    line = float(line_value) if line_value is not None else None
+    subject = str(subject_name or "he").strip()
+    lower_subject = subject.lower()
+
+    if choice in {"over", "under"} and line is not None:
+        if choice == "over":
+            count = sum(1 for value in sample if float(value) > line)
+        else:
+            count = sum(1 for value in sample if float(value) < line)
+        total = len(sample)
+        prop_key = _normalized_hitter_history_prop(prop)
+
+        if prop_key == "home_runs" and line <= 0.5:
+            if choice == "over":
+                return f"{subject} has homered in {int(count)} of {int(total)} games"
+            return f"{subject} has been held without a homer in {int(count)} of {int(total)} games"
+        if prop_key == "hits" and line <= 1.5:
+            if line <= 0.5:
+                if choice == "over":
+                    return f"{subject} has recorded a hit in {int(count)} of {int(total)} games"
+                return f"{subject} has been held hitless in {int(count)} of {int(total)} games"
+            if choice == "over":
+                return f"{subject} has recorded multiple hits in {int(count)} of {int(total)} games"
+            return f"{subject} has been held to one hit or fewer in {int(count)} of {int(total)} games"
+        if prop_key in {"rbi", "rbis"} and line <= 0.5:
+            if choice == "over":
+                if lower_subject == "he":
+                    return f"he has driven in a run in {int(count)} of {int(total)} games"
+                return f"{subject} has driven in a run in {int(count)} of {int(total)} games"
+            if lower_subject == "he":
+                return f"he has been held without an RBI in {int(count)} of {int(total)} games"
+            return f"{subject} has been held without an RBI in {int(count)} of {int(total)} games"
+        if prop_key == "runs" and line <= 0.5:
+            if choice == "over":
+                if lower_subject == "he":
+                    return f"he has scored in {int(count)} of {int(total)} games"
+                return f"{subject} has scored in {int(count)} of {int(total)} games"
+            if lower_subject == "he":
+                return f"he has been held scoreless in {int(count)} of {int(total)} games"
+            return f"{subject} has been held scoreless in {int(count)} of {int(total)} games"
+        if prop_key == "total_bases" and line <= 1.5:
+            if line <= 0.5:
+                if choice == "over":
+                    return f"{subject} has recorded at least one total base in {int(count)} of {int(total)} games"
+                return f"{subject} has been held without a total base in {int(count)} of {int(total)} games"
+            if choice == "over":
+                return f"{subject} has cleared 1.5 total bases in {int(count)} of {int(total)} games"
+            return f"{subject} has been held to one total base or fewer in {int(count)} of {int(total)} games"
+        if choice == "over":
+            return f"{subject} has cleared {_format_reason_number(line)} {_prop_unit_label(prop)} in {int(count)} of {int(total)} games"
+        return f"{subject} has stayed under {_format_reason_number(line)} {_prop_unit_label(prop)} in {int(count)} of {int(total)} games"
+
+    prop_key = _normalized_hitter_history_prop(prop)
+    if prop_key == "home_runs":
+        total = int(round(sum(sample)))
+        if total <= 0:
+            return f"{subject} has not homered"
+        return f"{subject} has homered {int(total)} times"
+    avg_value = float(sum(sample) / len(sample))
+    return f"{subject} has averaged {_format_reason_number(avg_value)} {_prop_unit_label(prop)}"
 
 
 def _pitcher_recent_form_reason(
@@ -678,31 +878,35 @@ def _hitter_recent_form_reason(
     season: int,
     prop: str,
     *,
+    selection: Optional[str] = None,
+    line_value: Optional[float] = None,
     subject_name: Optional[str] = None,
 ) -> Optional[str]:
     batter_id = _safe_int((batter_profile or {}).get("id"))
     if batter_id is None or int(batter_id) <= 0:
         return None
     logs = _recent_season_logs(int(batter_id), int(season), "hitting", seasons_back=1)[-10:]
-    if len(logs) < 5:
+    values = [
+        float(value)
+        for value in (
+            _history_metric_value("hitting", str(prop), (row.get("stat") or {}))
+            for row in logs
+        )
+        if value is not None
+    ]
+    min_samples = 3 if str(selection or "").strip().lower() in {"over", "under"} and line_value is not None else 5
+    if len(values) < min_samples:
         return None
-    label = _prop_unit_label(str(prop))
-    subject = str(subject_name or "He").strip()
-    if str(prop) == "home_runs":
-        total = sum(_history_metric_value("hitting", "home_runs", (row.get("stat") or {})) or 0.0 for row in logs)
-        if total <= 0:
-            if subject.lower() == "he":
-                return f"Over his last {int(len(logs))} games, he has not homered."
-            return f"Over his last {int(len(logs))} games, {subject} has not homered."
-        if subject.lower() == "he":
-            return f"Over his last {int(len(logs))} games, he has homered {int(round(total))} times."
-        return f"Over his last {int(len(logs))} games, {subject} has homered {int(round(total))} times."
-    avg_value = _average_metric_from_logs("hitting", str(prop), logs)
-    if avg_value is None:
+    clause = _hitter_line_history_clause(
+        str(prop),
+        values,
+        selection=selection,
+        line_value=line_value,
+        subject_name=str(subject_name or "he"),
+    )
+    if not clause:
         return None
-    if subject.lower() == "he":
-        return f"Over his last {int(len(logs))} games, he has averaged {_format_reason_number(avg_value)} {label}."
-    return f"Over his last {int(len(logs))} games, {subject} has averaged {_format_reason_number(avg_value)} {label}."
+    return f"Over his last {int(len(values))} games, {clause}."
 
 
 def _hitter_opponent_team_reason(
@@ -712,6 +916,8 @@ def _hitter_opponent_team_reason(
     season: int,
     prop: str,
     *,
+    selection: Optional[str] = None,
+    line_value: Optional[float] = None,
     subject_name: Optional[str] = None,
 ) -> Optional[str]:
     batter_id = _safe_int((batter_profile or {}).get("id"))
@@ -719,26 +925,28 @@ def _hitter_opponent_team_reason(
     if batter_id is None or int(batter_id) <= 0 or opponent_id is None or int(opponent_id) <= 0:
         return None
     logs = _opponent_logs_recent_seasons(int(batter_id), int(season), "hitting", int(opponent_id), seasons_back=1)
-    if len(logs) < 3:
+    values = [
+        float(value)
+        for value in (
+            _history_metric_value("hitting", str(prop), (row.get("stat") or {}))
+            for row in logs
+        )
+        if value is not None
+    ]
+    min_samples = 2 if str(selection or "").strip().lower() in {"over", "under"} and line_value is not None else 3
+    if len(values) < min_samples:
         return None
-    subject = str(subject_name or "He").strip()
     opponent = str(opponent_label or "this opponent").strip()
-    if str(prop) == "home_runs":
-        total = sum(_history_metric_value("hitting", "home_runs", (row.get("stat") or {})) or 0.0 for row in logs)
-        if total <= 0:
-            if subject.lower() == "he":
-                return f"This season against {opponent}, he has not homered in {int(len(logs))} games."
-            return f"This season against {opponent}, {subject} has not homered in {int(len(logs))} games."
-        if subject.lower() == "he":
-            return f"This season against {opponent}, he has homered {int(round(total))} times in {int(len(logs))} games."
-        return f"This season against {opponent}, {subject} has homered {int(round(total))} times in {int(len(logs))} games."
-    avg_value = _average_metric_from_logs("hitting", str(prop), logs)
-    if avg_value is None:
+    clause = _hitter_line_history_clause(
+        str(prop),
+        values,
+        selection=selection,
+        line_value=line_value,
+        subject_name=str(subject_name or "he"),
+    )
+    if not clause:
         return None
-    label = _prop_unit_label(str(prop))
-    if subject.lower() == "he":
-        return f"This season against {opponent}, he has averaged {_format_reason_number(avg_value)} {label} across {int(len(logs))} games."
-    return f"This season against {opponent}, {subject} has averaged {_format_reason_number(avg_value)} {label} across {int(len(logs))} games."
+    return f"Against {opponent}, {clause}."
 
 
 def _append_unique_reason(reasons: List[str], value: Optional[str]) -> None:
@@ -1103,7 +1311,15 @@ def _hitter_platoon_reason(batter_profile: Dict[str, Any], pitcher_profile: Dict
     return None
 
 
-def _hitter_bvp_reason(batter_profile: Dict[str, Any], pitcher_profile: Dict[str, Any]) -> Optional[str]:
+def _hitter_bvp_reason(
+    batter_profile: Dict[str, Any],
+    pitcher_profile: Dict[str, Any],
+    *,
+    season: Optional[int] = None,
+    prop: Optional[str] = None,
+    selection: Optional[str] = None,
+    line_value: Optional[float] = None,
+) -> Optional[str]:
     if not isinstance(batter_profile, dict) or not isinstance(pitcher_profile, dict):
         return None
     try:
@@ -1113,9 +1329,11 @@ def _hitter_bvp_reason(batter_profile: Dict[str, Any], pitcher_profile: Dict[str
     if pitcher_id <= 0:
         return None
     history_map = batter_profile.get("vs_pitcher_history")
-    if not isinstance(history_map, dict):
-        return None
-    history = history_map.get(str(pitcher_id)) if str(pitcher_id) in history_map else history_map.get(pitcher_id)
+    history = None
+    if isinstance(history_map, dict):
+        history = history_map.get(str(pitcher_id)) if str(pitcher_id) in history_map else history_map.get(pitcher_id)
+    if not isinstance(history, dict):
+        history = _derived_hitter_bvp_history(batter_profile, pitcher_profile, season)
     if not isinstance(history, dict):
         return None
 
@@ -1123,36 +1341,77 @@ def _hitter_bvp_reason(batter_profile: Dict[str, Any], pitcher_profile: Dict[str
         pa = int(round(float(history.get("pa") or 0)))
     except Exception:
         pa = 0
-    if pa < 5:
+    if pa < 3:
         return None
 
-    bits: List[str] = []
+    prop_key = _normalized_hitter_history_prop(prop)
+    side = str(selection or "").strip().lower()
+    hits = _safe_int(history.get("hits")) or 0
+    homers = _safe_int(history.get("hr")) or 0
+    supportive_bits: List[str] = []
+    caution_bits: List[str] = []
     try:
         inplay_mult = float(history.get("inplay_mult") or 1.0)
         if inplay_mult >= 1.06:
-            bits.append("he has turned balls in play against this starter into hits a little more often than his normal rate")
+            supportive_bits.append("he has turned balls in play against this starter into hits a little more often than his usual rate")
         elif inplay_mult <= 0.94:
-            bits.append("he has not converted many balls in play into hits against this starter")
+            caution_bits.append("he has not converted many balls in play into hits against this starter")
     except Exception:
         pass
     try:
         hr_mult = float(history.get("hr_mult") or 1.0)
         if hr_mult >= 1.08:
-            bits.append("the head-to-head sample has shown a bit more extra-base damage than baseline")
+            supportive_bits.append("the head-to-head sample has shown a bit more damage than baseline")
+        elif hr_mult <= 0.94:
+            caution_bits.append("the head-to-head damage has been lighter than baseline")
     except Exception:
         pass
     try:
         k_mult = float(history.get("k_mult") or 1.0)
         if k_mult <= 0.94:
-            bits.append("he has also managed the strikeout risk well in prior meetings")
+            supportive_bits.append("he has also managed the strikeout risk well in prior meetings")
         elif k_mult >= 1.08:
-            bits.append("the prior meetings have come with elevated strikeout pressure")
+            caution_bits.append("the prior meetings have come with elevated strikeout pressure")
     except Exception:
         pass
 
-    if not bits:
-        return None
-    return f"There is at least a real head-to-head sample here ({pa} plate appearances), and {bits[0]}" + (f", while {', while '.join(bits[1:])}." if len(bits) > 1 else ".")
+    preferred_bits: List[str] = []
+    fallback_bits: List[str] = []
+    if side == "under":
+        preferred_bits = caution_bits
+        fallback_bits = supportive_bits
+    else:
+        preferred_bits = supportive_bits
+        fallback_bits = caution_bits
+
+    if prop_key == "home_runs":
+        if side == "over":
+            homer_text = "no homers" if homers <= 0 else ("1 homer" if homers == 1 else f"{int(homers)} homers")
+            if supportive_bits:
+                return f"Against this starter, he has {homer_text} in {pa} prior plate appearances, and {supportive_bits[0]}."
+            return f"Against this starter, he has {homer_text} in {pa} prior plate appearances."
+        if side == "under" and caution_bits:
+            return f"Against this starter, he has {homers} homers in {pa} prior plate appearances, and {caution_bits[0]}."
+        return f"Against this starter, he has {homers} homers in {pa} prior plate appearances."
+    elif prop_key in {"hits", "total_bases", "runs", "rbis", "rbi"}:
+        hit_label = "hit" if int(hits) == 1 else "hits"
+        lead = f"Against this starter, he has {hits} {hit_label}"
+        if homers > 0:
+            lead += f", including {homers} homer{'s' if homers != 1 else ''}"
+        lead += f" in {pa} prior plate appearances"
+        if preferred_bits:
+            return f"{lead}, and {preferred_bits[0]}."
+        return lead + "."
+
+    if preferred_bits:
+        return f"Against this starter, he has seen {pa} prior plate appearances, and {preferred_bits[0]}."
+    if fallback_bits and pa >= 5:
+        return f"Against this starter, he has seen {pa} prior plate appearances, though {fallback_bits[0]}."
+    if pa >= 8:
+        return f"Against this starter, he has seen {pa} prior plate appearances, even if the prior meetings have been fairly neutral overall."
+    if line_value is not None and pa >= 3:
+        return f"Against this starter, he has seen {pa} prior plate appearances."
+    return None
 
 
 def _lookup_hitter_matchup_context(
@@ -1204,6 +1463,7 @@ def _lookup_hitter_matchup_context(
         "batter_profile": batter_profile,
         "pitcher_profile": pitcher_profile,
         "opponent": str((sim_obj.get(opp_side) or {}).get("abbreviation") or "").strip(),
+        "opponent_team_id": _safe_int((((opp_doc.get("team") or {}) if isinstance(opp_doc, dict) else {}).get("team_id"))),
     }
 
 
@@ -1947,10 +2207,7 @@ def _collect_hitter_recommendations(
             opponent_label = str(matchup_ctx.get("opponent") or "").strip()
             opponent_side = "home" if str(rec.get("team") or "").strip().upper() == str((sim_obj.get("away") or {}).get("abbreviation") or "").strip().upper() else "away"
             opponent_team = sim_obj.get(opponent_side) if isinstance(sim_obj.get(opponent_side), dict) else {}
-            opponent_team_id = _safe_int(opponent_team.get("id"))
-            if isinstance(batter_profile, dict) and isinstance(pitcher_profile, dict):
-                bvp_reason = _hitter_bvp_reason(batter_profile, pitcher_profile)
-                _append_unique_reason(baseball_reasons, bvp_reason)
+            opponent_team_id = _safe_int(matchup_ctx.get("opponent_team_id")) or _safe_int(opponent_team.get("id"))
             for market_key, market_spec in HITTER_MARKET_SPECS.items():
                 props_market = _select_hitter_props_market(market_key, markets.get(market_key) or {})
                 line = props_market.get("line")
@@ -1980,6 +2237,18 @@ def _collect_hitter_recommendations(
                 if not _passes_mean_alignment(mean_value, line_value, side_pick["selection"], 0.0):
                     continue
                 reason_items: List[str] = list(baseball_reasons)
+                if isinstance(batter_profile, dict) and isinstance(pitcher_profile, dict):
+                    _append_unique_reason(
+                        reason_items,
+                        _hitter_bvp_reason(
+                            batter_profile,
+                            pitcher_profile,
+                            season=int(season_value),
+                            prop=str(market_key),
+                            selection=str(side_pick.get("selection") or ""),
+                            line_value=float(line_value),
+                        ),
+                    )
                 if isinstance(batter_profile, dict):
                     _append_unique_reason(
                         reason_items,
@@ -1989,6 +2258,8 @@ def _collect_hitter_recommendations(
                             opponent_label,
                             int(season_value),
                             str(market_key),
+                            selection=str(side_pick.get("selection") or ""),
+                            line_value=float(line_value),
                         ),
                     )
                     _append_unique_reason(
@@ -1997,10 +2268,13 @@ def _collect_hitter_recommendations(
                             batter_profile,
                             int(season_value),
                             str(market_key),
+                            selection=str(side_pick.get("selection") or ""),
+                            line_value=float(line_value),
                         ),
                     )
                 if isinstance(batter_profile, dict) and isinstance(pitcher_profile, dict):
-                    _append_unique_reason(reason_items, _hitter_pitch_mix_reason(batter_profile, pitcher_profile))
+                    if len(reason_items) < 2:
+                        _append_unique_reason(reason_items, _hitter_pitch_mix_reason(batter_profile, pitcher_profile))
                     if len(reason_items) < 2:
                         _append_unique_reason(reason_items, _hitter_platoon_reason(batter_profile, pitcher_profile))
                 rows.append(
