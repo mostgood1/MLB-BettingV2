@@ -1384,7 +1384,7 @@ def main() -> int:
     )
     normalized_profile = str(args.profile_name or "").strip().lower()
     if normalized_profile not in ("baseline", "retuned"):
-        normalized_profile = "retuned" if "retuned" in betting_manifest_path.name.lower() else "baseline"
+        normalized_profile = "retuned" if "retuned" in manifest_out.name.lower() else "baseline"
     day_payload_dir = _resolve_path(
         str(args.day_payload_dir),
         default=(season_dir / ("betting_day_payloads_retuned" if normalized_profile == "retuned" else "betting_day_payloads")),
