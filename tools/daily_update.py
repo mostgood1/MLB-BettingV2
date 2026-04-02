@@ -2969,8 +2969,8 @@ def main() -> int:
     ap.add_argument(
         "--bvp-hr",
         choices=["on", "off"],
-        default="off",
-        help="If on, apply a shrunk batter-vs-starter HR multiplier from local Statcast raw pitch files.",
+        default="on",
+        help="If on, apply shrunk batter-vs-starter matchup multipliers from local Statcast raw pitch files.",
     )
     ap.add_argument("--bvp-days-back", type=int, default=365, help="How many days of history to consider for BvP lookup.")
     ap.add_argument("--bvp-min-pa", type=int, default=10, help="Minimum BvP PA required to apply a multiplier.")

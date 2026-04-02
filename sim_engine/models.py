@@ -245,6 +245,11 @@ class BatterProfile:
     platoon_mult_vs_lhp: Dict[str, float] = field(default_factory=dict)
     platoon_mult_vs_rhp: Dict[str, float] = field(default_factory=dict)
 
+    # Home/road split multipliers keyed by venue side.
+    # Values use the same metric names as platoon multipliers.
+    venue_mult_home: Dict[str, float] = field(default_factory=dict)
+    venue_mult_away: Dict[str, float] = field(default_factory=dict)
+
     # Statcast-derived quality multipliers applied to baseline rates.
     # Keys: "k", "bb", "hr", "inplay".
     statcast_quality_mult: Dict[str, float] = field(default_factory=dict)
@@ -302,6 +307,10 @@ class PitcherProfile:
     # "k", "bb", "hr", "inplay". Values are multipliers vs that batter side.
     platoon_mult_vs_lhb: Dict[str, float] = field(default_factory=dict)
     platoon_mult_vs_rhb: Dict[str, float] = field(default_factory=dict)
+
+    # Home/road split multipliers keyed by venue side.
+    venue_mult_home: Dict[str, float] = field(default_factory=dict)
+    venue_mult_away: Dict[str, float] = field(default_factory=dict)
 
     # Statcast-derived quality multipliers applied to baseline rates.
     # Keys: "k", "bb", "hr", "inplay".

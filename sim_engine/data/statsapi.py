@@ -881,6 +881,40 @@ def fetch_person_stat_splits(client: StatsApiClient, person_id: int, season: int
     return out
 
 
+def fetch_person_home_away_splits(client: StatsApiClient, person_id: int, season: int, group: str) -> Dict[str, Dict[str, Any]]:
+    """Fetch season home/away stat splits for a player.
+
+    Returns mapping: {"home": stat_dict, "away": stat_dict}
+    """
+    attempts = ("hm,aw", "home,away", "h,a")
+    for sit_codes in attempts:
+        out: Dict[str, Dict[str, Any]] = {}
+        try:
+            data = client.get(
+                f"/people/{int(person_id)}/stats",
+                params={"stats": "statSplits", "group": group, "season": int(season), "sitCodes": sit_codes},
+            )
+            stats = data.get("stats", []) or []
+            for grp in stats:
+                for split in (grp.get("splits", []) or []):
+                    s = (split.get("split") or {}) if isinstance(split, dict) else {}
+                    code = str(s.get("code") or "").strip().lower()
+                    desc = str(s.get("description") or "").strip().lower()
+                    normalized = ""
+                    if code in {"hm", "home", "h"} or "home" in desc:
+                        normalized = "home"
+                    elif code in {"aw", "away", "a"} or "away" in desc or "road" in desc:
+                        normalized = "away"
+                    stat = (split.get("stat") or {}) if isinstance(split, dict) else {}
+                    if normalized and isinstance(stat, dict):
+                        out[normalized] = stat
+        except Exception:
+            out = {}
+        if out:
+            return out
+    return {}
+
+
 def fetch_person_pitch_arsenal(client: StatsApiClient, person_id: int, season: int) -> tuple[Dict[PitchType, float], int]:
     """Fetch pitch mix (usage) for a pitcher from StatsAPI.
 

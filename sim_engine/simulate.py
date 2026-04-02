@@ -2004,11 +2004,13 @@ def simulate_game(away: TeamRoster, home: TeamRoster, config: Optional[GameConfi
         )
         b_mults = getattr(batter_prof, "platoon_mult_vs_lhp", {}) if pit_hand == "L" else getattr(batter_prof, "platoon_mult_vs_rhp", {})
         p_mults = getattr(pitcher_prof, "platoon_mult_vs_lhb", {}) if eff_bat == "L" else getattr(pitcher_prof, "platoon_mult_vs_rhb", {})
+        batter_venue_mults = getattr(batter_prof, "venue_mult_home", {}) if batting_roster is home else getattr(batter_prof, "venue_mult_away", {})
+        pitcher_venue_mults = getattr(pitcher_prof, "venue_mult_home", {}) if fielding_roster is home else getattr(pitcher_prof, "venue_mult_away", {})
 
-        batter_k = _clamp_rate(float(batter_prof.k_rate) * _mult_from_map(b_mults, "k"), 0.05, 0.55)
-        batter_bb = _clamp_rate(float(batter_prof.bb_rate) * _mult_from_map(b_mults, "bb"), 0.01, 0.22)
-        batter_hr = _clamp_rate(float(batter_prof.hr_rate) * _mult_from_map(b_mults, "hr"), 0.002, 0.12)
-        batter_inplay = _clamp_rate(float(batter_prof.inplay_hit_rate) * _mult_from_map(b_mults, "inplay"), 0.10, 0.45)
+        batter_k = _clamp_rate(float(batter_prof.k_rate) * _mult_from_map(b_mults, "k") * _mult_from_map(batter_venue_mults, "k"), 0.05, 0.55)
+        batter_bb = _clamp_rate(float(batter_prof.bb_rate) * _mult_from_map(b_mults, "bb") * _mult_from_map(batter_venue_mults, "bb"), 0.01, 0.22)
+        batter_hr = _clamp_rate(float(batter_prof.hr_rate) * _mult_from_map(b_mults, "hr") * _mult_from_map(batter_venue_mults, "hr"), 0.002, 0.12)
+        batter_inplay = _clamp_rate(float(batter_prof.inplay_hit_rate) * _mult_from_map(b_mults, "inplay") * _mult_from_map(batter_venue_mults, "inplay"), 0.10, 0.45)
 
         try:
             mm = getattr(batter_prof, "vs_pitcher_hr_mult", None)
@@ -2035,10 +2037,10 @@ def simulate_game(away: TeamRoster, home: TeamRoster, config: Optional[GameConfi
             pass
 
         prates = pitcher_day_rates_eff or {}
-        base_pitcher_k = float(prates.get("k_rate", pitcher_prof.k_rate))
-        base_pitcher_bb = float(prates.get("bb_rate", pitcher_prof.bb_rate))
-        base_pitcher_hr = float(prates.get("hr_rate", pitcher_prof.hr_rate))
-        base_pitcher_inplay = float(prates.get("inplay_hit_rate", pitcher_prof.inplay_hit_rate))
+        base_pitcher_k = float(prates.get("k_rate", pitcher_prof.k_rate)) * _mult_from_map(pitcher_venue_mults, "k")
+        base_pitcher_bb = float(prates.get("bb_rate", pitcher_prof.bb_rate)) * _mult_from_map(pitcher_venue_mults, "bb")
+        base_pitcher_hr = float(prates.get("hr_rate", pitcher_prof.hr_rate)) * _mult_from_map(pitcher_venue_mults, "hr")
+        base_pitcher_inplay = float(prates.get("inplay_hit_rate", pitcher_prof.inplay_hit_rate)) * _mult_from_map(pitcher_venue_mults, "inplay")
 
         pitcher_k = _clamp_rate(base_pitcher_k * _mult_from_map(p_mults, "k"), 0.05, 0.60)
         pitcher_bb = _clamp_rate(base_pitcher_bb * _mult_from_map(p_mults, "bb"), 0.01, 0.25)

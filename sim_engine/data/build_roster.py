@@ -22,6 +22,7 @@ from .statsapi import (
     fetch_person,
     fetch_person_season_hitting,
     fetch_person_season_pitching,
+    fetch_person_home_away_splits,
     fetch_person_stat_splits,
 )
 from .recency import batter_recent_rates, pitcher_recent_rates
@@ -822,6 +823,87 @@ def _apply_platoon_splits_to_batter(client: StatsApiClient, prof: BatterProfile,
         return
 
 
+def _apply_home_away_splits_to_pitcher(client: StatsApiClient, prof: PitcherProfile, season: int) -> None:
+    if prof.player.mlbam_id <= 0:
+        return
+    try:
+        splits = fetch_person_home_away_splits(client, prof.player.mlbam_id, season, group="pitching")
+        if not isinstance(splits, dict) or not splits:
+            return
+        for code in ("home", "away"):
+            s = splits.get(code) or {}
+            if not isinstance(s, dict) or not s:
+                continue
+            bf_s = float(s.get("battersFaced") or 0.0)
+            if bf_s <= 0:
+                continue
+            so_s = float(s.get("strikeOuts") or 0.0)
+            bb_s = float(s.get("baseOnBalls") or 0.0)
+            hbp_s = float(s.get("hitBatsmen") or 0.0)
+            hr_s = float(s.get("homeRuns") or 0.0)
+            hits_s = float(s.get("hits") or 0.0)
+            inplay_s = max(bf_s - so_s - bb_s - hbp_s, 1.0)
+
+            k_rate_s = _rate(so_s, bf_s, prof.k_rate)
+            bb_rate_s = _rate(bb_s, bf_s, prof.bb_rate)
+            hr_rate_s = _rate(hr_s, bf_s, prof.hr_rate)
+            inplay_hit_s = _rate(hits_s, inplay_s, prof.inplay_hit_rate)
+
+            mults = {
+                "k": _mult(k_rate_s, prof.k_rate),
+                "bb": _mult(bb_rate_s, prof.bb_rate),
+                "hr": _mult(hr_rate_s, prof.hr_rate, lo=0.6, hi=1.5),
+                "inplay": _mult(inplay_hit_s, prof.inplay_hit_rate),
+            }
+            if code == "home":
+                prof.venue_mult_home = mults
+            else:
+                prof.venue_mult_away = mults
+    except Exception:
+        return
+
+
+def _apply_home_away_splits_to_batter(client: StatsApiClient, prof: BatterProfile, season: int) -> None:
+    if prof.player.mlbam_id <= 0:
+        return
+    try:
+        splits = fetch_person_home_away_splits(client, prof.player.mlbam_id, season, group="hitting")
+        if not isinstance(splits, dict) or not splits:
+            return
+        for code in ("home", "away"):
+            s = splits.get(code) or {}
+            if not isinstance(s, dict) or not s:
+                continue
+            pa_s = float(s.get("plateAppearances") or 0.0)
+            if pa_s <= 0:
+                continue
+            so_s = float(s.get("strikeOuts") or 0.0)
+            bb_s = float(s.get("baseOnBalls") or 0.0)
+            hbp_s = float(s.get("hitByPitch") or 0.0)
+            hr_s = float(s.get("homeRuns") or 0.0)
+            hits_s = float(s.get("hits") or 0.0)
+            inplay_s = max(pa_s - so_s - bb_s - hbp_s, 1.0)
+            inplay_hits_s = max(hits_s - hr_s, 0.0)
+
+            k_rate_s = _rate(so_s, pa_s, prof.k_rate)
+            bb_rate_s = _rate(bb_s, pa_s, prof.bb_rate)
+            hr_rate_s = _rate(hr_s, pa_s, prof.hr_rate)
+            inplay_hit_s = _rate(inplay_hits_s, inplay_s, prof.inplay_hit_rate)
+
+            mults = {
+                "k": _mult(k_rate_s, prof.k_rate),
+                "bb": _mult(bb_rate_s, prof.bb_rate),
+                "hr": _mult(hr_rate_s, prof.hr_rate, lo=0.6, hi=1.5),
+                "inplay": _mult(inplay_hit_s, prof.inplay_hit_rate),
+            }
+            if code == "home":
+                prof.venue_mult_home = mults
+            else:
+                prof.venue_mult_away = mults
+    except Exception:
+        return
+
+
 def build_team(team_id: int, name: str, abbr: str) -> Team:
     return Team(team_id=team_id, name=name, abbreviation=abbr)
 
@@ -842,6 +924,8 @@ def build_team_roster(
     enable_pitcher_platoon: bool = True,
     batter_platoon_alpha: float = 0.55,
     pitcher_platoon_alpha: float = 0.55,
+    batter_home_away_alpha: float = 0.35,
+    pitcher_home_away_alpha: float = 0.35,
     roster_type: str = "active",
     batter_recency_games: int = 14,
     batter_recency_weight: float = 0.15,
@@ -1635,16 +1719,28 @@ def build_team_roster(
                 if float(batter_platoon_alpha) != 1.0:
                     b.platoon_mult_vs_lhp = _shrink_mult_dict(getattr(b, "platoon_mult_vs_lhp", None), float(batter_platoon_alpha))
                     b.platoon_mult_vs_rhp = _shrink_mult_dict(getattr(b, "platoon_mult_vs_rhp", None), float(batter_platoon_alpha))
+                _apply_home_away_splits_to_batter(client, b, season)
+                if float(batter_home_away_alpha) != 1.0:
+                    b.venue_mult_home = _shrink_mult_dict(getattr(b, "venue_mult_home", None), float(batter_home_away_alpha))
+                    b.venue_mult_away = _shrink_mult_dict(getattr(b, "venue_mult_away", None), float(batter_home_away_alpha))
         if bool(enable_pitcher_platoon):
             _apply_platoon_splits_to_pitcher(client, starter, season)
             if float(pitcher_platoon_alpha) != 1.0:
                 starter.platoon_mult_vs_lhb = _shrink_mult_dict(getattr(starter, "platoon_mult_vs_lhb", None), float(pitcher_platoon_alpha))
                 starter.platoon_mult_vs_rhb = _shrink_mult_dict(getattr(starter, "platoon_mult_vs_rhb", None), float(pitcher_platoon_alpha))
+            _apply_home_away_splits_to_pitcher(client, starter, season)
+            if float(pitcher_home_away_alpha) != 1.0:
+                starter.venue_mult_home = _shrink_mult_dict(getattr(starter, "venue_mult_home", None), float(pitcher_home_away_alpha))
+                starter.venue_mult_away = _shrink_mult_dict(getattr(starter, "venue_mult_away", None), float(pitcher_home_away_alpha))
             for p in bullpen or []:
                 _apply_platoon_splits_to_pitcher(client, p, season)
                 if float(pitcher_platoon_alpha) != 1.0:
                     p.platoon_mult_vs_lhb = _shrink_mult_dict(getattr(p, "platoon_mult_vs_lhb", None), float(pitcher_platoon_alpha))
                     p.platoon_mult_vs_rhb = _shrink_mult_dict(getattr(p, "platoon_mult_vs_rhb", None), float(pitcher_platoon_alpha))
+                _apply_home_away_splits_to_pitcher(client, p, season)
+                if float(pitcher_home_away_alpha) != 1.0:
+                    p.venue_mult_home = _shrink_mult_dict(getattr(p, "venue_mult_home", None), float(pitcher_home_away_alpha))
+                    p.venue_mult_away = _shrink_mult_dict(getattr(p, "venue_mult_away", None), float(pitcher_home_away_alpha))
     except Exception:
         pass
 

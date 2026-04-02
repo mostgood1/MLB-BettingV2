@@ -815,6 +815,26 @@ def _hitter_line_history_clause(
     return f"{subject} has averaged {_format_reason_number(avg_value)} {_prop_unit_label(prop)}"
 
 
+def _history_supports_selection(
+    values: Sequence[float],
+    *,
+    selection: Optional[str] = None,
+    line_value: Optional[float] = None,
+) -> bool:
+    choice = str(selection or "").strip().lower()
+    if choice not in {"over", "under"} or line_value is None:
+        return True
+    sample = [float(value) for value in values]
+    if not sample:
+        return False
+    line = float(line_value)
+    if choice == "over":
+        hits = sum(1 for value in sample if float(value) > line)
+    else:
+        hits = sum(1 for value in sample if float(value) < line)
+    return float(hits) > (float(len(sample)) / 2.0)
+
+
 def _pitcher_recent_form_reason(
     pitcher_profile: Dict[str, Any],
     season: int,
@@ -897,6 +917,8 @@ def _hitter_recent_form_reason(
     min_samples = 3 if str(selection or "").strip().lower() in {"over", "under"} and line_value is not None else 5
     if len(values) < min_samples:
         return None
+    if not _history_supports_selection(values, selection=selection, line_value=line_value):
+        return None
     clause = _hitter_line_history_clause(
         str(prop),
         values,
@@ -935,6 +957,8 @@ def _hitter_opponent_team_reason(
     ]
     min_samples = 2 if str(selection or "").strip().lower() in {"over", "under"} and line_value is not None else 3
     if len(values) < min_samples:
+        return None
+    if not _history_supports_selection(values, selection=selection, line_value=line_value):
         return None
     opponent = str(opponent_label or "this opponent").strip()
     clause = _hitter_line_history_clause(
@@ -1394,6 +1418,8 @@ def _hitter_bvp_reason(
             return f"Against this starter, he has {homers} homers in {pa} prior plate appearances, and {caution_bits[0]}."
         return f"Against this starter, he has {homers} homers in {pa} prior plate appearances."
     elif prop_key in {"hits", "total_bases", "runs", "rbis", "rbi"}:
+        if side == "over" and not preferred_bits:
+            return None
         hit_label = "hit" if int(hits) == 1 else "hits"
         lead = f"Against this starter, he has {hits} {hit_label}"
         if homers > 0:
