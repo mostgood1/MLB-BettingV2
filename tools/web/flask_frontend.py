@@ -1617,6 +1617,18 @@ def _find_candidate_file(*, preferred: List[Path], recursive_pattern: str) -> Op
     return None
 
 
+def _find_preferred_file(preferred: Sequence[Path]) -> Optional[Path]:
+    seen: set[str] = set()
+    for p in preferred:
+        key = str(p)
+        if key in seen:
+            continue
+        seen.add(key)
+        if p.exists() and p.is_file():
+            return p
+    return None
+
+
 @lru_cache(maxsize=_JSON_FILE_CACHE_MAXSIZE)
 def _load_json_file_cached(path_str: str, mtime_ns: int, size_bytes: int) -> Optional[Dict[str, Any]]:
     try:
@@ -1926,40 +1938,31 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
 
     tracked_profile_bundle_path = tracked_daily_dir / f"daily_summary_{slug}_profile_bundle.json"
 
-    profile_bundle_path = _find_candidate_file(
-        preferred=[
-            canonical_profile_bundle_path,
-            tracked_profile_bundle_path,
-            data_dir / "_tmp_live_subcap_random_day" / f"daily_summary_{slug}_profile_bundle.json",
-            data_dir / "_tmp_live_subcap_smoke" / f"daily_summary_{slug}_profile_bundle.json",
-        ],
-        recursive_pattern=f"**/daily_summary_{slug}_profile_bundle.json",
-    )
+    profile_bundle_path = _find_preferred_file([
+        canonical_profile_bundle_path,
+        tracked_profile_bundle_path,
+        data_dir / "_tmp_live_subcap_random_day" / f"daily_summary_{slug}_profile_bundle.json",
+        data_dir / "_tmp_live_subcap_smoke" / f"daily_summary_{slug}_profile_bundle.json",
+    ])
     profile_bundle_path = _prefer_newer_file(profile_bundle_path, tracked_profile_bundle_path)
     profile_bundle = _load_json_file(profile_bundle_path)
 
-    settlement_path = _find_candidate_file(
-        preferred=[
-            canonical_daily_dir / "settlements" / f"daily_summary_{slug}_locked_policy_settlement.json",
-            tracked_daily_dir / "settlements" / f"daily_summary_{slug}_locked_policy_settlement.json",
-            data_dir / f"daily_summary_{slug}_locked_policy_settlement.json",
-        ],
-        recursive_pattern=f"**/daily_summary_{slug}_locked_policy_settlement.json",
-    )
+    settlement_path = _find_preferred_file([
+        canonical_daily_dir / "settlements" / f"daily_summary_{slug}_locked_policy_settlement.json",
+        tracked_daily_dir / "settlements" / f"daily_summary_{slug}_locked_policy_settlement.json",
+        data_dir / f"daily_summary_{slug}_locked_policy_settlement.json",
+    ])
     settlement = _load_json_file(settlement_path)
 
     tracked_locked_policy_path = tracked_daily_dir / f"daily_summary_{slug}_locked_policy.json"
 
-    locked_policy_path = _find_candidate_file(
-        preferred=[
-            canonical_locked_policy_path,
-            tracked_locked_policy_path,
-            data_dir / "_tmp_live_subcap_random_day" / f"daily_summary_{slug}_locked_policy.json",
-            data_dir / "_tmp_live_subcap_smoke" / f"daily_summary_{slug}_locked_policy.json",
-            data_dir / f"daily_summary_{slug}_locked_policy.json",
-        ],
-        recursive_pattern=f"**/daily_summary_{slug}_locked_policy.json",
-    )
+    locked_policy_path = _find_preferred_file([
+        canonical_locked_policy_path,
+        tracked_locked_policy_path,
+        data_dir / "_tmp_live_subcap_random_day" / f"daily_summary_{slug}_locked_policy.json",
+        data_dir / "_tmp_live_subcap_smoke" / f"daily_summary_{slug}_locked_policy.json",
+        data_dir / f"daily_summary_{slug}_locked_policy.json",
+    ])
     locked_policy_path = _prefer_newer_file(locked_policy_path, tracked_locked_policy_path)
     if not locked_policy_path and isinstance(profile_bundle, dict):
         locked_policy_path = _path_from_maybe_relative(
@@ -2000,10 +2003,10 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
                 snapshot_dir = candidate
 
     if not game_summary_path:
-        game_summary_path = _find_candidate_file(
-            preferred=[canonical_game_summary_path],
-            recursive_pattern=f"**/daily_summary_{slug}.json",
-        )
+        game_summary_path = _find_preferred_file([
+            canonical_game_summary_path,
+            tracked_daily_dir / f"daily_summary_{slug}.json",
+        ])
     if not sim_dir and canonical_sim_dir.exists() and canonical_sim_dir.is_dir():
         sim_dir = canonical_sim_dir
     if not snapshot_dir and canonical_snapshot_dir.exists() and canonical_snapshot_dir.is_dir():
