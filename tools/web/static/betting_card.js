@@ -254,6 +254,16 @@
     return allDays.filter((row) => String(row?.month || "") === state.monthFilter);
   }
 
+  function preferredDay(days) {
+    const rows = Array.isArray(days) ? days.filter(Boolean) : [];
+    if (!rows.length) return null;
+    for (let idx = rows.length - 1; idx >= 0; idx -= 1) {
+      const row = rows[idx] || {};
+      if (Number(row?.settled_n || 0) > 0) return row;
+    }
+    return rows[rows.length - 1] || null;
+  }
+
   function bettingMetricLabel(reco) {
     const market = String(reco?.market || "").toLowerCase();
     const prop = String(reco?.prop || "").toLowerCase();
@@ -865,7 +875,7 @@
         return;
       }
       if (!state.selectedDate || !days.some((row) => String(row?.date || "") === state.selectedDate)) {
-        state.selectedDate = String(days[days.length - 1]?.date || "");
+        state.selectedDate = String(preferredDay(days)?.date || "");
       }
       renderDays();
       await loadDay(state.selectedDate);
@@ -899,7 +909,7 @@
       renderDays();
       const visible = filteredDays();
       if (visible.length && !visible.some((row) => String(row?.date || "") === state.selectedDate)) {
-        loadDay(String(visible[visible.length - 1]?.date || ""));
+        loadDay(String(preferredDay(visible)?.date || ""));
       }
     });
   }
