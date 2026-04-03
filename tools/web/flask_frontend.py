@@ -5207,7 +5207,59 @@ def _official_betting_card_manifest_payload(
 
 
 def _official_betting_card_games_payload(date_str: str, betting_games: Dict[int, Dict[str, Any]]) -> List[Dict[str, Any]]:
-    schedule_by_game_pk = _schedule_context_by_game_pk(str(date_str))
+    def _lead_betting_row(bucket: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if not isinstance(bucket, dict):
+            return None
+        markets = bucket.get("markets") if isinstance(bucket.get("markets"), dict) else {}
+        for key in ("totals", "ml"):
+            item = markets.get(key)
+            if isinstance(item, dict):
+                return item
+        for key in ("pitcherProps", "hitterProps", "extraPitcherProps", "extraHitterProps"):
+            rows = markets.get(key) or []
+            if isinstance(rows, list):
+                for row in rows:
+                    if isinstance(row, dict):
+                        return row
+        return None
+
+    def _historical_schedule_context() -> Dict[int, Dict[str, Any]]:
+        out: Dict[int, Dict[str, Any]] = {}
+        for raw_game_pk, raw_game_betting in (betting_games or {}).items():
+            game_pk = _safe_int(raw_game_pk)
+            if not game_pk or int(game_pk) <= 0 or not isinstance(raw_game_betting, dict):
+                continue
+            lead_row = _lead_betting_row(raw_game_betting)
+            if not isinstance(lead_row, dict):
+                continue
+            game_date = str(lead_row.get("commence_time") or lead_row.get("game_date") or "")
+            away_name = _first_text(lead_row.get("away"), lead_row.get("away_abbr"), "Away")
+            home_name = _first_text(lead_row.get("home"), lead_row.get("home_abbr"), "Home")
+            away_abbr = _first_text(lead_row.get("away_abbr"), away_name, "Away")
+            home_abbr = _first_text(lead_row.get("home_abbr"), home_name, "Home")
+            out[int(game_pk)] = {
+                "gameDate": game_date,
+                "startTime": _format_start_time_local(game_date),
+                "officialDate": str(lead_row.get("date") or date_str),
+                "status": {
+                    "abstract": "Final",
+                    "detailed": "Final",
+                },
+                "away": {"id": None, "abbr": away_abbr, "name": away_name},
+                "home": {"id": None, "abbr": home_abbr, "name": home_name},
+                "score": {},
+                "probable": {
+                    "away": _normalized_probable_entry(None),
+                    "home": _normalized_probable_entry(None),
+                },
+            }
+        return out
+
+    schedule_by_game_pk = (
+        _historical_schedule_context()
+        if _is_historical_date(str(date_str))
+        else _schedule_context_by_game_pk(str(date_str))
+    )
     games_out: List[Dict[str, Any]] = []
     live_matchup_candidates: List[Tuple[int, str, Dict[str, Any]]] = []
 
