@@ -840,26 +840,37 @@ def _pitcher_recent_form_reason(
     season: int,
     prop: str,
     *,
+    selection: Optional[str] = None,
+    line_value: Optional[float] = None,
     subject_name: Optional[str] = None,
 ) -> Optional[str]:
     pitcher_id = _safe_int((pitcher_profile or {}).get("id"))
     if pitcher_id is None or int(pitcher_id) <= 0:
         return None
     logs = _recent_season_logs(int(pitcher_id), int(season), "pitching", seasons_back=1)[-5:]
-    if len(logs) < 3:
+    values = [
+        float(value)
+        for value in (
+            _history_metric_value("pitching", str(prop), (row.get("stat") or {}))
+            for row in logs
+        )
+        if value is not None
+    ]
+    min_samples = 3 if str(selection or "").strip().lower() in {"over", "under"} and line_value is not None else 3
+    if len(values) < min_samples:
         return None
-    avg_value = _average_metric_from_logs("pitching", str(prop), logs)
-    if avg_value is None:
+    if not _history_supports_selection(values, selection=selection, line_value=line_value):
         return None
+    avg_value = float(sum(values) / len(values))
     label = _prop_unit_label(str(prop))
     subject = str(subject_name or "He").strip()
     if str(prop) == "earned_runs":
         if subject.lower() == "he":
-            return f"Across his last {int(len(logs))} starts, he has allowed about {_format_reason_number(avg_value)} {label} per outing."
-        return f"Across his last {int(len(logs))} starts, {subject} has allowed about {_format_reason_number(avg_value)} {label} per outing."
+            return f"Across his last {int(len(values))} starts, he has allowed about {_format_reason_number(avg_value)} {label} per outing."
+        return f"Across his last {int(len(values))} starts, {subject} has allowed about {_format_reason_number(avg_value)} {label} per outing."
     if subject.lower() == "he":
-        return f"Across his last {int(len(logs))} starts, he has averaged {_format_reason_number(avg_value)} {label}."
-    return f"Across his last {int(len(logs))} starts, {subject} has averaged {_format_reason_number(avg_value)} {label}."
+        return f"Across his last {int(len(values))} starts, he has averaged {_format_reason_number(avg_value)} {label}."
+    return f"Across his last {int(len(values))} starts, {subject} has averaged {_format_reason_number(avg_value)} {label}."
 
 
 def _pitcher_opponent_team_reason(
@@ -869,6 +880,8 @@ def _pitcher_opponent_team_reason(
     season: int,
     prop: str,
     *,
+    selection: Optional[str] = None,
+    line_value: Optional[float] = None,
     subject_name: Optional[str] = None,
 ) -> Optional[str]:
     pitcher_id = _safe_int((pitcher_profile or {}).get("id"))
@@ -876,21 +889,30 @@ def _pitcher_opponent_team_reason(
     if pitcher_id is None or int(pitcher_id) <= 0 or opponent_id is None or int(opponent_id) <= 0:
         return None
     logs = _opponent_logs_recent_seasons(int(pitcher_id), int(season), "pitching", int(opponent_id), seasons_back=1)
-    if len(logs) < 2:
+    values = [
+        float(value)
+        for value in (
+            _history_metric_value("pitching", str(prop), (row.get("stat") or {}))
+            for row in logs
+        )
+        if value is not None
+    ]
+    min_samples = 2 if str(selection or "").strip().lower() in {"over", "under"} and line_value is not None else 2
+    if len(values) < min_samples:
         return None
-    avg_value = _average_metric_from_logs("pitching", str(prop), logs)
-    if avg_value is None:
+    if not _history_supports_selection(values, selection=selection, line_value=line_value):
         return None
+    avg_value = float(sum(values) / len(values))
     subject = str(subject_name or "He").strip()
     opponent = str(opponent_label or "this opponent").strip()
     if str(prop) == "earned_runs":
         if subject.lower() == "he":
-            return f"This season against {opponent}, he has allowed about {_format_reason_number(avg_value)} earned runs per outing across {int(len(logs))} starts."
-        return f"This season against {opponent}, {subject} has allowed about {_format_reason_number(avg_value)} earned runs per outing across {int(len(logs))} starts."
+            return f"This season against {opponent}, he has allowed about {_format_reason_number(avg_value)} earned runs per outing across {int(len(values))} starts."
+        return f"This season against {opponent}, {subject} has allowed about {_format_reason_number(avg_value)} earned runs per outing across {int(len(values))} starts."
     label = _prop_unit_label(str(prop))
     if subject.lower() == "he":
-        return f"This season against {opponent}, he has averaged {_format_reason_number(avg_value)} {label} across {int(len(logs))} starts."
-    return f"This season against {opponent}, {subject} has averaged {_format_reason_number(avg_value)} {label} across {int(len(logs))} starts."
+        return f"This season against {opponent}, he has averaged {_format_reason_number(avg_value)} {label} across {int(len(values))} starts."
+    return f"This season against {opponent}, {subject} has averaged {_format_reason_number(avg_value)} {label} across {int(len(values))} starts."
 
 
 def _hitter_recent_form_reason(
@@ -980,6 +1002,318 @@ def _append_unique_reason(reasons: List[str], value: Optional[str]) -> None:
     reasons.append(text)
 
 
+_RECOMMENDATION_BASEBALL_REASON_LIMIT = 5
+_RECOMMENDATION_REASON_SENTENCE_LIMIT = 6
+_EXPLANATION_SUPPORT_MIN_REASONS = 2
+
+
+def _selection_choice(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _safe_profile_mult(profile: Optional[Dict[str, Any]], key: str) -> Optional[float]:
+    if not isinstance(profile, dict):
+        return None
+    try:
+        value = profile.get(key)
+        return float(value) if value is not None else None
+    except Exception:
+        return None
+
+
+def _weighted_pitch_metric(profile: Dict[str, Any], metric_key: str) -> Optional[float]:
+    arsenal = profile.get("arsenal") if isinstance(profile, dict) else None
+    metric_map = profile.get(metric_key) if isinstance(profile, dict) else None
+    if not isinstance(arsenal, dict) or not isinstance(metric_map, dict):
+        return None
+    weighted = 0.0
+    denom = 0.0
+    for raw_pitch, raw_share in arsenal.items():
+        try:
+            pitch = str(raw_pitch).strip().upper()
+            share = float(raw_share)
+            metric = float(metric_map.get(pitch, 1.0))
+        except Exception:
+            continue
+        if not pitch or share <= 0.0:
+            continue
+        weighted += float(share) * float(metric)
+        denom += float(share)
+    if denom <= 0.0:
+        return None
+    return float(weighted / denom)
+
+
+def _trim_reason_list(reasons: Sequence[str]) -> List[str]:
+    limit = max(1, int(_RECOMMENDATION_BASEBALL_REASON_LIMIT))
+    cleaned = [str(reason or "").strip() for reason in reasons if str(reason or "").strip()]
+    return cleaned[:limit]
+
+
+def _recommendation_subject_label(row: Dict[str, Any]) -> str:
+    for key in ("player_name", "pitcher_name"):
+        value = str(row.get(key) or "").strip()
+        if value:
+            return value
+    away = str(row.get("away_abbr") or row.get("away") or "").strip()
+    home = str(row.get("home_abbr") or row.get("home") or "").strip()
+    if away and home:
+        return f"{away} @ {home}"
+    return str(row.get("market_label") or row.get("market") or "pick").strip() or "pick"
+
+
+def _recommendation_market_label(row: Dict[str, Any]) -> str:
+    market = str(row.get("market") or "").strip().lower()
+    if market == "pitcher_props":
+        prop = str(row.get("prop") or "").strip().replace("_", " ")
+        return f"pitcher_props:{prop}" if prop else "pitcher_props"
+    if market in {"hitter_home_runs", "hitter_hits", "hitter_total_bases", "hitter_runs", "hitter_rbis"}:
+        return market
+    return market or "unknown"
+
+
+def _explanation_diagnostic(
+    row: Dict[str, Any],
+    reasons: Sequence[str],
+    baseball_reasons: Sequence[str],
+) -> Dict[str, Any]:
+    baseball_reason_list = [str(reason or "").strip() for reason in baseball_reasons if str(reason or "").strip()]
+    total_reasons = [str(reason or "").strip() for reason in reasons if str(reason or "").strip()]
+    baseball_reason_count = int(len(baseball_reason_list))
+    if baseball_reason_count >= 3:
+        status = "strong"
+    elif baseball_reason_count >= int(_EXPLANATION_SUPPORT_MIN_REASONS):
+        status = "supported"
+    elif baseball_reason_count == 1:
+        status = "thin"
+    else:
+        status = "none"
+    return {
+        "status": status,
+        "flag_sparse_support": baseball_reason_count < int(_EXPLANATION_SUPPORT_MIN_REASONS),
+        "support_min_reasons": int(_EXPLANATION_SUPPORT_MIN_REASONS),
+        "baseball_reasons_n": baseball_reason_count,
+        "reason_sentences_n": int(len(total_reasons)),
+        "market": _recommendation_market_label(row),
+        "subject": _recommendation_subject_label(row),
+        "supporting_reasons": baseball_reason_list,
+    }
+
+
+def _collect_card_explanation_diagnostics(markets: Dict[str, Any]) -> Dict[str, Any]:
+    status_counts: Dict[str, int] = {"strong": 0, "supported": 0, "thin": 0, "none": 0}
+    market_rows: Dict[str, List[Dict[str, Any]]] = {}
+
+    for market_name, market_payload in (markets or {}).items():
+        if not isinstance(market_payload, dict):
+            continue
+        rows = market_payload.get("recommendations")
+        if not isinstance(rows, list):
+            continue
+        collected: List[Dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            diagnostic = row.get("explanation_diagnostic")
+            if not isinstance(diagnostic, dict):
+                continue
+            status = str(diagnostic.get("status") or "").strip().lower()
+            if status in status_counts:
+                status_counts[status] += 1
+            collected.append(row)
+        market_rows[str(market_name)] = collected
+
+    selected_rows_n = int(sum(len(rows) for rows in market_rows.values()))
+    sparse_examples: List[Dict[str, Any]] = []
+    markets_summary: Dict[str, Any] = {}
+    sparse_total = 0
+
+    for market_name, rows in market_rows.items():
+        sparse_rows = []
+        for row in rows:
+            diagnostic = row.get("explanation_diagnostic") or {}
+            if bool(diagnostic.get("flag_sparse_support")):
+                sparse_rows.append(row)
+        sparse_total += int(len(sparse_rows))
+        markets_summary[market_name] = {
+            "selected_n": int(len(rows)),
+            "sparse_support_n": int(len(sparse_rows)),
+            "status_counts": {
+                key: int(
+                    sum(
+                        1
+                        for row in rows
+                        if str(((row.get("explanation_diagnostic") or {}).get("status") or "")).strip().lower() == key
+                    )
+                )
+                for key in status_counts.keys()
+            },
+            "examples": [
+                {
+                    "subject": str(((row.get("explanation_diagnostic") or {}).get("subject") or _recommendation_subject_label(row))),
+                    "selection": str(row.get("selection") or ""),
+                    "market": str(((row.get("explanation_diagnostic") or {}).get("market") or _recommendation_market_label(row))),
+                    "baseball_reasons_n": int(((row.get("explanation_diagnostic") or {}).get("baseball_reasons_n") or 0)),
+                    "reason_summary": str(row.get("reason_summary") or ""),
+                }
+                for row in sparse_rows[:3]
+            ],
+        }
+        for row in sparse_rows:
+            if len(sparse_examples) >= 10:
+                break
+            sparse_examples.append(
+                {
+                    "subject": str(((row.get("explanation_diagnostic") or {}).get("subject") or _recommendation_subject_label(row))),
+                    "selection": str(row.get("selection") or ""),
+                    "market": str(((row.get("explanation_diagnostic") or {}).get("market") or _recommendation_market_label(row))),
+                    "baseball_reasons_n": int(((row.get("explanation_diagnostic") or {}).get("baseball_reasons_n") or 0)),
+                    "reason_summary": str(row.get("reason_summary") or ""),
+                }
+            )
+
+    return {
+        "selected_rows_n": int(selected_rows_n),
+        "sparse_support_n": int(sparse_total),
+        "sparse_support_rate": (float(sparse_total) / float(selected_rows_n)) if selected_rows_n > 0 else 0.0,
+        "support_min_reasons": int(_EXPLANATION_SUPPORT_MIN_REASONS),
+        "status_counts": {key: int(value) for key, value in status_counts.items()},
+        "markets": markets_summary,
+        "sparse_support_examples": sparse_examples,
+    }
+
+
+def _row_explanation_diagnostic(row: Dict[str, Any]) -> Dict[str, Any]:
+    diagnostic = row.get("explanation_diagnostic") if isinstance(row, dict) else None
+    if isinstance(diagnostic, dict):
+        return diagnostic
+    baseball_reasons = _trim_reason_list((row or {}).get("baseball_reasons") or [])
+    reasons = _build_recommendation_reasons({**(row or {}), "baseball_reasons": baseball_reasons}) if isinstance(row, dict) else []
+    return _explanation_diagnostic((row or {}), reasons, baseball_reasons)
+
+
+def _filter_playable_candidates_by_support(
+    rows: Sequence[Dict[str, Any]],
+    *,
+    market_name: str,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    kept: List[Dict[str, Any]] = []
+    removed: List[Dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        diagnostic = _row_explanation_diagnostic(row)
+        if bool(diagnostic.get("flag_sparse_support")):
+            removed.append(row)
+        else:
+            kept.append(row)
+    audit = {
+        "market": str(market_name),
+        "evaluated_n": int(len([row for row in rows if isinstance(row, dict)])),
+        "kept_n": int(len(kept)),
+        "removed_sparse_support_n": int(len(removed)),
+        "removed_examples": [
+            {
+                "subject": str((_row_explanation_diagnostic(row).get("subject") or _recommendation_subject_label(row))),
+                "selection": str(row.get("selection") or ""),
+                "market": str((_row_explanation_diagnostic(row).get("market") or _recommendation_market_label(row))),
+                "baseball_reasons_n": int((_row_explanation_diagnostic(row).get("baseball_reasons_n") or 0)),
+                "reason_summary": str(row.get("reason_summary") or ""),
+            }
+            for row in removed[:5]
+        ],
+    }
+    return kept, audit
+
+
+def _filter_candidates_by_support(
+    rows: Sequence[Dict[str, Any]],
+    *,
+    market_name: str,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    kept: List[Dict[str, Any]] = []
+    removed: List[Dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        diagnostic = _row_explanation_diagnostic(row)
+        if bool(diagnostic.get("flag_sparse_support")):
+            removed.append(row)
+        else:
+            kept.append(row)
+    audit = {
+        "market": str(market_name),
+        "evaluated_n": int(len([row for row in rows if isinstance(row, dict)])),
+        "kept_n": int(len(kept)),
+        "removed_sparse_support_n": int(len(removed)),
+        "removed_examples": [
+            {
+                "subject": str((_row_explanation_diagnostic(row).get("subject") or _recommendation_subject_label(row))),
+                "selection": str(row.get("selection") or ""),
+                "market": str((_row_explanation_diagnostic(row).get("market") or _recommendation_market_label(row))),
+                "baseball_reasons_n": int((_row_explanation_diagnostic(row).get("baseball_reasons_n") or 0)),
+                "reason_summary": str(row.get("reason_summary") or ""),
+            }
+            for row in removed[:5]
+        ],
+    }
+    return kept, audit
+
+
+def _audit_selected_support_policy(
+    *,
+    market_name: str,
+    baseline_selected: Sequence[Dict[str, Any]],
+    final_selected: Sequence[Dict[str, Any]],
+) -> Dict[str, Any]:
+    baseline_ids = Counter(_candidate_row_id(row) for row in baseline_selected if isinstance(row, dict))
+    final_ids = Counter(_candidate_row_id(row) for row in final_selected if isinstance(row, dict))
+    displaced: List[Dict[str, Any]] = []
+    replaced_n = 0
+
+    for row in final_selected:
+        if not isinstance(row, dict):
+            continue
+        row_id = _candidate_row_id(row)
+        if baseline_ids.get(row_id, 0) > 0:
+            baseline_ids[row_id] -= 1
+        else:
+            replaced_n += 1
+
+    for row in baseline_selected:
+        if not isinstance(row, dict):
+            continue
+        row_id = _candidate_row_id(row)
+        if final_ids.get(row_id, 0) > 0:
+            final_ids[row_id] -= 1
+            continue
+        diagnostic = _row_explanation_diagnostic(row)
+        if bool(diagnostic.get("flag_sparse_support")):
+            displaced.append(row)
+
+    return {
+        "market": str(market_name),
+        "support_min_reasons": int(_EXPLANATION_SUPPORT_MIN_REASONS),
+        "baseline_selected_n": int(len([row for row in baseline_selected if isinstance(row, dict)])),
+        "final_selected_n": int(len([row for row in final_selected if isinstance(row, dict)])),
+        "removed_sparse_support_n": int(len(displaced)),
+        "replacement_added_n": int(replaced_n),
+        "selection_shortfall_n": int(
+            max(0, len([row for row in baseline_selected if isinstance(row, dict)]) - len([row for row in final_selected if isinstance(row, dict)]))
+        ),
+        "removed_examples": [
+            {
+                "subject": str((_row_explanation_diagnostic(row).get("subject") or _recommendation_subject_label(row))),
+                "selection": str(row.get("selection") or ""),
+                "market": str((_row_explanation_diagnostic(row).get("market") or _recommendation_market_label(row))),
+                "baseball_reasons_n": int((_row_explanation_diagnostic(row).get("baseball_reasons_n") or 0)),
+                "reason_summary": str(row.get("reason_summary") or ""),
+            }
+            for row in displaced[:5]
+        ],
+    }
+
+
 _PITCH_TYPE_REASON_LABELS = {
     "FF": "four-seam fastball",
     "SI": "sinker",
@@ -1013,7 +1347,14 @@ def _join_reason_labels(labels: Sequence[str]) -> str:
     return ", ".join(cleaned[:-1]) + f", and {cleaned[-1]}"
 
 
-def _pitch_mix_reason(profile: Dict[str, Any]) -> Optional[str]:
+def _pitch_mix_reason(
+    profile: Dict[str, Any],
+    *,
+    prop: Optional[str] = None,
+    selection: Optional[str] = None,
+) -> Optional[str]:
+    prop_key = str(prop or "").strip().lower()
+    choice = _selection_choice(selection)
     arsenal = profile.get("arsenal")
     if not isinstance(arsenal, dict) or not arsenal:
         return None
@@ -1033,6 +1374,33 @@ def _pitch_mix_reason(profile: Dict[str, Any]) -> Optional[str]:
     top = parts[:3]
     pitch_names = [_pitch_type_reason_label(pitch) for pitch, _ in top]
     lead_share = float(top[0][1]) if top else 0.0
+    whiff_score = _weighted_pitch_metric(profile, "pitch_type_whiff_mult")
+    inplay_score = _weighted_pitch_metric(profile, "pitch_type_inplay_mult")
+
+    if choice in {"over", "under"}:
+        if prop_key == "strikeouts":
+            if choice == "over" and whiff_score is not None and whiff_score >= 1.03:
+                return f"His primary mix of { _join_reason_labels(pitch_names) } is still generating more swing-and-miss than baseline."
+            if choice == "under" and whiff_score is not None and whiff_score <= 0.97:
+                return f"His main mix of { _join_reason_labels(pitch_names) } is grading lighter on swing-and-miss than his baseline."
+            return None
+        if prop_key == "outs":
+            if choice == "over" and inplay_score is not None and inplay_score <= 0.97:
+                return f"The contact profile on his { _join_reason_labels(pitch_names) } points to a slightly cleaner path to quick outs."
+            if choice == "over" and whiff_score is not None and whiff_score >= 1.03:
+                return f"His mix of { _join_reason_labels(pitch_names) } is still missing enough bats to help him work deeper into the outing."
+            if choice == "under" and inplay_score is not None and inplay_score >= 1.03:
+                return f"The contact profile on his { _join_reason_labels(pitch_names) } is allowing a bit more quality contact than usual, which can shorten the outing."
+            if choice == "under" and whiff_score is not None and whiff_score <= 0.97:
+                return f"His main mix of { _join_reason_labels(pitch_names) } is not carrying the usual bat-missing support for a long outing."
+            return None
+        if prop_key == "earned_runs":
+            if choice == "over" and inplay_score is not None and inplay_score >= 1.03:
+                return f"His pitch mix of { _join_reason_labels(pitch_names) } is giving hitters a slightly friendlier contact look than baseline."
+            if choice == "under" and inplay_score is not None and inplay_score <= 0.97:
+                return f"His pitch mix of { _join_reason_labels(pitch_names) } is still suppressing contact quality a bit better than baseline."
+            return None
+
     if lead_share >= 0.45:
         return f"He leans heavily on his {pitch_names[0]}, with { _join_reason_labels(pitch_names[1:]) } working as the main support." if len(pitch_names) > 1 else f"He leans heavily on his {pitch_names[0]}."
     return f"He mixes { _join_reason_labels(pitch_names) } often enough that hitters have to cover multiple looks."
@@ -1041,6 +1409,9 @@ def _pitch_mix_reason(profile: Dict[str, Any]) -> Optional[str]:
 def _opponent_lineup_reason(
     pitcher_profile: Dict[str, Any],
     opponent_lineup: List[Dict[str, Any]],
+    *,
+    prop: Optional[str] = None,
+    selection: Optional[str] = None,
 ) -> Optional[str]:
     if not isinstance(opponent_lineup, list) or not opponent_lineup:
         return None
@@ -1128,6 +1499,9 @@ def _opponent_lineup_reason(
         if count > 0:
             mix_avg = float(weighted_sum / float(count))
 
+    choice = _selection_choice(selection)
+    prop_key = str(prop or "").strip().lower()
+
     handedness_bits: List[str] = []
     if bats.get("L"):
         handedness_bits.append(f"{int(bats['L'])} left-handed")
@@ -1135,41 +1509,121 @@ def _opponent_lineup_reason(
         handedness_bits.append(f"{int(bats['R'])} right-handed")
     if bats.get("S"):
         handedness_bits.append(f"{int(bats['S'])} switch-hitting")
-    handedness_sentence = ""
     handedness_label = _join_reason_labels(handedness_bits)
-    if handedness_label:
-        handedness_sentence = f"The opposing lineup is mostly {handedness_label}."
 
-    matchup_bits: List[str] = []
-    if mix_avg is not None:
-        if mix_avg <= 0.97:
-            matchup_bits.append("That group grades a little below average against this pitch mix")
-        elif mix_avg >= 1.03:
-            matchup_bits.append("That group grades a little better than average against this pitch mix")
-        else:
-            matchup_bits.append("That group looks fairly neutral against this pitch mix")
-    if k_mult is not None:
-        if k_mult >= 1.03:
-            matchup_bits.append("the handedness split gives him a small strikeout boost")
-        elif k_mult <= 0.97:
-            matchup_bits.append("the handedness split trims some strikeout upside")
-    if hr_mult is not None:
-        if hr_mult <= 0.97:
-            matchup_bits.append("the power risk also comes in a bit lower than average")
-        elif hr_mult >= 1.03:
-            matchup_bits.append("the power risk is a little higher than average")
+    supportive_bits: List[str] = []
+    if prop_key == "strikeouts":
+        if choice == "over":
+            if mix_avg is not None and mix_avg <= 0.97:
+                supportive_bits.append("this projected lineup grades a bit below average against his mix")
+            if k_mult is not None and k_mult >= 1.03:
+                supportive_bits.append("the handedness split adds some strikeout lift")
+        elif choice == "under":
+            if mix_avg is not None and mix_avg >= 1.03:
+                supportive_bits.append("this projected lineup grades better than average against his mix")
+            if k_mult is not None and k_mult <= 0.97:
+                supportive_bits.append("the handedness split trims some strikeout upside")
+    elif prop_key == "earned_runs":
+        if choice == "over":
+            if mix_avg is not None and mix_avg >= 1.03:
+                supportive_bits.append("this projected lineup looks a little stronger than average against his mix")
+            if hr_mult is not None and hr_mult >= 1.03:
+                supportive_bits.append("the power risk comes in a little hotter than baseline")
+        elif choice == "under":
+            if mix_avg is not None and mix_avg <= 0.97:
+                supportive_bits.append("this projected lineup grades a little below average against his mix")
+            if hr_mult is not None and hr_mult <= 0.97:
+                supportive_bits.append("the power risk also comes in lighter than baseline")
+    elif prop_key == "outs":
+        if choice == "over":
+            if mix_avg is not None and mix_avg <= 0.97:
+                supportive_bits.append("this projected lineup grades a little below average against his mix")
+            if hr_mult is not None and hr_mult <= 0.97:
+                supportive_bits.append("the damage profile is lighter than average")
+        elif choice == "under":
+            if mix_avg is not None and mix_avg >= 1.03:
+                supportive_bits.append("this projected lineup grades better than average against his mix")
+            if hr_mult is not None and hr_mult >= 1.03:
+                supportive_bits.append("the damage profile is a bit hotter than average")
 
-    matchup_sentence = ""
-    if matchup_bits:
-        first = matchup_bits[0]
-        rest = matchup_bits[1:]
-        if rest:
-            matchup_sentence = first + ", and " + ", and ".join(rest) + "."
-        else:
-            matchup_sentence = first + "."
+    if not supportive_bits:
+        return None
 
-    combined = " ".join(part for part in (handedness_sentence, matchup_sentence) if part)
-    return combined.strip() or None
+    lead = f"The projected lineup is mostly {handedness_label}" if handedness_label else "The projected lineup"
+    first = supportive_bits[0]
+    rest = supportive_bits[1:]
+    sentence = f"{lead}, and {first}"
+    if rest:
+        sentence += ", while " + ", while ".join(rest)
+    return sentence + "."
+
+
+def _pitcher_statcast_quality_reason(
+    pitcher_profile: Dict[str, Any],
+    *,
+    prop: Optional[str] = None,
+    selection: Optional[str] = None,
+) -> Optional[str]:
+    quality = pitcher_profile.get("statcast_quality_mult") if isinstance(pitcher_profile, dict) else None
+    if not isinstance(quality, dict):
+        return None
+    prop_key = str(prop or "").strip().lower()
+    choice = _selection_choice(selection)
+    k_mult = _safe_profile_mult(quality, "k")
+    bb_mult = _safe_profile_mult(quality, "bb")
+    hr_mult = _safe_profile_mult(quality, "hr")
+    inplay_mult = _safe_profile_mult(quality, "inplay")
+
+    if prop_key == "strikeouts":
+        if choice == "over" and k_mult is not None and k_mult >= 1.03:
+            return "His underlying bat-missing quality is still grading above baseline, which supports the strikeout ceiling."
+        if choice == "under" and k_mult is not None and k_mult <= 0.97:
+            return "His underlying bat-missing quality is grading a bit lighter than baseline, which supports the lower strikeout path."
+        return None
+    if prop_key == "earned_runs":
+        if choice == "over" and ((hr_mult is not None and hr_mult >= 1.03) or (inplay_mult is not None and inplay_mult >= 1.03)):
+            return "The underlying contact-quality profile is allowing a little more damage than baseline, which raises the run-risk case."
+        if choice == "under" and ((hr_mult is not None and hr_mult <= 0.97) or (inplay_mult is not None and inplay_mult <= 0.97)):
+            return "The underlying contact-quality profile is keeping damage a bit lighter than baseline, which supports the run suppression case."
+        return None
+    if prop_key == "outs":
+        if choice == "over" and ((bb_mult is not None and bb_mult <= 0.97) or (inplay_mult is not None and inplay_mult <= 0.97)):
+            return "His underlying profile is still limiting free passes and noisy contact enough to help the workload case."
+        if choice == "under" and ((bb_mult is not None and bb_mult >= 1.03) or (inplay_mult is not None and inplay_mult >= 1.03)):
+            return "His underlying profile is carrying a bit more traffic than baseline, which can shorten the outing."
+        return None
+    return None
+
+
+def _pitcher_workload_reason(
+    pitcher_profile: Dict[str, Any],
+    *,
+    prop: Optional[str] = None,
+    selection: Optional[str] = None,
+) -> Optional[str]:
+    prop_key = str(prop or "").strip().lower()
+    if prop_key not in {"strikeouts", "outs"}:
+        return None
+    choice = _selection_choice(selection)
+    stamina = _safe_int((pitcher_profile or {}).get("stamina_pitches"))
+    availability = None
+    try:
+        raw_availability = (pitcher_profile or {}).get("availability_mult")
+        availability = float(raw_availability) if raw_availability is not None else None
+    except Exception:
+        availability = None
+
+    if choice == "over":
+        if stamina is not None and int(stamina) >= 90:
+            return f"His starter leash still looks solid at roughly {int(stamina)} pitches, which keeps the volume path available."
+        if availability is not None and availability >= 1.03:
+            return "The availability and usage profile still point to a full starter workload."
+    elif choice == "under":
+        if stamina is not None and int(stamina) <= 82:
+            return f"The expected leash is closer to {int(stamina)} pitches than a deep-workload profile, which supports the shorter outing path."
+        if availability is not None and availability <= 0.95:
+            return "The availability signal is a bit lighter than a true full-workload starter profile."
+    return None
 
 
 def _pitcher_bvp_reason(
@@ -1253,7 +1707,13 @@ def _pitcher_bvp_reason(
     return sentence + "."
 
 
-def _hitter_pitch_mix_reason(batter_profile: Dict[str, Any], pitcher_profile: Dict[str, Any]) -> Optional[str]:
+def _hitter_pitch_mix_reason(
+    batter_profile: Dict[str, Any],
+    pitcher_profile: Dict[str, Any],
+    *,
+    prop: Optional[str] = None,
+    selection: Optional[str] = None,
+) -> Optional[str]:
     vs_pitch_type = batter_profile.get("vs_pitch_type") if isinstance(batter_profile, dict) else None
     arsenal = pitcher_profile.get("arsenal") if isinstance(pitcher_profile, dict) else None
     if not isinstance(vs_pitch_type, dict) or not isinstance(arsenal, dict):
@@ -1290,18 +1750,30 @@ def _hitter_pitch_mix_reason(batter_profile: Dict[str, Any], pitcher_profile: Di
         if share >= 0.12 and mult <= 0.95
     ][:2]
 
+    choice = _selection_choice(selection)
+    prop_key = _normalized_hitter_history_prop(prop)
     if mix_score >= 1.04:
-        if strong:
-            return f"His profile lines up well with this starter's { _join_reason_labels(strong) }, so the overall pitch mix looks favorable for hard contact." 
-        return "His profile matches this starter's mix well enough to give the at-bat quality a small boost."
+        if choice in {"", "over"}:
+            if strong:
+                return f"His profile lines up well with this starter's { _join_reason_labels(strong) }, so the overall pitch mix looks favorable for hard contact."
+            return "His profile matches this starter's mix well enough to give the at-bat quality a small boost."
+        return None
     if mix_score <= 0.96:
-        if weak:
-            return f"The tougher part of this matchup is the starter's { _join_reason_labels(weak) }, which pulls the pitch-mix look a bit below his usual baseline." 
-        return "The starter's pitch mix grades a little less favorable than this hitter's usual baseline."
+        if choice == "under" and prop_key in {"hits", "total_bases", "runs", "rbis", "rbi", "home_runs"}:
+            if weak:
+                return f"The tougher part of this matchup is the starter's { _join_reason_labels(weak) }, which pulls the pitch-mix look below his usual baseline."
+            return "The starter's pitch mix grades a little less favorable than this hitter's usual baseline."
+        return None
     return None
 
 
-def _hitter_platoon_reason(batter_profile: Dict[str, Any], pitcher_profile: Dict[str, Any]) -> Optional[str]:
+def _hitter_platoon_reason(
+    batter_profile: Dict[str, Any],
+    pitcher_profile: Dict[str, Any],
+    *,
+    prop: Optional[str] = None,
+    selection: Optional[str] = None,
+) -> Optional[str]:
     if not isinstance(batter_profile, dict) or not isinstance(pitcher_profile, dict):
         return None
     throw_hand = str(pitcher_profile.get("throw") or pitcher_profile.get("handedness") or "").strip().upper()
@@ -1328,10 +1800,57 @@ def _hitter_platoon_reason(batter_profile: Dict[str, Any], pitcher_profile: Dict
     except Exception:
         k_v = None
 
+    choice = _selection_choice(selection)
+    prop_key = _normalized_hitter_history_prop(prop)
+
     if (inplay_v is not None and inplay_v >= 1.05) or (hr_v is not None and hr_v >= 1.05):
-        return f"The handedness matchup leans his way here, with his expected damage against {throw_hand}-handed pitching grading above baseline."
+        if choice in {"", "over"}:
+            return f"The handedness matchup leans his way here, with his expected damage against {throw_hand}-handed pitching grading above baseline."
+        return None
     if (inplay_v is not None and inplay_v <= 0.95) or (k_v is not None and k_v >= 1.05):
-        return f"The handedness matchup is a little tougher than usual, so this spot comes with more swing-and-miss risk against {throw_hand}-handed pitching."
+        if choice == "under" and prop_key in {"hits", "total_bases", "runs", "rbis", "rbi", "home_runs"}:
+            return f"The handedness matchup is a little tougher than usual, so this spot comes with more swing-and-miss risk against {throw_hand}-handed pitching."
+        return None
+    return None
+
+
+def _hitter_statcast_quality_reason(
+    batter_profile: Dict[str, Any],
+    *,
+    prop: Optional[str] = None,
+    selection: Optional[str] = None,
+) -> Optional[str]:
+    quality = batter_profile.get("statcast_quality_mult") if isinstance(batter_profile, dict) else None
+    if not isinstance(quality, dict):
+        return None
+    prop_key = _normalized_hitter_history_prop(prop)
+    choice = _selection_choice(selection)
+    k_mult = _safe_profile_mult(quality, "k")
+    hr_mult = _safe_profile_mult(quality, "hr")
+    inplay_mult = _safe_profile_mult(quality, "inplay")
+
+    if prop_key == "home_runs":
+        if choice == "over" and hr_mult is not None and hr_mult >= 1.03:
+            return "His underlying batted-ball quality is still running strong enough to keep the home-run path live."
+        if choice == "under" and hr_mult is not None and hr_mult <= 0.97:
+            return "His underlying damage quality is a bit lighter than baseline, which supports the lower home-run path."
+        return None
+
+    if prop_key in {"hits", "total_bases", "runs", "rbis", "rbi"}:
+        if choice == "over":
+            if inplay_mult is not None and inplay_mult >= 1.03:
+                return "His underlying contact quality is grading above baseline, which supports the production side of the prop."
+            if k_mult is not None and k_mult <= 0.97:
+                return "His underlying strikeout risk is running below baseline, which helps the ball-in-play volume case."
+            if hr_mult is not None and hr_mult >= 1.03 and prop_key in {"total_bases", "runs", "rbis", "rbi"}:
+                return "His underlying damage quality is strong enough to support the extra-base production path."
+        elif choice == "under":
+            if inplay_mult is not None and inplay_mult <= 0.97:
+                return "His underlying contact quality is coming in a bit lighter than baseline, which supports the under path."
+            if k_mult is not None and k_mult >= 1.03:
+                return "His underlying strikeout pressure is elevated enough to support the lower-volume outcome."
+            if hr_mult is not None and hr_mult <= 0.97 and prop_key in {"total_bases", "runs", "rbis", "rbi"}:
+                return "His underlying damage quality is lighter than baseline, which trims the extra-base ceiling."
     return None
 
 
@@ -1493,7 +2012,7 @@ def _lookup_hitter_matchup_context(
     }
 
 
-def _reason_paragraph(reasons: Sequence[str], *, max_sentences: int = 3) -> str:
+def _reason_paragraph(reasons: Sequence[str], *, max_sentences: int = _RECOMMENDATION_REASON_SENTENCE_LIMIT) -> str:
     cleaned = [str(item or "").strip() for item in reasons if str(item or "").strip()]
     if not cleaned:
         return ""
@@ -1560,8 +2079,10 @@ def _build_recommendation_reasons(row: Dict[str, Any]) -> List[str]:
 
 def _annotate_recommendation(row: Dict[str, Any]) -> Dict[str, Any]:
     item = dict(row)
+    baseball_reasons = _trim_reason_list(item.get("baseball_reasons") or [])
+    item["baseball_reasons"] = list(baseball_reasons)
     reasons = _build_recommendation_reasons(item)
-    item.pop("baseball_reasons", None)
+    item["explanation_diagnostic"] = _explanation_diagnostic(item, reasons, baseball_reasons)
     if reasons:
         paragraph = _reason_paragraph(reasons)
         item["reasons"] = ([paragraph] if paragraph else reasons)
@@ -1780,28 +2301,46 @@ def _collect_game_recommendations(sim_dir: Path, game_lines_path: Path, policy: 
                                     opponent_label,
                                     int(season_value),
                                     "earned_runs",
+                                    selection=selection,
                                     subject_name=subject_name,
                                 ),
                             )
                             _append_unique_reason(totals_reasons, _pitcher_bvp_reason(pitcher_profile, opponent_lineup))
-                            if len(totals_reasons) >= 2:
-                                break
-                    if not totals_reasons and isinstance(roster_snapshot, dict):
-                        for pitcher_side in ("home", "away"):
-                            side_doc = roster_snapshot.get(pitcher_side) if isinstance(roster_snapshot.get(pitcher_side), dict) else {}
-                            pitcher_profile = side_doc.get("starter_profile") if isinstance(side_doc.get("starter_profile"), dict) else {}
-                            subject_name = str(pitcher_profile.get("name") or "").strip() or None
                             _append_unique_reason(
                                 totals_reasons,
                                 _pitcher_recent_form_reason(
                                     pitcher_profile,
                                     int(season_value),
                                     "earned_runs",
+                                    selection=selection,
                                     subject_name=subject_name,
                                 ),
                             )
-                            if len(totals_reasons) >= 2:
-                                break
+                            _append_unique_reason(
+                                totals_reasons,
+                                _pitcher_statcast_quality_reason(
+                                    pitcher_profile,
+                                    prop="earned_runs",
+                                    selection=selection,
+                                ),
+                            )
+                            _append_unique_reason(
+                                totals_reasons,
+                                _pitch_mix_reason(
+                                    pitcher_profile,
+                                    prop="earned_runs",
+                                    selection=selection,
+                                ),
+                            )
+                            _append_unique_reason(
+                                totals_reasons,
+                                _opponent_lineup_reason(
+                                    pitcher_profile,
+                                    opponent_lineup,
+                                    prop="earned_runs",
+                                    selection=selection,
+                                ),
+                            )
                     out["totals"].append(
                         _annotate_recommendation(
                             {
@@ -1824,7 +2363,7 @@ def _collect_game_recommendations(sim_dir: Path, game_lines_path: Path, policy: 
                                 "market_no_vig_prob": no_vig_over_prob(
                                     totals_market.get("over_odds"), totals_market.get("under_odds")
                                 ),
-                                "baseball_reasons": totals_reasons,
+                                "baseball_reasons": _trim_reason_list(totals_reasons),
                             }
                         )
                     )
@@ -1863,20 +2402,46 @@ def _collect_game_recommendations(sim_dir: Path, game_lines_path: Path, policy: 
                             opponent_label,
                             int(season_value),
                             "earned_runs",
+                            selection="under",
                             subject_name=subject_name,
                         ),
                     )
                     _append_unique_reason(ml_reasons, _pitcher_bvp_reason(pitcher_profile, opponent_lineup))
-                    if not ml_reasons:
-                        _append_unique_reason(
-                            ml_reasons,
-                            _pitcher_recent_form_reason(
-                                pitcher_profile,
-                                int(season_value),
-                                "earned_runs",
-                                subject_name=subject_name,
-                            ),
-                        )
+                    _append_unique_reason(
+                        ml_reasons,
+                        _pitcher_recent_form_reason(
+                            pitcher_profile,
+                            int(season_value),
+                            "earned_runs",
+                            selection="under",
+                            subject_name=subject_name,
+                        ),
+                    )
+                    _append_unique_reason(
+                        ml_reasons,
+                        _pitcher_statcast_quality_reason(
+                            pitcher_profile,
+                            prop="earned_runs",
+                            selection="under",
+                        ),
+                    )
+                    _append_unique_reason(
+                        ml_reasons,
+                        _pitch_mix_reason(
+                            pitcher_profile,
+                            prop="earned_runs",
+                            selection="under",
+                        ),
+                    )
+                    _append_unique_reason(
+                        ml_reasons,
+                        _opponent_lineup_reason(
+                            pitcher_profile,
+                            opponent_lineup,
+                            prop="earned_runs",
+                            selection="under",
+                        ),
+                    )
                 out["ml"].append(
                     _annotate_recommendation(
                         {
@@ -1890,7 +2455,7 @@ def _collect_game_recommendations(sim_dir: Path, game_lines_path: Path, policy: 
                             "market_no_vig_prob": side_pick.get("market_no_vig_prob"),
                             "odds": side_pick.get("odds"),
                             "stake_u": float(DEFAULT_STANDARD_STAKE_U),
-                            "baseball_reasons": ml_reasons,
+                            "baseball_reasons": _trim_reason_list(ml_reasons),
                         }
                     )
                 )
@@ -2299,10 +2864,32 @@ def _collect_hitter_recommendations(
                         ),
                     )
                 if isinstance(batter_profile, dict) and isinstance(pitcher_profile, dict):
-                    if len(reason_items) < 2:
-                        _append_unique_reason(reason_items, _hitter_pitch_mix_reason(batter_profile, pitcher_profile))
-                    if len(reason_items) < 2:
-                        _append_unique_reason(reason_items, _hitter_platoon_reason(batter_profile, pitcher_profile))
+                    _append_unique_reason(
+                        reason_items,
+                        _hitter_pitch_mix_reason(
+                            batter_profile,
+                            pitcher_profile,
+                            prop=str(market_key),
+                            selection=str(side_pick.get("selection") or ""),
+                        ),
+                    )
+                    _append_unique_reason(
+                        reason_items,
+                        _hitter_platoon_reason(
+                            batter_profile,
+                            pitcher_profile,
+                            prop=str(market_key),
+                            selection=str(side_pick.get("selection") or ""),
+                        ),
+                    )
+                    _append_unique_reason(
+                        reason_items,
+                        _hitter_statcast_quality_reason(
+                            batter_profile,
+                            prop=str(market_key),
+                            selection=str(side_pick.get("selection") or ""),
+                        ),
+                    )
                 rows.append(
                     _annotate_recommendation(
                         {
@@ -2336,7 +2923,7 @@ def _collect_hitter_recommendations(
                             "market_alternates": list(props_market.get("alternates") or []),
                             "odds": side_pick["odds"],
                             "stake_u": float(DEFAULT_HITTER_STAKE_U),
-                            "baseball_reasons": list(reason_items[:3]),
+                            "baseball_reasons": _trim_reason_list(reason_items),
                         }
                     )
                 )
@@ -2459,6 +3046,8 @@ def _collect_pitcher_recommendations(
                                 opponent_label,
                                 int(season_value),
                                 str(market_name),
+                                selection=str(side_pick.get("selection") or ""),
+                                line_value=float(line_value),
                             ),
                         )
                         _append_unique_reason(
@@ -2467,11 +3056,43 @@ def _collect_pitcher_recommendations(
                                 pitcher_profile,
                                 int(season_value),
                                 str(market_name),
+                                selection=str(side_pick.get("selection") or ""),
+                                line_value=float(line_value),
                             ),
                         )
-                        _append_unique_reason(baseball_reasons, _pitch_mix_reason(pitcher_profile))
-                        if len(baseball_reasons) < 2:
-                            _append_unique_reason(baseball_reasons, _opponent_lineup_reason(pitcher_profile, opponent_lineup))
+                        _append_unique_reason(
+                            baseball_reasons,
+                            _pitcher_statcast_quality_reason(
+                                pitcher_profile,
+                                prop=str(market_name),
+                                selection=str(side_pick.get("selection") or ""),
+                            ),
+                        )
+                        _append_unique_reason(
+                            baseball_reasons,
+                            _pitch_mix_reason(
+                                pitcher_profile,
+                                prop=str(market_name),
+                                selection=str(side_pick.get("selection") or ""),
+                            ),
+                        )
+                        _append_unique_reason(
+                            baseball_reasons,
+                            _opponent_lineup_reason(
+                                pitcher_profile,
+                                opponent_lineup,
+                                prop=str(market_name),
+                                selection=str(side_pick.get("selection") or ""),
+                            ),
+                        )
+                        _append_unique_reason(
+                            baseball_reasons,
+                            _pitcher_workload_reason(
+                                pitcher_profile,
+                                prop=str(market_name),
+                                selection=str(side_pick.get("selection") or ""),
+                            ),
+                        )
 
                 rows.append(
                     _annotate_recommendation(
@@ -2498,7 +3119,7 @@ def _collect_pitcher_recommendations(
                             "market_alternates": list(props_market.get("alternates") or []),
                             "odds": side_pick.get("odds"),
                             "stake_u": float(DEFAULT_STANDARD_STAKE_U),
-                            "baseball_reasons": baseball_reasons[:3],
+                            "baseball_reasons": _trim_reason_list(baseball_reasons),
                         }
                     )
                 )
@@ -2735,8 +3356,16 @@ def _build_locked_policy_card(
     }
 
     markets: Dict[str, Any] = {}
+    selected_support_policy_markets: Dict[str, Any] = {}
     for market_name, rows in raw_rows.items():
-        selected = _rank_and_cap(rows, caps.get(market_name))
+        baseline_selected = _rank_and_cap(rows, caps.get(market_name))
+        supported_rows, _ = _filter_candidates_by_support(rows, market_name=str(market_name))
+        selected = _rank_and_cap(supported_rows, caps.get(market_name))
+        selected_support_policy_markets[str(market_name)] = _audit_selected_support_policy(
+            market_name=str(market_name),
+            baseline_selected=baseline_selected,
+            final_selected=selected,
+        )
         markets[market_name] = {
             "raw_candidates_n": int(len(rows)),
             "selected_n": int(len(selected)),
@@ -2745,8 +3374,18 @@ def _build_locked_policy_card(
             "recommendations": selected,
         }
 
-    selected_pitcher_rows = _rank_and_cap_unique_players(pitcher_rows, caps.get("pitcher_props"))
-    extra_pitcher_rows = _subtract_selected_rows(pitcher_rows, selected_pitcher_rows)
+    baseline_selected_pitcher_rows = _rank_and_cap_unique_players(pitcher_rows, caps.get("pitcher_props"))
+    supported_pitcher_rows, _ = _filter_candidates_by_support(pitcher_rows, market_name="pitcher_props")
+    selected_pitcher_rows = _rank_and_cap_unique_players(supported_pitcher_rows, caps.get("pitcher_props"))
+    selected_support_policy_markets["pitcher_props"] = _audit_selected_support_policy(
+        market_name="pitcher_props",
+        baseline_selected=baseline_selected_pitcher_rows,
+        final_selected=selected_pitcher_rows,
+    )
+    extra_pitcher_rows, pitcher_playable_audit = _filter_playable_candidates_by_support(
+        _subtract_selected_rows(supported_pitcher_rows, selected_pitcher_rows),
+        market_name="pitcher_props",
+    )
     markets["pitcher_props"] = {
         "raw_candidates_n": int(len(pitcher_rows)),
         "selected_n": int(len(selected_pitcher_rows)),
@@ -2756,6 +3395,7 @@ def _build_locked_policy_card(
         "one_prop_per_player": True,
         "recommendations": selected_pitcher_rows,
         "other_playable_candidates": extra_pitcher_rows,
+        "playable_support_removed_n": int(pitcher_playable_audit.get("removed_sparse_support_n") or 0),
     }
 
     hitter_raw_by_market: Dict[str, List[Dict[str, Any]]] = {market_name: [] for market_name in HITTER_MARKET_ORDER}
@@ -2763,17 +3403,38 @@ def _build_locked_policy_card(
         market_name = str(row.get("market") or "")
         hitter_raw_by_market.setdefault(market_name, []).append(row)
 
-    selected_hitter_rows, selected_hitter_by_market, hitter_selection_mode = _select_hitter_recommendations(
+    baseline_selected_hitter_rows, baseline_selected_hitter_by_market, _ = _select_hitter_recommendations(
         hitter_rows,
         caps.get("hitter_props"),
         normalized_hitter_subcaps,
         blocked_player_keys=_selected_player_keys(selected_pitcher_rows),
     )
+    supported_hitter_rows, _ = _filter_candidates_by_support(hitter_rows, market_name="hitter_props")
+    selected_hitter_rows, selected_hitter_by_market, hitter_selection_mode = _select_hitter_recommendations(
+        supported_hitter_rows,
+        caps.get("hitter_props"),
+        normalized_hitter_subcaps,
+        blocked_player_keys=_selected_player_keys(selected_pitcher_rows),
+    )
+    selected_support_policy_markets["hitter_props"] = _audit_selected_support_policy(
+        market_name="hitter_props",
+        baseline_selected=baseline_selected_hitter_rows,
+        final_selected=selected_hitter_rows,
+    )
 
     for market_name in HITTER_MARKET_ORDER:
         rows = list(hitter_raw_by_market.get(market_name) or [])
         selected = list(selected_hitter_by_market.get(market_name) or [])
-        extra = _subtract_selected_rows(rows, selected)
+        baseline_selected = list(baseline_selected_hitter_by_market.get(market_name) or [])
+        selected_support_policy_markets[str(market_name)] = _audit_selected_support_policy(
+            market_name=str(market_name),
+            baseline_selected=baseline_selected,
+            final_selected=selected,
+        )
+        extra, playable_audit = _filter_playable_candidates_by_support(
+            _subtract_selected_rows(list(row for row in supported_hitter_rows if str(row.get("market") or "") == market_name), selected),
+            market_name=str(market_name),
+        )
         market_cap = normalized_hitter_subcaps.get(market_name) if hitter_selection_mode == "submarket_caps" else None
         markets[market_name] = {
             "raw_candidates_n": int(len(rows)),
@@ -2786,7 +3447,67 @@ def _build_locked_policy_card(
             "one_prop_per_player": True,
             "recommendations": selected,
             "other_playable_candidates": extra,
+            "playable_support_removed_n": int(playable_audit.get("removed_sparse_support_n") or 0),
         }
+
+    playable_support_policy = {
+        "support_min_reasons": int(_EXPLANATION_SUPPORT_MIN_REASONS),
+        "removed_sparse_support_n": int(
+            (pitcher_playable_audit.get("removed_sparse_support_n") or 0)
+            + sum(int((markets.get(market_name, {}) or {}).get("playable_support_removed_n") or 0) for market_name in HITTER_MARKET_ORDER)
+        ),
+        "markets": {
+            "pitcher_props": pitcher_playable_audit,
+            **{
+                str(market_name): {
+                    "market": str(market_name),
+                    "evaluated_n": int(
+                        len(_subtract_selected_rows(list(hitter_raw_by_market.get(market_name) or []), list(selected_hitter_by_market.get(market_name) or [])))
+                    ),
+                    "kept_n": int(len((markets.get(market_name, {}) or {}).get("other_playable_candidates") or [])),
+                    "removed_sparse_support_n": int((markets.get(market_name, {}) or {}).get("playable_support_removed_n") or 0),
+                    "removed_examples": [],
+                }
+                for market_name in HITTER_MARKET_ORDER
+            },
+        },
+    }
+    for market_name in HITTER_MARKET_ORDER:
+        _, playable_audit = _filter_playable_candidates_by_support(
+            _subtract_selected_rows(list(hitter_raw_by_market.get(market_name) or []), list(selected_hitter_by_market.get(market_name) or [])),
+            market_name=str(market_name),
+        )
+        playable_support_policy["markets"][str(market_name)] = playable_audit
+
+    if int(playable_support_policy.get("removed_sparse_support_n") or 0) > 0:
+        warnings.append(
+            f"Removed {int(playable_support_policy.get('removed_sparse_support_n') or 0)} sparse-support playable candidate(s) from the official card output"
+        )
+
+    selected_support_summary_markets = ("totals", "ml", "pitcher_props", "hitter_props")
+    selected_support_policy = {
+        "support_min_reasons": int(_EXPLANATION_SUPPORT_MIN_REASONS),
+        "removed_sparse_support_n": int(
+            sum(int((selected_support_policy_markets.get(market_name, {}) or {}).get("removed_sparse_support_n") or 0) for market_name in selected_support_summary_markets)
+        ),
+        "replacement_added_n": int(
+            sum(int((selected_support_policy_markets.get(market_name, {}) or {}).get("replacement_added_n") or 0) for market_name in selected_support_summary_markets)
+        ),
+        "selection_shortfall_n": int(
+            sum(int((selected_support_policy_markets.get(market_name, {}) or {}).get("selection_shortfall_n") or 0) for market_name in selected_support_summary_markets)
+        ),
+        "markets": selected_support_policy_markets,
+    }
+    if int(selected_support_policy.get("removed_sparse_support_n") or 0) > 0:
+        warnings.append(
+            "Removed "
+            f"{int(selected_support_policy.get('removed_sparse_support_n') or 0)} sparse-support official recommendation(s) before final publish"
+        )
+    if int(selected_support_policy.get("selection_shortfall_n") or 0) > 0:
+        warnings.append(
+            "Official card could not fully replace "
+            f"{int(selected_support_policy.get('selection_shortfall_n') or 0)} sparse-support recommendation slot(s) with support-qualified alternatives"
+        )
 
     market_groups = {
         "hitter_props": {
@@ -2850,6 +3571,8 @@ def _build_locked_policy_card(
         else "Hitter submarkets are separated in output but still share the combined hitter_props cap."
     )
 
+    explanation_diagnostics = _collect_card_explanation_diagnostics(markets)
+
     return {
         "date": str(date),
         "season": int(season),
@@ -2907,6 +3630,12 @@ def _build_locked_policy_card(
             "outs_prob_calibration": (_rel(outs_prob_calibration_path) if outs_prob_calibration_path is not None else None),
         },
         "warnings": warnings,
+        "explanation_diagnostics": explanation_diagnostics,
+        "audit_track": {
+            "official_card_explanation_support": explanation_diagnostics,
+            "selected_support_policy": selected_support_policy,
+            "playable_support_policy": playable_support_policy,
+        },
         "market_groups": market_groups,
         "markets": markets,
         "combined": {
@@ -3365,6 +4094,8 @@ def main() -> int:
             "staking": ((locked_policy_card.get("staking") or {}) if locked_policy_card is not None else None),
             "selected_counts": (_locked_policy_selected_counts(locked_policy_card) if locked_policy_card is not None else None),
             "warnings": (locked_policy_card.get("warnings") if locked_policy_card is not None else []),
+            "explanation_diagnostics": ((locked_policy_card.get("explanation_diagnostics") or {}) if locked_policy_card is not None else None),
+            "audit_track": ((locked_policy_card.get("audit_track") or {}) if locked_policy_card is not None else None),
             "error": locked_policy_error,
         },
         "failures": failures,

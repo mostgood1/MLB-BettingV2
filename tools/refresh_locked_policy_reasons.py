@@ -16,9 +16,11 @@ from tools.daily_update_multi_profile import (
     _ROOT,
     _annotate_recommendation,
     _append_unique_reason,
+    _collect_card_explanation_diagnostics,
     _hitter_bvp_reason,
     _hitter_opponent_team_reason,
     _hitter_pitch_mix_reason,
+    _hitter_statcast_quality_reason,
     _hitter_platoon_reason,
     _hitter_recent_form_reason,
     _iter_sim_records,
@@ -27,10 +29,13 @@ from tools.daily_update_multi_profile import (
     _pitcher_bvp_reason,
     _pitcher_opponent_team_reason,
     _pitcher_recent_form_reason,
+    _pitcher_statcast_quality_reason,
+    _pitcher_workload_reason,
     _read_json,
     _rel,
     _safe_int,
     _season_from_date_str,
+    _trim_reason_list,
     _write_json,
     _opponent_lineup_reason,
 )
@@ -117,29 +122,47 @@ def _refresh_game_baseball_reasons(row: Dict[str, Any], sim_obj: Dict[str, Any],
                     opponent_label,
                     int(season_value),
                     "earned_runs",
+                    selection=str(row.get("selection") or ""),
                     subject_name=subject_name,
                 ),
             )
             _append_unique_reason(reasons, _pitcher_bvp_reason(pitcher_profile, opponent_lineup))
-            if len(reasons) >= 2:
-                break
-        if not reasons:
-            for pitcher_side in ("home", "away"):
-                side_doc = roster_snapshot.get(pitcher_side) if isinstance(roster_snapshot.get(pitcher_side), dict) else {}
-                pitcher_profile = side_doc.get("starter_profile") if isinstance(side_doc.get("starter_profile"), dict) else {}
-                subject_name = str(pitcher_profile.get("name") or "").strip() or None
-                _append_unique_reason(
-                    reasons,
-                    _pitcher_recent_form_reason(
-                        pitcher_profile,
-                        int(season_value),
-                        "earned_runs",
-                        subject_name=subject_name,
-                    ),
-                )
-                if len(reasons) >= 2:
-                    break
-        return reasons[:3]
+            _append_unique_reason(
+                reasons,
+                _pitcher_recent_form_reason(
+                    pitcher_profile,
+                    int(season_value),
+                    "earned_runs",
+                    selection=str(row.get("selection") or ""),
+                    subject_name=subject_name,
+                ),
+            )
+            _append_unique_reason(
+                reasons,
+                _pitcher_statcast_quality_reason(
+                    pitcher_profile,
+                    prop="earned_runs",
+                    selection=str(row.get("selection") or ""),
+                ),
+            )
+            _append_unique_reason(
+                reasons,
+                _pitch_mix_reason(
+                    pitcher_profile,
+                    prop="earned_runs",
+                    selection=str(row.get("selection") or ""),
+                ),
+            )
+            _append_unique_reason(
+                reasons,
+                _opponent_lineup_reason(
+                    pitcher_profile,
+                    opponent_lineup,
+                    prop="earned_runs",
+                    selection=str(row.get("selection") or ""),
+                ),
+            )
+        return _trim_reason_list(reasons)
 
     if market == "ml":
         selected_side = str(row.get("selection") or "home")
@@ -160,21 +183,47 @@ def _refresh_game_baseball_reasons(row: Dict[str, Any], sim_obj: Dict[str, Any],
                 opponent_label,
                 int(season_value),
                 "earned_runs",
+                selection="under",
                 subject_name=subject_name,
             ),
         )
         _append_unique_reason(reasons, _pitcher_bvp_reason(pitcher_profile, opponent_lineup))
-        if not reasons:
-            _append_unique_reason(
-                reasons,
-                _pitcher_recent_form_reason(
-                    pitcher_profile,
-                    int(season_value),
-                    "earned_runs",
-                    subject_name=subject_name,
-                ),
-            )
-        return reasons[:3]
+        _append_unique_reason(
+            reasons,
+            _pitcher_recent_form_reason(
+                pitcher_profile,
+                int(season_value),
+                "earned_runs",
+                selection="under",
+                subject_name=subject_name,
+            ),
+        )
+        _append_unique_reason(
+            reasons,
+            _pitcher_statcast_quality_reason(
+                pitcher_profile,
+                prop="earned_runs",
+                selection="under",
+            ),
+        )
+        _append_unique_reason(
+            reasons,
+            _pitch_mix_reason(
+                pitcher_profile,
+                prop="earned_runs",
+                selection="under",
+            ),
+        )
+        _append_unique_reason(
+            reasons,
+            _opponent_lineup_reason(
+                pitcher_profile,
+                opponent_lineup,
+                prop="earned_runs",
+                selection="under",
+            ),
+        )
+        return _trim_reason_list(reasons)
 
     return reasons
 
@@ -214,6 +263,8 @@ def _refresh_pitcher_baseball_reasons(row: Dict[str, Any], sim_obj: Dict[str, An
             opponent_label,
             int(season_value),
             str(row.get("prop") or ""),
+            selection=str(row.get("selection") or ""),
+            line_value=float(row.get("market_line")) if row.get("market_line") is not None else None,
         ),
     )
     _append_unique_reason(
@@ -222,12 +273,44 @@ def _refresh_pitcher_baseball_reasons(row: Dict[str, Any], sim_obj: Dict[str, An
             pitcher_profile,
             int(season_value),
             str(row.get("prop") or ""),
+            selection=str(row.get("selection") or ""),
+            line_value=float(row.get("market_line")) if row.get("market_line") is not None else None,
         ),
     )
-    _append_unique_reason(reasons, _pitch_mix_reason(pitcher_profile))
-    if len(reasons) < 2:
-        _append_unique_reason(reasons, _opponent_lineup_reason(pitcher_profile, opponent_lineup))
-    return reasons[:3]
+    _append_unique_reason(
+        reasons,
+        _pitcher_statcast_quality_reason(
+            pitcher_profile,
+            prop=str(row.get("prop") or ""),
+            selection=str(row.get("selection") or ""),
+        ),
+    )
+    _append_unique_reason(
+        reasons,
+        _pitch_mix_reason(
+            pitcher_profile,
+            prop=str(row.get("prop") or ""),
+            selection=str(row.get("selection") or ""),
+        ),
+    )
+    _append_unique_reason(
+        reasons,
+        _opponent_lineup_reason(
+            pitcher_profile,
+            opponent_lineup,
+            prop=str(row.get("prop") or ""),
+            selection=str(row.get("selection") or ""),
+        ),
+    )
+    _append_unique_reason(
+        reasons,
+        _pitcher_workload_reason(
+            pitcher_profile,
+            prop=str(row.get("prop") or ""),
+            selection=str(row.get("selection") or ""),
+        ),
+    )
+    return _trim_reason_list(reasons)
 
 
 def _refresh_hitter_baseball_reasons(row: Dict[str, Any], sim_obj: Dict[str, Any], roster_snapshot: Optional[Dict[str, Any]]) -> List[str]:
@@ -284,11 +367,34 @@ def _refresh_hitter_baseball_reasons(row: Dict[str, Any], sim_obj: Dict[str, Any
             ),
         )
     if isinstance(batter_profile, dict) and isinstance(pitcher_profile, dict):
-        if len(reasons) < 2:
-            _append_unique_reason(reasons, _hitter_pitch_mix_reason(batter_profile, pitcher_profile))
-        if len(reasons) < 2:
-            _append_unique_reason(reasons, _hitter_platoon_reason(batter_profile, pitcher_profile))
-    return reasons[:3]
+        _append_unique_reason(
+            reasons,
+            _hitter_pitch_mix_reason(
+                batter_profile,
+                pitcher_profile,
+                prop=str(row.get("prop_market_key") or row.get("prop") or ""),
+                selection=str(row.get("selection") or ""),
+            ),
+        )
+        _append_unique_reason(
+            reasons,
+            _hitter_platoon_reason(
+                batter_profile,
+                pitcher_profile,
+                prop=str(row.get("prop_market_key") or row.get("prop") or ""),
+                selection=str(row.get("selection") or ""),
+            ),
+        )
+    if isinstance(batter_profile, dict):
+        _append_unique_reason(
+            reasons,
+            _hitter_statcast_quality_reason(
+                batter_profile,
+                prop=str(row.get("prop_market_key") or row.get("prop") or ""),
+                selection=str(row.get("selection") or ""),
+            ),
+        )
+    return _trim_reason_list(reasons)
 
 
 def _refresh_row_reasons(
@@ -351,6 +457,11 @@ def _refresh_card(card: Dict[str, Any], date_str: str) -> Tuple[Dict[str, Any], 
                     updated_rows += 1
                 new_rows.append(updated_row)
             market_payload[field_name] = new_rows
+    explanation_diagnostics = _collect_card_explanation_diagnostics(markets)
+    refreshed["explanation_diagnostics"] = explanation_diagnostics
+    audit_track = refreshed.get("audit_track")
+    if isinstance(audit_track, dict):
+        audit_track["official_card_explanation_support"] = explanation_diagnostics
     return refreshed, scanned_rows, updated_rows
 
 

@@ -2010,6 +2010,46 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
             elif not locked_path.exists():
                 current_stage["status"] = "warning"
                 report["warnings"].append("current-day locked-policy card was not written")
+            else:
+                try:
+                    locked_card = json.loads(locked_path.read_text(encoding="utf-8")) or {}
+                except Exception as exc:
+                    current_stage["status"] = "warning" if current_stage.get("status") == "ok" else current_stage.get("status")
+                    current_stage["locked_policy_audit_error"] = f"{type(exc).__name__}: {exc}"
+                    report["warnings"].append(f"current-day locked-policy audit unreadable: {type(exc).__name__}: {exc}")
+                else:
+                    audit_track = locked_card.get("audit_track") if isinstance(locked_card, dict) else None
+                    explanation_diagnostics = locked_card.get("explanation_diagnostics") if isinstance(locked_card, dict) else None
+                    if isinstance(audit_track, dict):
+                        current_stage["official_card_audit_track"] = audit_track
+                    if isinstance(explanation_diagnostics, dict):
+                        current_stage["official_card_explanation_diagnostics"] = explanation_diagnostics
+                        sparse_support_n = int(explanation_diagnostics.get("sparse_support_n") or 0)
+                        selected_rows_n = int(explanation_diagnostics.get("selected_rows_n") or 0)
+                        if sparse_support_n > 0:
+                            report["warnings"].append(
+                                f"official locked card has {sparse_support_n} sparse-support selected recommendation(s) out of {selected_rows_n}"
+                            )
+                    selected_policy = (audit_track or {}).get("selected_support_policy") if isinstance(audit_track, dict) else None
+                    if isinstance(selected_policy, dict):
+                        removed_n = int(selected_policy.get("removed_sparse_support_n") or 0)
+                        replacement_n = int(selected_policy.get("replacement_added_n") or 0)
+                        shortfall_n = int(selected_policy.get("selection_shortfall_n") or 0)
+                        if removed_n > 0:
+                            report["warnings"].append(
+                                f"official locked card removed {removed_n} sparse-support selected recommendation(s) before publish and added {replacement_n} replacement(s)"
+                            )
+                        if shortfall_n > 0:
+                            report["warnings"].append(
+                                f"official locked card still has {shortfall_n} unfilled slot(s) because no support-qualified replacement was available"
+                            )
+                    playable_policy = (audit_track or {}).get("playable_support_policy") if isinstance(audit_track, dict) else None
+                    if isinstance(playable_policy, dict):
+                        removed_n = int(playable_policy.get("removed_sparse_support_n") or 0)
+                        if removed_n > 0:
+                            report["warnings"].append(
+                                f"official locked card removed {removed_n} sparse-support playable candidate(s)"
+                            )
     except Exception as exc:
         current_stage["status"] = "error"
         current_stage["error"] = f"{type(exc).__name__}: {exc}"
