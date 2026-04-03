@@ -1483,6 +1483,15 @@ def _with_app_build(payload: Dict[str, Any]) -> Dict[str, Any]:
     return merged
 
 
+def _jsonify_no_store(payload: Any, status_code: int = 200) -> Response:
+    response = jsonify(payload)
+    response.status_code = int(status_code)
+    response.headers["Cache-Control"] = "no-store, no-cache, max-age=0, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
+
+
 def _resolve_oddsapi_market_file(d: str, prefix: str) -> Optional[Path]:
     slug = _date_slug(d)
     filename = f"{prefix}_{slug}.json"
@@ -9867,7 +9876,7 @@ def api_season_betting_cards(season: int) -> Response:
         requested_profile,
     )
     if not manifest_path or not isinstance(manifest, dict):
-        return jsonify(
+        return _jsonify_no_store(
             _with_app_build(
                 {
                     "season": int(season),
@@ -9876,8 +9885,9 @@ def api_season_betting_cards(season: int) -> Response:
                     "available_profiles": available_profiles,
                     "error": "season_betting_cards_missing",
                 }
-            )
-        ), 404
+            ),
+            404,
+        )
 
     payload = _season_betting_manifest_static_payload(
         int(season),
@@ -9889,7 +9899,7 @@ def api_season_betting_cards(season: int) -> Response:
     meta = dict(payload.get("meta") or {})
     meta["app"] = dict(_APP_BUILD_INFO)
     payload["meta"] = meta
-    return jsonify(_with_app_build(payload))
+    return _jsonify_no_store(_with_app_build(payload))
 
 
 @app.get("/api/season/<int:season>/betting-card")
@@ -9900,7 +9910,7 @@ def api_season_official_betting_card(season: int) -> Response:
         requested_profile,
     )
     if not manifest_path or not isinstance(manifest, dict):
-        return jsonify(
+        return _jsonify_no_store(
             _with_app_build(
                 {
                     "season": int(season),
@@ -9909,8 +9919,9 @@ def api_season_official_betting_card(season: int) -> Response:
                     "available_profiles": available_profiles,
                     "error": "season_betting_cards_missing",
                 }
-            )
-        ), 404
+            ),
+            404,
+        )
 
     payload = _official_betting_card_manifest_static_payload(
         int(season),
@@ -9922,7 +9933,7 @@ def api_season_official_betting_card(season: int) -> Response:
     meta = dict(payload.get("meta") or {})
     meta["app"] = dict(_APP_BUILD_INFO)
     payload["meta"] = meta
-    return jsonify(_with_app_build(payload))
+    return _jsonify_no_store(_with_app_build(payload))
 
 
 @app.get("/api/season/<int:season>/betting-cards/day/<date_str>")
@@ -9932,10 +9943,10 @@ def api_season_betting_cards_day(season: int, date_str: str) -> Response:
     if payload.get("found"):
         card_path = _path_from_maybe_relative(payload.get("card_source"))
         payload["card"] = _load_json_file(card_path)
-        return jsonify(_with_app_build(payload))
+        return _jsonify_no_store(_with_app_build(payload))
 
     status_code = 500 if payload.get("error") == "season_betting_day_settle_failed" else 404
-    return jsonify(_with_app_build(payload)), status_code
+    return _jsonify_no_store(_with_app_build(payload), status_code)
 
 
 @app.get("/api/season/<int:season>/betting-card/day/<date_str>")
@@ -9943,10 +9954,10 @@ def api_season_official_betting_card_day(season: int, date_str: str) -> Response
     requested_profile = str(request.args.get("profile") or "").strip().lower()
     payload = _official_betting_card_day_payload(int(season), str(date_str), requested_profile)
     if payload.get("found"):
-        return jsonify(_with_app_build(payload))
+        return _jsonify_no_store(_with_app_build(payload))
 
     status_code = 500 if payload.get("error") == "season_betting_day_settle_failed" else 404
-    return jsonify(_with_app_build(payload)), status_code
+    return _jsonify_no_store(_with_app_build(payload), status_code)
 
 
 @app.get("/api/season/<int:season>/day/<date_str>")
@@ -9954,7 +9965,7 @@ def api_season_day(season: int, date_str: str) -> Response:
     requested_profile = str(request.args.get("profile") or "").strip().lower()
     manifest_path, manifest = _load_season_manifest(int(season))
     if not manifest_path or not isinstance(manifest, dict):
-        return jsonify(
+        return _jsonify_no_store(
             _with_app_build(
                 {
                     "season": int(season),
@@ -9962,8 +9973,9 @@ def api_season_day(season: int, date_str: str) -> Response:
                     "found": False,
                     "error": "season_manifest_missing",
                 }
-            )
-        ), 404
+            ),
+            404,
+        )
 
     report_path = _resolve_season_day_report_path(manifest, str(date_str))
     if not report_path or not report_path.exists() or not report_path.is_file():
@@ -9971,8 +9983,8 @@ def api_season_day(season: int, date_str: str) -> Response:
         if fallback_payload.get("cards_available") or ((fallback_payload.get("betting") or {}).get("found")):
             fallback_payload["found"] = True
             fallback_payload["manifest_source"] = _relative_path_str(manifest_path)
-            return jsonify(_with_app_build(fallback_payload))
-        return jsonify(
+            return _jsonify_no_store(_with_app_build(fallback_payload))
+        return _jsonify_no_store(
             _with_app_build(
                 {
                     "season": int(season),
@@ -9980,12 +9992,13 @@ def api_season_day(season: int, date_str: str) -> Response:
                     "found": False,
                     "error": "season_day_missing",
                 }
-            )
-        ), 404
+            ),
+            404,
+        )
 
     report_obj = _load_json_file(report_path)
     if not isinstance(report_obj, dict):
-        return jsonify(
+        return _jsonify_no_store(
             _with_app_build(
                 {
                     "season": int(season),
@@ -9993,8 +10006,9 @@ def api_season_day(season: int, date_str: str) -> Response:
                     "found": False,
                     "error": "season_day_read_failed",
                 }
-            )
-        ), 500
+            ),
+            500,
+        )
 
     payload = _season_day_payload(
         season=int(season),
@@ -10005,7 +10019,7 @@ def api_season_day(season: int, date_str: str) -> Response:
     )
     payload["found"] = True
     payload["manifest_source"] = _relative_path_str(manifest_path)
-    return jsonify(_with_app_build(payload))
+    return _jsonify_no_store(_with_app_build(payload))
 
 
 @app.get("/game/<int:game_pk>")
