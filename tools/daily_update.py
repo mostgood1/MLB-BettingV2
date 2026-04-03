@@ -34,6 +34,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 _TRACKED_DATA_DIR = (_ROOT / "data").resolve()
 _DATA_ROOT_ENV = str(os.environ.get("MLB_BETTING_DATA_ROOT") or "").strip()
 _DATA_DIR = (Path(_DATA_ROOT_ENV).resolve() if _DATA_ROOT_ENV else _TRACKED_DATA_DIR)
+_OFFICIAL_CARD_MIN_PUBLISH_SIMS = 250
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
@@ -1980,6 +1981,11 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
         "profile_bundle_path": _relative_path_str(game_out / f"daily_summary_{token}_profile_bundle.json"),
         "locked_policy_path": _relative_path_str(game_out / f"daily_summary_{token}_locked_policy.json"),
     }
+    if int(getattr(args, "sims", 0) or 0) < int(_OFFICIAL_CARD_MIN_PUBLISH_SIMS):
+        current_stage["official_card_publish_warning"] = (
+            f"current-day run is using only {int(getattr(args, 'sims', 0) or 0)} sims; official locked-card publish requires at least {int(_OFFICIAL_CARD_MIN_PUBLISH_SIMS)} sims"
+        )
+        report["warnings"].append(str(current_stage["official_card_publish_warning"]))
     try:
         rc = subprocess.run(cmd, check=False).returncode
         current_stage["exit_code"] = int(rc)

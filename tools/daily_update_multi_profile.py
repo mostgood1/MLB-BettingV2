@@ -1005,10 +1005,57 @@ def _append_unique_reason(reasons: List[str], value: Optional[str]) -> None:
 _RECOMMENDATION_BASEBALL_REASON_LIMIT = 5
 _RECOMMENDATION_REASON_SENTENCE_LIMIT = 6
 _EXPLANATION_SUPPORT_MIN_REASONS = 2
+_LOW_SIM_REASON_SAMPLE_MIN = 25
+_DEFAULT_LOCKED_POLICY_MIN_SIMS = 250
 
 
 def _selection_choice(value: Any) -> str:
     return str(value or "").strip().lower()
+
+
+def _argv_flag_value(argv: Sequence[str], flag: str) -> Optional[str]:
+    values = list(argv or [])
+    for index, item in enumerate(values):
+        if str(item) != str(flag):
+            continue
+        next_index = index + 1
+        if next_index >= len(values):
+            return None
+        return str(values[next_index])
+    return None
+
+
+def _sim_sample_size_from_sim_obj(sim_obj: Optional[Dict[str, Any]]) -> Optional[int]:
+    if not isinstance(sim_obj, dict):
+        return None
+    sim_payload = sim_obj.get("sim") if isinstance(sim_obj.get("sim"), dict) else None
+    return _safe_int((sim_payload or {}).get("sims"))
+
+
+def _sim_sample_size_from_row(row: Dict[str, Any]) -> Optional[int]:
+    return _safe_int((row or {}).get("sim_sample_size"))
+
+
+def _is_low_sim_reason_sample(sim_sample_size: Optional[int]) -> bool:
+    return sim_sample_size is not None and int(sim_sample_size) < int(_LOW_SIM_REASON_SAMPLE_MIN)
+
+
+def _selected_side_reason_sentence(row: Dict[str, Any], *, selection: str) -> Optional[str]:
+    selected_model_prob = row.get("selected_side_model_prob")
+    selected_market_prob = row.get("selected_side_market_prob")
+    if selected_model_prob is None or selected_market_prob is None:
+        return None
+    sim_sample_size = _sim_sample_size_from_row(row)
+    if _is_low_sim_reason_sample(sim_sample_size):
+        sims_label = int(sim_sample_size) if sim_sample_size is not None else 0
+        return (
+            f"This snapshot only used {sims_label} sim{'s' if sims_label != 1 else ''}, so the model-side frequency is too coarse to quote; "
+            f"the market is pricing the {selection or 'selected'} side closer to {_format_reason_percent(selected_market_prob)}."
+        )
+    return (
+        f"The model lands on the {selection or 'selected'} side in {_format_reason_percent(selected_model_prob)} of sims, "
+        f"while the market is pricing it closer to {_format_reason_percent(selected_market_prob)}."
+    )
 
 
 def _safe_profile_mult(profile: Optional[Dict[str, Any]], key: str) -> Optional[float]:
@@ -2025,12 +2072,9 @@ def _build_recommendation_reasons(row: Dict[str, Any]) -> List[str]:
     selection = str(row.get("selection") or "").strip().lower()
     reasons: List[str] = []
 
-    selected_model_prob = row.get("selected_side_model_prob")
-    selected_market_prob = row.get("selected_side_market_prob")
-    if selected_model_prob is not None and selected_market_prob is not None:
-        reasons.append(
-            f"The model lands on the {selection or 'selected'} side in {_format_reason_percent(selected_model_prob)} of sims, while the market is pricing it closer to {_format_reason_percent(selected_market_prob)}."
-        )
+    selected_side_reason = _selected_side_reason_sentence(row, selection=selection)
+    if selected_side_reason:
+        reasons.append(selected_side_reason)
 
     baseball_reasons = row.get("baseball_reasons")
     if isinstance(baseball_reasons, list):
@@ -2046,7 +2090,7 @@ def _build_recommendation_reasons(row: Dict[str, Any]) -> List[str]:
             )
     elif market == "ml":
         team_label = str(row.get("home_abbr") or row.get("home") or "Home") if selection == "home" else str(row.get("away_abbr") or row.get("away") or "Away")
-        if row.get("selected_side_model_prob") is not None:
+        if row.get("selected_side_model_prob") is not None and not _is_low_sim_reason_sample(_sim_sample_size_from_row(row)):
             reasons.append(f"{team_label} wins this matchup in about {_format_reason_percent(row.get('selected_side_model_prob'))} of model runs.")
     elif market == "pitcher_props":
         prop_label = str(row.get("prop") or "prop").replace("_", " ")
@@ -2363,6 +2407,7 @@ def _collect_game_recommendations(sim_dir: Path, game_lines_path: Path, policy: 
                                 "market_no_vig_prob": no_vig_over_prob(
                                     totals_market.get("over_odds"), totals_market.get("under_odds")
                                 ),
+                                "sim_sample_size": _sim_sample_size_from_sim_obj(sim_obj),
                                 "baseball_reasons": _trim_reason_list(totals_reasons),
                             }
                         )
@@ -2455,6 +2500,7 @@ def _collect_game_recommendations(sim_dir: Path, game_lines_path: Path, policy: 
                             "market_no_vig_prob": side_pick.get("market_no_vig_prob"),
                             "odds": side_pick.get("odds"),
                             "stake_u": float(DEFAULT_STANDARD_STAKE_U),
+                            "sim_sample_size": _sim_sample_size_from_sim_obj(sim_obj),
                             "baseball_reasons": _trim_reason_list(ml_reasons),
                         }
                     )
@@ -2923,6 +2969,7 @@ def _collect_hitter_recommendations(
                             "market_alternates": list(props_market.get("alternates") or []),
                             "odds": side_pick["odds"],
                             "stake_u": float(DEFAULT_HITTER_STAKE_U),
+                            "sim_sample_size": _sim_sample_size_from_sim_obj(sim_obj),
                             "baseball_reasons": _trim_reason_list(reason_items),
                         }
                     )
@@ -3119,6 +3166,7 @@ def _collect_pitcher_recommendations(
                             "market_alternates": list(props_market.get("alternates") or []),
                             "odds": side_pick.get("odds"),
                             "stake_u": float(DEFAULT_STANDARD_STAKE_U),
+                            "sim_sample_size": _sim_sample_size_from_sim_obj(sim_obj),
                             "baseball_reasons": _trim_reason_list(baseball_reasons),
                         }
                     )
@@ -3873,6 +3921,12 @@ def main() -> int:
         default="data/tuning/so_calibration/default.json",
         help="Calibration JSON for official pitcher strikeout recommendations (use 'off' to disable).",
     )
+    ap.add_argument(
+        "--locked-policy-min-sims",
+        type=int,
+        default=int(_DEFAULT_LOCKED_POLICY_MIN_SIMS),
+        help="Minimum simulation count required before writing the official locked-policy card; lower-sim runs skip final card publish.",
+    )
 
     # Parse known args and pass all unknown args through to each daily_update run.
     args, passthrough = ap.parse_known_args()
@@ -4036,25 +4090,32 @@ def main() -> int:
         locked_policy_path = out_game / f"daily_summary_{token}_locked_policy.json"
     locked_policy_error: Optional[str] = None
     locked_policy_card: Optional[Dict[str, Any]] = None
+    current_run_sims = _safe_int(_argv_flag_value(list(passthrough), "--sims"))
     try:
-        locked_policy_card = _build_locked_policy_card(
-            date=str(args.date),
-            season=int(args.season),
-            out_game=out_game,
-            out_pitcher=out_pitcher,
-            out_hitter=out_hitter,
-            best_selection_path=best_selection_path,
-            best_selection=best_selection,
-            profile_info=profile_info,
-            so_prob_calibration_path=so_prob_calibration_path,
-            so_prob_calibration=so_prob_calibration,
-            outs_prob_calibration_path=outs_prob_calibration_path,
-            outs_prob_calibration=outs_prob_calibration,
-            policy_overrides=official_policy_overrides,
-            market_caps=official_caps,
-            hitter_subcaps=official_hitter_subcaps,
-        )
-        _write_json(locked_policy_path, locked_policy_card)
+        if current_run_sims is not None and int(current_run_sims) < int(args.locked_policy_min_sims):
+            locked_policy_error = (
+                f"Skipped locked-policy card publish because this run only used {int(current_run_sims)} sims "
+                f"and the minimum is {int(args.locked_policy_min_sims)}"
+            )
+        else:
+            locked_policy_card = _build_locked_policy_card(
+                date=str(args.date),
+                season=int(args.season),
+                out_game=out_game,
+                out_pitcher=out_pitcher,
+                out_hitter=out_hitter,
+                best_selection_path=best_selection_path,
+                best_selection=best_selection,
+                profile_info=profile_info,
+                so_prob_calibration_path=so_prob_calibration_path,
+                so_prob_calibration=so_prob_calibration,
+                outs_prob_calibration_path=outs_prob_calibration_path,
+                outs_prob_calibration=outs_prob_calibration,
+                policy_overrides=official_policy_overrides,
+                market_caps=official_caps,
+                hitter_subcaps=official_hitter_subcaps,
+            )
+            _write_json(locked_policy_path, locked_policy_card)
     except Exception as e:
         locked_policy_error = f"{type(e).__name__}: {e}"
 
