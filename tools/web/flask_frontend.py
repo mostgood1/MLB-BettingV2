@@ -2060,8 +2060,13 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
                 ops_report_path = next_ops_report_path
                 ops_report = next_ops_report
     if not isinstance(settlement, dict) and isinstance(embedded_settlement_summary, dict):
-        settlement = _synthetic_settlement_from_summary(embedded_settlement_summary)
-        settlement_path = _path_from_maybe_relative(embedded_settlement_summary.get("settlement_path")) or settlement_path
+        embedded_settlement_path = _path_from_maybe_relative(embedded_settlement_summary.get("settlement_path"))
+        if embedded_settlement_path and embedded_settlement_path.exists() and embedded_settlement_path.is_file():
+            settlement_path = embedded_settlement_path
+            settlement = _load_json_file(settlement_path)
+        if not isinstance(settlement, dict):
+            settlement = _synthetic_settlement_from_summary(embedded_settlement_summary)
+            settlement_path = embedded_settlement_path or settlement_path
 
     lineups_path = (snapshot_dir / "lineups.json") if snapshot_dir else None
     lineups = _load_json_file(lineups_path)
