@@ -44,6 +44,10 @@ DEFAULT_HITTER_EDGE_MIN_BY_MARKET: Dict[str, float] = {
     "hitter_runs": 0.10,
 }
 
+DEFAULT_HITTER_MODEL_PROB_MIN_BY_MARKET: Dict[str, float] = {
+    "hitter_home_runs": 0.25,
+}
+
 PITCHER_MARKET_SPECS: Dict[str, Dict[str, str]] = {
     "outs": {
         "market_key": "outs",
@@ -71,6 +75,7 @@ DEFAULT_LOCK_POLICY: Dict[str, Any] = {
     "ml_edge_min": 0.01,
     "hitter_edge_min": 0.0,
     "hitter_edge_min_by_market": dict(DEFAULT_HITTER_EDGE_MIN_BY_MARKET),
+    "hitter_model_prob_min_by_market": dict(DEFAULT_HITTER_MODEL_PROB_MIN_BY_MARKET),
     "hitter_max_favorite_odds": -200,
     "hitter_hr_under_0_5_max_favorite_odds": -200,
     "pitcher_market": "best",
@@ -333,6 +338,18 @@ def _hitter_edge_min_for_market(policy: Optional[Dict[str, Any]], market_name: s
         return default_value
     override_value = _normalize_edge_min(raw_overrides.get(str(market_name)))
     return float(override_value) if override_value is not None else default_value
+
+
+def _hitter_model_prob_min_for_market(policy: Optional[Dict[str, Any]], market_name: str) -> float:
+    if not isinstance(policy, dict):
+        return float(DEFAULT_HITTER_MODEL_PROB_MIN_BY_MARKET.get(str(market_name), 0.0))
+    raw_overrides = policy.get("hitter_model_prob_min_by_market") or {}
+    if not isinstance(raw_overrides, dict):
+        return float(DEFAULT_HITTER_MODEL_PROB_MIN_BY_MARKET.get(str(market_name), 0.0))
+    override_value = _normalize_edge_min(raw_overrides.get(str(market_name)))
+    if override_value is not None:
+        return float(override_value)
+    return float(DEFAULT_HITTER_MODEL_PROB_MIN_BY_MARKET.get(str(market_name), 0.0))
 
 
 def _policy_with_overrides(
@@ -2862,6 +2879,9 @@ def _collect_hitter_recommendations(
                 )
                 if side_pick is None:
                     continue
+                selected_model_prob = _selected_side_prob_from_over_prob(p_over, side_pick["selection"])
+                if selected_model_prob < _hitter_model_prob_min_for_market(policy, str(market_spec["market"])):
+                    continue
                 if not _hitter_price_allowed(
                     policy,
                     market_name=str(market_spec["market"]),
@@ -2956,7 +2976,7 @@ def _collect_hitter_recommendations(
                             "market_prob_mode": side_pick["market_prob_mode"],
                             "market_no_vig_prob_over": side_pick["market_no_vig_prob_over"],
                             "selected_side_market_prob": float(side_pick["selected_side_market_prob"]),
-                            "selected_side_model_prob": _selected_side_prob_from_over_prob(p_over, side_pick["selection"]),
+                            "selected_side_model_prob": float(selected_model_prob),
                             "mean_support": _mean_support_for_selection(
                                 mean_value,
                                 line_value,
@@ -3175,11 +3195,31 @@ def _collect_pitcher_recommendations(
     return rows
 
 
-def _row_rank_key(row: Dict[str, Any]) -> Tuple[float, float, float]:
+def _row_model_prob(row: Dict[str, Any]) -> float:
+    return float(row.get("selected_side_model_prob") or row.get("model_prob") or row.get("model_prob_over") or 0.0)
+
+
+def _row_market_prob(row: Dict[str, Any]) -> float:
+    return float(row.get("selected_side_market_prob") or row.get("market_prob") or row.get("market_prob_over") or 0.0)
+
+
+def _row_rank_key(row: Dict[str, Any]) -> Tuple[float, float, float, float]:
+    model_prob = _row_model_prob(row)
+    market_prob = _row_market_prob(row)
+    edge = float(row.get("edge") or 0.0)
+    mean_support = float(row.get("mean_support") or row.get("model_mean_total") or 0.0)
+    if str(row.get("market") or "") == "hitter_home_runs":
+        return (
+            model_prob,
+            market_prob,
+            edge,
+            mean_support,
+        )
     return (
-        float(row.get("selected_side_model_prob") or row.get("model_prob") or row.get("model_prob_over") or 0.0),
-        float(row.get("edge") or 0.0),
-        float(row.get("mean_support") or row.get("model_mean_total") or 0.0),
+        model_prob,
+        edge,
+        mean_support,
+        market_prob,
     )
 
 
