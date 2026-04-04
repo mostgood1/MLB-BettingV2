@@ -9,6 +9,7 @@ import io
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -2854,7 +2855,7 @@ def _pitcher_ladders_payload(d: str, prop_value: Any, sort_value: Any) -> Dict[s
         payload["error"] = "sim_dir_missing"
         return payload
 
-    sim_files = sorted(path for path in sim_dir.glob("sim_*.json") if path.is_file())
+    sim_files = _list_unique_sim_files(sim_dir)
     rows: List[Dict[str, Any]] = []
     for sim_path in sim_files:
         sim_obj = _load_json_file(sim_path)
@@ -3055,7 +3056,7 @@ def _hitter_ladders_payload(d: str, prop_value: Any) -> Dict[str, Any]:
         payload["error"] = "sim_dir_missing"
         return payload
 
-    sim_files = sorted(path for path in sim_dir.glob("sim_*.json") if path.is_file())
+    sim_files = _list_unique_sim_files(sim_dir)
     threshold_specs = list(prop_cfg.get("thresholds") or [])
     rows: List[Dict[str, Any]] = []
     topn_limits: List[int] = []
@@ -6263,11 +6264,12 @@ def _find_sim_file(*, game_pk: int, d: str, day_dir: Optional[Path] = None) -> O
 
     # Fast path: file name includes pk.
     pk_tag = f"pk{int(game_pk)}"
-    for p in day_dir.glob(f"*{pk_tag}*.json"):
-        if p.is_file():
-            return p
+    candidates = [p for p in day_dir.glob(f"*{pk_tag}*.json") if p.is_file()]
+    if candidates:
+        return max(candidates, key=lambda p: (int(getattr(p.stat(), "st_mtime_ns", 0)), p.name))
 
     # Fallback: scan small set of json files for matching game_pk field.
+    matches: List[Path] = []
     for p in day_dir.glob("*.json"):
         if not p.is_file():
             continue
@@ -6276,8 +6278,51 @@ def _find_sim_file(*, game_pk: int, d: str, day_dir: Optional[Path] = None) -> O
         except Exception:
             continue
         if _safe_int(obj.get("game_pk")) == int(game_pk):
-            return p
+            matches.append(p)
+    if matches:
+        return max(matches, key=lambda p: (int(getattr(p.stat(), "st_mtime_ns", 0)), p.name))
     return None
+
+
+_SIM_FILE_PK_RE = re.compile(r"pk(\d+)", re.IGNORECASE)
+
+
+def _sim_file_game_pk(path: Path) -> Optional[int]:
+    match = _SIM_FILE_PK_RE.search(path.name)
+    if match is not None:
+        try:
+            return int(match.group(1))
+        except Exception:
+            pass
+    obj = _load_json_file(path)
+    if isinstance(obj, dict):
+        return _safe_int(obj.get("game_pk"))
+    return None
+
+
+def _list_unique_sim_files(day_dir: Path) -> List[Path]:
+    latest_by_game: Dict[int, Path] = {}
+    for path in sorted(day_dir.glob("sim_*.json")):
+        if not path.is_file():
+            continue
+        game_pk = _sim_file_game_pk(path)
+        if game_pk is None:
+            continue
+        current = latest_by_game.get(int(game_pk))
+        if current is None:
+            latest_by_game[int(game_pk)] = path
+            continue
+        try:
+            current_mtime = int(getattr(current.stat(), "st_mtime_ns", 0))
+        except Exception:
+            current_mtime = 0
+        try:
+            next_mtime = int(getattr(path.stat(), "st_mtime_ns", 0))
+        except Exception:
+            next_mtime = 0
+        if (next_mtime, path.name) >= (current_mtime, current.name):
+            latest_by_game[int(game_pk)] = path
+    return sorted(latest_by_game.values(), key=lambda path: path.name)
 
 
 def _sim_predicted_score(sim_obj: Dict[str, Any]) -> Dict[str, Any]:
