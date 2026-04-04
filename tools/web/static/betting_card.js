@@ -212,6 +212,14 @@
     return dt.toLocaleDateString(undefined, { month: "short", year: "numeric" });
   }
 
+  function localTodayIso() {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, "0");
+    const day = String(now.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
   function fetchJson(url) {
     return fetch(url, { cache: "no-store" }).then((response) => {
       if (!response.ok) {
@@ -257,6 +265,8 @@
   function preferredDay(days) {
     const rows = Array.isArray(days) ? days.filter(Boolean) : [];
     if (!rows.length) return null;
+    const todayRow = rows.find((row) => String(row?.date || "") === localTodayIso());
+    if (todayRow) return todayRow;
     for (let idx = rows.length - 1; idx >= 0; idx -= 1) {
       const row = rows[idx] || {};
       if (Number(row?.settled_n || 0) > 0) return row;

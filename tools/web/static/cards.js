@@ -171,6 +171,8 @@
   }
 
   function recoReasonText(reco) {
+    const summary = String(reco?.reason_summary || "").trim();
+    if (summary) return summary;
     const texts = recoReasonList(reco);
     return texts[0] || "";
   }
@@ -1665,10 +1667,32 @@
         const rightEdge = Math.abs(toNumber(right.reco?.edge) || 0);
         if (leftEdge !== rightEdge) return rightEdge - leftEdge;
         return String(propOwnerName(left.reco) || "").localeCompare(String(propOwnerName(right.reco) || ""));
-      })
-      .slice(0, 6);
+      });
 
-    const items = rankedRows.map((entry) => {
+    let selectedRows = rankedRows.slice(0, 6);
+    if (liveRows.length) {
+      const pitcherRows = rankedRows.filter((entry) => String(entry?.reco?.market || '').toLowerCase() === 'pitcher_props');
+      const nonPitcherRows = rankedRows.filter((entry) => String(entry?.reco?.market || '').toLowerCase() !== 'pitcher_props');
+      const reservedPitcherCount = Math.min(2, pitcherRows.length);
+      if (reservedPitcherCount > 0) {
+        const picked = [];
+        const pickedKeys = new Set();
+        pitcherRows.slice(0, reservedPitcherCount).forEach((entry) => {
+          picked.push(entry);
+          pickedKeys.add(propKey(entry.reco));
+        });
+        rankedRows.forEach((entry) => {
+          if (picked.length >= 6) return;
+          const key = propKey(entry.reco);
+          if (pickedKeys.has(key)) return;
+          picked.push(entry);
+          pickedKeys.add(key);
+        });
+        selectedRows = picked.slice(0, 6);
+      }
+    }
+
+    const items = selectedRows.map((entry) => {
       const reco = entry.reco;
       const label = String(reco?.market || '').toLowerCase() === 'pitcher_props' ? 'Pitcher live lens' : 'Hitter live lens';
       return { label, state: entry.state };
@@ -1721,13 +1745,13 @@
               <div class="cards-prop-overview-metrics">
                 <div class="cards-data-pair"><span>Actual</span><strong>${escapeHtml(stateObj.actualValue == null ? '-' : formatLine(stateObj.actualValue))}</strong></div>
                 <div class="cards-data-pair"><span>Live proj</span><strong>${escapeHtml(stateObj.liveProjection == null ? '-' : formatLine(stateObj.liveProjection))}</strong></div>
-                <div class="cards-data-pair"><span>Line</span><strong>${escapeHtml(stateObj.lineLabel)}</strong></div>
+                <div class="cards-data-pair"><span>Line</span><strong>${escapeHtml(`${stateObj.lineLabel} ${formatOdds(reco?.odds)}`.trim())}</strong></div>
                 <div class="cards-data-pair ${liveEdgeClass}"><span>Live edge</span><strong>${escapeHtml(stateObj.liveEdge == null ? '-' : formatSigned(stateObj.liveEdge, 2))}</strong></div>
               </div>
               ${reasonText ? `<div class="cards-live-lens-reasons"><div class="cards-live-lens-reason">${escapeHtml(reasonText)}</div></div>` : ''}
               <div class="cards-prop-overview-foot">
                 <span>${escapeHtml(stateObj.modelMean == null ? 'Model mean -' : `Model mean ${formatLine(stateObj.modelMean)}`)}</span>
-                <span>${escapeHtml(reco?.first_seen_at ? `Live since ${formatTimestampShort(reco.first_seen_at)}` : `${stateObj.tierLabel} | ${formatOdds(reco?.odds)}`)}</span>
+                <span>${escapeHtml(reco?.first_seen_at ? `Live since ${formatTimestampShort(reco.first_seen_at)} | ${formatOdds(reco?.odds)}` : `${stateObj.tierLabel} | ${formatOdds(reco?.odds)}`)}</span>
               </div>
             </div>`;
         }).join('')}

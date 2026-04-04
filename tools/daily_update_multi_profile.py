@@ -9,6 +9,7 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -258,6 +259,22 @@ def _market_entries_n(path: Path, *, root_key: str) -> int:
 def _write_json(path: Path, obj: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(obj, indent=2), encoding="utf-8")
+
+
+def _elapsed_seconds(started_at: float) -> float:
+    return max(0.0, float(perf_counter() - started_at))
+
+
+def _format_elapsed(seconds: Any) -> str:
+    try:
+        total_seconds = max(0.0, float(seconds))
+    except Exception:
+        total_seconds = 0.0
+    minutes = int(total_seconds // 60.0)
+    remainder = total_seconds - float(minutes * 60)
+    if minutes <= 0:
+        return f"{remainder:.1f}s"
+    return f"{minutes}m {remainder:04.1f}s"
 
 
 def _load_json_cfg(path_str: str) -> Optional[Dict[str, Any]]:
@@ -3369,6 +3386,7 @@ def _build_locked_policy_card(
     market_caps: Dict[str, Optional[int]],
     hitter_subcaps: Optional[Dict[str, Optional[int]]],
 ) -> Dict[str, Any]:
+    build_started_at = perf_counter()
     token = str(date).replace("-", "_")
     policy = _policy_with_overrides(policy_overrides)
     caps = _normalized_official_caps(market_caps)
@@ -3390,6 +3408,7 @@ def _build_locked_policy_card(
     }
 
     warnings: List[str] = []
+    timings: Dict[str, float] = {}
     for label, path in (
         ("game sims", game_sim_dir),
         ("pitcher sims", pitcher_sim_dir),
@@ -3422,7 +3441,18 @@ def _build_locked_policy_card(
         if entries_n <= 0:
             warnings.append(f"No {label} entries found in {_rel(path)}")
 
+    print(f"[multi-profile] Building locked-policy card for {date}")
+
+    stage_started_at = perf_counter()
     game_rows = _collect_game_recommendations(game_sim_dir, game_lines_path, policy)
+    timings["collect_game_candidates_s"] = _elapsed_seconds(stage_started_at)
+    print(
+        "[multi-profile] Locked-policy stage: game candidates "
+        f"({_format_elapsed(timings['collect_game_candidates_s'])}, "
+        f"totals={len(game_rows.get('totals') or [])}, ml={len(game_rows.get('ml') or [])})"
+    )
+
+    stage_started_at = perf_counter()
     pitcher_rows = _collect_pitcher_recommendations(
         pitcher_sim_dir,
         pitcher_lines_path,
@@ -3431,11 +3461,23 @@ def _build_locked_policy_card(
         outs_prob_calibration,
         _ROOT / "data" / "daily" / "snapshots" / str(date),
     )
+    timings["collect_pitcher_candidates_s"] = _elapsed_seconds(stage_started_at)
+    print(
+        "[multi-profile] Locked-policy stage: pitcher candidates "
+        f"({_format_elapsed(timings['collect_pitcher_candidates_s'])}, rows={len(pitcher_rows)})"
+    )
+
+    stage_started_at = perf_counter()
     hitter_rows = _collect_hitter_recommendations(
         hitter_sim_dir,
         hitter_lines_path,
         policy,
         _ROOT / "data" / "daily" / "snapshots" / str(date),
+    )
+    timings["collect_hitter_candidates_s"] = _elapsed_seconds(stage_started_at)
+    print(
+        "[multi-profile] Locked-policy stage: hitter candidates "
+        f"({_format_elapsed(timings['collect_hitter_candidates_s'])}, rows={len(hitter_rows)})"
     )
 
     raw_rows: Dict[str, List[Dict[str, Any]]] = {
@@ -3443,6 +3485,7 @@ def _build_locked_policy_card(
         "ml": list(game_rows.get("ml") or []),
     }
 
+    stage_started_at = perf_counter()
     markets: Dict[str, Any] = {}
     selected_support_policy_markets: Dict[str, Any] = {}
     for market_name, rows in raw_rows.items():
@@ -3498,6 +3541,10 @@ def _build_locked_policy_card(
         blocked_player_keys=_selected_player_keys(selected_pitcher_rows),
     )
     supported_hitter_rows, _ = _filter_candidates_by_support(hitter_rows, market_name="hitter_props")
+    supported_hitter_rows_by_market: Dict[str, List[Dict[str, Any]]] = {market_name: [] for market_name in HITTER_MARKET_ORDER}
+    for row in supported_hitter_rows:
+        market_name = str(row.get("market") or "")
+        supported_hitter_rows_by_market.setdefault(market_name, []).append(row)
     selected_hitter_rows, selected_hitter_by_market, hitter_selection_mode = _select_hitter_recommendations(
         supported_hitter_rows,
         caps.get("hitter_props"),
@@ -3510,6 +3557,7 @@ def _build_locked_policy_card(
         final_selected=selected_hitter_rows,
     )
 
+    hitter_playable_audits: Dict[str, Dict[str, Any]] = {}
     for market_name in HITTER_MARKET_ORDER:
         rows = list(hitter_raw_by_market.get(market_name) or [])
         selected = list(selected_hitter_by_market.get(market_name) or [])
@@ -3520,9 +3568,10 @@ def _build_locked_policy_card(
             final_selected=selected,
         )
         extra, playable_audit = _filter_playable_candidates_by_support(
-            _subtract_selected_rows(list(row for row in supported_hitter_rows if str(row.get("market") or "") == market_name), selected),
+            _subtract_selected_rows(list(supported_hitter_rows_by_market.get(market_name) or []), selected),
             market_name=str(market_name),
         )
+        hitter_playable_audits[str(market_name)] = playable_audit
         market_cap = normalized_hitter_subcaps.get(market_name) if hitter_selection_mode == "submarket_caps" else None
         markets[market_name] = {
             "raw_candidates_n": int(len(rows)),
@@ -3537,6 +3586,13 @@ def _build_locked_policy_card(
             "other_playable_candidates": extra,
             "playable_support_removed_n": int(playable_audit.get("removed_sparse_support_n") or 0),
         }
+
+    timings["selection_and_support_s"] = _elapsed_seconds(stage_started_at)
+    print(
+        "[multi-profile] Locked-policy stage: selection and support filters "
+        f"({_format_elapsed(timings['selection_and_support_s'])}, "
+        f"selected={sum(int((markets.get(name, {}) or {}).get('selected_n') or 0) for name in markets)})"
+    )
 
     playable_support_policy = {
         "support_min_reasons": int(_EXPLANATION_SUPPORT_MIN_REASONS),
@@ -3561,11 +3617,7 @@ def _build_locked_policy_card(
         },
     }
     for market_name in HITTER_MARKET_ORDER:
-        _, playable_audit = _filter_playable_candidates_by_support(
-            _subtract_selected_rows(list(hitter_raw_by_market.get(market_name) or []), list(selected_hitter_by_market.get(market_name) or [])),
-            market_name=str(market_name),
-        )
-        playable_support_policy["markets"][str(market_name)] = playable_audit
+        playable_support_policy["markets"][str(market_name)] = dict(hitter_playable_audits.get(str(market_name)) or {})
 
     if int(playable_support_policy.get("removed_sparse_support_n") or 0) > 0:
         warnings.append(
@@ -3659,7 +3711,15 @@ def _build_locked_policy_card(
         else "Hitter submarkets are separated in output but still share the combined hitter_props cap."
     )
 
+    stage_started_at = perf_counter()
     explanation_diagnostics = _collect_card_explanation_diagnostics(markets)
+    timings["explanation_diagnostics_s"] = _elapsed_seconds(stage_started_at)
+    timings["total_build_s"] = _elapsed_seconds(build_started_at)
+    print(
+        "[multi-profile] Locked-policy stage: explanation diagnostics "
+        f"({_format_elapsed(timings['explanation_diagnostics_s'])})"
+    )
+    print(f"[multi-profile] Locked-policy card ready in {_format_elapsed(timings['total_build_s'])}")
 
     return {
         "date": str(date),
@@ -3718,6 +3778,7 @@ def _build_locked_policy_card(
             "outs_prob_calibration": (_rel(outs_prob_calibration_path) if outs_prob_calibration_path is not None else None),
         },
         "warnings": warnings,
+        "timings": {key: round(float(value), 3) for key, value in timings.items()},
         "explanation_diagnostics": explanation_diagnostics,
         "audit_track": {
             "official_card_explanation_support": explanation_diagnostics,
@@ -3779,6 +3840,7 @@ def _sync_profile_snapshot_dir(source_dir: Path, target_dir: Path) -> None:
 
 
 def main() -> int:
+    overall_started_at = perf_counter()
     ap = argparse.ArgumentParser(
         description=(
             "Run tools/daily_update.py three times for specialized recommendation profiles: "
@@ -4027,6 +4089,11 @@ def main() -> int:
     profile_info: Dict[str, Any] = {}
     shared_lineups_last_known_path = out_game / "lineups_last_known_by_team.json"
 
+    print(
+        "[multi-profile] Starting daily multi-profile build "
+        f"for {args.date} (season {int(args.season)})"
+    )
+
     for profile_name, role_name, out_dir, extra in profiles:
         summary_path = out_dir / f"daily_summary_{token}.json"
         sim_dir = out_dir / "sims" / str(args.date)
@@ -4049,6 +4116,7 @@ def main() -> int:
                 "skip_reason": str(skip_reason),
             }
             continue
+        profile_started_at = perf_counter()
         rc, cmd = _run_profile(
             profile_name=profile_name,
             py_exe=py_exe,
@@ -4060,6 +4128,7 @@ def main() -> int:
             extra_args=extra,
             lineups_last_known_path=shared_lineups_last_known_path,
         )
+        profile_duration_s = _elapsed_seconds(profile_started_at)
         profile_info[role_name] = {
             "profile": profile_name,
             "out_dir": _rel(out_dir),
@@ -4068,8 +4137,13 @@ def main() -> int:
             "snapshot_dir": _rel(snapshot_dir),
             "extra_args": list(extra),
             "exit_code": int(rc),
+            "duration_s": round(float(profile_duration_s), 3),
             "skipped": False,
         }
+        print(
+            f"[multi-profile] Finished profile '{profile_name}' in {_format_elapsed(profile_duration_s)} "
+            f"(exit={int(rc)})"
+        )
         if rc != 0:
             failures.append(
                 {
@@ -4131,13 +4205,16 @@ def main() -> int:
     locked_policy_error: Optional[str] = None
     locked_policy_card: Optional[Dict[str, Any]] = None
     current_run_sims = _safe_int(_argv_flag_value(list(passthrough), "--sims"))
+    locked_policy_started_at = perf_counter()
     try:
         if current_run_sims is not None and int(current_run_sims) < int(args.locked_policy_min_sims):
             locked_policy_error = (
                 f"Skipped locked-policy card publish because this run only used {int(current_run_sims)} sims "
                 f"and the minimum is {int(args.locked_policy_min_sims)}"
             )
+            print(f"[multi-profile] {locked_policy_error}")
         else:
+            print("[multi-profile] Starting locked-policy card assembly")
             locked_policy_card = _build_locked_policy_card(
                 date=str(args.date),
                 season=int(args.season),
@@ -4156,8 +4233,13 @@ def main() -> int:
                 hitter_subcaps=official_hitter_subcaps,
             )
             _write_json(locked_policy_path, locked_policy_card)
+            print(
+                "[multi-profile] Wrote locked-policy card "
+                f"to {_rel(locked_policy_path)} in {_format_elapsed(_elapsed_seconds(locked_policy_started_at))}"
+            )
     except Exception as e:
         locked_policy_error = f"{type(e).__name__}: {e}"
+        print(f"[multi-profile] Locked-policy card failed: {locked_policy_error}")
 
     if str(args.manifest_out).strip():
         manifest_path = _resolve_path(str(args.manifest_out))
@@ -4199,12 +4281,24 @@ def main() -> int:
             "audit_track": ((locked_policy_card.get("audit_track") or {}) if locked_policy_card is not None else None),
             "error": locked_policy_error,
         },
+        "timings": {
+            "profiles": {
+                role_name: round(float((info or {}).get("duration_s") or 0.0), 3)
+                for role_name, info in profile_info.items()
+                if isinstance(info, dict) and not bool(info.get("skipped"))
+            },
+            "locked_policy_s": round(float(_elapsed_seconds(locked_policy_started_at)), 3),
+            "total_s": round(float(_elapsed_seconds(overall_started_at)), 3),
+        },
         "failures": failures,
         "failures_n": int(len(failures)),
     }
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
-    print(f"[multi-profile] Wrote bundle manifest: {_rel(manifest_path)}")
+    print(
+        "[multi-profile] Wrote bundle manifest "
+        f"to {_rel(manifest_path)} in {_format_elapsed(_elapsed_seconds(overall_started_at))}"
+    )
     if locked_policy_card is not None:
         print(f"[multi-profile] Wrote locked-policy card: {_rel(locked_policy_path)}")
     elif locked_policy_error:

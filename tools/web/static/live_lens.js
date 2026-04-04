@@ -72,10 +72,12 @@
   }
 
   function propReasonText(prop) {
+    const summary = String(prop?.reason_summary || "").trim();
+    if (summary) return summary;
     const reasons = Array.isArray(prop?.reasons) ? prop.reasons : [];
     const cleaned = reasons.map((row) => String(row == null ? "" : row).trim()).filter(Boolean);
     if (cleaned.length) return cleaned[0];
-    return String(prop?.reason_summary || "").trim();
+    return "";
   }
 
   function gameReasonBlock(lens) {

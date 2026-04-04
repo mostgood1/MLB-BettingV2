@@ -7746,6 +7746,10 @@ def _select_live_prop_side(
         if live_edge is None or float(live_edge) <= 0.0:
             continue
         projection_gap = abs(float(live_edge)) if live_edge is not None else None
+        min_live_edge = 0.08 if selection == "over" else 0.18
+        min_required_market_edge = float(min_market_edge) if selection == "over" else max(float(min_market_edge), 0.025)
+        if projection_gap is None or float(projection_gap) < float(min_live_edge):
+            continue
         market_edge = None
         if model_prob_over is not None:
             if selection == "over" and market_prob_over is not None:
@@ -7753,7 +7757,7 @@ def _select_live_prop_side(
             elif selection == "under" and market_prob_under is not None:
                 market_edge = round((1.0 - float(model_prob_over)) - float(market_prob_under), 4)
         score = market_edge
-        if score is None or float(score) <= float(min_market_edge):
+        if score is None or float(score) <= float(min_required_market_edge):
             continue
         candidates.append(
             {
@@ -7796,6 +7800,152 @@ def _live_prop_market_label(market: str, prop: str) -> str:
         return str(cfg.get("label") or market or "Pitcher prop")
     cfg = _HITTER_LADDER_PROPS.get(prop_text) or {}
     return str(cfg.get("label") or market or "Hitter prop")
+
+
+def _live_prop_reason_subject(row: Dict[str, Any]) -> str:
+    market = str(row.get("market") or "").strip().lower()
+    if market == "pitcher_props":
+        return str(row.get("pitcher_name") or "the starter").strip() or "the starter"
+    return str(row.get("player_name") or "the hitter").strip() or "the hitter"
+
+
+def _live_prop_reason_stat_label(row: Dict[str, Any]) -> str:
+    label = str(row.get("market_label") or _live_prop_market_label(str(row.get("market") or ""), str(row.get("prop") or ""))).strip()
+    if not label:
+        return "the prop"
+    label = label.replace("Hitter ", "").replace("Pitcher ", "")
+    return label[:1].lower() + label[1:] if label else "the prop"
+
+
+def _live_hitter_boxscore_reason(
+    row: Dict[str, Any],
+    actual_row: Optional[Dict[str, Any]],
+) -> Optional[str]:
+    if not isinstance(actual_row, dict):
+        return None
+    actual_value = _live_stat_value(actual_row, row)
+    if actual_value is None:
+        return None
+    choice = str(row.get("selection") or "").strip().lower()
+    line_value = _safe_float(row.get("market_line"))
+    at_bats = _safe_int(actual_row.get("AB"))
+    subject = _live_prop_reason_subject(row)
+    stat_label = _live_prop_reason_stat_label(row)
+    actual_text = _format_live_reason_value(actual_value)
+
+    if choice == "over":
+        if line_value is not None and float(actual_value) > float(line_value):
+            return f"{subject} already has {actual_text} {stat_label} on the board, so this over is already home."
+        if float(actual_value) > 0.0:
+            return f"{subject} already has {actual_text} {stat_label} on the board, so the over is now part-way there before the remaining plate appearances."
+        if at_bats is not None and int(at_bats) <= 1:
+            return f"{subject} is only {int(at_bats)} at-bat into the game, so the live over is still leaning on remaining volume rather than a dead profile."
+        return None
+
+    if float(actual_value) <= 0.0 and at_bats is not None and int(at_bats) >= 2:
+        return f"{subject} is still at {actual_text} {stat_label} through {int(at_bats)} at-bats, which keeps the under live if the remaining trips stay quiet."
+    if line_value is not None and float(actual_value) < float(line_value):
+        return f"{subject} has only reached {actual_text} {stat_label} so far, so the under is still ahead of the current number."
+    return None
+
+
+def _live_hitter_pitcher_hook_reason(
+    row: Dict[str, Any],
+    snapshot: Optional[Dict[str, Any]],
+    matchup_profile: Optional[Dict[str, Any]],
+    *,
+    current_is_starter: bool,
+    opponent_side: str,
+) -> Optional[str]:
+    if not isinstance(snapshot, dict) or not isinstance(matchup_profile, dict) or not current_is_starter:
+        return None
+    pitching_rows = (((snapshot.get("teams") or {}).get(opponent_side) or {}).get("boxscore") or {}).get("pitching") or []
+    current_row = _lookup_boxscore_row(pitching_rows, matchup_profile.get("name"))
+    if not isinstance(current_row, dict):
+        return None
+
+    pitch_count = _safe_int(current_row.get("P"))
+    outs_recorded = _safe_int(current_row.get("OUTS"))
+    if outs_recorded is None:
+        outs_recorded = _parse_ip_to_outs(current_row.get("IP"))
+    stamina = _safe_int(matchup_profile.get("stamina_pitches"))
+    choice = str(row.get("selection") or "").strip().lower()
+    subject = str(matchup_profile.get("name") or "the starter").strip() or "the starter"
+
+    if choice == "over" and pitch_count is not None and stamina is not None and pitch_count >= max(1, int(stamina) - 10):
+        return f"{subject} is already up to {int(pitch_count)} pitches against a leash around {int(stamina)}, so the plate-appearance path may flip to the bullpen soon."
+    if choice == "under" and pitch_count is not None and stamina is not None and pitch_count <= max(0, int(stamina) - 20):
+        return f"{subject} is still working at only {int(pitch_count)} pitches against a leash near {int(stamina)}, so the original starter matchup is likely to stay in place a bit longer."
+    if choice == "under" and outs_recorded is not None and int(outs_recorded) >= 9 and pitch_count is not None and int(pitch_count) <= 55:
+        return f"{subject} is still fairly efficient through {int(outs_recorded)} outs on {int(pitch_count)} pitches, which supports the tougher starter matchup holding."
+    return None
+
+
+def _live_pitcher_k_performance_reason(
+    row: Dict[str, Any],
+    actual_row: Optional[Dict[str, Any]],
+) -> Optional[str]:
+    if not isinstance(actual_row, dict):
+        return None
+    prop = str(row.get("prop") or "").strip().lower()
+    choice = str(row.get("selection") or "").strip().lower()
+    strikeouts = _safe_int(actual_row.get("SO"))
+    batters_faced = _safe_int(actual_row.get("BF"))
+    strikes = _safe_int(actual_row.get("S"))
+    pitch_count = _safe_int(actual_row.get("P"))
+    subject = _live_prop_reason_subject(row)
+
+    if prop == "strikeouts" and strikeouts is not None:
+        if choice == "over" and batters_faced is not None and int(batters_faced) > 0:
+            k_rate = float(strikeouts) / float(batters_faced)
+            if strikeouts >= 3 and k_rate >= 0.28:
+                return f"{subject} already has {int(strikeouts)} strikeouts through {int(batters_faced)} batters, so the in-game bat-missing pace is still live enough for the over."
+        if choice == "under" and batters_faced is not None and int(batters_faced) >= 9 and strikeouts <= 2:
+            return f"{subject} only has {int(strikeouts)} strikeouts through {int(batters_faced)} batters, so the in-game K pace is still lagging the current number."
+
+    if prop == "outs" and pitch_count is not None and strikes is not None and int(pitch_count) > 0:
+        strike_rate = float(strikes) / float(pitch_count)
+        outs_recorded = _safe_int(actual_row.get("OUTS"))
+        if outs_recorded is None:
+            outs_recorded = _parse_ip_to_outs(actual_row.get("IP"))
+        if choice == "over" and outs_recorded is not None and pitch_count <= max(1, int(outs_recorded) * 6):
+            return f"{subject} has banked {int(outs_recorded)} outs on only {int(pitch_count)} pitches, which is efficient enough to keep the over path open."
+        if choice == "under" and strike_rate <= 0.61 and pitch_count >= 50:
+            return f"{subject} is only around a {strike_rate * 100.0:.0f}% strike rate on {int(pitch_count)} pitches, which is the kind of traffic that can bring the hook in faster."
+    return None
+
+
+def _live_pitcher_manager_hook_reason(
+    row: Dict[str, Any],
+    snapshot: Optional[Dict[str, Any]],
+    actual_row: Optional[Dict[str, Any]],
+    pitcher_profile: Optional[Dict[str, Any]],
+) -> Optional[str]:
+    if not isinstance(actual_row, dict):
+        return None
+    prop = str(row.get("prop") or "").strip().lower()
+    if prop not in {"outs", "strikeouts", "earned_runs"}:
+        return None
+    choice = str(row.get("selection") or "").strip().lower()
+    pitch_count = _safe_int(actual_row.get("P"))
+    stamina = _safe_int((pitcher_profile or {}).get("stamina_pitches")) if isinstance(pitcher_profile, dict) else None
+    batters_faced = _safe_int(actual_row.get("BF"))
+    side = str(row.get("team_side") or "").strip().lower()
+    team_score = _safe_int(row.get("score_away")) if side == "away" else _safe_int(row.get("score_home"))
+    opp_score = _safe_int(row.get("score_home")) if side == "away" else _safe_int(row.get("score_away"))
+    subject = _live_prop_reason_subject(row)
+
+    if choice == "under":
+        if pitch_count is not None and stamina is not None and pitch_count >= max(1, int(stamina) - 5):
+            return f"{subject} is basically at the edge of a normal leash at {int(pitch_count)} pitches versus roughly {int(stamina)}, so the manager-hook risk is now real."
+        if batters_faced is not None and int(batters_faced) >= 21:
+            return f"{subject} is already deep into the lineup for a third time through at {int(batters_faced)} batters faced, which is a common manager decision point."
+        if team_score is not None and opp_score is not None and int(team_score) < int(opp_score) - 3:
+            return f"{subject}'s club is already down {int(opp_score) - int(team_score)}, which makes a shorter leash more likely if one more jam shows up."
+    elif choice == "over":
+        if pitch_count is not None and stamina is not None and pitch_count <= max(0, int(stamina) - 18):
+            return f"{subject} is still well short of a normal hook point at {int(pitch_count)} pitches against a leash near {int(stamina)}, so the manager can still leave him out there."
+    return None
 
 
 def _format_live_reason_value(value: Any) -> str:
@@ -8022,6 +8172,10 @@ def _live_hitter_matchup_reasons(
     starter_removed = bool(pitcher_ctx.get("starter_removed"))
     choice = str(row.get("selection") or "").strip().lower()
     prop = str(row.get("prop") or "")
+    actual_row = _lookup_boxscore_row(
+        ((((snapshot or {}).get("teams") or {}).get(side) or {}).get("boxscore") or {}).get("batting") or [],
+        str(row.get("player_name") or ""),
+    )
 
     reasons: List[str] = []
     matchup_profile = current_profile if isinstance(current_profile, dict) else starter_profile
@@ -8038,6 +8192,16 @@ def _live_hitter_matchup_reasons(
     elif starter_removed:
         reasons.append("The opposing starter is already out, so the remaining path is bullpen-based rather than the original starter look.")
 
+    hook_reason = _live_hitter_pitcher_hook_reason(
+        row,
+        snapshot,
+        matchup_profile,
+        current_is_starter=current_is_starter,
+        opponent_side=opponent_side,
+    )
+    if hook_reason:
+        reasons.append(hook_reason)
+
     if isinstance(batter_profile, dict) and isinstance(matchup_profile, dict):
         reasons.extend(
             reason
@@ -8048,6 +8212,10 @@ def _live_hitter_matchup_reasons(
             )
             if str(reason or "").strip()
         )
+
+    progress_reason = _live_hitter_boxscore_reason(row, actual_row if isinstance(actual_row, dict) else None)
+    if progress_reason:
+        reasons.append(progress_reason)
 
     game_state_reason = _live_hitter_game_state_reason(row, snapshot)
     if game_state_reason:
@@ -8153,6 +8321,12 @@ def _live_pitcher_matchup_reasons(
     pitch_count_reason = _live_pitcher_count_reason(row, actual_row, pitcher_profile)
     if pitch_count_reason:
         reasons.append(pitch_count_reason)
+    k_perf_reason = _live_pitcher_k_performance_reason(row, actual_row)
+    if k_perf_reason:
+        reasons.append(k_perf_reason)
+    hook_reason = _live_pitcher_manager_hook_reason(row, snapshot, actual_row, pitcher_profile)
+    if hook_reason:
+        reasons.append(hook_reason)
     reasons.extend(
         reason
         for reason in (
