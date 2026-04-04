@@ -2,7 +2,7 @@
 set -euo pipefail
 
 BASE_URL="${MLB_BETTING_BASE_URL:-${BASE_URL:-${RENDER_URL:-${RENDER_EXTERNAL_URL:-}}}}"
-TOKEN="${MLB_BETTING_CRON_TOKEN:-${CRON_TOKEN:-}}"
+TOKEN="${MLB_BETTING_CRON_TOKEN:-${MLB_CRON_TOKEN:-${CRON_TOKEN:-}}}"
 PATH_QS="${1:-/api/cron/ping}"
 
 if [[ -z "${BASE_URL}" ]]; then
@@ -10,7 +10,7 @@ if [[ -z "${BASE_URL}" ]]; then
   exit 2
 fi
 if [[ -z "${TOKEN}" ]]; then
-  echo "Missing cron token. Set MLB_BETTING_CRON_TOKEN or CRON_TOKEN." >&2
+  echo "Missing cron token. Set MLB_BETTING_CRON_TOKEN, MLB_CRON_TOKEN, or CRON_TOKEN." >&2
   exit 2
 fi
 

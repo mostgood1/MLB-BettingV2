@@ -53,7 +53,7 @@ All cron endpoints accept either:
 The included workflows are intended to run from GitHub Actions and hit the Render cron endpoints where scheduled server-side work is still desired. Configure these repository secrets:
 
 - `MLB_BETTING_BASE_URL` or `RENDER_URL`
-- `MLB_BETTING_CRON_TOKEN` or `CRON_TOKEN`
+- `MLB_BETTING_CRON_TOKEN`, `MLB_CRON_TOKEN`, or `CRON_TOKEN`
 
 Scheduled workflows in this repo now cover pregame market refreshes and season recap maintenance on the Render disk:
 

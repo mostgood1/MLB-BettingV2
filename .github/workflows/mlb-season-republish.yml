@@ -29,7 +29,9 @@ concurrency:
 env:
   MLB_BETTING_BASE_URL: ${{ secrets.MLB_BETTING_BASE_URL }}
   RENDER_URL: ${{ secrets.RENDER_URL }}
+  MLB_CRON_TOKEN: ${{ secrets.MLB_CRON_TOKEN }}
   MLB_BETTING_CRON_TOKEN: ${{ secrets.MLB_BETTING_CRON_TOKEN }}
+  CRON_TOKEN: ${{ secrets.CRON_TOKEN }}
 
 jobs:
   republish-season:
@@ -40,8 +42,8 @@ jobs:
 
       - name: Validate secrets
         run: |
-          test -n "${MLB_BETTING_BASE_URL}" || (echo 'Missing MLB_BETTING_BASE_URL or RENDER_URL secret' && exit 1)
-          test -n "${MLB_BETTING_CRON_TOKEN}" || (echo 'Missing MLB_BETTING_CRON_TOKEN or CRON_TOKEN secret' && exit 1)
+          test -n "${MLB_BETTING_BASE_URL:-${RENDER_URL:-}}" || (echo 'Missing MLB_BETTING_BASE_URL or RENDER_URL secret' && exit 1)
+          test -n "${MLB_BETTING_CRON_TOKEN:-${MLB_CRON_TOKEN:-${CRON_TOKEN:-}}}" || (echo 'Missing MLB_BETTING_CRON_TOKEN, MLB_CRON_TOKEN, or CRON_TOKEN secret' && exit 1)
 
       - name: Ping Render cron surface
         run: bash scripts/render_cron_call.sh /api/cron/ping
