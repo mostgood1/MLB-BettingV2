@@ -44,6 +44,11 @@ from tools.daily_update_multi_profile import (
     _hitter_pitch_mix_reason,
     _hitter_platoon_reason,
     _hitter_statcast_quality_reason,
+    _opponent_lineup_reason,
+    _pitch_mix_reason,
+    _pitcher_bvp_reason,
+    _pitcher_statcast_quality_reason,
+    _pitcher_workload_reason,
 )
 from tools.eval.build_season_eval_manifest import build_manifest as build_season_eval_manifest
 from tools.eval.build_season_eval_manifest import write_manifest_artifacts as write_season_eval_manifest_artifacts
@@ -8009,6 +8014,142 @@ def _live_hitter_matchup_reasons(
     return _dedupe_reason_texts(reasons)
 
 
+def _live_pitcher_matchup_context(
+    row: Dict[str, Any],
+    sim_context: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    if not isinstance(sim_context, dict):
+        return {}
+    roster_snapshot = sim_context.get("roster_snapshot") if isinstance(sim_context.get("roster_snapshot"), dict) else None
+    if not isinstance(roster_snapshot, dict):
+        return {}
+    side = str(row.get("team_side") or "").strip().lower()
+    if side not in {"away", "home"}:
+        return {}
+    opp_side = "home" if side == "away" else "away"
+    side_doc = roster_snapshot.get(side)
+    opp_doc = roster_snapshot.get(opp_side)
+    if not isinstance(side_doc, dict) or not isinstance(opp_doc, dict):
+        return {}
+    pitcher_profile = side_doc.get("starter_profile") if isinstance(side_doc.get("starter_profile"), dict) else None
+    opponent_lineup = opp_doc.get("lineup") if isinstance(opp_doc.get("lineup"), list) else []
+    return {
+        "pitcher_profile": pitcher_profile,
+        "opponent_lineup": [item for item in opponent_lineup if isinstance(item, dict)],
+    }
+
+
+def _live_pitcher_count_reason(
+    row: Dict[str, Any],
+    actual_row: Optional[Dict[str, Any]],
+    pitcher_profile: Optional[Dict[str, Any]],
+) -> Optional[str]:
+    if not isinstance(actual_row, dict):
+        return None
+    choice = str(row.get("selection") or "").strip().lower()
+    pitch_count = _safe_int(actual_row.get("P"))
+    batters_faced = _safe_int(actual_row.get("BF"))
+    outs_recorded = _safe_int(actual_row.get("OUTS"))
+    if outs_recorded is None:
+        outs_recorded = _parse_ip_to_outs(actual_row.get("IP"))
+    stamina = _safe_int((pitcher_profile or {}).get("stamina_pitches")) if isinstance(pitcher_profile, dict) else None
+
+    if choice == "over":
+        if pitch_count is not None and stamina is not None and pitch_count <= max(0, int(stamina) - 15):
+            return f"He is only at {int(pitch_count)} pitches against a leash closer to {int(stamina)}, so there is still room for more workload."
+        if batters_faced is not None and batters_faced <= 18 and (outs_recorded or 0) >= 9:
+            return f"He is only {float(batters_faced) / 9.0:.1f} times through the order, which keeps the deeper-outing path available."
+    elif choice == "under":
+        if pitch_count is not None and stamina is not None and pitch_count >= max(1, int(stamina) - 8):
+            return f"He is already up to {int(pitch_count)} pitches against a leash around {int(stamina)}, so the hook risk is climbing."
+        if batters_faced is not None and batters_faced >= 19:
+            return "He is already into the third trip through the order, which raises the chance the outing gets cut shorter from here."
+    return None
+
+
+def _live_pitcher_game_state_reason(row: Dict[str, Any], snapshot: Optional[Dict[str, Any]]) -> Optional[str]:
+    side = str(row.get("team_side") or "").strip().lower()
+    if side not in {"away", "home"}:
+        return None
+    team_score = _safe_int(row.get("score_away")) if side == "away" else _safe_int(row.get("score_home"))
+    opp_score = _safe_int(row.get("score_home")) if side == "away" else _safe_int(row.get("score_away"))
+    if team_score is None or opp_score is None:
+        return None
+    margin = int(team_score) - int(opp_score)
+    choice = str(row.get("selection") or "").strip().lower()
+    remaining_outs = _game_lens_remaining_outs(_live_game_progress(snapshot))
+    prop = str(row.get("prop") or "").strip().lower()
+
+    if prop in {"outs", "strikeouts"} and choice == "over" and abs(margin) <= 2 and remaining_outs >= 9:
+        return "The score is still tight enough that a normal starter leash is more likely to stay in place."
+    if prop in {"outs", "strikeouts"} and choice == "under" and margin <= -4:
+        return f"His club is trailing by {int(abs(margin))}, which raises the chance the manager shortens the outing from here."
+    if prop == "earned_runs" and choice == "over" and margin <= -2:
+        return "The game script is already leaning against him, so more run pressure is still in play."
+    if prop == "earned_runs" and choice == "under" and margin >= 2 and remaining_outs <= 15:
+        return "With his club protecting a lead late, the clean finish path is still intact if he avoids one damaging inning."
+    return None
+
+
+def _live_pitcher_matchup_reasons(
+    row: Dict[str, Any],
+    snapshot: Optional[Dict[str, Any]],
+    sim_context: Optional[Dict[str, Any]],
+    actual_row: Optional[Dict[str, Any]],
+) -> List[str]:
+    ctx = _live_pitcher_matchup_context(row, sim_context)
+    pitcher_profile = ctx.get("pitcher_profile") if isinstance(ctx.get("pitcher_profile"), dict) else None
+    opponent_lineup = ctx.get("opponent_lineup") if isinstance(ctx.get("opponent_lineup"), list) else []
+    if not isinstance(pitcher_profile, dict):
+        return []
+    choice = str(row.get("selection") or "").strip().lower()
+    prop = str(row.get("prop") or "")
+
+    reasons: List[str] = []
+    pitch_count_reason = _live_pitcher_count_reason(row, actual_row, pitcher_profile)
+    if pitch_count_reason:
+        reasons.append(pitch_count_reason)
+    reasons.extend(
+        reason
+        for reason in (
+            _pitch_mix_reason(pitcher_profile, prop=prop, selection=choice),
+            _opponent_lineup_reason(pitcher_profile, opponent_lineup, prop=prop, selection=choice),
+            _pitcher_statcast_quality_reason(pitcher_profile, prop=prop, selection=choice),
+            _pitcher_workload_reason(pitcher_profile, prop=prop, selection=choice),
+            _pitcher_bvp_reason(pitcher_profile, opponent_lineup),
+        )
+        if str(reason or "").strip()
+    )
+    game_state_reason = _live_pitcher_game_state_reason(row, snapshot)
+    if game_state_reason:
+        reasons.append(game_state_reason)
+    return _dedupe_reason_texts(reasons)
+
+
+def _live_staff_state(snapshot: Optional[Dict[str, Any]]) -> Dict[str, bool]:
+    return {
+        "awayStarterOut": _starter_removed_from_snapshot(snapshot, "away"),
+        "homeStarterOut": _starter_removed_from_snapshot(snapshot, "home"),
+    }
+
+
+def _game_lens_leader_text(selected_side: str, actual_home: Optional[float], actual_away: Optional[float], remaining_outs: int) -> str:
+    current_home_margin = float(_safe_float(actual_home) or 0.0) - float(_safe_float(actual_away) or 0.0)
+    current_side_margin = current_home_margin if selected_side == "home" else -current_home_margin
+    return _game_lens_score_phrase(current_side_margin, remaining_outs)
+
+
+def _game_lens_bullpen_context(snapshot: Optional[Dict[str, Any]]) -> str:
+    staff = _live_staff_state(snapshot)
+    if staff.get("awayStarterOut") and staff.get("homeStarterOut"):
+        return "Both clubs are already into the bullpens."
+    if staff.get("awayStarterOut"):
+        return "The away starter is already out, while the home starter is still carrying the game."
+    if staff.get("homeStarterOut"):
+        return "The home starter is already out, while the away starter is still carrying the game."
+    return "Both starters are still shaping the run environment."
+
+
 def _annotate_live_prop_reason_fields(
     row: Dict[str, Any],
     *,
@@ -8041,7 +8182,17 @@ def _annotate_live_prop_reason_fields(
         actual_clause = f" Current actual sits at {actual_text}." if actual_text else ""
         common_reasons.append(f"{actual_clause.strip() or 'Current actual is still pending.'} The live projection is {projection_text} against a line of {line_text} for {label.lower()}.")
 
+    actual_row = None
+    if market == "pitcher_props" and isinstance(snapshot, dict):
+        team_side = str(item.get("team_side") or "").strip().lower()
+        if team_side in {"away", "home"}:
+            actual_row = _lookup_boxscore_row(
+                ((((snapshot.get("teams") or {}).get(team_side)) or {}).get("boxscore") or {}).get("pitching") or [],
+                str(item.get("pitcher_name") or ""),
+            )
+
     if market == "pitcher_props":
+        reasons.extend(_live_pitcher_matchup_reasons(item, snapshot, sim_context, actual_row if isinstance(actual_row, dict) else None))
         reasons.extend(common_reasons)
         model_mean_text = _format_live_reason_value(item.get("model_mean"))
         if model_mean_text:
@@ -8461,6 +8612,7 @@ def _game_lens_moneyline_market(
     actual_away: Optional[float],
     home_odds: Any,
     away_odds: Any,
+    snapshot: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     home_prob_market = _american_odds_implied_prob(home_odds)
     away_prob_market = _american_odds_implied_prob(away_odds)
@@ -8499,13 +8651,14 @@ def _game_lens_moneyline_market(
 
     out["pick"] = selected_side
     out["edge"] = round(edge, 4)
-    out["reason"] = "; ".join(
+    side_label = "home" if selected_side == "home" else "away"
+    out["reason"] = " ".join(
         [
-            f"win prob {selected_prob:.1%}",
-            f"proj margin {selected_projection_margin:+.2f}",
-            _game_lens_score_phrase(current_side_margin, remaining_outs),
+            f"The model still favors the {side_label} side at {selected_prob:.1%}, with a projected margin of {selected_projection_margin:+.2f}.",
+            f"Right now they are {_game_lens_leader_text(selected_side, actual_home, actual_away, remaining_outs)}.",
+            _game_lens_bullpen_context(snapshot),
         ]
-    )
+    ).strip()
     return out
 
 
@@ -8518,6 +8671,7 @@ def _game_lens_spread_market(
     spread_line: Optional[float],
     spread_home_odds: Any,
     spread_away_odds: Any,
+    snapshot: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     out = {
         "homeLine": spread_line,
@@ -8550,13 +8704,14 @@ def _game_lens_spread_market(
 
     out["pick"] = selected_side
     out["edge"] = round(spread_edge, 3)
-    out["reason"] = "; ".join(
+    side_label = "home" if selected_side == "home" else "away"
+    out["reason"] = " ".join(
         [
-            f"cover cushion {cover_cushion:.2f}",
-            f"proj margin {float(home_margin):+.2f}",
-            _game_lens_score_phrase(current_side_cover, remaining_outs),
+            f"The {side_label} side still projects to cover with about {cover_cushion:.2f} runs of cushion off a {float(home_margin):+.2f} margin forecast.",
+            f"At the moment they are {_game_lens_leader_text(selected_side, actual_home, actual_away, remaining_outs)}.",
+            _game_lens_bullpen_context(snapshot),
         ]
-    )
+    ).strip()
     return out
 
 
@@ -8569,6 +8724,7 @@ def _game_lens_total_market(
     total_line: Optional[float],
     total_over_odds: Any,
     total_under_odds: Any,
+    snapshot: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     out = {
         "line": total_line,
@@ -8595,13 +8751,14 @@ def _game_lens_total_market(
 
     out["pick"] = selected_side
     out["edge"] = round(total_edge, 3)
-    out["reason"] = "; ".join(
+    pace_text = f"{int(max(0, remaining_outs))} outs left with {current_total:.0f} runs already on the board"
+    out["reason"] = " ".join(
         [
-            f"proj total {float(projected_total):.2f}",
-            f"current total {current_total:.0f}",
-            f"{int(max(0, remaining_outs))} outs left",
+            f"The live total still leans {selected_side} because the projection sits at {float(projected_total):.2f} against {float(live_total_line):.1f}.",
+            f"There are {pace_text}.",
+            _game_lens_bullpen_context(snapshot),
         ]
-    )
+    ).strip()
     return out
 
 
@@ -9065,6 +9222,7 @@ def _build_game_lens(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], s
             actual_away=away_score,
             home_odds=home_odds,
             away_odds=away_odds,
+            snapshot=snapshot,
         )
         spread_market = _game_lens_spread_market(
             projection_home_margin=projection.get("homeMargin"),
@@ -9074,6 +9232,7 @@ def _build_game_lens(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], s
             spread_line=spread_line,
             spread_home_odds=spread_home_odds,
             spread_away_odds=spread_away_odds,
+            snapshot=snapshot,
         )
         total_market = _game_lens_total_market(
             projection_total=projection.get("total"),
@@ -9083,6 +9242,7 @@ def _build_game_lens(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], s
             total_line=total_line,
             total_over_odds=total_over_odds,
             total_under_odds=total_under_odds,
+            snapshot=snapshot,
         )
 
         rows.append(
