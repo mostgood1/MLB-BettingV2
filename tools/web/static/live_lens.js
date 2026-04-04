@@ -259,7 +259,7 @@
             ${renderSeasonMetric("Home win", modelProb)}
             ${renderSeasonMetric("Market", marketProb)}
             ${renderSeasonMetric("ML", moneyline.pick ? `${String(moneyline.pick).toUpperCase()} ${formatPercent(moneyline.edge)}` : "-")}
-            ${renderSeasonMetric("Spread", spread.pick ? `${String(spread.pick).toUpperCase()} ${formatSigned(spread.homeLine, 1)} (${formatSigned(spread.edge)})` : "-")}
+            ${renderSeasonMetric("Spread", spread.pick ? `${String(spread.pick).toUpperCase()} ${formatSigned(spread.selectedLine, 1)} (${formatSigned(spread.edge)})` : "-")}
             ${renderSeasonMetric("Total", total.pick ? `${String(total.pick).toUpperCase()} ${formatLine(total.line)} (${formatSigned(total.edge)})` : "-")}
           </div>
           ${reasonBlock}
@@ -276,7 +276,7 @@
           ${renderMetric("Home win", modelProb)}
           ${renderMetric("Market", marketProb)}
           ${renderMetric("ML", moneyline.pick ? `${String(moneyline.pick).toUpperCase()} ${formatPercent(moneyline.edge)}` : "-" )}
-          ${renderMetric("Spread", spread.pick ? `${String(spread.pick).toUpperCase()} ${formatSigned(spread.homeLine, 1)} (${formatSigned(spread.edge)})` : "-" )}
+          ${renderMetric("Spread", spread.pick ? `${String(spread.pick).toUpperCase()} ${formatSigned(spread.selectedLine, 1)} (${formatSigned(spread.edge)})` : "-" )}
           ${renderMetric("Total", total.pick ? `${String(total.pick).toUpperCase()} ${formatLine(total.line)} (${formatSigned(total.edge)})` : "-" )}
         </div>
         ${reasonBlock}

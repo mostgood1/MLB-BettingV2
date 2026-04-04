@@ -523,22 +523,35 @@
       const modelHomeProb = logisticWinProb(projection.homeMargin);
       const baselineProb = baselineHomeWinProb(card, segment.key);
       const totalLine = toNumber(totals.line);
-      const totalEdge = projection.total == null || totalLine == null ? null : Number((projection.total - totalLine).toFixed(2));
+      const totalDelta = projection.total == null || totalLine == null ? null : Number((projection.total - totalLine).toFixed(2));
       const spreadHomeLine = toNumber(spreads.home_line ?? spreads.homeLine);
-      const spreadEdge = projection.homeMargin == null || spreadHomeLine == null ? null : Number((projection.homeMargin + spreadHomeLine).toFixed(2));
+      const spreadDelta = projection.homeMargin == null || spreadHomeLine == null ? null : Number((projection.homeMargin + spreadHomeLine).toFixed(2));
       const homeDelta = modelHomeProb == null || marketHomeProb == null ? null : modelHomeProb - marketHomeProb;
       const awayDelta = modelHomeProb == null || marketHomeProb == null ? null : (1 - modelHomeProb) - (1 - marketHomeProb);
       let moneylinePick = null;
       let moneylineEdge = null;
+      let moneylineModelProb = null;
+      let moneylineMarketProb = null;
       if (homeDelta != null && awayDelta != null) {
         if (Math.abs(homeDelta) >= Math.abs(awayDelta) && homeDelta > 0) {
           moneylinePick = "home";
           moneylineEdge = Number(homeDelta.toFixed(3));
+          moneylineModelProb = modelHomeProb == null ? null : Number(modelHomeProb.toFixed(4));
+          moneylineMarketProb = marketHomeProb == null ? null : Number(marketHomeProb.toFixed(4));
         } else if (awayDelta > 0) {
           moneylinePick = "away";
           moneylineEdge = Number(awayDelta.toFixed(3));
+          moneylineModelProb = modelHomeProb == null ? null : Number((1 - modelHomeProb).toFixed(4));
+          moneylineMarketProb = marketHomeProb == null ? null : Number((1 - marketHomeProb).toFixed(4));
         }
       }
+      const spreadPick = spreadDelta == null ? null : (spreadDelta > 0 ? "home" : (spreadDelta < 0 ? "away" : null));
+      const spreadEdge = spreadDelta == null ? null : Number(Math.abs(spreadDelta).toFixed(2));
+      const spreadSelectedLine = spreadPick === "home"
+        ? spreadHomeLine
+        : (spreadPick === "away" && spreadHomeLine != null ? Number((-spreadHomeLine).toFixed(2)) : null);
+      const totalPick = totalDelta == null ? null : (totalDelta > 0 ? "over" : (totalDelta < 0 ? "under" : null));
+      const totalEdge = totalDelta == null ? null : Number(Math.abs(totalDelta).toFixed(2));
       return {
         key: segment.key,
         label: segment.label,
@@ -550,19 +563,22 @@
           moneyline: {
             pick: moneylinePick,
             edge: moneylineEdge,
+            modelProb: moneylineModelProb,
+            marketProb: moneylineMarketProb,
             homeOdds: moneylineHomeOdds,
             awayOdds: moneylineAwayOdds,
             marketHomeProb,
           },
           spread: {
-            pick: spreadEdge == null ? null : (spreadEdge > 0 ? "home" : (spreadEdge < 0 ? "away" : null)),
+            pick: spreadPick,
             edge: spreadEdge,
             homeLine: spreadHomeLine,
+            selectedLine: spreadSelectedLine,
             homeOdds: spreads.home_odds || spreads.homeOdds || null,
             awayOdds: spreads.away_odds || spreads.awayOdds || null,
           },
           total: {
-            pick: totalEdge == null ? null : (totalEdge > 0 ? "over" : (totalEdge < 0 ? "under" : null)),
+            pick: totalPick,
             edge: totalEdge,
             line: totalLine,
             overOdds: totals.over_odds || totals.overOdds || null,
@@ -1603,26 +1619,25 @@
       const currentMargin = Number((currentHomeRuns - currentAwayRuns).toFixed(2));
       const currentTotal = Number((currentAwayRuns + currentHomeRuns).toFixed(2));
       if (moneyline.pick && moneyline.edge != null) {
+        const selectedTeamCode = moneyline.pick === "home" ? homeCode : awayCode;
         liveGameCards.push({
           label: "Game live lens",
-          playerName: `${moneyline.pick === "home" ? homeCode : awayCode} ML`,
+          playerName: `${selectedTeamCode} ML`,
           marketLabel: "Moneyline",
           actualLabel: `${awayCode} ${formatLine(currentAwayRuns)} - ${homeCode} ${formatLine(currentHomeRuns)}`,
-          projectionLabel: formatPercent(liveGameRow.modelHomeWinProb, 1),
+          projectionLabel: formatPercent(moneyline.modelProb, 1),
           lineLabel: moneyline.pick === "home"
             ? `${homeCode} ${formatOdds(moneyline.homeOdds)}`
             : `${awayCode} ${formatOdds(moneyline.awayOdds)}`,
           edgeLabel: formatSigned((toNumber(moneyline.edge) || 0) * 100, 1),
           actualMetricLabel: "Current",
-          footLeft: moneyline.reason || `Market ${formatPercent(moneyline.marketHomeProb, 1)} home`,
+          footLeft: moneyline.reason || `Market ${formatPercent(moneyline.marketProb, 1)} ${selectedTeamCode}`,
           footRight: `${liveGameRow.label} | ML`,
         });
       }
       if (spread.pick && spread.edge != null) {
         const homeLine = toNumber(spread.homeLine);
-        const spreadLineValue = spread.pick === "home"
-          ? formatSigned(homeLine, 1)
-          : formatSigned(homeLine == null ? null : -homeLine, 1);
+        const spreadLineValue = formatSigned(spread.selectedLine, 1);
         const runLineText = spread.pick === "home"
           ? `${homeCode} ${formatSigned(homeLine, 1)} ${formatOdds(spread.homeOdds)}`
           : `${awayCode} ${formatSigned(homeLine == null ? null : -homeLine, 1)} ${formatOdds(spread.awayOdds)}`;
@@ -1661,6 +1676,14 @@
     const rankedRows = overviewRows
       .map((reco) => ({ reco, state: propLensState(card, detail, reco) }))
       .filter((entry) => entry.state && entry.state.reco)
+      .filter((entry) => {
+        if (livePayloadAvailable) return true;
+        if (!isLiveStatus(detail?.snapshot?.status?.abstractGameState || card?.status?.abstract)) return true;
+        const line = toNumber(entry.state?.reco?.market_line);
+        const liveEdge = toNumber(entry.state?.liveEdge);
+        if (line == null || liveEdge == null) return false;
+        return liveEdge > 0;
+      })
       .sort((left, right) => {
         if (liveRows.length) {
           const leftLive = Math.abs(toNumber(left.state.liveEdge) || 0);

@@ -9640,6 +9640,7 @@ def _prop_lens_rows(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], si
             model_mean = _prop_model_mean_value(reco, sim_row)
             live_projection = _project_live_value(actual_value, model_mean, progress_fraction)
             market_line = _safe_float(reco.get("market_line"))
+            selection = str(reco.get("selection") or "").strip().lower()
             rows.append(
                 {
                     "tier": tier,
@@ -9652,7 +9653,7 @@ def _prop_lens_rows(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], si
                     "actual": actual_value,
                     "modelMean": model_mean,
                     "liveProjection": live_projection,
-                    "liveEdge": (float(live_projection) - float(market_line)) if live_projection is not None and market_line is not None else None,
+                    "liveEdge": _selection_live_edge(selection, live_projection, market_line),
                     "delta": (float(actual_value) - float(market_line)) if actual_value is not None and market_line is not None else None,
                     "status": _prop_result_state(reco, actual_value, status_text),
                     "edge": _safe_float(reco.get("edge")),
