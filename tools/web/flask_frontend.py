@@ -3561,6 +3561,10 @@ def _schedule_games_for_date(d: str) -> List[Dict[str, Any]]:
         if candidate.exists() and candidate.is_file():
             schedule_snapshot_path = candidate
             break
+    if not _is_historical_date(str(d)):
+        remote_games = [dict(game) for game in _fetch_schedule_games_remote_cached(str(d))]
+        if remote_games:
+            return remote_games
     schedule_snapshot = _load_json_file(schedule_snapshot_path)
     if isinstance(schedule_snapshot, list):
         return [game for game in schedule_snapshot if isinstance(game, dict)]
