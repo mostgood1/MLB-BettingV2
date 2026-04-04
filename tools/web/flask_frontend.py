@@ -150,6 +150,9 @@ _LIVE_LENS_LOOP_MIN_INTERVAL_SECONDS = 5
 _LIVE_LENS_LOOP_THREAD: Optional[threading.Thread] = None
 _LIVE_LENS_LOOP_LOCK = threading.Lock()
 _LIVE_LENS_LOOP_STOP = threading.Event()
+_LIVE_PROP_MARKET_REFRESH_LOCK = threading.Lock()
+_LIVE_PROP_MARKET_REFRESH_IN_PROGRESS: set[str] = set()
+_LIVE_PROP_MARKET_REFRESH_LAST_ATTEMPT: Dict[str, float] = {}
 _PITCHER_LADDER_PROPS: Dict[str, Dict[str, Any]] = {
     "strikeouts": {
         "label": "Strikeouts",
@@ -1599,11 +1602,25 @@ def _maybe_refresh_live_oddsapi_markets(d: str, *, max_age_seconds: int = _LIVE_
     if len(fresh) == 3:
         return False
 
+    now = time.time()
+    refresh_key = str(d)
+    with _LIVE_PROP_MARKET_REFRESH_LOCK:
+        last_attempt = _LIVE_PROP_MARKET_REFRESH_LAST_ATTEMPT.get(refresh_key)
+        if refresh_key in _LIVE_PROP_MARKET_REFRESH_IN_PROGRESS:
+            return False
+        if last_attempt is not None and (float(now) - float(last_attempt)) < float(max_age_seconds):
+            return False
+        _LIVE_PROP_MARKET_REFRESH_IN_PROGRESS.add(refresh_key)
+        _LIVE_PROP_MARKET_REFRESH_LAST_ATTEMPT[refresh_key] = float(now)
+
     try:
         _refresh_oddsapi_markets(d, overwrite=True)
         return True
     except Exception:
         return False
+    finally:
+        with _LIVE_PROP_MARKET_REFRESH_LOCK:
+            _LIVE_PROP_MARKET_REFRESH_IN_PROGRESS.discard(refresh_key)
 
 
 def _load_live_lens_feed(game_pk: int, d: str) -> Optional[Dict[str, Any]]:
