@@ -1359,6 +1359,13 @@
     return String(prop?.marketLabel || prop?.prop || prop?.market || "Prop").replace(/_/g, " ");
   }
 
+  function liveLensReasonText(prop) {
+    const reasons = Array.isArray(prop?.reasons) ? prop.reasons : [];
+    const cleaned = reasons.map((row) => String(row == null ? "" : row).trim()).filter(Boolean);
+    if (cleaned.length) return cleaned[0];
+    return String(prop?.reason_summary || "").trim();
+  }
+
   function liveLensStatusTone(status) {
     const token = String(status || "").toLowerCase();
     if (token === "win") return "is-win";
@@ -1472,6 +1479,7 @@
                 <td>
                   <div class="season-betting-cell-main">${escapeHtml(prop.playerName || '-')}</div>
                   <div class="season-betting-cell-sub">${escapeHtml(String(prop.teamSide || '').toUpperCase() || 'Team')}</div>
+                  ${liveLensReasonText(prop) ? `<div class="season-betting-cell-sub">${escapeHtml(liveLensReasonText(prop))}</div>` : ''}
                 </td>
                 <td>${escapeHtml(liveLensPropLabel(prop))}</td>
                 <td><span class="season-ticket-pill ${liveLensTierTone(prop.tier || prop.source)}" style="${seasonTicketPillStyle(liveLensTierTone(prop.tier || prop.source))}">${escapeHtml(liveLensTierLabel(prop.tier || prop.source))}</span></td>

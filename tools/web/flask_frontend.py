@@ -132,6 +132,7 @@ def _live_lens_optimization_regime(d: Any) -> Dict[str, Any]:
 _DEMO_DATE = "2025-06-04"
 _CARDS_PRESEASON_DEFAULT_WINDOW_DAYS = 21
 _LIVE_PROP_MARKET_MAX_AGE_SECONDS = 15
+_LIVE_HITTER_PROP_MIN_MARKET_EDGE = 0.05
 _JSON_FILE_CACHE_MAXSIZE = _env_int("MLB_JSON_FILE_CACHE_MAXSIZE", 256, minimum=32)
 _SCHEDULE_FETCH_CACHE_MAXSIZE = _env_int("MLB_SCHEDULE_FETCH_CACHE_MAXSIZE", 32, minimum=4)
 _LIVE_LENS_LOOP_DEFAULT_INTERVAL_SECONDS = 15
@@ -1097,6 +1098,12 @@ def _live_prop_capture_snapshot(row: Dict[str, Any]) -> Dict[str, Any]:
         "liveEdge": _safe_float(row.get("live_edge")),
         "modelMean": _safe_float(row.get("model_mean")),
         "actual": _safe_float(row.get("actual")),
+        "reasonSummary": str(row.get("reason_summary") or "").strip(),
+        "reasons": [
+            str(reason).strip()
+            for reason in (row.get("reasons") or [])
+            if str(reason).strip()
+        ],
     }
 
 
@@ -7541,7 +7548,7 @@ def _live_stat_value(row: Optional[Dict[str, Any]], reco: Dict[str, Any]) -> Opt
         return _safe_float(row.get("TB"))
     if "rbis" in market or prop == "rbi":
         return _safe_float(row.get("RBI"))
-    if "hitter_runs" in market or "runs_scored" in prop:
+    if "hitter_runs" in market or "runs_scored" in prop or prop == "runs":
         return _safe_float(row.get("R"))
     if "hitter_hits" in market or prop.endswith("hits"):
         return _safe_float(row.get("H"))
@@ -7668,6 +7675,7 @@ def _select_live_prop_side(
     line: Optional[float],
     over_odds: Any,
     under_odds: Any,
+    min_market_edge: float = 0.0,
 ) -> Optional[Dict[str, Any]]:
     candidates: List[Dict[str, Any]] = []
     line_value = _safe_float(line)
@@ -7691,7 +7699,7 @@ def _select_live_prop_side(
             elif selection == "under" and market_prob_under is not None:
                 market_edge = round((1.0 - float(model_prob_over)) - float(market_prob_under), 4)
         score = market_edge
-        if score is None or float(score) <= 0.0:
+        if score is None or float(score) <= float(min_market_edge):
             continue
         candidates.append(
             {
@@ -7736,6 +7744,63 @@ def _live_prop_market_label(market: str, prop: str) -> str:
     return str(cfg.get("label") or market or "Hitter prop")
 
 
+def _format_live_reason_value(value: Any) -> str:
+    number = _safe_float(value)
+    if number is None:
+        return ""
+    text = f"{float(number):.1f}"
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+def _annotate_live_prop_reason_fields(row: Dict[str, Any]) -> Dict[str, Any]:
+    item = dict(row)
+    selection = str(item.get("selection") or "").strip().lower()
+    market = str(item.get("market") or "").strip().lower()
+    label = str(item.get("market_label") or _live_prop_market_label(market, str(item.get("prop") or ""))).strip()
+    model_prob_over = _safe_float(item.get("model_prob_over"))
+    selected_market_prob = _safe_float(item.get("selected_side_market_prob"))
+    selected_model_prob: Optional[float] = None
+    if model_prob_over is not None and selection == "over":
+        selected_model_prob = float(model_prob_over)
+    elif model_prob_over is not None and selection == "under":
+        selected_model_prob = 1.0 - float(model_prob_over)
+
+    sentences: List[str] = []
+    if selected_model_prob is not None and selected_market_prob is not None:
+        sentences.append(
+            f"The model lands on the {selection} side in {selected_model_prob * 100.0:.1f}% of sims, while the market is pricing it closer to {selected_market_prob * 100.0:.1f}%."
+        )
+
+    actual_text = _format_live_reason_value(item.get("actual"))
+    projection_text = _format_live_reason_value(item.get("live_projection"))
+    line_text = _format_live_reason_value(item.get("market_line"))
+    if projection_text and line_text:
+        actual_clause = f" Current actual sits at {actual_text}." if actual_text else ""
+        sentences.append(f"{actual_clause.strip() or 'Current actual is still pending.'} The live projection is {projection_text} against a line of {line_text} for {label.lower()}.")
+
+    if market == "pitcher_props":
+        model_mean_text = _format_live_reason_value(item.get("model_mean"))
+        if model_mean_text:
+            sentences.append(f"The pregame model mean sat around {model_mean_text} for this prop.")
+    else:
+        lineup_order = _safe_int(item.get("lineup_order"))
+        pa_mean = _safe_float(item.get("pa_mean"))
+        if lineup_order is not None and pa_mean is not None:
+            sentences.append(f"He opened in lineup spot {int(lineup_order)} and was projected for about {float(pa_mean):.1f} plate appearances.")
+        elif pa_mean is not None:
+            sentences.append(f"He was projected for about {float(pa_mean):.1f} plate appearances pregame.")
+
+    live_text = str(item.get("live_text") or "").strip()
+    if live_text:
+        sentences.append(f"Game state: {live_text}.")
+
+    summary = " ".join(part for part in sentences if part).strip()
+    if summary:
+        item["reason_summary"] = summary
+        item["reasons"] = [summary]
+    return item
+
+
 def _final_live_prop_rows_from_registry(
     card: Dict[str, Any],
     snapshot: Optional[Dict[str, Any]],
@@ -7763,8 +7828,6 @@ def _final_live_prop_rows_from_registry(
         prop = str(entry.get("prop") or "").strip().lower()
         selection = str(entry.get("selection") or "").strip().lower()
         market_line = _safe_float(entry.get("marketLine"))
-        if market != "pitcher_props":
-            continue
         if not owner or not market or not prop or not selection or market_line is None:
             continue
 
@@ -7779,7 +7842,7 @@ def _final_live_prop_rows_from_registry(
                 actual_row = candidate_row
                 team_side = candidate_side
                 break
-        if team_side in {"away", "home"} and _starter_removed_from_snapshot(snapshot, str(team_side)):
+        if market == "pitcher_props" and team_side in {"away", "home"} and _starter_removed_from_snapshot(snapshot, str(team_side)):
             continue
 
         live_edge = _safe_float(first_snapshot.get("liveEdge"))
@@ -7822,10 +7885,24 @@ def _final_live_prop_rows_from_registry(
         if market == "pitcher_props":
             item["pitcher_name"] = owner
             item["outs_mean"] = _safe_float(first_snapshot.get("modelMean")) if prop == "outs" else None
+        else:
+            item["player_name"] = owner
         if team_side:
             item["team_side"] = team_side
         if team_info:
             item["team"] = team_info.get("abbr") or team_info.get("name")
+        reason_summary = str(first_snapshot.get("reasonSummary") or "").strip()
+        reasons = [
+            str(reason).strip()
+            for reason in (first_snapshot.get("reasons") or [])
+            if str(reason).strip()
+        ]
+        if reason_summary:
+            item["reason_summary"] = reason_summary
+        if reasons:
+            item["reasons"] = reasons
+        elif reason_summary:
+            item["reasons"] = [reason_summary]
         rows.append(item)
 
     rows.sort(
@@ -7869,7 +7946,9 @@ def _current_live_prop_rows(
     progress_fraction = float((_live_game_progress(snapshot, card).get("fraction") or 0.0))
     actual_teams = ((snapshot or {}).get("teams") or {})
     _, pitcher_market_lines = _load_pitcher_prop_market_lines(d)
+    _, hitter_market_lines = _load_hitter_prop_market_lines(d)
     pitcher_models = _sim_prop_models(sim_context, "pitchers")
+    hitter_models = _sim_prop_models(sim_context, "hitters")
     rows: List[Dict[str, Any]] = []
 
     for side in ("away", "home"):
@@ -7938,6 +8017,77 @@ def _current_live_prop_rows(
                     }
                 )
 
+    for model_entry in hitter_models.values():
+        if not isinstance(model_entry, dict):
+            continue
+        hitter_name = _first_text(model_entry.get("name"))
+        side = str(model_entry.get("team_side") or "").strip().lower()
+        if not hitter_name or side not in {"away", "home"}:
+            continue
+        actual_row = _lookup_boxscore_row((((actual_teams.get(side) or {}).get("boxscore") or {}).get("batting") or []), hitter_name)
+        player_market_lines = _market_lines_for_name(hitter_market_lines, hitter_name)
+        if not isinstance(player_market_lines, dict) or not player_market_lines:
+            continue
+        model_row = model_entry.get("model") or {}
+        for prop_key, cfg in _HITTER_LADDER_PROPS.items():
+            market_key = cfg.get("market_key")
+            if not market_key:
+                continue
+            market = player_market_lines.get(str(market_key))
+            if not isinstance(market, dict):
+                continue
+            line_value = _safe_float(market.get("line"))
+            if line_value is None:
+                continue
+            model_mean = _safe_float(model_row.get(str(cfg.get("mean_key"))))
+            model_prob_over = _prob_over_line_from_dist(model_row.get(str(cfg.get("dist_key"))) or {}, float(line_value))
+            actual_value = _live_stat_value(actual_row, {"market": "hitter_props", "prop": prop_key})
+            if _live_prop_market_resolved(actual_value, line_value):
+                continue
+            live_projection = _project_live_value(actual_value, model_mean, progress_fraction)
+            side_pick = _select_live_prop_side(
+                model_prob_over=model_prob_over,
+                live_projection=live_projection,
+                line=float(line_value),
+                over_odds=market.get("over_odds"),
+                under_odds=market.get("under_odds"),
+                min_market_edge=_LIVE_HITTER_PROP_MIN_MARKET_EDGE,
+            )
+            if side_pick is None:
+                continue
+            rows.append(
+                {
+                    "recommendation_tier": "live",
+                    "source": "current_market",
+                    "market": "hitter_props",
+                    "market_label": cfg.get("label"),
+                    "prop": prop_key,
+                    "player_name": hitter_name,
+                    "team": model_entry.get("team"),
+                    "team_side": side,
+                    "selection": side_pick.get("selection"),
+                    "market_line": float(line_value),
+                    "odds": side_pick.get("odds"),
+                    "over_odds": _safe_int(market.get("over_odds")),
+                    "under_odds": _safe_int(market.get("under_odds")),
+                    "model_prob_over": model_prob_over,
+                    "market_prob_over": side_pick.get("marketProbOver"),
+                    "market_prob_under": side_pick.get("marketProbUnder"),
+                    "market_prob_mode": side_pick.get("marketProbMode"),
+                    "selected_side_market_prob": side_pick.get("selectedSideMarketProb"),
+                    "edge": side_pick.get("marketEdge"),
+                    "live_edge": side_pick.get("liveEdge"),
+                    "projection_gap": side_pick.get("projectionGap"),
+                    "model_mean": model_mean,
+                    "actual": actual_value,
+                    "actual_value": actual_value,
+                    "live_projection": live_projection,
+                    "lineup_order": _safe_int(model_row.get("lineup_order")),
+                    "pa_mean": _safe_float(model_row.get("pa_mean")),
+                    "ab_mean": _safe_float(model_row.get("ab_mean")),
+                }
+            )
+
     rows.sort(
         key=lambda row: (
             -float(_safe_float(row.get("edge")) or -999.0),
@@ -7966,7 +8116,7 @@ def _current_live_prop_rows(
         item["score_away"] = _safe_int(away_totals.get("R"))
         item["score_home"] = _safe_int(home_totals.get("R"))
         item["live_text"] = _live_matchup_text(snapshot)
-        out.append(item)
+        out.append(_annotate_live_prop_reason_fields(item))
     return _enrich_live_prop_rows_with_registry(out, d, write_observation_log=write_observation_log)
 
 
@@ -8797,6 +8947,12 @@ def _normalize_live_lens_live_prop_row(row: Dict[str, Any], snapshot: Optional[D
         "modelProbOver": _safe_float(row.get("model_prob_over")),
         "outsMean": _safe_float(row.get("outs_mean")),
         "marketLabel": row.get("market_label") or row.get("prop") or row.get("market"),
+        "reason_summary": str(row.get("reason_summary") or "").strip(),
+        "reasons": [
+            str(reason).strip()
+            for reason in (row.get("reasons") or [])
+            if str(reason).strip()
+        ],
         "firstSeenAt": row.get("first_seen_at"),
         "lastSeenAt": row.get("last_seen_at"),
         "firstSeenLine": _safe_float(row.get("first_seen_line")),

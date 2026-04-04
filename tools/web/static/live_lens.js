@@ -71,6 +71,13 @@
     return raw.replace(/_/g, " ");
   }
 
+  function propReasonText(prop) {
+    const reasons = Array.isArray(prop?.reasons) ? prop.reasons : [];
+    const cleaned = reasons.map((row) => String(row == null ? "" : row).trim()).filter(Boolean);
+    if (cleaned.length) return cleaned[0];
+    return String(prop?.reason_summary || "").trim();
+  }
+
   function propTierLabel(prop) {
     const tier = String(prop?.tier || prop?.source || "").toLowerCase();
     if (tier === "live" || tier === "current_market" || tier === "live_registry") return "live";
@@ -307,7 +314,10 @@
         <tbody>
           ${props.map((prop) => `
             <tr>
-              <td>${escapeHtml(prop.playerName || "")}</td>
+              <td>
+                <div style="font-weight:600;">${escapeHtml(prop.playerName || "")}</div>
+                ${propReasonText(prop) ? `<div class="status-line" style="font-size:12px;line-height:1.35;margin-top:4px;">${escapeHtml(propReasonText(prop))}</div>` : ''}
+              </td>
               <td>${escapeHtml(propLabel(prop))}</td>
               <td>${escapeHtml(propTierLabel(prop))}</td>
               <td>${escapeHtml(String(prop.selection || ""))}</td>

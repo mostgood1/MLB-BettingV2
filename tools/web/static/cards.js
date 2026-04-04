@@ -1665,14 +1665,14 @@
 
     const items = rankedRows.map((entry) => {
       const reco = entry.reco;
-      const label = "Pitcher live lens";
+      const label = String(reco?.market || '').toLowerCase() === 'pitcher_props' ? 'Pitcher live lens' : 'Hitter live lens';
       return { label, state: entry.state };
     });
 
     if (!items.length && !liveGameCards.length) {
       return livePayloadAvailable
         ? '<div class="cards-empty-copy">No unresolved live prop opportunities remain for this game.</div>'
-        : '<div class="cards-empty-copy">No tracked starter pitcher props for live lens.</div>';
+        : '<div class="cards-empty-copy">No tracked live prop opportunities for this game.</div>';
     }
 
     return `
