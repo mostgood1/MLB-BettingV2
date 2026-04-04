@@ -73,7 +73,12 @@ _LIVE_LENS_DIR = Path(
     str(os.environ.get("MLB_LIVE_LENS_DIR") or os.environ.get("LIVE_LENS_DIR") or (_DATA_DIR / "live_lens")).strip()
 ).resolve()
 _TRACKED_DAILY_SNAPSHOT_DIR = _TRACKED_DATA_DIR / "daily" / "snapshots"
-_CRON_TOKEN = str(os.environ.get("MLB_CRON_TOKEN") or os.environ.get("CRON_TOKEN") or "").strip()
+_CRON_TOKEN = str(
+    os.environ.get("MLB_BETTING_CRON_TOKEN")
+    or os.environ.get("MLB_CRON_TOKEN")
+    or os.environ.get("CRON_TOKEN")
+    or ""
+).strip()
 _USER_TIMEZONE_NAME = str(os.environ.get("MLB_USER_TIMEZONE") or "America/Chicago").strip() or "America/Chicago"
 try:
     _USER_TIMEZONE = ZoneInfo(_USER_TIMEZONE_NAME)
