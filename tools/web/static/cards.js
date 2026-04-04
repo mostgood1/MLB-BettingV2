@@ -1605,6 +1605,8 @@
   }
 
   function renderPropOverviewLens(card, detail) {
+    const liveStatus = isLiveStatus(detail?.snapshot?.status?.abstractGameState || card?.status?.abstract);
+    const simLoaded = !!detail?.sim;
     const liveGameRows = buildGameLensRows(card, detail);
     const liveGameRow = liveGameRows.find((row) => row?.key === "live") || null;
     const liveGameCards = [];
@@ -1672,6 +1674,35 @@
 
     const livePayloadAvailable = hasLivePropPayload(detail);
     const liveRows = livePropRows(detail);
+    if (liveStatus && !livePayloadAvailable) {
+      return liveGameCards.length
+        ? `
+      <div class="cards-prop-overview-grid">
+        ${liveGameCards.map((entry) => `
+          <div class="cards-prop-overview-card">
+            <div class="cards-lens-head">
+              <div>
+                <div class="cards-lens-label">${escapeHtml(entry.label)}</div>
+                <div class="cards-lens-main">${escapeHtml(entry.playerName)}</div>
+                <div class="cards-subcopy">${escapeHtml(entry.marketLabel)}</div>
+              </div>
+              <span class="cards-lens-badge is-live">Live</span>
+            </div>
+            <div class="cards-prop-overview-metrics">
+              <div class="cards-data-pair"><span>${escapeHtml(entry.actualMetricLabel || 'Current')}</span><strong>${escapeHtml(entry.actualLabel)}</strong></div>
+              <div class="cards-data-pair"><span>Live proj</span><strong>${escapeHtml(entry.projectionLabel)}</strong></div>
+              <div class="cards-data-pair"><span>Line</span><strong>${escapeHtml(entry.lineLabel)}</strong></div>
+              <div class="cards-data-pair is-positive"><span>Live edge</span><strong>${escapeHtml(entry.edgeLabel)}</strong></div>
+            </div>
+            <div class="cards-prop-overview-foot">
+              <span>${escapeHtml(entry.footLeft)}</span>
+              <span>${escapeHtml(entry.footRight)}</span>
+            </div>
+          </div>`).join('')}
+        <div class="cards-empty-copy">Loading current live prop lanes...</div>
+      </div>`
+        : `<div class="cards-empty-copy">${escapeHtml(simLoaded ? 'Loading current live prop lanes...' : 'Loading live sim context...')}</div>`;
+    }
     const overviewRows = livePayloadAvailable ? liveRows : liveLensAllPropRows(card);
     const rankedRows = overviewRows
       .map((reco) => ({ reco, state: propLensState(card, detail, reco) }))
