@@ -142,6 +142,7 @@ def _live_lens_optimization_regime(d: Any) -> Dict[str, Any]:
 _DEMO_DATE = "2025-06-04"
 _CARDS_PRESEASON_DEFAULT_WINDOW_DAYS = 21
 _LIVE_PROP_MARKET_MAX_AGE_SECONDS = 15
+_LIVE_FEED_CACHE_TTL_SECONDS = float(_env_int("MLB_LIVE_FEED_CACHE_TTL_SECONDS", 5, minimum=1))
 _LIVE_HITTER_PROP_MIN_MARKET_EDGE = 0.05
 _JSON_FILE_CACHE_MAXSIZE = _env_int("MLB_JSON_FILE_CACHE_MAXSIZE", 256, minimum=32)
 _SCHEDULE_FETCH_CACHE_MAXSIZE = _env_int("MLB_SCHEDULE_FETCH_CACHE_MAXSIZE", 32, minimum=4)
@@ -150,6 +151,8 @@ _LIVE_LENS_LOOP_MIN_INTERVAL_SECONDS = 5
 _LIVE_LENS_LOOP_THREAD: Optional[threading.Thread] = None
 _LIVE_LENS_LOOP_LOCK = threading.Lock()
 _LIVE_LENS_LOOP_STOP = threading.Event()
+_LIVE_FEED_CACHE_LOCK = threading.Lock()
+_LIVE_FEED_CACHE: Dict[Tuple[str, int], Tuple[float, Dict[str, Any]]] = {}
 _LIVE_PROP_MARKET_REFRESH_LOCK = threading.Lock()
 _LIVE_PROP_MARKET_REFRESH_IN_PROGRESS: set[str] = set()
 _LIVE_PROP_MARKET_REFRESH_LAST_ATTEMPT: Dict[str, float] = {}
@@ -1626,9 +1629,28 @@ def _maybe_refresh_live_oddsapi_markets(d: str, *, max_age_seconds: int = _LIVE_
 def _load_live_lens_feed(game_pk: int, d: str) -> Optional[Dict[str, Any]]:
     try:
         use_archive = _is_historical_date(d)
+        cache_key = (str(d), int(game_pk))
+        if not use_archive:
+            now = time.time()
+            with _LIVE_FEED_CACHE_LOCK:
+                cached = _LIVE_FEED_CACHE.get(cache_key)
+                if cached is not None and (now - float(cached[0])) <= _LIVE_FEED_CACHE_TTL_SECONDS:
+                    return cached[1]
+
         feed = _load_game_feed_for_date(int(game_pk), d) if use_archive else None
         if not isinstance(feed, dict) or not feed:
             feed = fetch_game_feed_live(_client(), int(game_pk))
+        if not use_archive and isinstance(feed, dict) and feed:
+            now = time.time()
+            with _LIVE_FEED_CACHE_LOCK:
+                _LIVE_FEED_CACHE[cache_key] = (now, feed)
+                expired_keys = [
+                    key
+                    for key, value in _LIVE_FEED_CACHE.items()
+                    if (now - float(value[0])) > (_LIVE_FEED_CACHE_TTL_SECONDS * 4.0)
+                ]
+                for key in expired_keys:
+                    _LIVE_FEED_CACHE.pop(key, None)
         if isinstance(feed, dict) and feed:
             return feed
     except Exception:
@@ -11285,9 +11307,10 @@ def api_game_sim(game_pk: int) -> Response:
         return jsonify({"gamePk": int(game_pk), "found": False, "error": "missing_date"}), 400
     artifacts = _load_cards_artifacts(d)
     archive = _load_cards_archive_context(d) if _should_load_cards_archive_context(d, artifacts) else {}
-    out = _load_sim_context_for_game(int(game_pk), d, artifacts=artifacts, archive=archive)
+    feed = _load_live_lens_feed(int(game_pk), d)
+    out = _load_sim_context_for_game(int(game_pk), d, artifacts=artifacts, archive=archive, feed=feed)
     if out.get("found"):
-        snapshot = _load_live_lens_snapshot(int(game_pk), d)
+        snapshot = _load_live_lens_snapshot(int(game_pk), d, feed=feed)
         schedule_games = _schedule_games_for_date(d)
         live_card = next(
             (
