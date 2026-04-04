@@ -388,17 +388,47 @@ def _extract_game_lines(
     away_team: str,
 ) -> Dict[str, Any]:
     """Extract core game markets (h2h/spreads/totals) from bookmaker markets."""
-    out: Dict[str, Any] = {"h2h": None, "spreads": None, "totals": None}
+    segment_market_map = {
+        "h2h": ("full", "h2h"),
+        "spreads": ("full", "spreads"),
+        "totals": ("full", "totals"),
+        "h2h_1st_1_innings": ("first1", "h2h"),
+        "spreads_1st_1_innings": ("first1", "spreads"),
+        "totals_1st_1_innings": ("first1", "totals"),
+        "h2h_1st_3_innings": ("first3", "h2h"),
+        "spreads_1st_3_innings": ("first3", "spreads"),
+        "totals_1st_3_innings": ("first3", "totals"),
+        "h2h_1st_5_innings": ("first5", "h2h"),
+        "spreads_1st_5_innings": ("first5", "spreads"),
+        "totals_1st_5_innings": ("first5", "totals"),
+        "h2h_1st_7_innings": ("first7", "h2h"),
+        "spreads_1st_7_innings": ("first7", "spreads"),
+        "totals_1st_7_innings": ("first7", "totals"),
+    }
+    out: Dict[str, Any] = {
+        "h2h": None,
+        "spreads": None,
+        "totals": None,
+        "segments": {
+            "full": {"h2h": None, "spreads": None, "totals": None},
+            "first1": {"h2h": None, "spreads": None, "totals": None},
+            "first3": {"h2h": None, "spreads": None, "totals": None},
+            "first5": {"h2h": None, "spreads": None, "totals": None},
+            "first7": {"h2h": None, "spreads": None, "totals": None},
+        },
+    }
 
     home = str(home_team or "").strip().lower()
     away = str(away_team or "").strip().lower()
 
     for m in _as_market_list(markets):
         key = (m.get("key") or "").lower().strip()
-        if key not in {"h2h", "spreads", "totals"}:
+        segment_spec = segment_market_map.get(key)
+        if segment_spec is None:
             continue
+        segment_key, market_key = segment_spec
         outcomes = m.get("outcomes") or []
-        if key == "h2h":
+        if market_key == "h2h":
             row = {"home_odds": None, "away_odds": None}
             for oc in outcomes:
                 nm = str(oc.get("name") or "").strip().lower()
@@ -410,9 +440,11 @@ def _extract_game_lines(
                 elif nm == away and row["away_odds"] is None:
                     row["away_odds"] = _american_str(price)
             if row["home_odds"] is not None or row["away_odds"] is not None:
-                out["h2h"] = row
+                out["segments"][segment_key]["h2h"] = row
+                if segment_key == "full":
+                    out["h2h"] = row
 
-        elif key == "totals":
+        elif market_key == "totals":
             row = {"line": None, "over_odds": None, "under_odds": None}
             for oc in outcomes:
                 side = str(oc.get("name") or "").strip().lower()  # Over/Under
@@ -428,9 +460,11 @@ def _extract_game_lines(
                 elif side.startswith("under") and row["under_odds"] is None:
                     row["under_odds"] = _american_str(price)
             if row["line"] is not None:
-                out["totals"] = row
+                out["segments"][segment_key]["totals"] = row
+                if segment_key == "full":
+                    out["totals"] = row
 
-        elif key == "spreads":
+        elif market_key == "spreads":
             row = {
                 "home_line": None,
                 "home_odds": None,
@@ -460,7 +494,16 @@ def _extract_game_lines(
                     if row["away_odds"] is None:
                         row["away_odds"] = _american_str(price)
             if row["home_line"] is not None or row["away_line"] is not None:
-                out["spreads"] = row
+                out["segments"][segment_key]["spreads"] = row
+                if segment_key == "full":
+                    out["spreads"] = row
+
+    if not any(
+        any(bucket.get(market) is not None for market in ("h2h", "spreads", "totals"))
+        for key, bucket in (out.get("segments") or {}).items()
+        if key != "full" and isinstance(bucket, dict)
+    ):
+        out.pop("segments", None)
 
     return out
 

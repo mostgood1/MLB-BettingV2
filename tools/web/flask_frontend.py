@@ -7483,6 +7483,50 @@ def _team_totals(feed: Dict[str, Any], side: str) -> Dict[str, Any]:
         return {}
 
 
+def _live_linescore(feed: Dict[str, Any]) -> Dict[str, Any]:
+    linescore = ((feed.get("liveData") or {}).get("linescore") or {}) if isinstance(feed, dict) else {}
+    innings_raw = linescore.get("innings") or []
+    innings: List[Dict[str, int]] = []
+    if isinstance(innings_raw, list):
+        for inning in innings_raw:
+            if not isinstance(inning, dict):
+                continue
+            away_runs = _safe_int(((inning.get("away") or {}).get("runs")))
+            home_runs = _safe_int(((inning.get("home") or {}).get("runs")))
+            if away_runs is None or home_runs is None:
+                continue
+            innings.append({"away": int(away_runs), "home": int(home_runs)})
+
+    teams = (linescore.get("teams") or {}) if isinstance(linescore, dict) else {}
+    away_runs = _safe_int(((teams.get("away") or {}).get("runs")))
+    home_runs = _safe_int(((teams.get("home") or {}).get("runs")))
+    if away_runs is None and innings:
+        away_runs = sum(int(row.get("away") or 0) for row in innings)
+    if home_runs is None and innings:
+        home_runs = sum(int(row.get("home") or 0) for row in innings)
+    if away_runs is None and home_runs is None and not innings:
+        return {}
+
+    def _segment_score(target_innings: int) -> Dict[str, int]:
+        subset = innings[: max(0, int(target_innings))]
+        return {
+            "away": int(sum(int(row.get("away") or 0) for row in subset)),
+            "home": int(sum(int(row.get("home") or 0) for row in subset)),
+        }
+
+    return {
+        "innings": innings,
+        "full": {
+            "away": int(away_runs or 0),
+            "home": int(home_runs or 0),
+        },
+        "first1": _segment_score(1),
+        "first3": _segment_score(3),
+        "first5": _segment_score(5),
+        "first7": _segment_score(7),
+    }
+
+
 def _plays_since(feed: Dict[str, Any], *, since_index: int) -> Tuple[int, List[Dict[str, Any]]]:
     """Return (new_index, plays[]) where plays are simplified for UI."""
     try:
@@ -8150,6 +8194,67 @@ def _game_lens_bullpen_context(snapshot: Optional[Dict[str, Any]]) -> str:
     return "Both starters are still shaping the run environment."
 
 
+def _game_lens_score_text(actual_home: Optional[float], actual_away: Optional[float]) -> str:
+    home_score = _safe_float(actual_home)
+    away_score = _safe_float(actual_away)
+    if home_score is None or away_score is None:
+        return ""
+    return f"home {home_score:.0f}, away {away_score:.0f}"
+
+
+def _game_lens_segment_result_text(label: str, actual_home: Optional[float], actual_away: Optional[float], *, closed: bool) -> str:
+    home_score = _safe_float(actual_home)
+    away_score = _safe_float(actual_away)
+    if home_score is None or away_score is None:
+        return ""
+    score_text = _game_lens_score_text(home_score, away_score)
+    if closed:
+        if home_score > away_score:
+            return f"{label} closed with the home side winning at {score_text}."
+        if away_score > home_score:
+            return f"{label} closed with the away side winning at {score_text}."
+        return f"{label} closed tied at {score_text}."
+    return f"{label} currently sits at {score_text}."
+
+
+def _game_lens_reason_label(label: str) -> str:
+    text = str(label or "").strip()
+    if text.startswith("F") or text == "Full Game":
+        return text
+    return "live"
+
+
+def _game_lens_markets_for_lane(markets: Optional[Dict[str, Any]], lane_key: str) -> Dict[str, Any]:
+    if not isinstance(markets, dict):
+        return {}
+    segments = markets.get("segments") if isinstance(markets.get("segments"), dict) else {}
+    if lane_key in {"live", "full"}:
+        full_bucket = segments.get("full") if isinstance(segments.get("full"), dict) else None
+        return dict(full_bucket) if isinstance(full_bucket, dict) else markets
+    bucket = segments.get(lane_key)
+    return dict(bucket) if isinstance(bucket, dict) else {}
+
+
+def _game_lens_actual_segment(snapshot: Optional[Dict[str, Any]], target_innings: int) -> Dict[str, Optional[float]]:
+    linescore = (snapshot or {}).get("linescore") if isinstance(snapshot, dict) else {}
+    key = {1: "first1", 3: "first3", 5: "first5", 7: "first7", 9: "full"}.get(int(target_innings), "full")
+    if isinstance(linescore, dict) and isinstance(linescore.get(key), dict):
+        segment = linescore.get(key) or {}
+        away_score = _safe_float(segment.get("away"))
+        home_score = _safe_float(segment.get("home"))
+    else:
+        away_score = _safe_float((((snapshot or {}).get("teams") or {}).get("away") or {}).get("totals", {}).get("R"))
+        home_score = _safe_float((((snapshot or {}).get("teams") or {}).get("home") or {}).get("totals", {}).get("R"))
+    total = None if away_score is None or home_score is None else float(away_score) + float(home_score)
+    margin = None if away_score is None or home_score is None else float(home_score) - float(away_score)
+    return {
+        "away": away_score,
+        "home": home_score,
+        "total": total,
+        "homeMargin": margin,
+    }
+
+
 def _annotate_live_prop_reason_fields(
     row: Dict[str, Any],
     *,
@@ -8605,11 +8710,13 @@ def _game_lens_score_phrase(side_margin: Optional[float], remaining_outs: int) -
 
 def _game_lens_moneyline_market(
     *,
+    label: str,
     model_home_prob: Optional[float],
     projection_home_margin: Optional[float],
     progress: Dict[str, Any],
     actual_home: Optional[float],
     actual_away: Optional[float],
+    closed: bool,
     home_odds: Any,
     away_odds: Any,
     snapshot: Optional[Dict[str, Any]] = None,
@@ -8625,9 +8732,15 @@ def _game_lens_moneyline_market(
         "edge": None,
         "reason": None,
     }
+    segment_text = _game_lens_segment_result_text(label, actual_home, actual_away, closed=closed)
+    reason_label = _game_lens_reason_label(label)
     home_prob = _safe_float(model_home_prob)
     home_margin = _safe_float(projection_home_margin)
-    if home_prob is None or home_margin is None or home_prob_market is None or away_prob_market is None:
+    if home_prob is None or home_margin is None:
+        out["reason"] = segment_text or None
+        return out
+    if home_prob_market is None or away_prob_market is None:
+        out["reason"] = " ".join(piece for piece in [segment_text, f"No tracked {reason_label.lower()} moneyline is attached yet."] if piece).strip() or None
         return out
 
     current_home_margin = float(_safe_float(actual_home) or 0.0) - float(_safe_float(actual_away) or 0.0)
@@ -8638,36 +8751,45 @@ def _game_lens_moneyline_market(
     current_side_margin = current_home_margin if selected_side == "home" else -current_home_margin
     remaining_outs = _game_lens_remaining_outs(progress)
     if current_side_margin < 0 and abs(current_side_margin) > float(_game_lens_trailing_cap(progress)):
+        out["reason"] = " ".join(piece for piece in [segment_text, f"The model leaned {selected_side} at {selected_prob:.1%} against a market price near {selected_market_prob:.1%}, but they were already chasing too much of the segment for the moneyline lane to stay live."] if piece).strip() or None
         return out
 
     if selected_prob < _game_lens_min_ml_win_prob(progress):
+        out["reason"] = " ".join(piece for piece in [segment_text, f"The model edge only leaned {selected_side} to {selected_prob:.1%}, which was too thin to promote a moneyline side."] if piece).strip() or None
         return out
     if selected_projection_margin < _game_lens_min_margin(progress):
+        out["reason"] = " ".join(piece for piece in [segment_text, f"The projected margin on the {reason_label.lower()} slice was only {selected_projection_margin:+.2f}, so there was not enough separation for a side."] if piece).strip() or None
         return out
 
     edge = float(selected_prob) - float(selected_market_prob)
     if edge < _game_lens_min_ml_edge(progress):
+        out["reason"] = " ".join(piece for piece in [segment_text, f"The model leaned {selected_side} at {selected_prob:.1%} versus {selected_market_prob:.1%} in the market, but that gap was not large enough to surface a moneyline edge."] if piece).strip() or None
         return out
 
     out["pick"] = selected_side
     out["edge"] = round(edge, 4)
     side_label = "home" if selected_side == "home" else "away"
     out["reason"] = " ".join(
-        [
+        piece
+        for piece in [
+            segment_text if closed else "",
             f"The model still favors the {side_label} side at {selected_prob:.1%}, with a projected margin of {selected_projection_margin:+.2f}.",
-            f"Right now they are {_game_lens_leader_text(selected_side, actual_home, actual_away, remaining_outs)}.",
-            _game_lens_bullpen_context(snapshot),
+            None if closed else f"Right now they are {_game_lens_leader_text(selected_side, actual_home, actual_away, remaining_outs)}.",
+            None if closed else _game_lens_bullpen_context(snapshot),
         ]
+        if piece
     ).strip()
     return out
 
 
 def _game_lens_spread_market(
     *,
+    label: str,
     projection_home_margin: Optional[float],
     progress: Dict[str, Any],
     actual_home: Optional[float],
     actual_away: Optional[float],
+    closed: bool,
     spread_line: Optional[float],
     spread_home_odds: Any,
     spread_away_odds: Any,
@@ -8681,18 +8803,26 @@ def _game_lens_spread_market(
         "edge": None,
         "reason": None,
     }
+    segment_text = _game_lens_segment_result_text(label, actual_home, actual_away, closed=closed)
+    reason_label = _game_lens_reason_label(label)
     home_margin = _safe_float(projection_home_margin)
     home_line = _safe_float(spread_line)
-    if home_margin is None or home_line is None:
+    if home_margin is None:
+        out["reason"] = segment_text or None
+        return out
+    if home_line is None:
+        out["reason"] = " ".join(piece for piece in [segment_text, f"No tracked {reason_label.lower()} spread is attached yet."] if piece).strip() or None
         return out
 
     spread_edge = float(home_margin) + float(home_line)
     if abs(spread_edge) <= 1e-9:
+        out["reason"] = " ".join(piece for piece in [segment_text, f"The projected {reason_label.lower()} margin landed almost exactly on the spread."] if piece).strip() or None
         return out
 
     selected_side = "home" if spread_edge > 0 else "away"
     cover_cushion = abs(float(spread_edge))
     if cover_cushion < _game_lens_min_spread_cushion(progress):
+        out["reason"] = " ".join(piece for piece in [segment_text, f"The projected cover cushion was only {cover_cushion:.2f} runs, so the spread lane stayed below threshold."] if piece).strip() or None
         return out
 
     current_home_margin = float(_safe_float(actual_home) or 0.0) - float(_safe_float(actual_away) or 0.0)
@@ -8700,27 +8830,33 @@ def _game_lens_spread_market(
     current_side_cover = current_cover_margin if selected_side == "home" else -current_cover_margin
     remaining_outs = _game_lens_remaining_outs(progress)
     if current_side_cover < 0 and remaining_outs <= 9 and cover_cushion < 1.25:
+        out["reason"] = " ".join(piece for piece in [segment_text, "The chosen side was already behind the live spread path late, and the cushion was too thin to keep the run-line play active."] if piece).strip() or None
         return out
 
     out["pick"] = selected_side
     out["edge"] = round(spread_edge, 3)
     side_label = "home" if selected_side == "home" else "away"
     out["reason"] = " ".join(
-        [
+        piece
+        for piece in [
+            segment_text if closed else "",
             f"The {side_label} side still projects to cover with about {cover_cushion:.2f} runs of cushion off a {float(home_margin):+.2f} margin forecast.",
-            f"At the moment they are {_game_lens_leader_text(selected_side, actual_home, actual_away, remaining_outs)}.",
-            _game_lens_bullpen_context(snapshot),
+            None if closed else f"At the moment they are {_game_lens_leader_text(selected_side, actual_home, actual_away, remaining_outs)}.",
+            None if closed else _game_lens_bullpen_context(snapshot),
         ]
+        if piece
     ).strip()
     return out
 
 
 def _game_lens_total_market(
     *,
+    label: str,
     projection_total: Optional[float],
     progress: Dict[str, Any],
     actual_home: Optional[float],
     actual_away: Optional[float],
+    closed: bool,
     total_line: Optional[float],
     total_over_odds: Any,
     total_under_odds: Any,
@@ -8734,30 +8870,41 @@ def _game_lens_total_market(
         "edge": None,
         "reason": None,
     }
+    segment_text = _game_lens_segment_result_text(label, actual_home, actual_away, closed=closed)
+    reason_label = _game_lens_reason_label(label)
     projected_total = _safe_float(projection_total)
     live_total_line = _safe_float(total_line)
-    if projected_total is None or live_total_line is None:
+    if projected_total is None:
+        out["reason"] = segment_text or None
+        return out
+    if live_total_line is None:
+        out["reason"] = " ".join(piece for piece in [segment_text, f"No tracked {reason_label.lower()} total is attached yet."] if piece).strip() or None
         return out
 
     total_edge = float(projected_total) - float(live_total_line)
     if abs(total_edge) < _game_lens_min_total_cushion(progress):
+        out["reason"] = " ".join(piece for piece in [segment_text, f"The projected total of {float(projected_total):.2f} was too close to {float(live_total_line):.1f} to surface a totals play."] if piece).strip() or None
         return out
 
     selected_side = "over" if total_edge > 0 else "under"
     current_total = float(_safe_float(actual_home) or 0.0) + float(_safe_float(actual_away) or 0.0)
     remaining_outs = _game_lens_remaining_outs(progress)
     if selected_side == "under" and current_total > float(live_total_line) and remaining_outs <= 9:
+        out["reason"] = " ".join(piece for piece in [segment_text, "The game had already run past the posted total too late for the under path to remain actionable."] if piece).strip() or None
         return out
 
     out["pick"] = selected_side
     out["edge"] = round(total_edge, 3)
     pace_text = f"{int(max(0, remaining_outs))} outs left with {current_total:.0f} runs already on the board"
     out["reason"] = " ".join(
-        [
+        piece
+        for piece in [
+            segment_text if closed else "",
             f"The live total still leans {selected_side} because the projection sits at {float(projected_total):.2f} against {float(live_total_line):.1f}.",
-            f"There are {pace_text}.",
-            _game_lens_bullpen_context(snapshot),
+            None if closed else f"There are {pace_text}.",
+            None if closed else _game_lens_bullpen_context(snapshot),
         ]
+        if piece
     ).strip()
     return out
 
@@ -9127,6 +9274,7 @@ def _load_live_lens_snapshot(game_pk: int, d: str, *, feed: Optional[Dict[str, A
             "gamePk": int(game_pk),
             "status": (feed.get("gameData") or {}).get("status") or {},
             "current": _current_matchup(feed),
+            "linescore": _live_linescore(feed),
             "teams": {
                 "away": {
                     "starter": {"id": away_sp, "name": _player_name_from_box(feed, away_sp) if away_sp else ""},
@@ -9172,9 +9320,6 @@ def _build_game_lens(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], s
     progress = _live_game_progress(snapshot, card)
     predictions = card.get("predictions") or {}
     markets = (market_row or {}).get("markets") or {}
-    h2h = markets.get("h2h") if isinstance(markets.get("h2h"), dict) else {}
-    spreads = markets.get("spreads") if isinstance(markets.get("spreads"), dict) else {}
-    totals = markets.get("totals") if isinstance(markets.get("totals"), dict) else {}
 
     lanes = [
         {"key": "live", "label": progress.get("label") or "Live", "innings": 9, "baseline": False},
@@ -9205,6 +9350,12 @@ def _build_game_lens(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], s
                 baseline_home_prob, _ = _normalize_two_way_probs(baseline_home_prob, away_prob)
         model_home_prob = _live_margin_win_prob(projection.get("homeMargin")) if not projection.get("closed") else None
 
+        lane_markets = _game_lens_markets_for_lane(markets, str(lane["key"]))
+        h2h = lane_markets.get("h2h") if isinstance(lane_markets.get("h2h"), dict) else {}
+        spreads = lane_markets.get("spreads") if isinstance(lane_markets.get("spreads"), dict) else {}
+        totals = lane_markets.get("totals") if isinstance(lane_markets.get("totals"), dict) else {}
+        segment_actual = _game_lens_actual_segment(snapshot, int(lane["innings"]))
+
         home_odds = h2h.get("home_odds") or h2h.get("homeOdds")
         away_odds = h2h.get("away_odds") or h2h.get("awayOdds")
         spread_line = _safe_float(spreads.get("home_line") or spreads.get("homeLine"))
@@ -9215,30 +9366,36 @@ def _build_game_lens(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], s
         total_under_odds = totals.get("under_odds") or totals.get("underOdds")
 
         moneyline_market = _game_lens_moneyline_market(
+            label=str(lane["label"]),
             model_home_prob=model_home_prob,
             projection_home_margin=projection.get("homeMargin"),
             progress=progress,
-            actual_home=home_score,
-            actual_away=away_score,
+            actual_home=segment_actual.get("home"),
+            actual_away=segment_actual.get("away"),
+            closed=bool(projection.get("closed")),
             home_odds=home_odds,
             away_odds=away_odds,
             snapshot=snapshot,
         )
         spread_market = _game_lens_spread_market(
+            label=str(lane["label"]),
             projection_home_margin=projection.get("homeMargin"),
             progress=progress,
-            actual_home=home_score,
-            actual_away=away_score,
+            actual_home=segment_actual.get("home"),
+            actual_away=segment_actual.get("away"),
+            closed=bool(projection.get("closed")),
             spread_line=spread_line,
             spread_home_odds=spread_home_odds,
             spread_away_odds=spread_away_odds,
             snapshot=snapshot,
         )
         total_market = _game_lens_total_market(
+            label=str(lane["label"]),
             projection_total=projection.get("total"),
             progress=progress,
-            actual_home=home_score,
-            actual_away=away_score,
+            actual_home=segment_actual.get("home"),
+            actual_away=segment_actual.get("away"),
+            closed=bool(projection.get("closed")),
             total_line=total_line,
             total_over_odds=total_over_odds,
             total_under_odds=total_under_odds,
@@ -9251,6 +9408,7 @@ def _build_game_lens(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], s
                 "label": lane["label"],
                 "closed": bool(projection.get("closed")),
                 "projection": projection,
+                "actualSegment": segment_actual,
                 "progress": progress,
                 "baselineHomeWinProb": baseline_home_prob,
                 "modelHomeWinProb": model_home_prob,

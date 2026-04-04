@@ -160,24 +160,29 @@
     return !!(value && typeof value === "object" && Object.keys(value).length);
   }
 
-  function recoReasonText(reco) {
+  function recoReasonList(reco) {
     const reasons = Array.isArray(reco?.reasons) ? reco.reasons : [];
     const cleaned = reasons
       .map((row) => String(row == null ? "" : row).trim())
       .filter(Boolean);
-    if (cleaned.length) return cleaned[0];
+    if (cleaned.length) return cleaned;
     const summary = String(reco?.reason_summary || "").trim();
-    return summary || "";
+    return summary ? [summary] : [];
+  }
+
+  function recoReasonText(reco) {
+    const texts = recoReasonList(reco);
+    return texts[0] || "";
   }
 
   function renderRecoReasons(reco) {
-    const text = recoReasonText(reco);
-    if (!text) return "";
+    const texts = recoReasonList(reco).slice(0, 4);
+    if (!texts.length) return "";
     return `
       <div class="cards-panel-card cards-prop-stack">
         <div class="cards-table-head"><div class="cards-table-title">Reasons</div></div>
         <div class="cards-live-lens-reasons">
-          <div class="cards-live-lens-reason">${escapeHtml(text)}</div>
+          ${texts.map((text) => `<div class="cards-live-lens-reason">${escapeHtml(text)}</div>`).join("")}
         </div>
       </div>`;
   }
@@ -576,7 +581,7 @@
     }
     function reasonSummary(label, market) {
       const text = String(market?.reason || '').trim();
-      if (!text || !market?.pick) return '';
+      if (!text) return '';
       return `<div class="cards-live-lens-reason">${escapeHtml(`${label}: ${text}`)}</div>`;
     }
     return rows.map((row) => {
@@ -607,7 +612,7 @@
           </div>
           <div class="cards-live-lens-summary-row">
             <div class="cards-data-pair"><span>Home win</span><strong>${escapeHtml(formatPercent(row.modelHomeWinProb, 1))}</strong></div>
-            <div class="cards-data-pair"><span>Baseline</span><strong>${escapeHtml(formatPercent(row.baselineHomeWinProb, 1))}</strong></div>
+            <div class="cards-data-pair"><span>Market</span><strong>${escapeHtml(formatPercent(ml.marketHomeProb, 1))}</strong></div>
           </div>
           <div class="cards-live-lens-picks">
             <div class="cards-live-lens-pick">${escapeHtml(pickSummary('ML', ml.pick, ml.edge, 'moneyline'))}</div>
@@ -1702,6 +1707,7 @@
           const stateObj = entry.state;
           const reco = stateObj.reco;
           const liveEdgeClass = stateObj.liveEdge == null ? "" : (stateObj.liveEdge >= 0 ? "is-positive" : "is-negative");
+          const reasonText = recoReasonText(reco);
           return `
             <div class="cards-prop-overview-card">
               <div class="cards-lens-head">
@@ -1718,6 +1724,7 @@
                 <div class="cards-data-pair"><span>Line</span><strong>${escapeHtml(stateObj.lineLabel)}</strong></div>
                 <div class="cards-data-pair ${liveEdgeClass}"><span>Live edge</span><strong>${escapeHtml(stateObj.liveEdge == null ? '-' : formatSigned(stateObj.liveEdge, 2))}</strong></div>
               </div>
+              ${reasonText ? `<div class="cards-live-lens-reasons"><div class="cards-live-lens-reason">${escapeHtml(reasonText)}</div></div>` : ''}
               <div class="cards-prop-overview-foot">
                 <span>${escapeHtml(stateObj.modelMean == null ? 'Model mean -' : `Model mean ${formatLine(stateObj.modelMean)}`)}</span>
                 <span>${escapeHtml(reco?.first_seen_at ? `Live since ${formatTimestampShort(reco.first_seen_at)}` : `${stateObj.tierLabel} | ${formatOdds(reco?.odds)}`)}</span>

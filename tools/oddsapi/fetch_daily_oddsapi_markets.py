@@ -97,6 +97,11 @@ def _best_bookmaker_game_lines(payload: Dict[str, Any], *, home_team: str, away_
             away_team=str(away_team or ""),
         )
         score = int(bool(lines.get("h2h"))) + int(bool(lines.get("totals"))) + int(bool(lines.get("spreads")))
+        segments = lines.get("segments") if isinstance(lines.get("segments"), dict) else {}
+        for bucket in segments.values():
+            if not isinstance(bucket, dict):
+                continue
+            score += int(bool(bucket.get("h2h"))) + int(bool(bucket.get("totals"))) + int(bool(bucket.get("spreads")))
         if score <= best_score:
             continue
         if score <= 0:
@@ -138,6 +143,23 @@ def fetch_live_game_lines_for_date(
     events: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     live_events = list(events or _fetch_live_events_for_date(api_key, date_str))
+    game_market_keys = [
+        "h2h",
+        "spreads",
+        "totals",
+        "h2h_1st_1_innings",
+        "spreads_1st_1_innings",
+        "totals_1st_1_innings",
+        "h2h_1st_3_innings",
+        "spreads_1st_3_innings",
+        "totals_1st_3_innings",
+        "h2h_1st_5_innings",
+        "spreads_1st_5_innings",
+        "totals_1st_5_innings",
+        "h2h_1st_7_innings",
+        "spreads_1st_7_innings",
+        "totals_1st_7_innings",
+    ]
     games: List[Dict[str, Any]] = []
     for event in live_events:
         event_id = str(event.get("id") or "").strip()
@@ -146,7 +168,7 @@ def fetch_live_game_lines_for_date(
         payload = _fetch_live_event_odds(
             api_key,
             event_id,
-            markets_csv="h2h,spreads,totals",
+            markets_csv=",".join(game_market_keys),
             regions=regions,
             bookmakers=bookmakers,
         )
@@ -181,7 +203,7 @@ def fetch_live_game_lines_for_date(
         "retrieved_at": datetime.utcnow().isoformat(),
         "games": games,
         "meta": {
-            "markets": ["h2h", "spreads", "totals"],
+            "markets": game_market_keys,
             "regions": str(regions or "us"),
             "bookmakers": (str(bookmakers).split(",") if bookmakers else None),
             "counts": counts,

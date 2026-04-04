@@ -78,6 +78,17 @@
     return String(prop?.reason_summary || "").trim();
   }
 
+  function gameReasonBlock(lens) {
+    const markets = lens?.markets || {};
+    const rows = [
+      { label: "ML", text: String(markets?.moneyline?.reason || "").trim() },
+      { label: "Run line", text: String(markets?.spread?.reason || "").trim() },
+      { label: "Total", text: String(markets?.total?.reason || "").trim() },
+    ].filter((row) => row.text);
+    if (!rows.length) return "";
+    return `<div class="cards-live-lens-reasons">${rows.map((row) => `<div class="cards-live-lens-reason">${escapeHtml(`${row.label}: ${row.text}`)}</div>`).join("")}</div>`;
+  }
+
   function propTierLabel(prop) {
     const tier = String(prop?.tier || prop?.source || "").toLowerCase();
     if (tier === "live" || tier === "current_market" || tier === "live_registry") return "live";
@@ -230,7 +241,7 @@
     const total = lens?.markets?.total || {};
     const marketProb = formatPercent(moneyline.marketHomeProb);
     const modelProb = formatPercent(lens?.modelHomeWinProb);
-    const baselineProb = formatPercent(lens?.baselineHomeWinProb);
+    const reasonBlock = gameReasonBlock(lens);
     const projectionLine = projection.closed
       ? "Segment closed"
       : `${formatLine(projection.away)} - ${formatLine(projection.home)} | Total ${formatLine(projection.total)} | Home margin ${formatSigned(projection.homeMargin)}`;
@@ -244,12 +255,12 @@
           <div class="live-lens-segment-copy">${escapeHtml(projectionLine)}</div>
           <div class="live-lens-metric-grid">
             ${renderSeasonMetric("Home win", modelProb)}
-            ${renderSeasonMetric("Baseline", baselineProb)}
             ${renderSeasonMetric("Market", marketProb)}
             ${renderSeasonMetric("ML", moneyline.pick ? `${String(moneyline.pick).toUpperCase()} ${formatPercent(moneyline.edge)}` : "-")}
             ${renderSeasonMetric("Spread", spread.pick ? `${String(spread.pick).toUpperCase()} ${formatSigned(spread.homeLine, 1)} (${formatSigned(spread.edge)})` : "-")}
             ${renderSeasonMetric("Total", total.pick ? `${String(total.pick).toUpperCase()} ${formatLine(total.line)} (${formatSigned(total.edge)})` : "-")}
           </div>
+          ${reasonBlock}
         </article>`;
     }
     return `
@@ -261,12 +272,12 @@
         <div class="status-line" style="margin-top:6px;">${escapeHtml(projectionLine)}</div>
         <div style="display:grid;gap:6px;margin-top:12px;">
           ${renderMetric("Home win", modelProb)}
-          ${renderMetric("Baseline", baselineProb)}
           ${renderMetric("Market", marketProb)}
           ${renderMetric("ML", moneyline.pick ? `${String(moneyline.pick).toUpperCase()} ${formatPercent(moneyline.edge)}` : "-" )}
           ${renderMetric("Spread", spread.pick ? `${String(spread.pick).toUpperCase()} ${formatSigned(spread.homeLine, 1)} (${formatSigned(spread.edge)})` : "-" )}
           ${renderMetric("Total", total.pick ? `${String(total.pick).toUpperCase()} ${formatLine(total.line)} (${formatSigned(total.edge)})` : "-" )}
         </div>
+        ${reasonBlock}
       </div>`;
   }
 
