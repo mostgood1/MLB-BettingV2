@@ -40,6 +40,11 @@ from sim_engine.data.statsapi import (
     fetch_schedule_for_date,
 )
 from sim_engine.market_pitcher_props import market_side_probabilities, normalize_pitcher_name
+from tools.daily_update_multi_profile import (
+    _hitter_pitch_mix_reason,
+    _hitter_platoon_reason,
+    _hitter_statcast_quality_reason,
+)
 from tools.eval.build_season_eval_manifest import build_manifest as build_season_eval_manifest
 from tools.eval.build_season_eval_manifest import write_manifest_artifacts as write_season_eval_manifest_artifacts
 from tools.oddsapi.fetch_daily_oddsapi_markets import fetch_and_write_live_odds_for_date
@@ -7752,7 +7757,264 @@ def _format_live_reason_value(value: Any) -> str:
     return text.rstrip("0").rstrip(".") if "." in text else text
 
 
-def _annotate_live_prop_reason_fields(row: Dict[str, Any]) -> Dict[str, Any]:
+def _pitcher_role_reason_label(value: Any) -> str:
+    role = str(value or "").strip().upper()
+    labels = {
+        "SP": "starter",
+        "CL": "closer",
+        "SU": "setup arm",
+        "MR": "middle reliever",
+        "LR": "long reliever",
+        "RP": "reliever",
+    }
+    return str(labels.get(role) or "reliever")
+
+
+def _dedupe_reason_texts(values: Sequence[str]) -> List[str]:
+    out: List[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
+def _live_hitter_profile_for_row(
+    roster_snapshot: Optional[Dict[str, Any]],
+    side: str,
+    player_name: str,
+    lineup_order: Optional[int],
+) -> Optional[Dict[str, Any]]:
+    if side not in {"away", "home"} or not isinstance(roster_snapshot, dict):
+        return None
+    side_doc = roster_snapshot.get(side)
+    if not isinstance(side_doc, dict):
+        return None
+    lineup = side_doc.get("lineup") if isinstance(side_doc.get("lineup"), list) else []
+    target_name = normalize_pitcher_name(player_name)
+    fallback: Optional[Dict[str, Any]] = None
+    for row in lineup:
+        if not isinstance(row, dict):
+            continue
+        if target_name and normalize_pitcher_name(str(row.get("name") or "")) == target_name:
+            return row
+        try:
+            if fallback is None and lineup_order is not None and int(row.get("lineup_order") or 0) == int(lineup_order):
+                fallback = row
+        except Exception:
+            continue
+    return fallback
+
+
+def _live_pitcher_profile_matches(profile: Optional[Dict[str, Any]], pitcher_id: Optional[int], pitcher_name: str) -> bool:
+    if not isinstance(profile, dict):
+        return False
+    profile_id = _safe_int(profile.get("id"))
+    if pitcher_id is not None and profile_id is not None and int(profile_id) == int(pitcher_id):
+        return True
+    profile_name = normalize_pitcher_name(str(profile.get("name") or ""))
+    return bool(profile_name and pitcher_name and profile_name == normalize_pitcher_name(pitcher_name))
+
+
+def _live_pitcher_profile_for_game_state(
+    roster_snapshot: Optional[Dict[str, Any]],
+    snapshot: Optional[Dict[str, Any]],
+    opponent_side: str,
+) -> Dict[str, Any]:
+    if opponent_side not in {"away", "home"} or not isinstance(roster_snapshot, dict):
+        return {}
+    opp_doc = roster_snapshot.get(opponent_side)
+    if not isinstance(opp_doc, dict):
+        return {}
+
+    starter_profile = opp_doc.get("starter_profile") if isinstance(opp_doc.get("starter_profile"), dict) else None
+    bullpen_profiles = [row for row in (opp_doc.get("bullpen_profiles") or []) if isinstance(row, dict)]
+    current_pitching_side = _current_pitching_side(snapshot)
+    current_pitcher = (((snapshot or {}).get("current") or {}).get("pitcher") or {}) if isinstance(snapshot, dict) else {}
+    current_pitcher_id = _safe_int(current_pitcher.get("id"))
+    current_pitcher_name = _first_text(current_pitcher.get("fullName"), current_pitcher.get("name"))
+
+    current_profile: Optional[Dict[str, Any]] = None
+    if current_pitching_side == opponent_side and (current_pitcher_id is not None or current_pitcher_name):
+        if _live_pitcher_profile_matches(starter_profile, current_pitcher_id, current_pitcher_name):
+            current_profile = starter_profile
+        else:
+            for profile in bullpen_profiles:
+                if _live_pitcher_profile_matches(profile, current_pitcher_id, current_pitcher_name):
+                    current_profile = profile
+                    break
+
+    current_is_starter = bool(
+        current_profile is not None
+        and starter_profile is not None
+        and _live_pitcher_profile_matches(starter_profile, _safe_int(current_profile.get("id")), str(current_profile.get("name") or ""))
+    )
+    return {
+        "starter_profile": starter_profile,
+        "current_profile": current_profile,
+        "current_is_starter": current_is_starter,
+        "starter_removed": _starter_removed_from_snapshot(snapshot, opponent_side),
+    }
+
+
+def _live_hitter_matchup_delta_reason(
+    batter_profile: Dict[str, Any],
+    starter_profile: Optional[Dict[str, Any]],
+    current_profile: Optional[Dict[str, Any]],
+    *,
+    selection: str,
+) -> Optional[str]:
+    if not isinstance(batter_profile, dict) or not isinstance(starter_profile, dict) or not isinstance(current_profile, dict):
+        return None
+    batter_side = str(batter_profile.get("bat") or "").strip().upper()
+    if batter_side not in {"L", "R"}:
+        return None
+    platoon_key = "platoon_mult_vs_lhb" if batter_side == "L" else "platoon_mult_vs_rhb"
+    starter_platoon = starter_profile.get(platoon_key) if isinstance(starter_profile.get(platoon_key), dict) else {}
+    current_platoon = current_profile.get(platoon_key) if isinstance(current_profile.get(platoon_key), dict) else {}
+    if not isinstance(starter_platoon, dict) or not isinstance(current_platoon, dict):
+        return None
+
+    starter_inplay = _safe_float(starter_platoon.get("inplay"))
+    starter_hr = _safe_float(starter_platoon.get("hr"))
+    starter_k = _safe_float(starter_platoon.get("k"))
+    current_inplay = _safe_float(current_platoon.get("inplay"))
+    current_hr = _safe_float(current_platoon.get("hr"))
+    current_k = _safe_float(current_platoon.get("k"))
+    if None in {starter_inplay, starter_hr, starter_k, current_inplay, current_hr, current_k}:
+        return None
+
+    starter_score = float(starter_inplay) + (0.8 * float(starter_hr)) - (0.7 * float(starter_k))
+    current_score = float(current_inplay) + (0.8 * float(current_hr)) - (0.7 * float(current_k))
+    delta = float(current_score) - float(starter_score)
+    current_name = str(current_profile.get("name") or "the current reliever").strip()
+    role_label = _pitcher_role_reason_label(current_profile.get("role"))
+    choice = str(selection or "").strip().lower()
+
+    if delta >= 0.08 and choice == "over":
+        return f"The starter is out, and the matchup has shifted to {current_name}, a {role_label} whose contact profile is softer for this bat than the opening starter."
+    if delta <= -0.08 and choice == "under":
+        return f"The starter is out, and the game has turned over to {current_name}, a {role_label} who grades tougher for this bat than the opening starter."
+    return None
+
+
+def _live_hitter_game_state_reason(row: Dict[str, Any], snapshot: Optional[Dict[str, Any]]) -> Optional[str]:
+    side = str(row.get("team_side") or "").strip().lower()
+    if side not in {"away", "home"}:
+        return None
+    team_score = _safe_int(row.get("score_away")) if side == "away" else _safe_int(row.get("score_home"))
+    opp_score = _safe_int(row.get("score_home")) if side == "away" else _safe_int(row.get("score_away"))
+    if team_score is None or opp_score is None:
+        return None
+    progress = _live_game_progress(snapshot)
+    remaining_outs = _game_lens_remaining_outs(progress)
+    margin = int(team_score) - int(opp_score)
+    choice = str(row.get("selection") or "").strip().lower()
+
+    if abs(margin) <= 2 and remaining_outs <= 18:
+        return f"The game is still within {int(abs(margin))} run{'s' if abs(margin) != 1 else ''}, so regular high-leverage plate appearances should stay intact."
+    if margin < 0 and choice == "over":
+        return f"His club is trailing by {int(abs(margin))}, which keeps the offense pressing and protects regular late-game at-bats."
+    if margin > 0 and choice == "under" and remaining_outs <= 15:
+        return f"His club is ahead by {int(margin)}, and with limited outs left the under gets some help from shrinking offensive volume."
+    return None
+
+
+def _live_hitter_inning_reason(row: Dict[str, Any], snapshot: Optional[Dict[str, Any]]) -> Optional[str]:
+    progress = _live_game_progress(snapshot)
+    inning = _safe_int(progress.get("inning"))
+    if inning is None:
+        return None
+    remaining_outs = _game_lens_remaining_outs(progress)
+    choice = str(row.get("selection") or "").strip().lower()
+    if remaining_outs <= 12:
+        if choice == "under":
+            return f"With only {int(remaining_outs)} outs left in the game, remaining plate-appearance volume is getting tight, which supports the under path."
+        if choice == "over":
+            return f"Even with only {int(remaining_outs)} outs left, the live projection still stays beyond the current number."
+    if int(inning) >= 7 and choice == "over":
+        return "This has turned into a late-game prop, so the over now needs impact quality more than a full game of volume."
+    if int(inning) >= 7 and choice == "under":
+        return "The game is already in the late innings, which naturally squeezes the remaining volume for the under path."
+    return None
+
+
+def _live_hitter_matchup_reasons(
+    row: Dict[str, Any],
+    snapshot: Optional[Dict[str, Any]],
+    sim_context: Optional[Dict[str, Any]],
+) -> List[str]:
+    if not isinstance(sim_context, dict):
+        return []
+    roster_snapshot = sim_context.get("roster_snapshot") if isinstance(sim_context.get("roster_snapshot"), dict) else None
+    if not isinstance(roster_snapshot, dict):
+        return []
+
+    side = str(row.get("team_side") or "").strip().lower()
+    if side not in {"away", "home"}:
+        return []
+    opponent_side = "home" if side == "away" else "away"
+    batter_profile = _live_hitter_profile_for_row(
+        roster_snapshot,
+        side,
+        str(row.get("player_name") or ""),
+        _safe_int(row.get("lineup_order")),
+    )
+    if not isinstance(batter_profile, dict):
+        return []
+
+    pitcher_ctx = _live_pitcher_profile_for_game_state(roster_snapshot, snapshot, opponent_side)
+    starter_profile = pitcher_ctx.get("starter_profile") if isinstance(pitcher_ctx.get("starter_profile"), dict) else None
+    current_profile = pitcher_ctx.get("current_profile") if isinstance(pitcher_ctx.get("current_profile"), dict) else None
+    current_is_starter = bool(pitcher_ctx.get("current_is_starter"))
+    starter_removed = bool(pitcher_ctx.get("starter_removed"))
+    choice = str(row.get("selection") or "").strip().lower()
+    prop = str(row.get("prop") or "")
+
+    reasons: List[str] = []
+    matchup_profile = current_profile if isinstance(current_profile, dict) else starter_profile
+    if isinstance(current_profile, dict):
+        current_name = str(current_profile.get("name") or "the current pitcher").strip()
+        if current_is_starter:
+            reasons.append(f"He is still lined up against the starter, {current_name}, so the original matchup is still the live path.")
+        else:
+            role_label = _pitcher_role_reason_label(current_profile.get("role"))
+            reasons.append(f"The starter is already out, so the remaining plate appearances are now running through {current_name}, a {role_label}.")
+            delta_reason = _live_hitter_matchup_delta_reason(batter_profile, starter_profile, current_profile, selection=choice)
+            if delta_reason:
+                reasons.append(delta_reason)
+    elif starter_removed:
+        reasons.append("The opposing starter is already out, so the remaining path is bullpen-based rather than the original starter look.")
+
+    if isinstance(batter_profile, dict) and isinstance(matchup_profile, dict):
+        reasons.extend(
+            reason
+            for reason in (
+                _hitter_pitch_mix_reason(batter_profile, matchup_profile, prop=prop, selection=choice),
+                _hitter_platoon_reason(batter_profile, matchup_profile, prop=prop, selection=choice),
+                _hitter_statcast_quality_reason(batter_profile, prop=prop, selection=choice),
+            )
+            if str(reason or "").strip()
+        )
+
+    game_state_reason = _live_hitter_game_state_reason(row, snapshot)
+    if game_state_reason:
+        reasons.append(game_state_reason)
+    inning_reason = _live_hitter_inning_reason(row, snapshot)
+    if inning_reason:
+        reasons.append(inning_reason)
+    return _dedupe_reason_texts(reasons)
+
+
+def _annotate_live_prop_reason_fields(
+    row: Dict[str, Any],
+    *,
+    snapshot: Optional[Dict[str, Any]] = None,
+    sim_context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     item = dict(row)
     selection = str(item.get("selection") or "").strip().lower()
     market = str(item.get("market") or "").strip().lower()
@@ -7765,9 +8027,10 @@ def _annotate_live_prop_reason_fields(row: Dict[str, Any]) -> Dict[str, Any]:
     elif model_prob_over is not None and selection == "under":
         selected_model_prob = 1.0 - float(model_prob_over)
 
-    sentences: List[str] = []
+    common_reasons: List[str] = []
+    reasons: List[str] = []
     if selected_model_prob is not None and selected_market_prob is not None:
-        sentences.append(
+        common_reasons.append(
             f"The model lands on the {selection} side in {selected_model_prob * 100.0:.1f}% of sims, while the market is pricing it closer to {selected_market_prob * 100.0:.1f}%."
         )
 
@@ -7776,28 +8039,32 @@ def _annotate_live_prop_reason_fields(row: Dict[str, Any]) -> Dict[str, Any]:
     line_text = _format_live_reason_value(item.get("market_line"))
     if projection_text and line_text:
         actual_clause = f" Current actual sits at {actual_text}." if actual_text else ""
-        sentences.append(f"{actual_clause.strip() or 'Current actual is still pending.'} The live projection is {projection_text} against a line of {line_text} for {label.lower()}.")
+        common_reasons.append(f"{actual_clause.strip() or 'Current actual is still pending.'} The live projection is {projection_text} against a line of {line_text} for {label.lower()}.")
 
     if market == "pitcher_props":
+        reasons.extend(common_reasons)
         model_mean_text = _format_live_reason_value(item.get("model_mean"))
         if model_mean_text:
-            sentences.append(f"The pregame model mean sat around {model_mean_text} for this prop.")
+            reasons.append(f"The pregame model mean sat around {model_mean_text} for this prop.")
     else:
+        reasons.extend(_live_hitter_matchup_reasons(item, snapshot, sim_context))
         lineup_order = _safe_int(item.get("lineup_order"))
         pa_mean = _safe_float(item.get("pa_mean"))
         if lineup_order is not None and pa_mean is not None:
-            sentences.append(f"He opened in lineup spot {int(lineup_order)} and was projected for about {float(pa_mean):.1f} plate appearances.")
+            reasons.append(f"He opened in lineup spot {int(lineup_order)} and was projected for about {float(pa_mean):.1f} plate appearances.")
         elif pa_mean is not None:
-            sentences.append(f"He was projected for about {float(pa_mean):.1f} plate appearances pregame.")
+            reasons.append(f"He was projected for about {float(pa_mean):.1f} plate appearances pregame.")
+        reasons.extend(common_reasons)
 
     live_text = str(item.get("live_text") or "").strip()
     if live_text:
-        sentences.append(f"Game state: {live_text}.")
+        reasons.append(f"Game state: {live_text}.")
 
-    summary = " ".join(part for part in sentences if part).strip()
+    reasons = _dedupe_reason_texts(reasons)
+    summary = " ".join(reasons[:4]).strip()
     if summary:
         item["reason_summary"] = summary
-        item["reasons"] = [summary]
+        item["reasons"] = reasons
     return item
 
 
@@ -8116,7 +8383,7 @@ def _current_live_prop_rows(
         item["score_away"] = _safe_int(away_totals.get("R"))
         item["score_home"] = _safe_int(home_totals.get("R"))
         item["live_text"] = _live_matchup_text(snapshot)
-        out.append(_annotate_live_prop_reason_fields(item))
+        out.append(_annotate_live_prop_reason_fields(item, snapshot=snapshot, sim_context=sim_context))
     return _enrich_live_prop_rows_with_registry(out, d, write_observation_log=write_observation_log)
 
 
@@ -8491,6 +8758,7 @@ def _load_sim_context_for_game(
         source_path = archive.get("report_path") if isinstance(archive.get("report_path"), Path) else None
 
     player_meta: Dict[int, Dict[str, Any]] = {}
+    roster_snapshot: Optional[Dict[str, Any]] = None
     if p:
         try:
             roster_path = _find_roster_snapshot_for_sim(
@@ -8502,6 +8770,7 @@ def _load_sim_context_for_game(
             if roster_path:
                 roster_obj = json.loads(roster_path.read_text(encoding="utf-8"))
                 if isinstance(roster_obj, dict):
+                    roster_snapshot = roster_obj
                     player_meta.update(_player_meta_from_roster_snapshot(roster_obj))
         except Exception:
             pass
@@ -8617,6 +8886,7 @@ def _load_sim_context_for_game(
         "date": d,
         "found": True,
         "sourceFile": _relative_path_str(source_path),
+        "roster_snapshot": roster_snapshot,
         "simCount": sim_count,
         "away": sim_obj.get("away") or {},
         "home": sim_obj.get("home") or {},
