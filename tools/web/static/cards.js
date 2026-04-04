@@ -1598,34 +1598,43 @@
       const total = liveGameRow.markets?.total || {};
       const awayCode = card?.away?.abbr || "Away";
       const homeCode = card?.home?.abbr || "Home";
+      const currentAwayRuns = toNumber(detail?.snapshot?.teams?.away?.totals?.R) || 0;
+      const currentHomeRuns = toNumber(detail?.snapshot?.teams?.home?.totals?.R) || 0;
+      const currentMargin = Number((currentHomeRuns - currentAwayRuns).toFixed(2));
+      const currentTotal = Number((currentAwayRuns + currentHomeRuns).toFixed(2));
       if (moneyline.pick && moneyline.edge != null) {
         liveGameCards.push({
           label: "Game live lens",
-          playerName: moneyline.pick === "home" ? homeCode : awayCode,
-          marketLabel: `ML ${moneyline.pick === "home" ? homeCode : awayCode}`,
-          actualLabel: `${awayCode} ${formatLine(detail?.snapshot?.teams?.away?.totals?.R)} - ${homeCode} ${formatLine(detail?.snapshot?.teams?.home?.totals?.R)}`,
+          playerName: `${moneyline.pick === "home" ? homeCode : awayCode} ML`,
+          marketLabel: "Moneyline",
+          actualLabel: `${awayCode} ${formatLine(currentAwayRuns)} - ${homeCode} ${formatLine(currentHomeRuns)}`,
           projectionLabel: formatPercent(liveGameRow.modelHomeWinProb, 1),
           lineLabel: moneyline.pick === "home"
             ? `${homeCode} ${formatOdds(moneyline.homeOdds)}`
             : `${awayCode} ${formatOdds(moneyline.awayOdds)}`,
           edgeLabel: formatSigned((toNumber(moneyline.edge) || 0) * 100, 1),
+          actualMetricLabel: "Current",
           footLeft: moneyline.reason || `Market ${formatPercent(moneyline.marketHomeProb, 1)} home`,
           footRight: `${liveGameRow.label} | ML`,
         });
       }
       if (spread.pick && spread.edge != null) {
         const homeLine = toNumber(spread.homeLine);
+        const spreadLineValue = spread.pick === "home"
+          ? formatSigned(homeLine, 1)
+          : formatSigned(homeLine == null ? null : -homeLine, 1);
         const runLineText = spread.pick === "home"
           ? `${homeCode} ${formatSigned(homeLine, 1)} ${formatOdds(spread.homeOdds)}`
           : `${awayCode} ${formatSigned(homeLine == null ? null : -homeLine, 1)} ${formatOdds(spread.awayOdds)}`;
         liveGameCards.push({
           label: "Game live lens",
-          playerName: spread.pick === "home" ? homeCode : awayCode,
-          marketLabel: `Run line ${spread.pick}`,
-          actualLabel: liveGameRow.projection?.homeMargin == null ? "-" : formatSigned(liveGameRow.projection.homeMargin, 2),
+          playerName: `${spread.pick === "home" ? homeCode : awayCode} ${spreadLineValue}`,
+          marketLabel: "Run line",
+          actualLabel: formatSigned(currentMargin, 2),
           projectionLabel: liveGameRow.projection?.homeMargin == null ? "-" : formatSigned(liveGameRow.projection.homeMargin, 2),
           lineLabel: runLineText,
           edgeLabel: formatSigned(spread.edge, 2),
+          actualMetricLabel: "Current",
           footLeft: spread.reason || `Projected margin ${formatSigned(liveGameRow.projection?.homeMargin, 2)}`,
           footRight: `${liveGameRow.label} | RL`,
         });
@@ -1633,12 +1642,13 @@
       if (total.pick && total.edge != null) {
         liveGameCards.push({
           label: "Game live lens",
-          playerName: String(total.pick || "").replace(/^./, (m) => m.toUpperCase()),
-          marketLabel: `Total ${String(total.pick || "")}`,
-          actualLabel: liveGameRow.projection?.total == null ? "-" : formatLine(liveGameRow.projection.total),
+          playerName: `${String(total.pick || "").replace(/^./, (m) => m.toUpperCase())} ${formatLine(total.line)}`,
+          marketLabel: "Total",
+          actualLabel: formatLine(currentTotal),
           projectionLabel: liveGameRow.projection?.total == null ? "-" : formatLine(liveGameRow.projection.total),
           lineLabel: `${String(total.pick || "").replace(/^./, (m) => m.toUpperCase())} ${formatLine(total.line)} ${formatOdds(total.pick === "over" ? total.overOdds : total.underOdds)}`,
           edgeLabel: formatSigned(total.edge, 2),
+          actualMetricLabel: "Current",
           footLeft: total.reason || `Projected total ${formatLine(liveGameRow.projection?.total)}`,
           footRight: `${liveGameRow.label} | Total`,
         });
@@ -1717,7 +1727,7 @@
               <span class="cards-lens-badge is-live">Live</span>
             </div>
             <div class="cards-prop-overview-metrics">
-              <div class="cards-data-pair"><span>Actual</span><strong>${escapeHtml(entry.actualLabel)}</strong></div>
+              <div class="cards-data-pair"><span>${escapeHtml(entry.actualMetricLabel || 'Current')}</span><strong>${escapeHtml(entry.actualLabel)}</strong></div>
               <div class="cards-data-pair"><span>Live proj</span><strong>${escapeHtml(entry.projectionLabel)}</strong></div>
               <div class="cards-data-pair"><span>Line</span><strong>${escapeHtml(entry.lineLabel)}</strong></div>
               <div class="cards-data-pair is-positive"><span>Live edge</span><strong>${escapeHtml(entry.edgeLabel)}</strong></div>
