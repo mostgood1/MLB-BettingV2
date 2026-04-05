@@ -2403,7 +2403,7 @@ def _schedule_status_counts(date_str: str) -> Dict[str, Any]:
             continue
         status = game.get("status") or {}
         abstract = str(status.get("abstractGameState") or "")
-        if _status_is_live(abstract):
+        if _status_is_live(status):
             counts["live"] += 1
         elif _status_is_final(abstract):
             counts["final"] += 1
@@ -5366,12 +5366,12 @@ def _official_betting_card_games_payload(date_str: str, betting_games: Dict[int,
                 official_date,
                 status,
                 score=schedule_row.get("score") if isinstance(schedule_row.get("score"), dict) else None,
-                fetch_feed=bool(_status_is_live(status.get("abstract"))),
+                fetch_feed=bool(_status_is_live(status)),
             ),
             "betting": dict(raw_game_betting),
         }
         games_out.append(game_row)
-        if bool(_status_is_live(status.get("abstract"))):
+        if bool(_status_is_live(status)):
             live_matchup_candidates.append((int(game_pk), official_date, status))
 
     if live_matchup_candidates:
@@ -7265,8 +7265,23 @@ def _current_matchup(feed: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _status_is_live(status_text: Any) -> bool:
-    text = str(status_text or "").strip().lower()
-    return text in {"live", "in progress", "manager challenge"}
+    if isinstance(status_text, dict):
+        abstract = str(
+            status_text.get("abstract")
+            or status_text.get("abstractGameState")
+            or ""
+        ).strip().lower()
+        detailed = str(
+            status_text.get("detailed")
+            or status_text.get("detailedState")
+            or ""
+        ).strip().lower()
+    else:
+        abstract = str(status_text or "").strip().lower()
+        detailed = ""
+    if detailed == "warmup":
+        return False
+    return abstract in {"live", "in progress", "manager challenge"}
 
 
 def _status_is_final(status_text: Any) -> bool:
@@ -7296,7 +7311,7 @@ def _official_betting_game_matchup_payload(
     detailed = str((status or {}).get("detailed") or "").strip()
     schedule_score = score if isinstance(score, dict) else {}
     out: Dict[str, Any] = {
-        "isLive": bool(_status_is_live(abstract)),
+        "isLive": bool(_status_is_live({"abstract": abstract, "detailed": detailed})),
         "isFinal": bool(_status_is_final(abstract)),
         "liveText": "",
         "displayState": detailed or abstract,
@@ -7343,7 +7358,7 @@ def _official_betting_game_matchup_payload(
 
     out.update(
         {
-            "isLive": bool(_status_is_live(abstract)),
+            "isLive": bool(_status_is_live({"abstract": abstract, "detailed": detailed})),
             "isFinal": bool(_status_is_final(abstract)),
             "liveText": _format_matchup_live_text(current),
             "displayState": detailed or abstract,
