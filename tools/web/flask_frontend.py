@@ -7791,6 +7791,27 @@ def _selection_live_edge(selection: str, live_projection: Optional[float], line:
     return None
 
 
+def _is_live_hitter_prop_market(market: Any) -> bool:
+    token = str(market or "").strip().lower()
+    return token == "hitter_props" or token.startswith("hitter_")
+
+
+def _live_hitter_prop_row_actionable(row: Dict[str, Any]) -> bool:
+    if not _is_live_hitter_prop_market(row.get("market")):
+        return True
+    pa_mean = _safe_float(row.get("pa_mean"))
+    model_mean = _safe_float(row.get("model_mean"))
+    live_projection = _safe_float(row.get("live_projection"))
+    actual_value = _safe_float(row.get("actual_value"))
+    if pa_mean is not None and float(pa_mean) <= 0.0:
+        return False
+    if model_mean is not None and float(model_mean) <= 0.0:
+        return False
+    if live_projection is not None and float(live_projection) <= 0.0 and (actual_value is None or float(actual_value) <= 0.0):
+        return False
+    return True
+
+
 def _is_live_game_status(status_text: Any) -> bool:
     token = str(status_text or "").strip().lower()
     return token in {"live", "in progress", "manager challenge"} or "live" in token
@@ -8673,6 +8694,8 @@ def _final_live_prop_rows_from_registry(
             item["outs_mean"] = _safe_float(first_snapshot.get("modelMean")) if prop == "outs" else None
         else:
             item["player_name"] = owner
+        if not _live_hitter_prop_row_actionable(item):
+            continue
         if team_side:
             item["team_side"] = team_side
         if team_info:
@@ -8841,38 +8864,39 @@ def _current_live_prop_rows(
             )
             if side_pick is None:
                 continue
-            rows.append(
-                {
-                    "recommendation_tier": "live",
-                    "source": "current_market",
-                    "market": "hitter_props",
-                    "market_label": cfg.get("label"),
-                    "prop": prop_key,
-                    "player_name": hitter_name,
-                    "team": model_entry.get("team"),
-                    "team_side": side,
-                    "selection": side_pick.get("selection"),
-                    "market_line": float(line_value),
-                    "odds": side_pick.get("odds"),
-                    "over_odds": _safe_int(market.get("over_odds")),
-                    "under_odds": _safe_int(market.get("under_odds")),
-                    "model_prob_over": model_prob_over,
-                    "market_prob_over": side_pick.get("marketProbOver"),
-                    "market_prob_under": side_pick.get("marketProbUnder"),
-                    "market_prob_mode": side_pick.get("marketProbMode"),
-                    "selected_side_market_prob": side_pick.get("selectedSideMarketProb"),
-                    "edge": side_pick.get("marketEdge"),
-                    "live_edge": side_pick.get("liveEdge"),
-                    "projection_gap": side_pick.get("projectionGap"),
-                    "model_mean": model_mean,
-                    "actual": actual_value,
-                    "actual_value": actual_value,
-                    "live_projection": live_projection,
-                    "lineup_order": _safe_int(model_row.get("lineup_order")),
-                    "pa_mean": _safe_float(model_row.get("pa_mean")),
-                    "ab_mean": _safe_float(model_row.get("ab_mean")),
-                }
-            )
+            item = {
+                "recommendation_tier": "live",
+                "source": "current_market",
+                "market": "hitter_props",
+                "market_label": cfg.get("label"),
+                "prop": prop_key,
+                "player_name": hitter_name,
+                "team": model_entry.get("team"),
+                "team_side": side,
+                "selection": side_pick.get("selection"),
+                "market_line": float(line_value),
+                "odds": side_pick.get("odds"),
+                "over_odds": _safe_int(market.get("over_odds")),
+                "under_odds": _safe_int(market.get("under_odds")),
+                "model_prob_over": model_prob_over,
+                "market_prob_over": side_pick.get("marketProbOver"),
+                "market_prob_under": side_pick.get("marketProbUnder"),
+                "market_prob_mode": side_pick.get("marketProbMode"),
+                "selected_side_market_prob": side_pick.get("selectedSideMarketProb"),
+                "edge": side_pick.get("marketEdge"),
+                "live_edge": side_pick.get("liveEdge"),
+                "projection_gap": side_pick.get("projectionGap"),
+                "model_mean": model_mean,
+                "actual": actual_value,
+                "actual_value": actual_value,
+                "live_projection": live_projection,
+                "lineup_order": _safe_int(model_row.get("lineup_order")),
+                "pa_mean": _safe_float(model_row.get("pa_mean")),
+                "ab_mean": _safe_float(model_row.get("ab_mean")),
+            }
+            if not _live_hitter_prop_row_actionable(item):
+                continue
+            rows.append(item)
 
     rows.sort(
         key=lambda row: (
