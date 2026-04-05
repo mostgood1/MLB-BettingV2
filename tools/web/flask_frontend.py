@@ -8356,10 +8356,57 @@ def _live_pitcher_matchup_context(
         return {}
     pitcher_profile = side_doc.get("starter_profile") if isinstance(side_doc.get("starter_profile"), dict) else None
     opponent_lineup = opp_doc.get("lineup") if isinstance(opp_doc.get("lineup"), list) else []
+    pitcher_models = _sim_prop_models(sim_context, "pitchers")
+    pitcher_name = str(row.get("pitcher_name") or (pitcher_profile or {}).get("name") or "").strip()
+    pitcher_entry = pitcher_models.get(normalize_pitcher_name(pitcher_name)) if pitcher_name else None
+    pitcher_model = pitcher_entry.get("model") if isinstance(pitcher_entry, dict) and isinstance(pitcher_entry.get("model"), dict) else None
     return {
         "pitcher_profile": pitcher_profile,
         "opponent_lineup": [item for item in opponent_lineup if isinstance(item, dict)],
+        "pitcher_model": pitcher_model,
     }
+
+
+def _live_pitcher_efficiency_reason(
+    row: Dict[str, Any],
+    actual_row: Optional[Dict[str, Any]],
+    pitcher_model: Optional[Dict[str, Any]],
+) -> Optional[str]:
+    if not isinstance(actual_row, dict) or not isinstance(pitcher_model, dict):
+        return None
+    prop = str(row.get("prop") or "").strip().lower()
+    if prop not in {"outs", "strikeouts"}:
+        return None
+
+    pitch_count = _safe_float(actual_row.get("P"))
+    batters_faced = _safe_float(actual_row.get("BF"))
+    expected_pitches = _safe_float(pitcher_model.get("pitches_mean"))
+    expected_bf = _safe_float(pitcher_model.get("batters_faced_mean"))
+    if pitch_count is None or batters_faced is None or expected_pitches is None or expected_bf is None:
+        return None
+    if float(batters_faced) <= 0.0 or float(expected_bf) <= 0.0:
+        return None
+
+    actual_ppbf = float(pitch_count) / float(batters_faced)
+    expected_ppbf = float(expected_pitches) / float(expected_bf)
+    if expected_ppbf <= 0.0:
+        return None
+
+    choice = str(row.get("selection") or "").strip().lower()
+    subject = _live_prop_reason_subject(row)
+    ratio = float(actual_ppbf / expected_ppbf)
+
+    if choice == "over" and float(batters_faced) >= 9.0 and ratio <= 0.94:
+        return (
+            f"{subject} is only around {actual_ppbf:.1f} pitches per batter so far versus a pregame pace near {expected_ppbf:.1f}, "
+            f"which leaves more pitch-count runway than the baseline expected."
+        )
+    if choice == "under" and float(pitch_count) >= 35.0 and ratio >= 1.08:
+        return (
+            f"{subject} is already around {actual_ppbf:.1f} pitches per batter versus a pregame pace near {expected_ppbf:.1f}, "
+            f"which is the kind of grind that can burn through the leash faster."
+        )
+    return None
 
 
 def _live_pitcher_count_reason(
@@ -8423,6 +8470,7 @@ def _live_pitcher_matchup_reasons(
     ctx = _live_pitcher_matchup_context(row, sim_context)
     pitcher_profile = ctx.get("pitcher_profile") if isinstance(ctx.get("pitcher_profile"), dict) else None
     opponent_lineup = ctx.get("opponent_lineup") if isinstance(ctx.get("opponent_lineup"), list) else []
+    pitcher_model = ctx.get("pitcher_model") if isinstance(ctx.get("pitcher_model"), dict) else None
     if not isinstance(pitcher_profile, dict):
         return []
     choice = str(row.get("selection") or "").strip().lower()
@@ -8432,6 +8480,9 @@ def _live_pitcher_matchup_reasons(
     pitch_count_reason = _live_pitcher_count_reason(row, actual_row, pitcher_profile)
     if pitch_count_reason:
         reasons.append(pitch_count_reason)
+    efficiency_reason = _live_pitcher_efficiency_reason(row, actual_row, pitcher_model)
+    if efficiency_reason:
+        reasons.append(efficiency_reason)
     k_perf_reason = _live_pitcher_k_performance_reason(row, actual_row)
     if k_perf_reason:
         reasons.append(k_perf_reason)

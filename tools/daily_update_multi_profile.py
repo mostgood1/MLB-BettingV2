@@ -1722,6 +1722,7 @@ def _pitcher_bvp_reason(
 
     total_pa = 0.0
     hitter_matches = 0
+    total_so = 0.0
     weighted_k = 0.0
     weighted_hr = 0.0
     weighted_inplay = 0.0
@@ -1744,6 +1745,10 @@ def _pitcher_bvp_reason(
         hitter_matches += 1
         total_pa += float(pa)
         try:
+            total_so += float(history.get("so") or 0.0)
+        except Exception:
+            pass
+        try:
             weighted_k += float(pa) * float(history.get("k_mult") or 1.0)
         except Exception:
             weighted_k += float(pa)
@@ -1762,12 +1767,21 @@ def _pitcher_bvp_reason(
     avg_k = float(weighted_k / total_pa) if total_pa > 0.0 else 1.0
     avg_hr = float(weighted_hr / total_pa) if total_pa > 0.0 else 1.0
     avg_inplay = float(weighted_inplay / total_pa) if total_pa > 0.0 else 1.0
+    so_rate = float(total_so / total_pa) if total_pa > 0.0 else 0.0
 
     bits: List[str] = []
     if avg_k >= 1.05:
-        bits.append("their prior looks against him have come with a little more swing-and-miss than baseline")
+        bits.append(
+            f"they have struck out {int(round(total_so))} times in {int(round(total_pa))} prior plate appearances, which is a little more swing-and-miss than baseline"
+        )
     elif avg_k <= 0.95:
-        bits.append("their prior looks against him have produced a little less swing-and-miss than baseline")
+        bits.append(
+            f"they have only struck out {int(round(total_so))} times in {int(round(total_pa))} prior plate appearances, which is a little lighter swing-and-miss than baseline"
+        )
+    elif total_so >= 6.0 and so_rate >= 0.24:
+        bits.append(
+            f"they have already struck out {int(round(total_so))} times in {int(round(total_pa))} prior plate appearances against him"
+        )
     if avg_inplay <= 0.95:
         bits.append("the contact they have made has turned into fewer hits than expected")
     elif avg_inplay >= 1.05:
