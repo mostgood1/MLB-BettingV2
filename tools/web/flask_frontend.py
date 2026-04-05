@@ -7281,6 +7281,10 @@ def _status_is_live(status_text: Any) -> bool:
         detailed = ""
     if detailed == "warmup":
         return False
+    if detailed in {"in progress", "manager challenge"}:
+        return True
+    if detailed.startswith(("top ", "bottom ", "mid ", "end ")):
+        return True
     return abstract in {"live", "in progress", "manager challenge"}
 
 
