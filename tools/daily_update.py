@@ -4821,6 +4821,15 @@ def main() -> int:
                 "platoon_mult_vs_lhp": {str(k): float(v) for k, v in (getattr(b, "platoon_mult_vs_lhp", {}) or {}).items() if isinstance(v, (int, float))},
                 "platoon_mult_vs_rhp": {str(k): float(v) for k, v in (getattr(b, "platoon_mult_vs_rhp", {}) or {}).items() if isinstance(v, (int, float))},
                 "statcast_quality_mult": {str(k): float(v) for k, v in (getattr(b, "statcast_quality_mult", {}) or {}).items() if isinstance(v, (int, float))},
+                "vs_pitcher_history": {
+                    str(pid): {
+                        str(key): float(value)
+                        for key, value in (history or {}).items()
+                        if isinstance(value, (int, float))
+                    }
+                    for pid, history in (getattr(b, "vs_pitcher_history", {}) or {}).items()
+                    if isinstance(history, dict)
+                },
             }
 
         def _pitcher_feat(p):

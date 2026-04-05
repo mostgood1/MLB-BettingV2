@@ -3934,6 +3934,7 @@ def _report_game_to_sim_obj(report_game: Dict[str, Any], sim_count: Optional[int
                 "outs_mean": _safe_float(pred.get("outs_mean")),
                 "so_mean": _safe_float(pred.get("so_mean")),
                 "pitches_mean": _safe_float(pred.get("pitches_mean")),
+                "batters_faced_mean": _safe_float(pred.get("batters_faced_mean")),
             }
 
     return {
@@ -6736,7 +6737,7 @@ def _sim_boxscore_from_aggregate_means(
                     "BB": None,
                     "SO": _round_stat(raw.get("so_mean"), 2),
                     "HR": None,
-                    "BF": None,
+                    "BF": _round_stat(raw.get("batters_faced_mean"), 2),
                     "P": _round_stat(raw.get("pitches_mean"), 2),
                 }
             )
@@ -8769,6 +8770,8 @@ def _current_live_prop_rows(
         market_entry = pitcher_market_lines.get(starter_key) if starter_key else None
         actual_row = _lookup_boxscore_row((((actual_teams.get(side) or {}).get("boxscore") or {}).get("pitching") or []), starter_name)
         if isinstance(model_entry, dict) and isinstance(market_entry, dict):
+            pitcher_ctx = _live_pitcher_matchup_context({"team_side": side}, sim_context)
+            pitcher_profile = pitcher_ctx.get("pitcher_profile") if isinstance(pitcher_ctx.get("pitcher_profile"), dict) else None
             for prop_key, cfg in _PITCHER_LADDER_PROPS.items():
                 market_key = cfg.get("market_key")
                 if not market_key:
@@ -8785,7 +8788,15 @@ def _current_live_prop_rows(
                 actual_value = _live_stat_value(actual_row, {"market": "pitcher_props", "prop": prop_key})
                 if _live_prop_market_resolved(actual_value, line_value):
                     continue
-                live_projection = _project_live_value(actual_value, model_mean, progress_fraction)
+                live_projection = _project_live_pitcher_value(
+                    prop=prop_key,
+                    actual_value=actual_value,
+                    model_mean=model_mean,
+                    progress_fraction=progress_fraction,
+                    actual_row=actual_row,
+                    model_row=model_row,
+                    pitcher_profile=pitcher_profile,
+                )
                 side_pick = _select_live_prop_side(
                     model_prob_over=model_prob_over,
                     live_projection=live_projection,
@@ -9286,6 +9297,84 @@ def _project_live_value(actual_value: Optional[float], model_mean: Optional[floa
     return round(actual + remaining, 3)
 
 
+def _model_pitcher_stat(model_row: Optional[Dict[str, Any]], *keys: str) -> Optional[float]:
+    if not isinstance(model_row, dict):
+        return None
+    for key in keys:
+        value = _safe_float(model_row.get(key))
+        if value is not None:
+            return float(value)
+    return None
+
+
+def _project_live_pitcher_value(
+    *,
+    prop: str,
+    actual_value: Optional[float],
+    model_mean: Optional[float],
+    progress_fraction: float,
+    actual_row: Optional[Dict[str, Any]] = None,
+    model_row: Optional[Dict[str, Any]] = None,
+    pitcher_profile: Optional[Dict[str, Any]] = None,
+) -> Optional[float]:
+    prop_key = str(prop or "").strip().lower()
+    mean = _safe_float(model_mean)
+    if mean is None or prop_key not in {"outs", "strikeouts"}:
+        return _project_live_value(actual_value, model_mean, progress_fraction)
+
+    actual = float(_safe_float(actual_value) or 0.0)
+    if not isinstance(actual_row, dict):
+        return _project_live_value(actual_value, model_mean, progress_fraction)
+
+    actual_bf = _safe_float(actual_row.get("BF"))
+    actual_pitches = _safe_float(actual_row.get("P"))
+    if actual_bf is None and actual_pitches is None:
+        return _project_live_value(actual_value, model_mean, progress_fraction)
+
+    model_bf = _model_pitcher_stat(model_row, "BF", "batters_faced_mean")
+    model_pitches = _model_pitcher_stat(model_row, "P", "pitches_mean")
+    if model_bf is None or model_bf <= 0.0:
+        return _project_live_value(actual_value, model_mean, progress_fraction)
+
+    remaining_bf = None
+    if actual_bf is not None:
+        remaining_bf = max(float(model_bf) - float(actual_bf), 0.0)
+
+    pitches_per_bf = None
+    if model_pitches is not None and float(model_pitches) > 0.0:
+        pitches_per_bf = float(model_pitches) / float(max(model_bf, 1e-6))
+
+    if pitches_per_bf is not None and actual_pitches is not None:
+        workload_limit = float(model_pitches) if model_pitches is not None else None
+        stamina = _safe_float((pitcher_profile or {}).get("stamina_pitches")) if isinstance(pitcher_profile, dict) else None
+        if stamina is not None:
+            leash_limit = float(stamina)
+            if actual_bf is not None and float(actual_bf) >= 18.0:
+                leash_limit = max(0.0, leash_limit - 3.0)
+            workload_limit = leash_limit if workload_limit is None else min(float(workload_limit), leash_limit)
+        if workload_limit is not None:
+            pitch_headroom = max(float(workload_limit) - float(actual_pitches), 0.0)
+            bf_from_pitch_budget = float(pitch_headroom) / float(max(pitches_per_bf, 1e-6))
+            bf_from_pitch_budget = max(0.0, bf_from_pitch_budget + 0.75)
+            remaining_bf = bf_from_pitch_budget if remaining_bf is None else min(float(remaining_bf), bf_from_pitch_budget)
+
+        if actual_bf is not None and float(actual_bf) > 0.0:
+            actual_pitches_per_bf = float(actual_pitches) / float(actual_bf)
+            pace_ratio = float(actual_pitches_per_bf) / float(max(pitches_per_bf, 1e-6))
+            if remaining_bf is not None and pace_ratio > 1.05:
+                remaining_bf = max(0.0, float(remaining_bf) / min(float(pace_ratio), 1.35))
+
+    if actual_bf is not None and float(actual_bf) >= 21.0 and remaining_bf is not None:
+        remaining_bf = min(float(remaining_bf), 3.5)
+
+    if remaining_bf is None:
+        return _project_live_value(actual_value, model_mean, progress_fraction)
+
+    per_bf_rate = float(mean) / float(max(model_bf, 1e-6))
+    projection = float(actual) + max(0.0, float(remaining_bf)) * float(per_bf_rate)
+    return round(max(float(actual), projection), 3)
+
+
 def _segment_projection(
     *,
     pregame_away: Optional[float],
@@ -9751,7 +9840,20 @@ def _prop_lens_rows(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], si
                     break
             actual_value = _live_stat_value(actual_row, reco)
             model_mean = _prop_model_mean_value(reco, sim_row)
-            live_projection = _project_live_value(actual_value, model_mean, progress_fraction)
+            pitcher_profile = None
+            if is_pitcher:
+                pitcher_ctx = _live_pitcher_matchup_context({"team_side": side}, sim_context)
+                if isinstance(pitcher_ctx.get("pitcher_profile"), dict):
+                    pitcher_profile = pitcher_ctx.get("pitcher_profile")
+            live_projection = _project_live_pitcher_value(
+                prop=str(reco.get("prop") or ""),
+                actual_value=actual_value,
+                model_mean=model_mean,
+                progress_fraction=progress_fraction,
+                actual_row=actual_row,
+                model_row=sim_row,
+                pitcher_profile=pitcher_profile,
+            ) if is_pitcher else _project_live_value(actual_value, model_mean, progress_fraction)
             market_line = _safe_float(reco.get("market_line"))
             selection = str(reco.get("selection") or "").strip().lower()
             rows.append(
