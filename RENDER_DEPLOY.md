@@ -59,10 +59,22 @@ Scheduled workflows in this repo now cover pregame market refreshes and season r
 
 - `.github/workflows/mlb-pregame-odds-refresh.yml`: refreshes Render OddsAPI snapshots throughout the day
 - `.github/workflows/mlb-season-republish.yml`: runs daily at `11:30 UTC`, rebuilds the prior Chicago-date season day report on Render, then republishes rolling season manifests for that season
+- `.github/workflows/mlb-render-disk-maintenance.yml`: runs daily at `12:45 UTC`, compacts older live-lens raw day files into recap artifacts and prunes old OddsAPI refresh-history snapshots from the Render disk
 
 The live-lens tick workflow is manual-only because GitHub Actions cron cannot schedule every 30 seconds. Live-lens persistence now runs from the in-process Render loop instead.
 
 The season republish workflow is what keeps `/opt/render/project/data/eval/seasons/...` current without relying on a user request to trigger a rebuild.
+
+For disk hygiene, the maintenance workflow intentionally leaves current-day files alone and uses conservative retention defaults:
+
+- live-lens compaction: compact raw day files older than 3 days into recap JSON while preserving recap artifacts
+- market refresh history cleanup: delete OddsAPI refresh-history snapshots older than 3 days
+
+You can inspect or run the same maintenance surfaces manually with the cron token:
+
+- `/api/cron/disk-usage?largest=15`
+- `/api/cron/compact-live-lens?retentionDays=3&maxDays=30&apply=off`
+- `/api/cron/cleanup-data?target=market-refresh-history&retentionDays=3&apply=off`
 
 ## Notes
 

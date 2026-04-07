@@ -1,0 +1,87 @@
+name: MLB Render Disk Maintenance
+
+on:
+  workflow_dispatch:
+    inputs:
+      compact_retention_days:
+        description: Keep raw live-lens day files this many days before compacting
+        required: false
+        default: "3"
+      compact_max_days:
+        description: Max live-lens days to compact in one run
+        required: false
+        default: "30"
+      market_retention_days:
+        description: Keep OddsAPI refresh-history snapshots this many days
+        required: false
+        default: "3"
+  schedule:
+    - cron: '45 12 * * *'
+
+concurrency:
+  group: mlb-render-disk-maintenance
+  cancel-in-progress: false
+
+env:
+  MLB_BETTING_BASE_URL: ${{ secrets['MLB_BETTING_BASE_URL'] }}
+  RENDER_URL: ${{ secrets['RENDER_URL'] }}
+  MLB_CRON_TOKEN: ${{ secrets['MLB_CRON_TOKEN'] }}
+  MLB_BETTING_CRON_TOKEN: ${{ secrets['MLB_BETTING_CRON_TOKEN'] }}
+  CRON_TOKEN: ${{ secrets['CRON_TOKEN'] }}
+
+jobs:
+  render-disk-maintenance:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Validate secrets
+        run: |
+          test -n "${MLB_BETTING_BASE_URL:-${RENDER_URL:-}}" || (echo 'Missing MLB_BETTING_BASE_URL or RENDER_URL secret' && exit 1)
+          test -n "${MLB_BETTING_CRON_TOKEN:-${MLB_CRON_TOKEN:-${CRON_TOKEN:-}}}" || (echo 'Missing MLB_BETTING_CRON_TOKEN, MLB_CRON_TOKEN, or CRON_TOKEN secret' && exit 1)
+
+      - name: Resolve retention inputs
+        id: resolve
+        shell: bash
+        env:
+          INPUT_COMPACT_RETENTION_DAYS: ${{ github.event.inputs.compact_retention_days }}
+          INPUT_COMPACT_MAX_DAYS: ${{ github.event.inputs.compact_max_days }}
+          INPUT_MARKET_RETENTION_DAYS: ${{ github.event.inputs.market_retention_days }}
+        run: |
+          compact_retention_days="${INPUT_COMPACT_RETENTION_DAYS:-3}"
+          compact_max_days="${INPUT_COMPACT_MAX_DAYS:-30}"
+          market_retention_days="${INPUT_MARKET_RETENTION_DAYS:-3}"
+
+          if ! [[ "${compact_retention_days}" =~ ^[0-9]+$ ]]; then
+            compact_retention_days="3"
+          fi
+          if ! [[ "${compact_max_days}" =~ ^[0-9]+$ ]] || [[ "${compact_max_days}" -lt 1 ]]; then
+            compact_max_days="30"
+          fi
+          if ! [[ "${market_retention_days}" =~ ^[0-9]+$ ]]; then
+            market_retention_days="3"
+          fi
+
+          echo "compact_retention_days=${compact_retention_days}" >> "$GITHUB_OUTPUT"
+          echo "compact_max_days=${compact_max_days}" >> "$GITHUB_OUTPUT"
+          echo "market_retention_days=${market_retention_days}" >> "$GITHUB_OUTPUT"
+
+      - name: Ping Render cron surface
+        run: bash scripts/render_cron_call.sh /api/cron/ping
+
+      - name: Disk usage before maintenance
+        run: bash scripts/render_cron_call.sh "/api/cron/disk-usage?largest=15"
+
+      - name: Compact older live-lens days
+        run: >-
+          bash scripts/render_cron_call.sh
+          "/api/cron/compact-live-lens?retentionDays=${{ steps.resolve.outputs.compact_retention_days }}&maxDays=${{ steps.resolve.outputs.compact_max_days }}&apply=on"
+
+      - name: Cleanup old OddsAPI refresh history
+        run: >-
+          bash scripts/render_cron_call.sh
+          "/api/cron/cleanup-data?target=market-refresh-history&retentionDays=${{ steps.resolve.outputs.market_retention_days }}&apply=on"
+
+      - name: Disk usage after maintenance
+        run: bash scripts/render_cron_call.sh "/api/cron/disk-usage?largest=15"
