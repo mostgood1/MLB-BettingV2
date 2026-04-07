@@ -9357,13 +9357,15 @@ def _current_live_prop_rows(
     write_observation_log: bool = False,
     ensure_market_fresh: bool = True,
 ) -> List[Dict[str, Any]]:
-    if not isinstance(snapshot, dict) or not isinstance(sim_context, dict) or not sim_context.get("found"):
+    if not isinstance(snapshot, dict):
         return []
 
     status = (snapshot or {}).get("status") or {}
     abstract = str(status.get("abstractGameState") or ((card or {}).get("status") or {}).get("abstract") or "").strip().lower()
     if abstract == "final":
         return _final_live_prop_rows_from_registry(card, snapshot, d)
+    if not isinstance(sim_context, dict) or not sim_context.get("found"):
+        return []
     if abstract != "live":
         return []
 
