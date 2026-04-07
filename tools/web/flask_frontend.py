@@ -4657,12 +4657,36 @@ def _supplemental_season_day_row(season: int, date_str: str) -> Optional[Dict[st
         return None
     game_count = _daily_artifact_game_count(daily_artifacts)
     betting_day_payload = _season_betting_day_payload(int(season), str(date_str), "")
+    betting_payload_found = bool(betting_day_payload.get("found"))
     betting_summary = betting_day_payload.get("summary") if isinstance(betting_day_payload.get("summary"), dict) else {}
     selected_counts = _betting_selected_counts_with_defaults(
         betting_day_payload.get("selected_counts") or betting_summary.get("selected_counts") or {}
     )
+    playable_selected_counts = _betting_selected_counts_with_defaults(
+        betting_day_payload.get("playable_selected_counts") or betting_summary.get("playable_selected_counts") or {}
+    )
     results = _merge_settled_results_blocks([betting_day_payload.get("results") or {}])
     combined = results.get("combined") or _blank_settled_summary()
+    betting_cards = _lightweight_betting_cards_hint(int(season), daily_artifacts)
+    default_profile = str(betting_cards.get("default_profile") or betting_day_payload.get("profile") or "").strip()
+    if betting_payload_found and default_profile:
+        merged_profiles = dict(betting_cards.get("profiles") or {})
+        merged_profiles[default_profile] = {
+            **dict(merged_profiles.get(default_profile) or {}),
+            "available": True,
+            "card_path": betting_day_payload.get("card_source"),
+            "selected_counts": selected_counts,
+            "playable_counts": playable_selected_counts,
+            "results": results,
+        }
+        betting_cards["profiles"] = merged_profiles
+        available_profiles = list(betting_cards.get("available_profiles") or [])
+        if default_profile not in available_profiles:
+            available_profiles.append(default_profile)
+            available_profiles.sort()
+            betting_cards["available_profiles"] = available_profiles
+        betting_cards["default_profile"] = default_profile
+        betting_cards["available"] = True
 
     return {
         "date": str(date_str),
@@ -4672,7 +4696,7 @@ def _supplemental_season_day_row(season: int, date_str: str) -> Optional[Dict[st
         "legacy_cards_available": bool(has_cards),
         "cards_url": f"/?date={date_str}" if has_cards else None,
         "legacy_cards_url": f"/?date={date_str}" if has_cards else None,
-        "betting_cards": _lightweight_betting_cards_hint(int(season), daily_artifacts),
+        "betting_cards": betting_cards,
         "full_game": {
             "moneyline": {},
             "totals": {},
@@ -4694,6 +4718,7 @@ def _supplemental_season_day_row(season: int, date_str: str) -> Optional[Dict[st
         "settled_n": int(combined.get("n") or 0),
         "unresolved_n": int(betting_summary.get("unresolved_n") or 0),
         "source_kind": betting_day_payload.get("source_kind"),
+        "_betting_payload_found": bool(betting_payload_found),
         "report_path": None,
     }
 
@@ -4706,25 +4731,47 @@ def _season_day_row_with_refreshed_cards(season: int, row: Dict[str, Any]) -> Di
     supplemental = _supplemental_season_day_row(int(season), date_str)
     if not isinstance(supplemental, dict):
         return out
+    betting_payload_found = bool(supplemental.get("_betting_payload_found"))
     out["month"] = str(out.get("month") or supplemental.get("month") or date_str[:7])
     out["games"] = int(out.get("games") or supplemental.get("games") or 0)
     out["cards_available"] = bool(supplemental.get("cards_available"))
     out["legacy_cards_available"] = bool(supplemental.get("legacy_cards_available"))
     out["cards_url"] = supplemental.get("cards_url")
     out["legacy_cards_url"] = supplemental.get("legacy_cards_url")
+    if betting_payload_found:
+        out["cap_profile"] = supplemental.get("cap_profile")
+        out["card_path"] = supplemental.get("card_path")
+        out["selected_counts"] = supplemental.get("selected_counts")
+        out["results"] = supplemental.get("results")
+        out["profit_u"] = supplemental.get("profit_u")
+        out["roi"] = supplemental.get("roi")
+        out["settled_n"] = supplemental.get("settled_n")
+        out["unresolved_n"] = supplemental.get("unresolved_n")
+        out["source_kind"] = supplemental.get("source_kind")
     existing_betting_cards = dict(out.get("betting_cards") or {})
     supplemental_betting_cards = dict(supplemental.get("betting_cards") or {})
     if existing_betting_cards:
         merged_profiles = dict(existing_betting_cards.get("profiles") or {})
         for profile_name, profile_info in (supplemental_betting_cards.get("profiles") or {}).items():
-            if profile_name not in merged_profiles and isinstance(profile_info, dict):
-                merged_profiles[str(profile_name)] = dict(profile_info)
+            if not isinstance(profile_info, dict):
+                continue
+            if betting_payload_found or profile_name not in merged_profiles:
+                merged_profiles[str(profile_name)] = {
+                    **dict(merged_profiles.get(profile_name) or {}),
+                    **dict(profile_info),
+                }
         if merged_profiles:
             existing_betting_cards["profiles"] = merged_profiles
         if supplemental_betting_cards.get("available"):
             existing_betting_cards["available"] = True
-        if not existing_betting_cards.get("available_profiles") and supplemental_betting_cards.get("available_profiles"):
-            existing_betting_cards["available_profiles"] = list(supplemental_betting_cards.get("available_profiles") or [])
+        if supplemental_betting_cards.get("available_profiles"):
+            merged_available_profiles = sorted(
+                {
+                    *[str(name) for name in (existing_betting_cards.get("available_profiles") or [])],
+                    *[str(name) for name in (supplemental_betting_cards.get("available_profiles") or [])],
+                }
+            )
+            existing_betting_cards["available_profiles"] = merged_available_profiles
         if not existing_betting_cards.get("default_profile") and supplemental_betting_cards.get("default_profile"):
             existing_betting_cards["default_profile"] = supplemental_betting_cards.get("default_profile")
         out["betting_cards"] = existing_betting_cards
