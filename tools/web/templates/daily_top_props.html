@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ title }} - {{ date }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='cards.css', v='20260407-daily-top-props-v1') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='daily_top_props.css', v='20260407-daily-top-props-v2') }}" />
+  </head>
+  <body class="cards-body top-props-body">
+    <div class="top-props-shell">
+      <header class="top-props-header">
+        <div class="top-props-title-block">
+          <div class="top-props-kicker">Daily raw-edge prop board</div>
+          <div class="top-props-title-row">
+            <h1>{{ title }}</h1>
+            <span class="cards-nav-pill is-active">{{ date }}</span>
+          </div>
+          <p class="top-props-header-meta">
+            {% if found %}
+            {{ summary.displayedCount }} rows shown across {{ summary.sectionCount }} tracked stats. {{ summary.positiveEdgeCount }} candidates are currently above market.
+            {% if reconciliation and reconciliation.enabled %}
+            Settled: {{ reconciliation.settledCount }}. Wins {{ reconciliation.resultCounts.win }}, losses {{ reconciliation.resultCounts.loss }}, pushes {{ reconciliation.resultCounts.push }}.
+            {% endif %}
+            {% else %}
+            No top-props board is available for this slate yet.
+            {% endif %}
+          </p>
+        </div>
+        <div class="top-props-header-actions">
+          <a class="cards-nav-pill" href="/?date={{ date }}">Daily cards</a>
+          {% if group == 'pitcher' %}
+          <a class="cards-nav-pill" href="/hitter-top-props?date={{ date }}">Hitter top props</a>
+          <a class="cards-nav-pill" href="/pitcher-ladders?date={{ date }}">Pitcher ladders</a>
+          {% else %}
+          <a class="cards-nav-pill" href="/pitcher-top-props?date={{ date }}">Pitcher top props</a>
+          <a class="cards-nav-pill" href="/hitter-ladders?date={{ date }}">Hitter ladders</a>
+          {% endif %}
+          <a class="cards-nav-pill" href="/season/{{ season }}?date={{ date }}">Season review</a>
+        </div>
+      </header>
+
+      <section class="cards-control-card top-props-controls" aria-label="Daily top props controls">
+        <form class="cards-date-form top-props-form" method="get" action="/{{ group }}-top-props">
+          <a class="cards-nav-pill" href="/{{ group }}-top-props?date={{ nav.prevDate or date }}" rel="prev">Prev</a>
+          <span class="cards-nav-pill cards-form-pill" aria-hidden="true">Date</span>
+          <input type="date" name="date" value="{{ date }}" aria-label="Top props date" />
+          <button type="submit">Load</button>
+          <a class="cards-nav-pill" href="/{{ group }}-top-props?date={{ nav.nextDate or date }}" rel="next">Next</a>
+        </form>
+        <div class="top-props-toolbar-meta">
+          <label class="top-props-filter-control">
+            <span class="top-props-filter-label">Stat</span>
+            <select id="topPropsStatFilter" aria-label="Filter by stat" data-default-stat="{{ defaultStat }}">
+              {% for section in sections %}
+              <option value="{{ section.stat }}" {% if section.stat == defaultStat %}selected{% endif %}>{{ section.label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label class="top-props-filter-control">
+            <span class="top-props-filter-label">Game</span>
+            <select id="topPropsGameFilter" aria-label="Filter by game" data-default-game="{{ defaultGame }}">
+              <option value="" selected>All games</option>
+              {% for option in gameOptions %}
+              <option value="{{ option.value }}">{{ option.label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <div class="top-props-source-meta">
+            {% if marketMode %}
+            Market mode: {{ marketMode }}
+            {% endif %}
+            {% if marketSource %}
+            <span>Source: {{ marketSource }}</span>
+            {% endif %}
+          </div>
+        </div>
+      </section>
+
+      <main class="top-props-grid">
+        {% for section in sections %}
+        <section class="top-props-card" data-stat-section="{{ section.stat }}" aria-labelledby="top-props-{{ section.stat }}">
+          <div class="top-props-card-head">
+            <div>
+              <div class="top-props-card-kicker">{{ groupLabel }} stat</div>
+              <h2 id="top-props-{{ section.stat }}">{{ section.label }}</h2>
+            </div>
+            <div class="top-props-card-meta">
+              <span class="cards-nav-pill">{{ section.candidateCount }} priced</span>
+              <span class="cards-nav-pill">{{ section.positiveEdgeCount }} positive</span>
+              {% if section.reconciliation and section.reconciliation.enabled %}
+              <span class="cards-nav-pill">{{ section.reconciliation.resultCounts.win }}-{{ section.reconciliation.resultCounts.loss }}-{{ section.reconciliation.resultCounts.push }}</span>
+              {% endif %}
+            </div>
+          </div>
+
+          {% if section.rows %}
+          <div class="top-props-table-wrap">
+            <table class="top-props-table" data-sortable-table>
+              <thead>
+                <tr>
+                  <th><button type="button" class="top-props-sort-button" data-sort-key="rank" data-sort-type="number">Rank</button></th>
+                  <th><button type="button" class="top-props-sort-button" data-sort-key="player" data-sort-type="text">{{ groupLabel }}</button></th>
+                  <th><button type="button" class="top-props-sort-button" data-sort-key="matchup" data-sort-type="text">Matchup</button></th>
+                  <th><button type="button" class="top-props-sort-button" data-sort-key="target" data-sort-type="text">Target</button></th>
+                  <th><button type="button" class="top-props-sort-button" data-sort-key="side" data-sort-type="text">Side</button></th>
+                  {% if reconciliation and reconciliation.enabled %}
+                  <th><button type="button" class="top-props-sort-button" data-sort-key="actual" data-sort-type="number">Actual</button></th>
+                  <th><button type="button" class="top-props-sort-button" data-sort-key="result" data-sort-type="text">Result</button></th>
+                  {% endif %}
+                  <th><button type="button" class="top-props-sort-button" data-sort-key="simProb" data-sort-type="number">Sim %</button></th>
+                  <th><button type="button" class="top-props-sort-button" data-sort-key="marketProb" data-sort-type="number">Market %</button></th>
+                  <th><button type="button" class="top-props-sort-button" data-sort-key="rawEdge" data-sort-type="number">Raw edge</button></th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in section.rows %}
+                <tr data-game-pk="{{ row.gamePk or '' }}">
+                  <td class="top-props-rank" data-label="Rank" data-sort-value="{{ row.rank }}">{{ row.rank }}</td>
+                  <td data-label="{{ groupLabel }}" data-sort-value="{{ row.playerName }}">
+                    <div class="top-props-player">{{ row.playerName }}</div>
+                    <div class="top-props-player-meta">{{ row.team }}{% if row.opponent %} vs {{ row.opponent }}{% endif %}</div>
+                  </td>
+                  <td data-label="Matchup" data-sort-value="{{ row.matchup or '' }}">{{ row.matchup or '-' }}</td>
+                  <td data-label="Target" data-sort-value="{{ row.targetLabel }}">{{ row.targetLabel }}</td>
+                  <td data-label="Side" data-sort-value="{{ row.selectionLabel }}">{{ row.selectionLabel }}</td>
+                  {% if reconciliation and reconciliation.enabled %}
+                  <td data-label="Actual" data-sort-value="{{ row.actual if row.actual is not none else '' }}">{% if row.actual is not none %}{{ '%.0f'|format(row.actual) }}{% else %}-{% endif %}</td>
+                  <td data-label="Result" data-sort-value="{{ (row.reconciliation or {}).get('label') or '' }}">
+                    {% set status = (row.reconciliation or {}).get('status') or 'unavailable' %}
+                    {% set label = (row.reconciliation or {}).get('label') or status %}
+                    <span class="top-props-result-badge top-props-result-{{ status }}">{{ label }}</span>
+                  </td>
+                  {% endif %}
+                  <td data-label="Sim %" data-sort-value="{{ row.simProb if row.simProb is not none else '' }}">{{ '%.1f'|format((row.simProb or 0) * 100) }}%</td>
+                  <td data-label="Market %" data-sort-value="{{ row.marketProb if row.marketProb is not none else '' }}">{{ '%.1f'|format((row.marketProb or 0) * 100) }}%</td>
+                  <td data-label="Raw edge" data-sort-value="{{ row.rawEdge if row.rawEdge is not none else '' }}" class="{% if (row.rawEdge or 0) > 0 %}top-props-edge-positive{% elif (row.rawEdge or 0) < 0 %}top-props-edge-negative{% endif %}">
+                    {{ '%+.1f'|format((row.rawEdge or 0) * 100) }}%
+                  </td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% elif section.error %}
+          <div class="cards-loading-state">{{ section.error }}</div>
+          {% else %}
+          <div class="cards-loading-state">No priced rows were available for {{ section.label|lower }}.</div>
+          {% endif %}
+        </section>
+        {% endfor %}
+      </main>
+    </div>
+    <script src="{{ url_for('static', filename='daily_top_props.js', v='20260407-daily-top-props-v1') }}"></script>
+  </body>
+</html>

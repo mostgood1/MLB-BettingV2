@@ -54,7 +54,13 @@ from tools.daily_update_multi_profile import (
 from tools.eval.build_season_eval_manifest import build_manifest as build_season_eval_manifest
 from tools.eval.build_season_eval_manifest import write_manifest_artifacts as write_season_eval_manifest_artifacts
 from tools.oddsapi.fetch_daily_oddsapi_markets import fetch_and_write_live_odds_for_date
-from tools.eval.settle_locked_policy_cards import _settle_card
+from tools.eval.settle_locked_policy_cards import (
+    _feed_is_final as _settlement_feed_is_final,
+    _load_feed as _load_settlement_feed,
+    _player_stats as _settlement_player_stats,
+    _settle_card,
+    _settle_over_under as _settlement_over_under,
+)
 
 
 app = Flask(
@@ -2693,6 +2699,13 @@ def _normalize_game_selector(value: Any) -> str:
     return token if token.isdigit() else ""
 
 
+def _normalize_top_props_limit(value: Any) -> int:
+    limit = _safe_int(value)
+    if limit is None:
+        return 15
+    return max(10, min(25, int(limit)))
+
+
 def _threshold_prob_to_count(prob: Any, sim_count: int) -> int:
     value = _safe_float(prob)
     if value is None or sim_count <= 0:
@@ -2720,6 +2733,231 @@ def _normalize_hitter_selector(value: Any) -> str:
 
 def _normalize_hitter_team_selector(value: Any) -> str:
     return str(value or "").strip().upper()
+
+
+def _top_props_market_line_for_stat(entries: Any, stat_key: str) -> Dict[str, Any]:
+    if not isinstance(entries, list):
+        return {}
+    target = str(stat_key or "").strip().lower()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("stat") or "").strip().lower() == target:
+            return entry
+    return {}
+
+
+def _top_props_target_label(line: Any, selection: str) -> str:
+    line_value = _safe_float(line)
+    if line_value is None:
+        return ""
+    normalized = str(selection or "").strip().lower()
+    if normalized == "under":
+        max_total = max(0, int(math.ceil(float(line_value)) - 1))
+        return "0" if max_total <= 0 else f"{max_total} or fewer"
+    required_total = int(math.floor(float(line_value))) + 1
+    return f"{required_total}+"
+
+
+def _top_props_side_choice(*, over_prob: Any, market_entry: Any, allow_under: bool = True) -> Optional[Dict[str, Any]]:
+    over_prob_value = _safe_float(over_prob)
+    line_value = _safe_float((market_entry or {}).get("line"))
+    if over_prob_value is None or line_value is None or not isinstance(market_entry, dict):
+        return None
+
+    over_odds = _safe_int(market_entry.get("overOdds"))
+    under_odds = _safe_int(market_entry.get("underOdds"))
+    side_probs = market_side_probabilities(over_odds, under_odds)
+    market_prob_over = _safe_float(side_probs.get("over"))
+    market_prob_under = _safe_float(side_probs.get("under"))
+
+    candidates: List[Dict[str, Any]] = []
+    if market_prob_over is not None:
+        candidates.append(
+            {
+                "selection": "over",
+                "selectionLabel": "Over",
+                "targetLabel": _top_props_target_label(line_value, "over"),
+                "simProb": float(over_prob_value),
+                "marketProb": float(market_prob_over),
+                "rawEdge": float(over_prob_value) - float(market_prob_over),
+                "odds": over_odds,
+                "line": float(line_value),
+            }
+        )
+    if allow_under and market_prob_under is not None:
+        under_prob_value = max(0.0, min(1.0, 1.0 - float(over_prob_value)))
+        candidates.append(
+            {
+                "selection": "under",
+                "selectionLabel": "Under",
+                "targetLabel": _top_props_target_label(line_value, "under"),
+                "simProb": float(under_prob_value),
+                "marketProb": float(market_prob_under),
+                "rawEdge": float(under_prob_value) - float(market_prob_under),
+                "odds": under_odds,
+                "line": float(line_value),
+            }
+        )
+    if not candidates:
+        return None
+    candidates.sort(
+        key=lambda item: (
+            -float(item.get("rawEdge") or 0.0),
+            -float(item.get("simProb") or 0.0),
+            0 if str(item.get("selection") or "") == "over" else 1,
+        )
+    )
+    return candidates[0]
+
+
+_TOP_PROPS_HITTER_ACTUAL_KEYS: Dict[str, str] = {
+    "hits": "hits",
+    "home_runs": "homeRuns",
+    "total_bases": "totalBases",
+    "runs": "runs",
+    "rbi": "rbi",
+}
+
+
+_TOP_PROPS_PITCHER_ACTUAL_KEYS: Dict[str, str] = {
+    "strikeouts": "strikeOuts",
+    "outs": "outs",
+    "earned_runs": "earnedRuns",
+}
+
+
+def _top_props_supports_reconciliation(d: str) -> bool:
+    try:
+        return date.fromisoformat(str(d or "")) < _local_today()
+    except Exception:
+        return False
+
+
+def _top_props_player_stats(
+    *,
+    feed: Dict[str, Any],
+    player_name: str,
+    stat_group: str,
+    side_hint: str,
+    cache: Dict[Tuple[int, str, str, str], Optional[Dict[str, Any]]],
+    game_pk: int,
+) -> Optional[Dict[str, Any]]:
+    normalized_name = str(player_name or "").strip()
+    if not normalized_name:
+        return None
+    candidate_sides = [str(side_hint or "").strip().lower(), "away", "home"]
+    seen: set[str] = set()
+    for side in candidate_sides:
+        if side not in {"away", "home"} or side in seen:
+            continue
+        seen.add(side)
+        cache_key = (int(game_pk), side, normalized_name.lower(), str(stat_group))
+        if cache_key not in cache:
+            stats = _settlement_player_stats(feed, side, normalized_name, stat_group)
+            cache[cache_key] = dict(stats) if isinstance(stats, dict) else None
+        if isinstance(cache.get(cache_key), dict):
+            return dict(cache[cache_key] or {})
+    return None
+
+
+def _reconcile_top_props_row(
+    row: Dict[str, Any],
+    *,
+    d: str,
+    group: str,
+    feed_cache: Dict[int, Optional[Dict[str, Any]]],
+    stats_cache: Dict[Tuple[int, str, str, str], Optional[Dict[str, Any]]],
+) -> Dict[str, Any]:
+    game_pk = _safe_int(row.get("gamePk"))
+    player_name = _first_text(row.get("playerName"), row.get("ownerName"))
+    stat_key = str(row.get("stat") or "").strip().lower()
+    line_value = _safe_float(row.get("line"))
+    side = str(row.get("side") or "").strip().lower()
+    if game_pk is None or not player_name or not stat_key or line_value is None:
+        return {"status": "unavailable", "label": "Unavailable"}
+
+    feed = feed_cache.get(int(game_pk))
+    if int(game_pk) not in feed_cache:
+        try:
+            feed = _load_settlement_feed(str(d), int(game_pk))
+        except Exception:
+            feed = None
+        feed_cache[int(game_pk)] = dict(feed) if isinstance(feed, dict) else None
+    if not isinstance(feed, dict):
+        return {"status": "unavailable", "label": "Unavailable"}
+    if not _settlement_feed_is_final(feed):
+        return {"status": "pending", "label": "Pending"}
+
+    stat_group = "pitching" if str(group) == "pitcher" else "batting"
+    actual_key = (_TOP_PROPS_PITCHER_ACTUAL_KEYS if str(group) == "pitcher" else _TOP_PROPS_HITTER_ACTUAL_KEYS).get(stat_key)
+    if not actual_key:
+        return {"status": "unavailable", "label": "Unavailable"}
+    stats = _top_props_player_stats(
+        feed=feed,
+        player_name=player_name,
+        stat_group=stat_group,
+        side_hint=side,
+        cache=stats_cache,
+        game_pk=int(game_pk),
+    )
+    actual_value = _safe_float((stats or {}).get(actual_key))
+    if actual_value is None:
+        return {"status": "unavailable", "label": "DNP/scratched"}
+
+    won = _settlement_over_under(float(actual_value), float(line_value), str(row.get("selection") or ""))
+    if won is None:
+        return {"status": "unavailable", "label": "Unavailable", "actual": float(actual_value)}
+    if abs(float(actual_value) - float(line_value)) < 1e-9:
+        return {"status": "push", "label": "Push", "actual": float(actual_value)}
+    return {
+        "status": "win" if bool(won) else "loss",
+        "label": "Right" if bool(won) else "Wrong",
+        "actual": float(actual_value),
+    }
+
+
+def _reconcile_top_props_sections(sections: List[Dict[str, Any]], *, d: str, group: str) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    if not _top_props_supports_reconciliation(d):
+        return sections, {"enabled": False}
+
+    feed_cache: Dict[int, Optional[Dict[str, Any]]] = {}
+    stats_cache: Dict[Tuple[int, str, str, str], Optional[Dict[str, Any]]] = {}
+    result_counts: Dict[str, int] = {"win": 0, "loss": 0, "push": 0, "pending": 0, "unavailable": 0}
+    out_sections: List[Dict[str, Any]] = []
+    for section in sections:
+        rows_out: List[Dict[str, Any]] = []
+        section_counts: Dict[str, int] = {"win": 0, "loss": 0, "push": 0, "pending": 0, "unavailable": 0}
+        for row in section.get("rows") or []:
+            if not isinstance(row, dict):
+                continue
+            row_out = dict(row)
+            reconciliation = _reconcile_top_props_row(
+                row_out,
+                d=str(d),
+                group=str(group),
+                feed_cache=feed_cache,
+                stats_cache=stats_cache,
+            )
+            status = str((reconciliation or {}).get("status") or "unavailable")
+            row_out["reconciliation"] = dict(reconciliation or {})
+            row_out["actual"] = _safe_float((reconciliation or {}).get("actual"))
+            result_counts[status] = int(result_counts.get(status) or 0) + 1
+            section_counts[status] = int(section_counts.get(status) or 0) + 1
+            rows_out.append(row_out)
+        section_out = dict(section)
+        section_out["rows"] = rows_out
+        section_out["reconciliation"] = {
+            "enabled": True,
+            "resultCounts": dict(section_counts),
+            "settledCount": int(section_counts.get("win", 0) + section_counts.get("loss", 0) + section_counts.get("push", 0)),
+        }
+        out_sections.append(section_out)
+    return out_sections, {
+        "enabled": True,
+        "resultCounts": dict(result_counts),
+        "settledCount": int(result_counts.get("win", 0) + result_counts.get("loss", 0) + result_counts.get("push", 0)),
+    }
 
 
 def _pitcher_ladder_sort_options() -> List[Dict[str, str]]:
@@ -2817,10 +3055,21 @@ def _sort_hitter_ladder_rows(rows: List[Dict[str, Any]], sort_key: str) -> List[
     )
 
 
-def _pitcher_ladders_payload(d: str, prop_value: Any, sort_value: Any) -> Dict[str, Any]:
+def _pitcher_ladders_payload(
+    d: str,
+    prop_value: Any,
+    sort_value: Any,
+    *,
+    selected_game_value: Any = None,
+    selected_pitcher_value: Any = None,
+) -> Dict[str, Any]:
     prop = _normalize_pitcher_ladder_prop(prop_value)
-    selected_game = _normalize_game_selector(request.args.get("game"))
-    selected_pitcher = _normalize_pitcher_selector(request.args.get("pitcher"))
+    if selected_game_value is None:
+        selected_game_value = request.args.get("game")
+    if selected_pitcher_value is None:
+        selected_pitcher_value = request.args.get("pitcher")
+    selected_game = _normalize_game_selector(selected_game_value)
+    selected_pitcher = _normalize_pitcher_selector(selected_pitcher_value)
     sort_key = _normalize_pitcher_ladder_sort(sort_value)
     prop_cfg = _PITCHER_LADDER_PROPS[prop]
     artifacts = _load_cards_artifacts(d)
@@ -3026,12 +3275,28 @@ def _pitcher_ladders_payload(d: str, prop_value: Any, sort_value: Any) -> Dict[s
     return payload
 
 
-def _hitter_ladders_payload(d: str, prop_value: Any) -> Dict[str, Any]:
+def _hitter_ladders_payload(
+    d: str,
+    prop_value: Any,
+    *,
+    selected_game_value: Any = None,
+    selected_team_value: Any = None,
+    selected_hitter_value: Any = None,
+    sort_value: Any = None,
+) -> Dict[str, Any]:
     prop = _normalize_hitter_ladder_prop(prop_value)
-    selected_game = _normalize_game_selector(request.args.get("game"))
-    selected_team = _normalize_hitter_team_selector(request.args.get("team"))
-    selected_hitter = _normalize_hitter_selector(request.args.get("hitter"))
-    sort_key = _normalize_hitter_ladder_sort(request.args.get("sort"))
+    if selected_game_value is None:
+        selected_game_value = request.args.get("game")
+    if selected_team_value is None:
+        selected_team_value = request.args.get("team")
+    if selected_hitter_value is None:
+        selected_hitter_value = request.args.get("hitter")
+    if sort_value is None:
+        sort_value = request.args.get("sort")
+    selected_game = _normalize_game_selector(selected_game_value)
+    selected_team = _normalize_hitter_team_selector(selected_team_value)
+    selected_hitter = _normalize_hitter_selector(selected_hitter_value)
+    sort_key = _normalize_hitter_ladder_sort(sort_value)
     prop_cfg = _HITTER_LADDER_PROPS[prop]
     artifacts = _load_cards_artifacts(d)
     sim_dir = artifacts.get("sim_dir") if isinstance(artifacts.get("sim_dir"), Path) else None
@@ -3435,6 +3700,192 @@ def _hitter_ladders_payload(d: str, prop_value: Any) -> Dict[str, Any]:
         "topN": int(max(topn_limits)) if topn_limits else None,
     }
     return payload
+
+
+def _daily_top_props_row(row: Dict[str, Any], *, stat_key: str, stat_label: str, group: str) -> Optional[Dict[str, Any]]:
+    market_entry = _top_props_market_line_for_stat(row.get("marketLinesByStat"), stat_key)
+    side_choice = _top_props_side_choice(
+        over_prob=row.get("overLineProb"),
+        market_entry=market_entry,
+        allow_under=(str(stat_key) != "home_runs"),
+    )
+    if side_choice is None:
+        return None
+
+    owner_name = _first_text(row.get("playerName"), row.get("pitcherName"), row.get("hitterName"))
+    if not owner_name:
+        return None
+
+    return {
+        "stat": str(stat_key),
+        "statLabel": str(stat_label),
+        "group": str(group),
+        "side": str(row.get("side") or ""),
+        "ownerId": _safe_int(row.get("pitcherId") if group == "pitcher" else row.get("hitterId")),
+        "ownerName": owner_name,
+        "playerName": owner_name,
+        "headshotUrl": row.get("headshotUrl"),
+        "team": _first_text(row.get("team")),
+        "teamId": _safe_int(row.get("teamId")),
+        "teamLogoUrl": row.get("teamLogoUrl"),
+        "opponent": _first_text(row.get("opponent")),
+        "opponentTeamId": _safe_int(row.get("opponentTeamId")),
+        "opponentLogoUrl": row.get("opponentLogoUrl"),
+        "matchup": _first_text(row.get("matchup")),
+        "gamePk": _safe_int(row.get("gamePk")),
+        "mean": _safe_float(row.get("mean")),
+        "line": _safe_float(side_choice.get("line")),
+        "selection": str(side_choice.get("selection") or ""),
+        "selectionLabel": str(side_choice.get("selectionLabel") or ""),
+        "targetLabel": str(side_choice.get("targetLabel") or ""),
+        "simProb": _safe_float(side_choice.get("simProb")),
+        "marketProb": _safe_float(side_choice.get("marketProb")),
+        "rawEdge": _safe_float(side_choice.get("rawEdge")),
+        "odds": _safe_int(side_choice.get("odds")),
+        "marketLine": _safe_float(market_entry.get("line")),
+        "sourceFile": row.get("sourceFile"),
+    }
+
+
+def _daily_top_props_payload(d: str, group: str, limit_value: Any) -> Dict[str, Any]:
+    normalized_group = "pitcher" if str(group or "").strip().lower() == "pitcher" else "hitter"
+    nav = _cards_nav_from_schedule(d) or {
+        "season": _season_from_date_str(d),
+        "minDate": None,
+        "maxDate": None,
+        "prevDate": _shift_iso_date_str(d, -1),
+        "nextDate": _shift_iso_date_str(d, 1),
+    }
+
+    if normalized_group == "pitcher":
+        prop_items = [(key, cfg) for key, cfg in _PITCHER_LADDER_PROPS.items() if str(cfg.get("market_key") or "").strip()]
+    else:
+        prop_items = [(key, cfg) for key, cfg in _HITTER_LADDER_PROPS.items() if str(cfg.get("market_key") or "").strip()]
+
+    def _load_prop_payload(prop_key: str) -> Tuple[str, Dict[str, Any]]:
+        if normalized_group == "pitcher":
+            return (
+                prop_key,
+                _pitcher_ladders_payload(
+                    d,
+                    prop_key,
+                    "mean",
+                    selected_game_value="",
+                    selected_pitcher_value="",
+                ),
+            )
+        return (
+            prop_key,
+            _hitter_ladders_payload(
+                d,
+                prop_key,
+                selected_game_value="",
+                selected_team_value="",
+                selected_hitter_value="",
+                sort_value="team",
+            ),
+        )
+
+    payload_by_prop: Dict[str, Dict[str, Any]] = {}
+    with ThreadPoolExecutor(max_workers=min(4, max(1, len(prop_items)))) as executor:
+        futures = {executor.submit(_load_prop_payload, prop_key): prop_key for prop_key, _ in prop_items}
+        for future in as_completed(futures):
+            prop_key = futures[future]
+            try:
+                loaded_prop_key, prop_payload = future.result()
+            except Exception as exc:
+                app.logger.exception("daily top props load failed for %s %s", normalized_group, prop_key)
+                payload_by_prop[prop_key] = {"found": False, "error": f"{type(exc).__name__}: {exc}"}
+                continue
+            payload_by_prop[str(loaded_prop_key)] = prop_payload if isinstance(prop_payload, dict) else {"found": False}
+
+    sections: List[Dict[str, Any]] = []
+    market_mode = ""
+    market_source = None
+    total_candidates = 0
+    total_positive = 0
+    total_displayed = 0
+    default_stat = "strikeouts" if normalized_group == "pitcher" else "home_runs"
+    game_options_map: Dict[int, Dict[str, Any]] = {}
+    for prop_key, prop_cfg in prop_items:
+        prop_payload = payload_by_prop.get(prop_key) or {}
+        if not market_mode:
+            market_mode = str(prop_payload.get("marketMode") or "")
+        if not market_source:
+            market_source = prop_payload.get("marketPath")
+        section_rows: List[Dict[str, Any]] = []
+        for row in prop_payload.get("rows") or []:
+            if not isinstance(row, dict):
+                continue
+            top_row = _daily_top_props_row(
+                row,
+                stat_key=prop_key,
+                stat_label=str(prop_cfg.get("label") or prop_key.title()),
+                group=normalized_group,
+            )
+            if top_row is not None:
+                section_rows.append(top_row)
+                game_pk = _safe_int(top_row.get("gamePk"))
+                matchup = _first_text(top_row.get("matchup"))
+                if game_pk is not None and matchup:
+                    game_options_map[int(game_pk)] = {
+                        "value": str(int(game_pk)),
+                        "gamePk": int(game_pk),
+                        "label": str(matchup),
+                        "matchup": str(matchup),
+                    }
+        section_rows.sort(
+            key=lambda item: (
+                -float(item.get("rawEdge") or 0.0),
+                -float(item.get("simProb") or 0.0),
+                str(item.get("playerName") or ""),
+            )
+        )
+        for idx, item in enumerate(section_rows, start=1):
+            item["rank"] = idx
+        positive_count = sum(1 for item in section_rows if float(item.get("rawEdge") or 0.0) > 0.0)
+        displayed_rows = list(section_rows)
+        total_candidates += len(section_rows)
+        total_positive += positive_count
+        total_displayed += len(displayed_rows)
+        sections.append(
+            {
+                "stat": str(prop_key),
+                "label": str(prop_cfg.get("label") or prop_key.title()),
+                "unit": str(prop_cfg.get("unit") or ""),
+                "marketKey": str(prop_cfg.get("market_key") or ""),
+                "rows": displayed_rows,
+                "candidateCount": int(len(section_rows)),
+                "positiveEdgeCount": int(positive_count),
+                "found": bool(prop_payload.get("found")),
+                "error": prop_payload.get("error"),
+            }
+        )
+
+    sections, reconciliation = _reconcile_top_props_sections(sections, d=str(d), group=normalized_group)
+
+    return {
+        "found": bool(any(section.get("candidateCount") for section in sections)),
+        "date": str(d),
+        "season": int(_season_from_date_str(d)),
+        "group": normalized_group,
+        "groupLabel": "Pitcher" if normalized_group == "pitcher" else "Hitter",
+        "title": "Daily Top Pitcher Props" if normalized_group == "pitcher" else "Daily Top Hitter Props",
+        "defaultStat": default_stat,
+        "defaultGame": "",
+        "gameOptions": sorted(game_options_map.values(), key=lambda item: (str(item.get("label") or ""), int(item.get("gamePk") or 0))),
+        "nav": nav,
+        "marketMode": market_mode,
+        "marketSource": _relative_path_str(market_source),
+        "reconciliation": reconciliation,
+        "sections": sections,
+        "summary": {
+            "sectionCount": int(len(sections)),
+            "candidateCount": int(total_candidates),
+            "positiveEdgeCount": int(total_positive),
+            "displayedCount": int(total_displayed),
+        },
+    }
 
 
 def _first_text(*values: Any) -> str:
@@ -10957,6 +11408,20 @@ def hitter_ladders_view() -> str:
     )
 
 
+@app.get("/pitcher-top-props")
+def pitcher_top_props_view() -> str:
+    d = str(request.args.get("date") or "").strip() or _default_cards_date()
+    payload = _daily_top_props_payload(d, "pitcher", request.args.get("limit"))
+    return render_template("daily_top_props.html", **payload)
+
+
+@app.get("/hitter-top-props")
+def hitter_top_props_view() -> str:
+    d = str(request.args.get("date") or "").strip() or _default_cards_date()
+    payload = _daily_top_props_payload(d, "hitter", request.args.get("limit"))
+    return render_template("daily_top_props.html", **payload)
+
+
 @app.get("/season/<int:season>")
 def season_view(season: int) -> str:
     d = str(request.args.get("date") or "").strip()
@@ -11100,6 +11565,22 @@ def api_pitcher_ladders() -> Response:
 def api_hitter_ladders() -> Response:
     d = str(request.args.get("date") or "").strip() or _default_cards_date()
     payload = _hitter_ladders_payload(d, request.args.get("prop"))
+    status_code = 200 if payload.get("found") else 404
+    return jsonify(payload), status_code
+
+
+@app.get("/api/pitcher-top-props")
+def api_pitcher_top_props() -> Response:
+    d = str(request.args.get("date") or "").strip() or _default_cards_date()
+    payload = _with_app_build(_daily_top_props_payload(d, "pitcher", request.args.get("limit")))
+    status_code = 200 if payload.get("found") else 404
+    return jsonify(payload), status_code
+
+
+@app.get("/api/hitter-top-props")
+def api_hitter_top_props() -> Response:
+    d = str(request.args.get("date") or "").strip() or _default_cards_date()
+    payload = _with_app_build(_daily_top_props_payload(d, "hitter", request.args.get("limit")))
     status_code = 200 if payload.get("found") else 404
     return jsonify(payload), status_code
 
