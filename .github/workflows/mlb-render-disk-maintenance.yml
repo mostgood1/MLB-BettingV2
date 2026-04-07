@@ -15,6 +15,14 @@ on:
         description: Keep OddsAPI refresh-history snapshots this many days
         required: false
         default: "3"
+      eval_batch_retention_days:
+        description: Keep eval batch/tuning files this many days before pruning
+        required: false
+        default: "30"
+      eval_temp_retention_days:
+        description: Keep top-level eval temp/comparison files this many days before pruning
+        required: false
+        default: "14"
   schedule:
     - cron: '45 12 * * *'
 
@@ -48,10 +56,14 @@ jobs:
           INPUT_COMPACT_RETENTION_DAYS: ${{ github.event.inputs.compact_retention_days }}
           INPUT_COMPACT_MAX_DAYS: ${{ github.event.inputs.compact_max_days }}
           INPUT_MARKET_RETENTION_DAYS: ${{ github.event.inputs.market_retention_days }}
+          INPUT_EVAL_BATCH_RETENTION_DAYS: ${{ github.event.inputs.eval_batch_retention_days }}
+          INPUT_EVAL_TEMP_RETENTION_DAYS: ${{ github.event.inputs.eval_temp_retention_days }}
         run: |
           compact_retention_days="${INPUT_COMPACT_RETENTION_DAYS:-3}"
           compact_max_days="${INPUT_COMPACT_MAX_DAYS:-30}"
           market_retention_days="${INPUT_MARKET_RETENTION_DAYS:-3}"
+          eval_batch_retention_days="${INPUT_EVAL_BATCH_RETENTION_DAYS:-30}"
+          eval_temp_retention_days="${INPUT_EVAL_TEMP_RETENTION_DAYS:-14}"
 
           if ! [[ "${compact_retention_days}" =~ ^[0-9]+$ ]]; then
             compact_retention_days="3"
@@ -62,10 +74,18 @@ jobs:
           if ! [[ "${market_retention_days}" =~ ^[0-9]+$ ]]; then
             market_retention_days="3"
           fi
+          if ! [[ "${eval_batch_retention_days}" =~ ^[0-9]+$ ]]; then
+            eval_batch_retention_days="30"
+          fi
+          if ! [[ "${eval_temp_retention_days}" =~ ^[0-9]+$ ]]; then
+            eval_temp_retention_days="14"
+          fi
 
           echo "compact_retention_days=${compact_retention_days}" >> "$GITHUB_OUTPUT"
           echo "compact_max_days=${compact_max_days}" >> "$GITHUB_OUTPUT"
           echo "market_retention_days=${market_retention_days}" >> "$GITHUB_OUTPUT"
+          echo "eval_batch_retention_days=${eval_batch_retention_days}" >> "$GITHUB_OUTPUT"
+          echo "eval_temp_retention_days=${eval_temp_retention_days}" >> "$GITHUB_OUTPUT"
 
       - name: Ping Render cron surface
         run: bash scripts/render_cron_call.sh /api/cron/ping
@@ -82,6 +102,16 @@ jobs:
         run: >-
           bash scripts/render_cron_call.sh
           "/api/cron/cleanup-data?target=market-refresh-history&retentionDays=${{ steps.resolve.outputs.market_retention_days }}&apply=on"
+
+      - name: Cleanup old eval batch outputs
+        run: >-
+          bash scripts/render_cron_call.sh
+          "/api/cron/cleanup-data?target=eval-batches&retentionDays=${{ steps.resolve.outputs.eval_batch_retention_days }}&apply=on"
+
+      - name: Cleanup old eval temp files
+        run: >-
+          bash scripts/render_cron_call.sh
+          "/api/cron/cleanup-data?target=eval-temp-files&retentionDays=${{ steps.resolve.outputs.eval_temp_retention_days }}&apply=on"
 
       - name: Disk usage after maintenance
         run: bash scripts/render_cron_call.sh "/api/cron/disk-usage?largest=15"

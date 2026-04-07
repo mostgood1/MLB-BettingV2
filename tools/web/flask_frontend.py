@@ -662,8 +662,24 @@ def _data_disk_report(*, largest_file_limit: int = 20) -> Dict[str, Any]:
                 "path": _relative_path_str(_market_refresh_archive_root()),
                 "description": "Archived OddsAPI refresh snapshots copied on each refresh event.",
             },
+            "eval-batches": {
+                "path": _relative_path_str(_DATA_DIR / "eval" / "batches"),
+                "description": "Historical eval batch and tuning run outputs under data/eval/batches.",
+            },
+            "eval-temp-files": {
+                "path": _relative_path_str(_DATA_DIR / "eval"),
+                "description": "Top-level disposable eval comparison and temporary files matching _tmp/_compare/_cmp/_attrib prefixes.",
+            },
         },
     }
+
+
+_EVAL_TEMP_FILE_PREFIXES: Tuple[str, ...] = (
+    "_tmp_",
+    "_compare_",
+    "_cmp_",
+    "_attrib_",
+)
 
 
 def _cleanup_target_paths(target: str) -> List[Path]:
@@ -672,12 +688,19 @@ def _cleanup_target_paths(target: str) -> List[Path]:
         return [_LIVE_LENS_DIR]
     if normalized == "market-refresh-history":
         return [_market_refresh_archive_root()]
+    if normalized == "eval-batches":
+        return [_DATA_DIR / "eval" / "batches"]
+    if normalized == "eval-temp-files":
+        return [_DATA_DIR / "eval"]
+    if normalized == "eval-ephemeral":
+        return [_DATA_DIR / "eval" / "batches", _DATA_DIR / "eval"]
     if normalized == "all":
         return [_LIVE_LENS_DIR, _market_refresh_archive_root()]
     raise ValueError(f"unsupported_cleanup_target: {normalized}")
 
 
-def _should_skip_cleanup_path(path: Path, *, root: Path, include_today: bool) -> bool:
+def _should_skip_cleanup_path(path: Path, *, root: Path, target: str, include_today: bool) -> bool:
+    normalized = str(target or "").strip().lower()
     resolved = path.resolve()
     if resolved == root.resolve():
         return True
@@ -686,6 +709,12 @@ def _should_skip_cleanup_path(path: Path, *, root: Path, include_today: bool) ->
     except Exception:
         return True
     parts = tuple(str(part) for part in relative.parts)
+    if normalized == "eval-temp-files":
+        if len(parts) != 1:
+            return True
+        filename = str(path.name or "")
+        if not any(filename.startswith(prefix) for prefix in _EVAL_TEMP_FILE_PREFIXES):
+            return True
     if parts and parts[0] in {"cron_meta", "recaps"}:
         return True
     if include_today:
@@ -703,8 +732,9 @@ def _cleanup_old_files(
     prune_empty_dirs: bool,
     largest_file_limit: int = 20,
 ) -> Dict[str, Any]:
+    normalized_target = str(target or "live-lens").strip().lower() or "live-lens"
     cutoff = _local_now().timestamp() - max(0, int(retention_days)) * 86400
-    candidate_roots = _cleanup_target_paths(target)
+    candidate_roots = _cleanup_target_paths(normalized_target)
     deleted_files: List[Dict[str, Any]] = []
     deleted_dirs: List[str] = []
     bytes_reclaimed = 0
@@ -719,7 +749,7 @@ def _cleanup_old_files(
             current_dir = Path(current_root)
             for file_name in file_names:
                 file_path = current_dir / file_name
-                if _should_skip_cleanup_path(file_path, root=root, include_today=include_today):
+                if _should_skip_cleanup_path(file_path, root=root, target=normalized_target, include_today=include_today):
                     skipped_today += 1
                     continue
                 scanned_files += 1
@@ -745,7 +775,8 @@ def _cleanup_old_files(
                         file_path.unlink(missing_ok=True)
                     except Exception:
                         continue
-            if prune_empty_dirs and current_dir != root and not any(current_dir.iterdir()):
+            can_prune_dir = prune_empty_dirs and normalized_target != "eval-temp-files"
+            if can_prune_dir and current_dir != root and not any(current_dir.iterdir()):
                 if apply_changes:
                     try:
                         current_dir.rmdir()
@@ -758,7 +789,7 @@ def _cleanup_old_files(
     deleted_files.sort(key=lambda item: (-int(item.get("bytes") or 0), str(item.get("path") or "")))
     return {
         "ok": True,
-        "target": str(target or "live-lens").strip().lower() or "live-lens",
+        "target": normalized_target,
         "apply": bool(apply_changes),
         "retention_days": int(retention_days),
         "include_today": bool(include_today),

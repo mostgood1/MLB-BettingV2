@@ -85,12 +85,16 @@ For disk hygiene, the maintenance workflow intentionally leaves current-day file
 
 - live-lens compaction: compact raw day files older than 3 days into recap JSON while preserving recap artifacts
 - market refresh history cleanup: delete OddsAPI refresh-history snapshots older than 3 days
+- eval batch cleanup: delete files under `data/eval/batches` older than 30 days, then prune emptied batch folders
+- eval temp cleanup: delete top-level disposable `data/eval/_tmp*`, `_compare*`, `_cmp*`, and `_attrib*` files older than 14 days
 
 You can inspect or run the same maintenance surfaces manually with the cron token:
 
 - `/api/cron/disk-usage?largest=15`
 - `/api/cron/compact-live-lens?retentionDays=3&maxDays=30&apply=off`
 - `/api/cron/cleanup-data?target=market-refresh-history&retentionDays=3&apply=off`
+- `/api/cron/cleanup-data?target=eval-batches&retentionDays=30&apply=off`
+- `/api/cron/cleanup-data?target=eval-temp-files&retentionDays=14&apply=off`
 
 ## Notes
 
