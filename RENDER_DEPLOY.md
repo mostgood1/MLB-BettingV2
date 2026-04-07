@@ -57,6 +57,7 @@ The included workflows are intended to run from GitHub Actions and hit the Rende
 
 Scheduled workflows in this repo now cover pregame market refreshes and season recap maintenance on the Render disk:
 
+- `.github/workflows/mlb-ui-daily-refresh.yml`: runs the full current-day `ui-daily` artifact build plus next-day forward build in GitHub Actions, commits canonical `data/...` outputs, and pushes them back to `main`
 - `.github/workflows/mlb-pregame-odds-refresh.yml`: refreshes Render OddsAPI snapshots throughout the day
 - `.github/workflows/mlb-season-republish.yml`: runs daily at `11:30 UTC`, rebuilds the prior Chicago-date season day report on Render, then republishes rolling season manifests for that season
 - `.github/workflows/mlb-render-disk-maintenance.yml`: runs daily at `12:45 UTC`, compacts older live-lens raw day files into recap artifacts and prunes old OddsAPI refresh-history snapshots from the Render disk
@@ -64,6 +65,21 @@ Scheduled workflows in this repo now cover pregame market refreshes and season r
 The live-lens tick workflow is manual-only because GitHub Actions cron cannot schedule every 30 seconds. Live-lens persistence now runs from the in-process Render loop instead.
 
 The season republish workflow is what keeps `/opt/render/project/data/eval/seasons/...` current without relying on a user request to trigger a rebuild.
+
+The ui-daily refresh workflow is what keeps repo-tracked current-day frontend artifacts fresh without requiring a manual local rerun. It uses the existing `scripts/daily_update_end_to_end.ps1` flow, which builds:
+
+- prior-day reconciliation and season publish inputs for the selected date
+- current-day canonical UI artifacts under `data/daily`, `data/daily_pitcher_props`, and `data/daily_hitter_props`
+- next-day forward artifacts for early board availability
+
+Required repository secret for the scheduled ui-daily workflow:
+
+- `ODDS_API_KEY`
+
+Optional but recommended secrets for richer prior-day live-lens sync/readout during ui-daily:
+
+- `MLB_BETTING_BASE_URL` or `RENDER_URL`
+- `MLB_BETTING_CRON_TOKEN`, `MLB_CRON_TOKEN`, or `CRON_TOKEN`
 
 For disk hygiene, the maintenance workflow intentionally leaves current-day files alone and uses conservative retention defaults:
 

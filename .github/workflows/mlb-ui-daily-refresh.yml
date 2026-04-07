@@ -1,0 +1,138 @@
+name: MLB UI Daily Refresh
+
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: Chicago-date to build; blank uses current Chicago date
+        required: false
+        default: ""
+      next_date:
+        description: Optional next-day override; blank uses date plus one day
+        required: false
+        default: ""
+      season:
+        description: Season to build; blank resolves from the selected date
+        required: false
+        default: ""
+      sims:
+        description: Sims per game
+        required: false
+        default: "1000"
+      workers:
+        description: Parallel worker count
+        required: false
+        default: "4"
+      pbp:
+        description: PBP mode
+        required: false
+        default: "off"
+  schedule:
+    - cron: '15 15 * * *'
+
+concurrency:
+  group: mlb-ui-daily-refresh
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  ODDS_API_KEY: ${{ secrets['ODDS_API_KEY'] }}
+  MLB_BETTING_BASE_URL: ${{ secrets['MLB_BETTING_BASE_URL'] }}
+  RENDER_URL: ${{ secrets['RENDER_URL'] }}
+  MLB_CRON_TOKEN: ${{ secrets['MLB_CRON_TOKEN'] }}
+  MLB_BETTING_CRON_TOKEN: ${{ secrets['MLB_BETTING_CRON_TOKEN'] }}
+  CRON_TOKEN: ${{ secrets['CRON_TOKEN'] }}
+
+jobs:
+  ui-daily-refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        id: setup-python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Validate required secrets
+        run: |
+          test -n "${ODDS_API_KEY:-}" || (echo 'Missing ODDS_API_KEY secret' && exit 1)
+
+      - name: Resolve daily build inputs
+        id: resolve
+        shell: bash
+        env:
+          INPUT_DATE: ${{ github.event.inputs.date }}
+          INPUT_NEXT_DATE: ${{ github.event.inputs.next_date }}
+          INPUT_SEASON: ${{ github.event.inputs.season }}
+          INPUT_SIMS: ${{ github.event.inputs.sims }}
+          INPUT_WORKERS: ${{ github.event.inputs.workers }}
+          INPUT_PBP: ${{ github.event.inputs.pbp }}
+        run: |
+          export TZ=America/Chicago
+
+          build_date="${INPUT_DATE}"
+          if [[ -z "${build_date}" ]]; then
+            build_date="$(date +%F)"
+          fi
+
+          next_date="${INPUT_NEXT_DATE}"
+          if [[ -z "${next_date}" ]]; then
+            next_date="$(date -d "${build_date} +1 day" +%F)"
+          fi
+
+          season="${INPUT_SEASON}"
+          if [[ -z "${season}" ]]; then
+            season="$(date -d "${build_date}" +%Y)"
+          fi
+
+          sims="${INPUT_SIMS:-1000}"
+          if ! [[ "${sims}" =~ ^[0-9]+$ ]] || [[ "${sims}" -lt 1 ]]; then
+            sims="1000"
+          fi
+
+          workers="${INPUT_WORKERS:-4}"
+          if ! [[ "${workers}" =~ ^[0-9]+$ ]] || [[ "${workers}" -lt 1 ]]; then
+            workers="4"
+          fi
+
+          pbp="${INPUT_PBP:-off}"
+          if [[ -z "${pbp}" ]]; then
+            pbp="off"
+          fi
+
+          echo "build_date=${build_date}" >> "$GITHUB_OUTPUT"
+          echo "next_date=${next_date}" >> "$GITHUB_OUTPUT"
+          echo "season=${season}" >> "$GITHUB_OUTPUT"
+          echo "sims=${sims}" >> "$GITHUB_OUTPUT"
+          echo "workers=${workers}" >> "$GITHUB_OUTPUT"
+          echo "pbp=${pbp}" >> "$GITHUB_OUTPUT"
+
+      - name: Configure git author
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Run end-to-end ui-daily refresh
+        shell: pwsh
+        run: |
+          ./scripts/daily_update_end_to_end.ps1 `
+            -Date "${{ steps.resolve.outputs.build_date }}" `
+            -Season "${{ steps.resolve.outputs.season }}" `
+            -NextDate "${{ steps.resolve.outputs.next_date }}" `
+            -Sims "${{ steps.resolve.outputs.sims }}" `
+            -Workers "${{ steps.resolve.outputs.workers }}" `
+            -Pbp "${{ steps.resolve.outputs.pbp }}" `
+            -PythonExe "${{ steps.setup-python.outputs.python-path }}" `
+            -GitPush on
