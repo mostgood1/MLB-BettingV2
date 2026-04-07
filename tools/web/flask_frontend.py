@@ -500,6 +500,10 @@ def _attach_history_summary_rows(rows: List[Dict[str, Any]], *, season: int, gro
     return [_attach_history_summary(row, season=season, group=group, prop=prop) for row in rows if isinstance(row, dict)]
 
 
+def _should_attach_ladder_history(*, selected_player: Any) -> bool:
+    return bool(str(selected_player or "").strip())
+
+
 def _date_slug(d: str) -> str:
     return str(d or "").strip().replace("-", "_")
 
@@ -2984,7 +2988,9 @@ def _pitcher_ladders_payload(d: str, prop_value: Any, sort_value: Any) -> Dict[s
             target_name = normalize_pitcher_name(selected_pitcher)
             rows = [row for row in rows if normalize_pitcher_name(row.get("pitcherName")) == target_name]
 
-    rows = _attach_history_summary_rows(rows, season=_season_from_date_str(d), group="pitching", prop=prop)
+    attach_history = _should_attach_ladder_history(selected_player=selected_pitcher)
+    if attach_history:
+        rows = _attach_history_summary_rows(rows, season=_season_from_date_str(d), group="pitching", prop=prop)
 
     if not rows:
         payload["error"] = "pitcher_ladders_missing"
@@ -3004,7 +3010,12 @@ def _pitcher_ladders_payload(d: str, prop_value: Any, sort_value: Any) -> Dict[s
     payload["found"] = True
     payload["rows"] = rows
     if rows:
-        payload["featuredRow"] = _attach_history_summary(rows[0], season=_season_from_date_str(d), group="pitching", prop=prop)
+        payload["featuredRow"] = (
+            _attach_history_summary(rows[0], season=_season_from_date_str(d), group="pitching", prop=prop)
+            if attach_history
+            else dict(rows[0])
+        )
+    payload["historyMode"] = "selected_player" if attach_history else "deferred"
     payload["summary"] = {
         "games": int(len(sim_files)),
         "starters": int(len(rows)),
@@ -3381,7 +3392,9 @@ def _hitter_ladders_payload(d: str, prop_value: Any) -> Dict[str, Any]:
             target_name = normalize_pitcher_name(selected_hitter)
             rows = [row for row in rows if normalize_pitcher_name(row.get("hitterName")) == target_name]
 
-    rows = _attach_history_summary_rows(rows, season=_season_from_date_str(d), group="hitting", prop=prop)
+    attach_history = _should_attach_ladder_history(selected_player=selected_hitter)
+    if attach_history:
+        rows = _attach_history_summary_rows(rows, season=_season_from_date_str(d), group="hitting", prop=prop)
 
     if not rows:
         payload["error"] = "hitter_ladders_missing"
@@ -3406,7 +3419,12 @@ def _hitter_ladders_payload(d: str, prop_value: Any) -> Dict[str, Any]:
     payload["rows"] = rows
     payload["ladderShape"] = "exact" if any(str(row.get("ladderShape") or "") == "exact" for row in rows) else "threshold"
     if rows:
-        payload["featuredRow"] = _attach_history_summary(rows[0], season=_season_from_date_str(d), group="hitting", prop=prop)
+        payload["featuredRow"] = (
+            _attach_history_summary(rows[0], season=_season_from_date_str(d), group="hitting", prop=prop)
+            if attach_history
+            else dict(rows[0])
+        )
+    payload["historyMode"] = "selected_player" if attach_history else "deferred"
     payload["summary"] = {
         "games": int(len(sim_files)),
         "hitters": int(len(rows)),
