@@ -157,6 +157,7 @@ _LIVE_PROP_MARKET_MAX_AGE_SECONDS = 15
 _LIVE_FEED_CACHE_TTL_SECONDS = float(_env_int("MLB_LIVE_FEED_CACHE_TTL_SECONDS", 5, minimum=1))
 _LIVE_HITTER_PROP_MIN_MARKET_EDGE = 0.05
 _JSON_FILE_CACHE_MAXSIZE = _env_int("MLB_JSON_FILE_CACHE_MAXSIZE", 256, minimum=32)
+_JSON_FILE_CACHE_MAX_BYTES = _env_int("MLB_JSON_FILE_CACHE_MAX_BYTES", 786432, minimum=0)
 _SCHEDULE_FETCH_CACHE_MAXSIZE = _env_int("MLB_SCHEDULE_FETCH_CACHE_MAXSIZE", 32, minimum=4)
 _LIVE_LENS_LOOP_DEFAULT_INTERVAL_SECONDS = 15
 _LIVE_LENS_LOOP_MIN_INTERVAL_SECONDS = 5
@@ -1743,6 +1744,10 @@ def _find_preferred_file(preferred: Sequence[Path]) -> Optional[Path]:
 
 @lru_cache(maxsize=_JSON_FILE_CACHE_MAXSIZE)
 def _load_json_file_cached(path_str: str, mtime_ns: int, size_bytes: int) -> Optional[Dict[str, Any]]:
+    return _read_json_file_dict(path_str)
+
+
+def _read_json_file_dict(path_str: str) -> Optional[Dict[str, Any]]:
     try:
         obj = json.loads(Path(path_str).read_text(encoding="utf-8"))
     except Exception:
@@ -1759,7 +1764,10 @@ def _load_json_file(path: Optional[Path]) -> Optional[Dict[str, Any]]:
         stat = path.stat()
     except Exception:
         return None
-    return _load_json_file_cached(str(path), int(getattr(stat, "st_mtime_ns", 0)), int(getattr(stat, "st_size", 0)))
+    size_bytes = int(getattr(stat, "st_size", 0))
+    if _JSON_FILE_CACHE_MAX_BYTES > 0 and size_bytes > _JSON_FILE_CACHE_MAX_BYTES:
+        return _read_json_file_dict(str(path))
+    return _load_json_file_cached(str(path), int(getattr(stat, "st_mtime_ns", 0)), size_bytes)
 
 
 def _logical_path_str(path: Optional[Path]) -> Optional[str]:

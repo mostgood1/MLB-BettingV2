@@ -5,7 +5,7 @@ services:
     plan: starter
     autoDeploy: true
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn wsgi:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120 --max-requests 200 --max-requests-jitter 25
+    startCommand: gunicorn wsgi:app --bind 0.0.0.0:$PORT --workers 1 --threads 2 --timeout 120 --max-requests 200 --max-requests-jitter 25
     disk:
       name: mlb-betting-v2-data
       mountPath: /opt/render/project/data
@@ -23,6 +23,8 @@ services:
         value: off
       - key: MLB_JSON_FILE_CACHE_MAXSIZE
         value: "256"
+      - key: MLB_JSON_FILE_CACHE_MAX_BYTES
+        value: "786432"
       - key: MLB_LIVE_LENS_LOOP_INTERVAL_SECONDS
         value: "30"
       - key: MLB_CRON_TOKEN
