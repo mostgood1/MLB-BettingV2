@@ -156,6 +156,9 @@ _CARDS_PRESEASON_DEFAULT_WINDOW_DAYS = 21
 _LIVE_PROP_MARKET_MAX_AGE_SECONDS = 15
 _LIVE_FEED_CACHE_TTL_SECONDS = float(_env_int("MLB_LIVE_FEED_CACHE_TTL_SECONDS", 5, minimum=1))
 _LIVE_HITTER_PROP_MIN_MARKET_EDGE = 0.05
+_PERSON_CACHE_MAXSIZE = _env_int("MLB_PERSON_CACHE_MAXSIZE", 1024, minimum=64)
+_PERSON_GAMELOG_CACHE_MAXSIZE = _env_int("MLB_PERSON_GAMELOG_CACHE_MAXSIZE", 512, minimum=64)
+_PERSON_SEASON_CACHE_MAXSIZE = _env_int("MLB_PERSON_SEASON_CACHE_MAXSIZE", 1024, minimum=64)
 _JSON_FILE_CACHE_MAXSIZE = _env_int("MLB_JSON_FILE_CACHE_MAXSIZE", 256, minimum=32)
 _JSON_FILE_CACHE_MAX_BYTES = _env_int("MLB_JSON_FILE_CACHE_MAX_BYTES", 786432, minimum=0)
 _SCHEDULE_FETCH_CACHE_MAXSIZE = _env_int("MLB_SCHEDULE_FETCH_CACHE_MAXSIZE", 32, minimum=4)
@@ -346,7 +349,7 @@ def _statsapi_client_cached() -> StatsApiClient:
     return StatsApiClient.with_default_cache()
 
 
-@lru_cache(maxsize=4096)
+@lru_cache(maxsize=_PERSON_CACHE_MAXSIZE)
 def _fetch_person_cached(person_id: int) -> Dict[str, Any]:
     try:
         return fetch_person(_statsapi_client_cached(), int(person_id)) or {}
@@ -354,7 +357,7 @@ def _fetch_person_cached(person_id: int) -> Dict[str, Any]:
         return {}
 
 
-@lru_cache(maxsize=8192)
+@lru_cache(maxsize=_PERSON_GAMELOG_CACHE_MAXSIZE)
 def _fetch_person_gamelog_cached(person_id: int, season: int, group: str) -> Tuple[Dict[str, Any], ...]:
     try:
         rows = fetch_person_gamelog(_statsapi_client_cached(), int(person_id), int(season), str(group)) or []
@@ -363,7 +366,7 @@ def _fetch_person_gamelog_cached(person_id: int, season: int, group: str) -> Tup
     return tuple(row for row in rows if isinstance(row, dict))
 
 
-@lru_cache(maxsize=4096)
+@lru_cache(maxsize=_PERSON_SEASON_CACHE_MAXSIZE)
 def _fetch_person_season_cached(person_id: int, season: int, group: str) -> Dict[str, Any]:
     try:
         if str(group) == "pitching":
