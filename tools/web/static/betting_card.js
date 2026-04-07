@@ -47,6 +47,8 @@
     profiles: document.getElementById("bettingCardProfiles"),
     summary: document.getElementById("bettingCardSummary"),
     months: document.getElementById("bettingCardMonths"),
+    mobileToolbar: document.getElementById("bettingCardMobileToolbar"),
+    daySelect: document.getElementById("bettingCardDaySelect"),
     days: document.getElementById("bettingCardDays"),
     dayTitle: document.getElementById("bettingCardDayTitle"),
     dayMeta: document.getElementById("bettingCardDayMeta"),
@@ -526,6 +528,29 @@
     }).join("");
   }
 
+  function renderMobileToolbar() {
+    if (!root.mobileToolbar || !root.daySelect) return;
+    const days = filteredDays();
+    if (!days.length) {
+      root.mobileToolbar.hidden = true;
+      root.daySelect.innerHTML = "";
+      return;
+    }
+    root.mobileToolbar.hidden = false;
+    root.daySelect.innerHTML = days.map((day) => {
+      const date = String(day?.date || "");
+      const counts = day?.selected_counts || {};
+      const combined = (day?.results || {}).combined || {};
+      const unresolved = Number(day?.unresolved_n || 0);
+      const settled = Number(combined?.n || 0);
+      const suffix = unresolved > 0
+        ? `${formatNumber(unresolved, 0)} unresolved`
+        : `${formatNumber(counts?.combined, 0)} picks | ${formatUnits(combined?.profit_u, 2)}`;
+      const selectedAttr = date === state.selectedDate ? " selected" : "";
+      return `<option value="${escapeHtml(date)}"${selectedAttr}>${escapeHtml(`${date} | ${formatNumber(settled, 0)} settled | ${suffix}`)}</option>`;
+    }).join("");
+  }
+
   function dayOfficialItems() {
     const games = Array.isArray(state.day?.games) ? state.day.games : [];
     const out = [];
@@ -845,6 +870,7 @@
     renderDayPicks();
     renderGames();
     renderDays();
+    renderMobileToolbar();
   }
 
   async function loadDay(dateStr) {
@@ -888,6 +914,7 @@
         state.selectedDate = String(preferredDay(days)?.date || "");
       }
       renderDays();
+      renderMobileToolbar();
       await loadDay(state.selectedDate);
     } catch (error) {
       const message = error && error.message ? error.message : "Unknown error";
@@ -917,6 +944,7 @@
       state.monthFilter = String(button.getAttribute("data-betting-card-month") || "all");
       renderMonths();
       renderDays();
+      renderMobileToolbar();
       const visible = filteredDays();
       if (visible.length && !visible.some((row) => String(row?.date || "") === state.selectedDate)) {
         loadDay(String(preferredDay(visible)?.date || ""));
@@ -930,6 +958,15 @@
       if (!button || !root.days.contains(button)) return;
       event.preventDefault();
       await loadDay(String(button.getAttribute("data-betting-card-date") || ""));
+    });
+  }
+
+  if (root.daySelect) {
+    root.daySelect.addEventListener("change", async function (event) {
+      const target = event.target;
+      const value = String(target && target.value ? target.value : "");
+      if (!value || value === state.selectedDate) return;
+      await loadDay(value);
     });
   }
 

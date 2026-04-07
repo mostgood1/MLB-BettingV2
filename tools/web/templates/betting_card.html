@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>MLB Official Betting Card - {{ season }}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='cards.css') }}" />
-    <link rel="stylesheet" href="{{ url_for('static', filename='season.css', v='20260328-season-mobile-v9') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='season.css', v='20260407-betting-card-mobile-v10') }}" />
   </head>
   <body class="cards-body season-body betting-card-body">
     <div class="season-shell">
@@ -33,6 +33,13 @@
       </section>
 
       <section class="season-months" id="bettingCardMonths" aria-label="Betting card month filters"></section>
+
+      <section class="betting-card-mobile-toolbar" id="bettingCardMobileToolbar" aria-label="Mobile betting card controls" hidden>
+        <label class="betting-card-mobile-control">
+          <span class="betting-card-mobile-control-label">Day</span>
+          <select id="bettingCardDaySelect" aria-label="Select betting card day"></select>
+        </label>
+      </section>
 
       <main class="season-layout">
         <aside class="season-day-rail">
@@ -79,6 +86,6 @@
         profile: {{ profile|tojson }},
       };
     </script>
-    <script src="{{ url_for('static', filename='betting_card.js', v='20260402-betting-card-v4') }}"></script>
+    <script src="{{ url_for('static', filename='betting_card.js', v='20260407-betting-card-mobile-v5') }}"></script>
   </body>
 </html>
