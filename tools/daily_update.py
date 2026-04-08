@@ -2165,6 +2165,15 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
                     for name, info in dict(season_frontend_result.get("artifacts") or {}).items()
                 },
             }
+            soft_artifact_warnings = []
+            for name, info in dict(season_frontend_stage.get("artifacts") or {}).items():
+                error_code = str(info.get("error") or "")
+                if name == "season_official_betting_day" and error_code == "official_betting_card_day_missing":
+                    soft_artifact_warnings.append(
+                        "current-day official betting card day artifact has no selected rows yet"
+                    )
+                    info["error"] = None
+                    info["found"] = True
             artifact_errors = [
                 f"{name}: {info.get('error')}"
                 for name, info in dict(season_frontend_stage.get("artifacts") or {}).items()
@@ -2175,6 +2184,9 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
                 report["errors"].append(
                     "current-day season frontend artifact build failed: " + "; ".join(artifact_errors)
                 )
+            elif soft_artifact_warnings:
+                season_frontend_stage["status"] = "partial"
+                report["warnings"].extend(soft_artifact_warnings)
         except Exception as exc:
             season_frontend_stage = {
                 "status": "error",
