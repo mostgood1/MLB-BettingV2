@@ -12602,15 +12602,29 @@ def hitter_ladders_view() -> str:
 @app.get("/pitcher-top-props")
 def pitcher_top_props_view() -> str:
     d = str(request.args.get("date") or "").strip() or _default_cards_date()
-    payload = _daily_top_props_payload(d, "pitcher", request.args.get("limit"))
-    return render_template("daily_top_props.html", **payload)
+    season = _season_from_date_str(d) or _season_from_date_str(_today_iso()) or date.today().year
+    return render_template(
+        "daily_top_props.html",
+        title="Pitcher Top Props",
+        date=d,
+        group="pitcher",
+        groupLabel="Pitcher",
+        season=int(season),
+    )
 
 
 @app.get("/hitter-top-props")
 def hitter_top_props_view() -> str:
     d = str(request.args.get("date") or "").strip() or _default_cards_date()
-    payload = _daily_top_props_payload(d, "hitter", request.args.get("limit"))
-    return render_template("daily_top_props.html", **payload)
+    season = _season_from_date_str(d) or _season_from_date_str(_today_iso()) or date.today().year
+    return render_template(
+        "daily_top_props.html",
+        title="Hitter Top Props",
+        date=d,
+        group="hitter",
+        groupLabel="Hitter",
+        season=int(season),
+    )
 
 
 @app.get("/season/<int:season>")
