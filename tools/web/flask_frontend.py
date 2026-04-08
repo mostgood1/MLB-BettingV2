@@ -4605,6 +4605,31 @@ def _prebuilt_daily_top_props_payload(d: str, group: str) -> Optional[Dict[str, 
     return out
 
 
+def _persist_daily_top_props_group_payload(d: str, group: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    normalized_group = "pitcher" if str(group or "").strip().lower() == "pitcher" else "hitter"
+    artifact_path, artifact_doc = _load_daily_top_props_artifact(d)
+    groups: Dict[str, Any] = {}
+    if isinstance(artifact_doc, dict):
+        existing_groups = artifact_doc.get("groups")
+        if isinstance(existing_groups, dict):
+            groups = {str(key): value for key, value in existing_groups.items() if isinstance(value, dict)}
+
+    groups[normalized_group] = dict(payload)
+    out_doc = {
+        "date": str(d),
+        "generatedAt": _local_timestamp_text(),
+        "groups": groups,
+    }
+    destination = artifact_path if isinstance(artifact_path, Path) else daily_top_props_artifact_path(str(d))
+    _write_json_file(destination, out_doc)
+
+    out = dict(payload)
+    out["artifactPath"] = _relative_path_str(destination)
+    out["artifactGeneratedAt"] = out_doc.get("generatedAt")
+    out["artifactSource"] = "historical_request_cache"
+    return out
+
+
 def _daily_top_props_signature(d: str, group: str) -> Tuple[Any, ...]:
     normalized_group = "pitcher" if str(group or "").strip().lower() == "pitcher" else "hitter"
     artifacts = _load_cards_artifacts(d)
@@ -4801,13 +4826,19 @@ def _daily_top_props_payload(d: str, group: str, limit_value: Any) -> Dict[str, 
         return prebuilt_payload
     cache_key = f"{str(d)}:{normalized_group}"
 
-    return _payload_cache_get_or_build(
+    payload = _payload_cache_get_or_build(
         "daily_top_props",
         cache_key,
         signature_factory=lambda: _daily_top_props_signature(d, normalized_group),
         max_age_seconds=_TOP_PROPS_CACHE_TTL_SECONDS,
         builder=lambda: _build_live_daily_top_props_payload(d, normalized_group),
     )
+    if _top_props_supports_reconciliation(d) and isinstance(payload, dict):
+        try:
+            return _persist_daily_top_props_group_payload(d, normalized_group, payload)
+        except Exception:
+            app.logger.exception("failed to persist historical top props payload for %s %s", normalized_group, d)
+    return payload
 
 
 def _first_text(*values: Any) -> str:
