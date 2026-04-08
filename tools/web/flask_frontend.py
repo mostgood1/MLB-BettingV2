@@ -166,6 +166,9 @@ _PERSON_SEASON_CACHE_MAXSIZE = _env_int("MLB_PERSON_SEASON_CACHE_MAXSIZE", 1024,
 _JSON_FILE_CACHE_MAXSIZE = _env_int("MLB_JSON_FILE_CACHE_MAXSIZE", 256, minimum=32)
 _JSON_FILE_CACHE_MAX_BYTES = _env_int("MLB_JSON_FILE_CACHE_MAX_BYTES", 786432, minimum=0)
 _SCHEDULE_FETCH_CACHE_MAXSIZE = _env_int("MLB_SCHEDULE_FETCH_CACHE_MAXSIZE", 32, minimum=4)
+_TOP_PROPS_CACHE_TTL_SECONDS = float(_env_int("MLB_TOP_PROPS_CACHE_TTL_SECONDS", 60, minimum=1))
+_CARDS_CACHE_TTL_SECONDS = float(_env_int("MLB_CARDS_CACHE_TTL_SECONDS", 30, minimum=1))
+_LIVE_ROUTE_CACHE_TTL_SECONDS = float(_env_int("MLB_LIVE_ROUTE_CACHE_TTL_SECONDS", 5, minimum=1))
 _LIVE_LENS_LOOP_DEFAULT_INTERVAL_SECONDS = 15
 _LIVE_LENS_LOOP_MIN_INTERVAL_SECONDS = 5
 _LIVE_LENS_LOOP_THREAD: Optional[threading.Thread] = None
@@ -173,6 +176,8 @@ _LIVE_LENS_LOOP_LOCK = threading.Lock()
 _LIVE_LENS_LOOP_STOP = threading.Event()
 _LIVE_FEED_CACHE_LOCK = threading.Lock()
 _LIVE_FEED_CACHE: Dict[Tuple[str, int], Tuple[float, Dict[str, Any]]] = {}
+_PAYLOAD_CACHE_LOCK = threading.Lock()
+_PAYLOAD_CACHE: Dict[Tuple[str, str], Dict[str, Any]] = {}
 _LIVE_PROP_MARKET_REFRESH_LOCK = threading.Lock()
 _LIVE_PROP_MARKET_REFRESH_IN_PROGRESS: set[str] = set()
 _LIVE_PROP_MARKET_REFRESH_LAST_ATTEMPT: Dict[str, float] = {}
@@ -1846,6 +1851,92 @@ def _load_json_file(path: Optional[Path]) -> Optional[Dict[str, Any]]:
     if _JSON_FILE_CACHE_MAX_BYTES > 0 and size_bytes > _JSON_FILE_CACHE_MAX_BYTES:
         return _read_json_file_dict(str(path))
     return _load_json_file_cached(str(path), int(getattr(stat, "st_mtime_ns", 0)), size_bytes)
+
+
+def _path_signature(path: Optional[Path]) -> Tuple[str, bool, int, int]:
+    if not isinstance(path, Path):
+        return ("", False, 0, 0)
+    try:
+        stat = path.stat()
+    except Exception:
+        return (_relative_path_str(path) or str(path), False, 0, 0)
+    return (
+        _relative_path_str(path) or str(path),
+        True,
+        int(getattr(stat, "st_mtime_ns", 0)),
+        int(getattr(stat, "st_size", 0)),
+    )
+
+
+def _dir_signature(path: Optional[Path], pattern: str = "*.json") -> Tuple[Any, ...]:
+    base = _path_signature(path)
+    if not isinstance(path, Path) or not path.exists() or not path.is_dir():
+        return (base,)
+    try:
+        children = sorted(child for child in path.glob(pattern) if child.is_file())
+    except Exception:
+        children = []
+    return tuple([base, *(_path_signature(child) for child in children)])
+
+
+def _payload_cache_get_or_build(
+    cache_name: str,
+    cache_key: str,
+    *,
+    signature: Any = None,
+    signature_factory: Any = None,
+    max_age_seconds: Optional[float] = None,
+    builder: Any,
+) -> Dict[str, Any]:
+    now = time.time()
+    full_key = (str(cache_name), str(cache_key))
+    with _PAYLOAD_CACHE_LOCK:
+        entry = _PAYLOAD_CACHE.get(full_key)
+        if entry is not None:
+            created_at = float(entry.get("createdAt") or 0.0)
+            cached_signature = entry.get("signature")
+            age_matches = max_age_seconds is None or (now - created_at) <= float(max_age_seconds)
+            if age_matches and isinstance(entry.get("payload"), dict):
+                return entry["payload"]
+            if signature_factory is not None:
+                try:
+                    signature = signature_factory()
+                except Exception:
+                    signature = None
+            signature_matches = signature is None or cached_signature == signature
+            if signature_matches and isinstance(entry.get("payload"), dict):
+                entry["createdAt"] = now
+                return entry["payload"]
+
+    payload = builder()
+    if signature_factory is not None and signature is None:
+        try:
+            signature = signature_factory()
+        except Exception:
+            signature = None
+    with _PAYLOAD_CACHE_LOCK:
+        _PAYLOAD_CACHE[full_key] = {
+            "signature": signature,
+            "createdAt": now,
+            "payload": payload,
+        }
+        if len(_PAYLOAD_CACHE) > 128:
+            oldest_key = min(
+                _PAYLOAD_CACHE,
+                key=lambda key: float((_PAYLOAD_CACHE.get(key) or {}).get("createdAt") or 0.0),
+            )
+            if oldest_key != full_key:
+                _PAYLOAD_CACHE.pop(oldest_key, None)
+    return payload
+
+
+def _path_age_seconds(path: Optional[Path]) -> Optional[float]:
+    if not isinstance(path, Path) or not path.exists() or not path.is_file():
+        return None
+    try:
+        return max(0.0, float(time.time()) - float(path.stat().st_mtime))
+    except Exception:
+        return None
 
 
 def _logical_path_str(path: Optional[Path]) -> Optional[str]:
@@ -4004,8 +4095,55 @@ def _daily_top_props_row(row: Dict[str, Any], *, stat_key: str, stat_label: str,
     }
 
 
-def _daily_top_props_payload(d: str, group: str, limit_value: Any) -> Dict[str, Any]:
+def daily_top_props_artifact_path(d: str, *, data_root: Optional[Path] = None) -> Path:
+    root = data_root.resolve() if isinstance(data_root, Path) else _DATA_DIR
+    return root / "daily" / "top_props" / f"daily_top_props_{_date_slug(d)}.json"
+
+
+def _load_daily_top_props_artifact(d: str) -> Tuple[Optional[Path], Optional[Dict[str, Any]]]:
+    candidates: List[Path] = []
+    for root in _data_roots():
+        candidate = daily_top_props_artifact_path(d, data_root=root)
+        if candidate not in candidates:
+            candidates.append(candidate)
+    artifact_path = _find_preferred_file(candidates)
+    if not artifact_path:
+        return None, None
+    return artifact_path, _load_json_file(artifact_path)
+
+
+def _prebuilt_daily_top_props_payload(d: str, group: str) -> Optional[Dict[str, Any]]:
     normalized_group = "pitcher" if str(group or "").strip().lower() == "pitcher" else "hitter"
+    artifact_path, artifact_doc = _load_daily_top_props_artifact(d)
+    if not artifact_path or not isinstance(artifact_doc, dict):
+        return None
+    groups = artifact_doc.get("groups") or {}
+    payload = groups.get(normalized_group) if isinstance(groups, dict) else None
+    if not isinstance(payload, dict):
+        return None
+    out = dict(payload)
+    out["artifactPath"] = _relative_path_str(artifact_path)
+    out["artifactGeneratedAt"] = artifact_doc.get("generatedAt")
+    out["artifactSource"] = "daily_update"
+    return out
+
+
+def _daily_top_props_signature(d: str, group: str) -> Tuple[Any, ...]:
+    normalized_group = "pitcher" if str(group or "").strip().lower() == "pitcher" else "hitter"
+    artifacts = _load_cards_artifacts(d)
+    sim_dir = artifacts.get("sim_dir") if isinstance(artifacts.get("sim_dir"), Path) else None
+    market_ctx = _load_pitcher_ladder_market_context(d) if normalized_group == "pitcher" else _load_hitter_ladder_market_context(d)
+    return (
+        str(d),
+        normalized_group,
+        _dir_signature(sim_dir),
+        _path_signature(market_ctx.get("displayPath") if isinstance(market_ctx.get("displayPath"), Path) else None),
+        _path_signature(market_ctx.get("currentPath") if isinstance(market_ctx.get("currentPath"), Path) else None),
+        _path_signature(market_ctx.get("pregamePath") if isinstance(market_ctx.get("pregamePath"), Path) else None),
+    )
+
+
+def _build_live_daily_top_props_payload(d: str, normalized_group: str) -> Dict[str, Any]:
     nav = _cards_nav_from_schedule(d) or {
         "season": _season_from_date_str(d),
         "minDate": None,
@@ -4119,10 +4257,10 @@ def _daily_top_props_payload(d: str, group: str, limit_value: Any) -> Dict[str, 
             }
         )
 
-    sections, reconciliation = _reconcile_top_props_sections(sections, d=str(d), group=normalized_group)
+    sections_out, reconciliation = _reconcile_top_props_sections(sections, d=str(d), group=normalized_group)
 
     return {
-        "found": bool(any(section.get("candidateCount") for section in sections)),
+        "found": bool(any(section.get("candidateCount") for section in sections_out)),
         "date": str(d),
         "season": int(_season_from_date_str(d)),
         "group": normalized_group,
@@ -4135,14 +4273,64 @@ def _daily_top_props_payload(d: str, group: str, limit_value: Any) -> Dict[str, 
         "marketMode": market_mode,
         "marketSource": _relative_path_str(market_source),
         "reconciliation": reconciliation,
-        "sections": sections,
+        "sections": sections_out,
         "summary": {
-            "sectionCount": int(len(sections)),
+            "sectionCount": int(len(sections_out)),
             "candidateCount": int(total_candidates),
             "positiveEdgeCount": int(total_positive),
             "displayedCount": int(total_displayed),
         },
     }
+
+
+def build_daily_top_props_artifact(d: str) -> Dict[str, Any]:
+    date_str = str(d or "").strip()
+    return {
+        "date": date_str,
+        "generatedAt": _local_timestamp_text(),
+        "groups": {
+            "pitcher": _build_live_daily_top_props_payload(date_str, "pitcher"),
+            "hitter": _build_live_daily_top_props_payload(date_str, "hitter"),
+        },
+    }
+
+
+def write_daily_top_props_artifact(d: str, *, out_path: Optional[Path] = None) -> Dict[str, Any]:
+    date_str = str(d or "").strip()
+    destination = out_path.resolve() if isinstance(out_path, Path) else daily_top_props_artifact_path(date_str)
+    artifact = build_daily_top_props_artifact(date_str)
+    _write_json_file(destination, artifact)
+    groups = artifact.get("groups") if isinstance(artifact.get("groups"), dict) else {}
+    return {
+        "date": date_str,
+        "path": destination,
+        "groupSummaries": {
+            str(group): {
+                "found": bool((payload or {}).get("found")),
+                "candidateCount": int((((payload or {}).get("summary") or {}).get("candidateCount") or 0)),
+                "displayedCount": int((((payload or {}).get("summary") or {}).get("displayedCount") or 0)),
+                "sectionCount": int((((payload or {}).get("summary") or {}).get("sectionCount") or 0)),
+            }
+            for group, payload in groups.items()
+            if isinstance(payload, dict)
+        },
+    }
+
+
+def _daily_top_props_payload(d: str, group: str, limit_value: Any) -> Dict[str, Any]:
+    normalized_group = "pitcher" if str(group or "").strip().lower() == "pitcher" else "hitter"
+    prebuilt_payload = _prebuilt_daily_top_props_payload(d, normalized_group)
+    if isinstance(prebuilt_payload, dict):
+        return prebuilt_payload
+    cache_key = f"{str(d)}:{normalized_group}"
+
+    return _payload_cache_get_or_build(
+        "daily_top_props",
+        cache_key,
+        signature_factory=lambda: _daily_top_props_signature(d, normalized_group),
+        max_age_seconds=_TOP_PROPS_CACHE_TTL_SECONDS,
+        builder=lambda: _build_live_daily_top_props_payload(d, normalized_group),
+    )
 
 
 def _first_text(*values: Any) -> str:
@@ -4811,6 +4999,105 @@ def _load_season_manifest(season: int) -> Tuple[Optional[Path], Optional[Dict[st
     return path, _load_json_file(path)
 
 
+def _season_frontend_profile_slug(requested_profile: str) -> str:
+    token = str(requested_profile or "").strip().lower()
+    if token in {"", "default", "current", "live"}:
+        return "retuned"
+    return token
+
+
+def daily_season_frontend_dir(*, data_root: Optional[Path] = None) -> Path:
+    root = data_root.resolve() if isinstance(data_root, Path) else _DATA_DIR
+    return root / "daily" / "season_frontend"
+
+
+def daily_season_manifest_artifact_path(season: int, date_str: str, *, data_root: Optional[Path] = None) -> Path:
+    return daily_season_frontend_dir(data_root=data_root) / f"season_manifest_{int(season)}_{_date_slug(date_str)}.json"
+
+
+def daily_season_day_artifact_path(season: int, date_str: str, *, profile: str = "retuned", data_root: Optional[Path] = None) -> Path:
+    profile_slug = _season_frontend_profile_slug(profile)
+    return daily_season_frontend_dir(data_root=data_root) / f"season_day_{int(season)}_{_date_slug(date_str)}_{profile_slug}.json"
+
+
+def daily_season_betting_day_artifact_path(season: int, date_str: str, *, profile: str = "retuned", data_root: Optional[Path] = None) -> Path:
+    profile_slug = _season_frontend_profile_slug(profile)
+    return daily_season_frontend_dir(data_root=data_root) / f"season_betting_day_{int(season)}_{_date_slug(date_str)}_{profile_slug}.json"
+
+
+def daily_official_betting_card_day_artifact_path(season: int, date_str: str, *, profile: str = "retuned", data_root: Optional[Path] = None) -> Path:
+    profile_slug = _season_frontend_profile_slug(profile)
+    return daily_season_frontend_dir(data_root=data_root) / f"season_official_betting_day_{int(season)}_{_date_slug(date_str)}_{profile_slug}.json"
+
+
+def _load_daily_season_frontend_artifact(path_factory: Any) -> Tuple[Optional[Path], Optional[Dict[str, Any]]]:
+    candidates: List[Path] = []
+    for root in _data_roots():
+        candidate = path_factory(root)
+        if candidate not in candidates:
+            candidates.append(candidate)
+    artifact_path = _find_preferred_file(candidates)
+    if not artifact_path:
+        return None, None
+    return artifact_path, _load_json_file(artifact_path)
+
+
+def _prebuilt_season_manifest_payload(season: int) -> Optional[Dict[str, Any]]:
+    if int(season) != int(_season_from_date_str(_today_iso()) or 0):
+        return None
+    artifact_path, artifact_doc = _load_daily_season_frontend_artifact(
+        lambda root: daily_season_manifest_artifact_path(int(season), _today_iso(), data_root=root)
+    )
+    if not artifact_path or not isinstance(artifact_doc, dict) or not artifact_doc.get("found"):
+        return None
+    out = dict(artifact_doc)
+    out["artifactPath"] = _relative_path_str(artifact_path)
+    out["artifactSource"] = "daily_update"
+    return out
+
+
+def _prebuilt_season_day_payload(season: int, date_str: str, requested_profile: str) -> Optional[Dict[str, Any]]:
+    if str(date_str or "").strip() != _today_iso():
+        return None
+    artifact_path, artifact_doc = _load_daily_season_frontend_artifact(
+        lambda root: daily_season_day_artifact_path(int(season), str(date_str), profile=requested_profile, data_root=root)
+    )
+    if not artifact_path or not isinstance(artifact_doc, dict) or not artifact_doc.get("found"):
+        return None
+    out = dict(artifact_doc)
+    out["artifactPath"] = _relative_path_str(artifact_path)
+    out["artifactSource"] = "daily_update"
+    return out
+
+
+def _prebuilt_season_betting_day_payload(season: int, date_str: str, requested_profile: str) -> Optional[Dict[str, Any]]:
+    if str(date_str or "").strip() != _today_iso():
+        return None
+    artifact_path, artifact_doc = _load_daily_season_frontend_artifact(
+        lambda root: daily_season_betting_day_artifact_path(int(season), str(date_str), profile=requested_profile, data_root=root)
+    )
+    if not artifact_path or not isinstance(artifact_doc, dict) or not artifact_doc.get("found"):
+        return None
+    out = dict(artifact_doc)
+    out["artifactPath"] = _relative_path_str(artifact_path)
+    out["artifactSource"] = "daily_update"
+    return out
+
+
+def _prebuilt_official_betting_card_day_payload(season: int, date_str: str, requested_profile: str) -> Optional[Dict[str, Any]]:
+    if str(date_str or "").strip() != _today_iso():
+        return None
+    artifact_path, artifact_doc = _load_daily_season_frontend_artifact(
+        lambda root: daily_official_betting_card_day_artifact_path(int(season), str(date_str), profile=requested_profile, data_root=root)
+    )
+    if not artifact_path or not isinstance(artifact_doc, dict) or not artifact_doc.get("found"):
+        return None
+    out = dict(artifact_doc)
+    out["artifactPath"] = _relative_path_str(artifact_path)
+    out["artifactSource"] = "daily_update"
+    return out
+
+
 def _season_from_date_str(date_str: str) -> Optional[int]:
     text = str(date_str or "").strip()
     if len(text) < 4:
@@ -5101,6 +5388,26 @@ def _supplement_season_manifest_payload(season: int, payload: Dict[str, Any]) ->
     return out
 
 
+def build_current_day_season_manifest_artifact(season: int, date_str: str) -> Dict[str, Any]:
+    manifest_path, manifest = _load_season_manifest(int(season))
+    if not manifest_path or not isinstance(manifest, dict):
+        return {
+            "season": int(season),
+            "date": str(date_str),
+            "found": False,
+            "error": "season_manifest_missing",
+        }
+    payload = _supplement_season_manifest_payload(int(season), dict(manifest))
+    meta = dict(payload.get("meta") or {})
+    sources = dict(meta.get("sources") or {})
+    sources["manifest"] = _relative_path_str(manifest_path)
+    meta["sources"] = sources
+    payload["meta"] = meta
+    payload["found"] = True
+    payload["artifactDate"] = str(date_str)
+    return payload
+
+
 def _season_day_fallback_payload(season: int, date_str: str, betting_profile: str) -> Dict[str, Any]:
     daily_artifacts = _load_cards_artifacts(str(date_str))
     has_cards = bool(daily_artifacts.get("locked_policy") or daily_artifacts.get("game_summary"))
@@ -5193,6 +5500,41 @@ def _season_day_fallback_payload(season: int, date_str: str, betting_profile: st
         },
         "betting": betting_payload,
         "games": games_out,
+    }
+
+
+def build_current_day_season_day_artifact(season: int, date_str: str, betting_profile: str) -> Dict[str, Any]:
+    manifest_path, manifest = _load_season_manifest(int(season))
+    if manifest_path and isinstance(manifest, dict):
+        report_path = _resolve_season_day_report_path(manifest, str(date_str))
+        if report_path and report_path.exists() and report_path.is_file():
+            report_obj = _load_json_file(report_path)
+            if isinstance(report_obj, dict):
+                payload = _season_day_payload(
+                    season=int(season),
+                    season_manifest=manifest,
+                    day_report=report_obj,
+                    report_path=report_path,
+                    betting_profile=betting_profile,
+                )
+                payload["found"] = True
+                payload["manifest_source"] = _relative_path_str(manifest_path)
+                payload["artifactDate"] = str(date_str)
+                return payload
+
+    fallback_payload = _season_day_fallback_payload(int(season), str(date_str), betting_profile)
+    if fallback_payload.get("cards_available") or ((fallback_payload.get("betting") or {}).get("found")):
+        fallback_payload["found"] = True
+        fallback_payload["manifest_source"] = _relative_path_str(manifest_path)
+        fallback_payload["artifactDate"] = str(date_str)
+        return fallback_payload
+    return {
+        "season": int(season),
+        "date": str(date_str),
+        "found": False,
+        "error": "season_day_missing" if manifest_path else "season_manifest_missing",
+        "manifest_source": _relative_path_str(manifest_path),
+        "artifactDate": str(date_str),
     }
 
 
@@ -6216,6 +6558,70 @@ def _official_betting_card_day_payload(season: int, date_str: str, requested_pro
         }
     )
     return payload
+
+
+def write_current_day_season_frontend_artifacts(
+    season: int,
+    date_str: str,
+    *,
+    betting_profile: str = "retuned",
+    out_dir: Optional[Path] = None,
+) -> Dict[str, Any]:
+    target_dir = out_dir.resolve() if isinstance(out_dir, Path) else daily_season_frontend_dir()
+    profile_slug = _season_frontend_profile_slug(betting_profile)
+
+    manifest_payload = build_current_day_season_manifest_artifact(int(season), str(date_str))
+    manifest_path = target_dir / daily_season_manifest_artifact_path(int(season), str(date_str)).name
+    _write_json_file(manifest_path, manifest_payload)
+
+    season_day_payload = build_current_day_season_day_artifact(int(season), str(date_str), profile_slug)
+    season_day_path = target_dir / daily_season_day_artifact_path(int(season), str(date_str), profile=profile_slug).name
+    _write_json_file(season_day_path, season_day_payload)
+
+    betting_day_payload = _season_betting_day_payload(int(season), str(date_str), profile_slug)
+    if betting_day_payload.get("found"):
+        card_path = _path_from_maybe_relative(betting_day_payload.get("card_source"))
+        betting_day_payload = dict(betting_day_payload)
+        betting_day_payload["card"] = _load_json_file(card_path)
+        betting_day_payload["artifactDate"] = str(date_str)
+    betting_day_path = target_dir / daily_season_betting_day_artifact_path(int(season), str(date_str), profile=profile_slug).name
+    _write_json_file(betting_day_path, betting_day_payload)
+
+    official_betting_payload = _official_betting_card_day_payload(int(season), str(date_str), profile_slug)
+    if official_betting_payload.get("found"):
+        official_betting_payload = dict(official_betting_payload)
+        official_betting_payload["artifactDate"] = str(date_str)
+    official_betting_path = target_dir / daily_official_betting_card_day_artifact_path(int(season), str(date_str), profile=profile_slug).name
+    _write_json_file(official_betting_path, official_betting_payload)
+
+    return {
+        "season": int(season),
+        "date": str(date_str),
+        "profile": profile_slug,
+        "dir": target_dir,
+        "artifacts": {
+            "season_manifest": {
+                "path": manifest_path,
+                "found": bool(manifest_payload.get("found")),
+                "error": manifest_payload.get("error"),
+            },
+            "season_day": {
+                "path": season_day_path,
+                "found": bool(season_day_payload.get("found")),
+                "error": season_day_payload.get("error"),
+            },
+            "season_betting_day": {
+                "path": betting_day_path,
+                "found": bool(betting_day_payload.get("found")),
+                "error": betting_day_payload.get("error"),
+            },
+            "season_official_betting_day": {
+                "path": official_betting_path,
+                "found": bool(official_betting_payload.get("found")),
+                "error": official_betting_payload.get("error"),
+            },
+        },
+    }
 
 
 def _settlement_player_key(value: Any) -> str:
@@ -11355,7 +11761,19 @@ def api_live_lens() -> Response:
     _ensure_live_lens_background_loop_running()
     d = str(request.args.get("date") or "").strip() or _default_cards_date()
     persist = str(request.args.get("persist") or "off").strip().lower() == "on"
-    return jsonify(_live_lens_payload(d, persist=persist, refresh_markets=False))
+    report_path = _live_lens_report_path(d)
+    report_age_seconds = _path_age_seconds(report_path)
+    if not persist and report_age_seconds is not None and report_age_seconds <= _LIVE_ROUTE_CACHE_TTL_SECONDS:
+        report_payload = _load_json_file(report_path)
+        if isinstance(report_payload, dict) and report_payload:
+            return jsonify(_with_app_build(report_payload))
+    payload = _payload_cache_get_or_build(
+        "live_lens_api",
+        str(d),
+        max_age_seconds=_LIVE_ROUTE_CACHE_TTL_SECONDS,
+        builder=lambda: _live_lens_payload(d, persist=persist, refresh_markets=False),
+    )
+    return jsonify(_with_app_build(payload))
 
 
 @app.get("/api/season/<int:season>/live-lens")
@@ -11788,42 +12206,87 @@ def _cards_api_payload(
     return payload
 
 
+def _cards_payload_context(d: str) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+    artifacts = _load_cards_artifacts(d)
+    archive = _load_cards_archive_context(d) if _should_load_cards_archive_context(d, artifacts) else {}
+    game_line_index = _load_game_line_market_index(d)
+    return artifacts, archive, game_line_index
+
+
+def _cards_payload_signature(d: str, artifacts: Dict[str, Any], archive: Dict[str, Any], game_line_index: Dict[str, Any]) -> Tuple[Any, ...]:
+    return (
+        str(d),
+        _path_signature(artifacts.get("profile_bundle_path") if isinstance(artifacts.get("profile_bundle_path"), Path) else None),
+        _path_signature(artifacts.get("locked_policy_path") if isinstance(artifacts.get("locked_policy_path"), Path) else None),
+        _path_signature(artifacts.get("game_summary_path") if isinstance(artifacts.get("game_summary_path"), Path) else None),
+        _path_signature(artifacts.get("settlement_path") if isinstance(artifacts.get("settlement_path"), Path) else None),
+        _path_signature(artifacts.get("ops_report_path") if isinstance(artifacts.get("ops_report_path"), Path) else None),
+        _path_signature(artifacts.get("lineups_path") if isinstance(artifacts.get("lineups_path"), Path) else None),
+        _dir_signature(artifacts.get("sim_dir") if isinstance(artifacts.get("sim_dir"), Path) else None),
+        _path_signature(archive.get("report_path") if isinstance(archive.get("report_path"), Path) else None),
+        _path_signature(archive.get("card_path") if isinstance(archive.get("card_path"), Path) else None),
+        _path_signature(game_line_index.get("path") if isinstance(game_line_index.get("path"), Path) else None),
+    )
+
+
+def _build_cards_api_payload(
+    d: str,
+    *,
+    artifacts: Optional[Dict[str, Any]] = None,
+    archive: Optional[Dict[str, Any]] = None,
+    game_line_index: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    artifacts = artifacts if isinstance(artifacts, dict) else _load_cards_artifacts(d)
+    archive = archive if isinstance(archive, dict) else (_load_cards_archive_context(d) if _should_load_cards_archive_context(d, artifacts) else {})
+    game_line_index = game_line_index if isinstance(game_line_index, dict) else _load_game_line_market_index(d)
+
+    if isinstance(artifacts.get("locked_policy"), dict):
+        recos_by_game = _recommendations_by_game(artifacts.get("locked_policy"))
+    elif isinstance(archive.get("card"), dict):
+        recos_by_game = _recommendations_by_game(archive.get("card"))
+    else:
+        recos_by_game = {}
+
+    if isinstance(artifacts.get("game_summary"), dict):
+        outputs_by_game = _game_outputs_by_game(artifacts.get("game_summary"))
+    elif isinstance(archive.get("report"), dict):
+        outputs_by_game = _season_report_outputs_by_game(archive.get("report"))
+    else:
+        outputs_by_game = {}
+
+    schedule_games = _schedule_games_for_date(d)
+    cards = _cards_list_from_sources(
+        d=d,
+        schedule_games=schedule_games,
+        outputs_by_game=outputs_by_game,
+        recos_by_game=recos_by_game,
+    )
+    for card in cards:
+        if not isinstance(card, dict):
+            continue
+        market_row = _game_line_market_for_card(card, game_line_index)
+        card["trackedGameLines"] = (market_row.get("markets") or {}) if isinstance(market_row, dict) else None
+    return _cards_api_payload(d, artifacts=artifacts, archive=archive, cards=cards)
+
+
 @app.get("/api/cards")
 def api_cards() -> Response:
     d = str(request.args.get("date") or "").strip() or _default_cards_date()
     try:
-        artifacts = _load_cards_artifacts(d)
-        archive = _load_cards_archive_context(d) if _should_load_cards_archive_context(d, artifacts) else {}
-        game_line_index = _load_game_line_market_index(d)
-
-        if isinstance(artifacts.get("locked_policy"), dict):
-            recos_by_game = _recommendations_by_game(artifacts.get("locked_policy"))
-        elif isinstance(archive.get("card"), dict):
-            recos_by_game = _recommendations_by_game(archive.get("card"))
-        else:
-            recos_by_game = {}
-
-        if isinstance(artifacts.get("game_summary"), dict):
-            outputs_by_game = _game_outputs_by_game(artifacts.get("game_summary"))
-        elif isinstance(archive.get("report"), dict):
-            outputs_by_game = _season_report_outputs_by_game(archive.get("report"))
-        else:
-            outputs_by_game = {}
-
-        schedule_games = _schedule_games_for_date(d)
-
-        cards = _cards_list_from_sources(
-            d=d,
-            schedule_games=schedule_games,
-            outputs_by_game=outputs_by_game,
-            recos_by_game=recos_by_game,
+        artifacts, archive, game_line_index = _cards_payload_context(d)
+        payload = _payload_cache_get_or_build(
+            "cards_api",
+            str(d),
+            signature_factory=lambda: _cards_payload_signature(d, artifacts, archive, game_line_index),
+            max_age_seconds=_CARDS_CACHE_TTL_SECONDS,
+            builder=lambda: _build_cards_api_payload(
+                d,
+                artifacts=artifacts,
+                archive=archive,
+                game_line_index=game_line_index,
+            ),
         )
-        for card in cards:
-            if not isinstance(card, dict):
-                continue
-            market_row = _game_line_market_for_card(card, game_line_index)
-            card["trackedGameLines"] = (market_row.get("markets") or {}) if isinstance(market_row, dict) else None
-        return jsonify(_cards_api_payload(d, artifacts=artifacts, archive=archive, cards=cards))
+        return jsonify(payload)
     except Exception as exc:
         app.logger.exception("cards api failed for %s", d)
         try:
@@ -11878,6 +12341,10 @@ def api_hitter_top_props() -> Response:
 
 @app.get("/api/season/<int:season>")
 def api_season_manifest(season: int) -> Response:
+    prebuilt_payload = _prebuilt_season_manifest_payload(int(season))
+    if isinstance(prebuilt_payload, dict):
+        return jsonify(_with_app_build(prebuilt_payload))
+
     manifest_path, manifest = _load_season_manifest(int(season))
     if not manifest_path or not isinstance(manifest, dict):
         return jsonify(
@@ -11972,6 +12439,10 @@ def api_season_official_betting_card(season: int) -> Response:
 @app.get("/api/season/<int:season>/betting-cards/day/<date_str>")
 def api_season_betting_cards_day(season: int, date_str: str) -> Response:
     requested_profile = str(request.args.get("profile") or "").strip().lower()
+    prebuilt_payload = _prebuilt_season_betting_day_payload(int(season), str(date_str), requested_profile)
+    if isinstance(prebuilt_payload, dict):
+        return _jsonify_no_store(_with_app_build(prebuilt_payload))
+
     payload = _season_betting_day_payload(int(season), str(date_str), requested_profile)
     if payload.get("found"):
         card_path = _path_from_maybe_relative(payload.get("card_source"))
@@ -11984,6 +12455,10 @@ def api_season_betting_cards_day(season: int, date_str: str) -> Response:
 @app.get("/api/season/<int:season>/betting-card/day/<date_str>")
 def api_season_official_betting_card_day(season: int, date_str: str) -> Response:
     requested_profile = str(request.args.get("profile") or "").strip().lower()
+    prebuilt_payload = _prebuilt_official_betting_card_day_payload(int(season), str(date_str), requested_profile)
+    if isinstance(prebuilt_payload, dict):
+        return _jsonify_no_store(_with_app_build(prebuilt_payload))
+
     payload = _official_betting_card_day_payload(int(season), str(date_str), requested_profile)
     if payload.get("found"):
         return _jsonify_no_store(_with_app_build(payload))
@@ -11994,6 +12469,10 @@ def api_season_official_betting_card_day(season: int, date_str: str) -> Response
 @app.get("/api/season/<int:season>/day/<date_str>")
 def api_season_day(season: int, date_str: str) -> Response:
     requested_profile = str(request.args.get("profile") or "").strip().lower()
+    prebuilt_payload = _prebuilt_season_day_payload(int(season), str(date_str), requested_profile)
+    if isinstance(prebuilt_payload, dict):
+        return _jsonify_no_store(_with_app_build(prebuilt_payload))
+
     manifest_path, manifest = _load_season_manifest(int(season))
     if not manifest_path or not isinstance(manifest, dict):
         return _jsonify_no_store(
@@ -12335,12 +12814,7 @@ def api_game_stream(game_pk: int) -> Response:
 
     return Response(gen(), mimetype="text/event-stream", headers={"Cache-Control": "no-cache"})
 
-
-@app.get("/api/game/<int:game_pk>/sim")
-def api_game_sim(game_pk: int) -> Response:
-    d = str(request.args.get("date") or "").strip()
-    if not d:
-        return jsonify({"gamePk": int(game_pk), "found": False, "error": "missing_date"}), 400
+def _build_game_sim_payload(game_pk: int, d: str) -> Dict[str, Any]:
     artifacts = _load_cards_artifacts(d)
     archive = _load_cards_archive_context(d) if _should_load_cards_archive_context(d, artifacts) else {}
     feed = _load_live_lens_feed(int(game_pk), d)
@@ -12371,6 +12845,20 @@ def api_game_sim(game_pk: int) -> Response:
             _game_line_market_for_card(live_card, _load_game_line_market_index(d)),
         )
         out.pop("propModels", None)
+    return out
+
+
+@app.get("/api/game/<int:game_pk>/sim")
+def api_game_sim(game_pk: int) -> Response:
+    d = str(request.args.get("date") or "").strip()
+    if not d:
+        return jsonify({"gamePk": int(game_pk), "found": False, "error": "missing_date"}), 400
+    out = _payload_cache_get_or_build(
+        "game_sim_api",
+        f"{str(d)}:{int(game_pk)}",
+        max_age_seconds=_LIVE_ROUTE_CACHE_TTL_SECONDS,
+        builder=lambda: _build_game_sim_payload(int(game_pk), d),
+    )
     status = 200 if out.get("found") else 404
     if out.get("error") == "read_failed":
         status = 500

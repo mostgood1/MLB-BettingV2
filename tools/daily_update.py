@@ -65,6 +65,7 @@ from tools.eval.build_season_eval_manifest import build_manifest as build_season
 from tools.eval.build_season_eval_manifest import write_manifest_artifacts as write_season_eval_manifest_artifacts
 from tools.eval.settle_locked_policy_cards import _feed_is_final, _load_feed, _settle_card
 from tools.oddsapi.fetch_daily_oddsapi_markets import fetch_and_write_live_odds_for_date
+from tools.web.flask_frontend import write_current_day_season_frontend_artifacts, write_daily_top_props_artifact
 
 
 # --- multiprocessing helpers (must be top-level for Windows spawn pickling) ---
@@ -1569,6 +1570,12 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
             "summary_path": _relative_path_str(game_out / f"daily_summary_{token}.json"),
             "profile_bundle_path": _relative_path_str(game_out / f"daily_summary_{token}_profile_bundle.json"),
             "locked_policy_path": _relative_path_str(game_out / f"daily_summary_{token}_locked_policy.json"),
+            "top_props_artifact_path": _relative_path_str(game_out / "top_props" / f"daily_top_props_{token}.json"),
+            "season_frontend_dir": _relative_path_str(game_out / "season_frontend"),
+            "season_manifest_artifact_path": _relative_path_str(game_out / "season_frontend" / f"season_manifest_{int(args.season)}_{token}.json"),
+            "season_day_artifact_path": _relative_path_str(game_out / "season_frontend" / f"season_day_{int(args.season)}_{token}_{str(getattr(args, 'season_betting_profile', 'retuned') or 'retuned').strip().lower()}.json"),
+            "season_betting_day_artifact_path": _relative_path_str(game_out / "season_frontend" / f"season_betting_day_{int(args.season)}_{token}_{str(getattr(args, 'season_betting_profile', 'retuned') or 'retuned').strip().lower()}.json"),
+            "season_official_betting_day_artifact_path": _relative_path_str(game_out / "season_frontend" / f"season_official_betting_day_{int(args.season)}_{token}_{str(getattr(args, 'season_betting_profile', 'retuned') or 'retuned').strip().lower()}.json"),
         },
         "stages": {},
         "warnings": [],
@@ -2061,6 +2068,90 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
         current_stage["error"] = f"{type(exc).__name__}: {exc}"
         report["errors"].append(f"current-day multi-profile build failed: {type(exc).__name__}: {exc}")
     report["stages"]["current_day_multi_profile"] = current_stage
+
+    top_props_stage: Dict[str, Any]
+    top_props_artifact_path = game_out / "top_props" / f"daily_top_props_{token}.json"
+    if str(current_stage.get("status") or "") == "error":
+        top_props_stage = {
+            "status": "skipped",
+            "date": str(args.date),
+            "artifact_path": _relative_path_str(top_props_artifact_path),
+            "reason": "current-day multi-profile build failed",
+        }
+    else:
+        print(f"[ui-daily] Building current-day top-props artifact for {args.date}...")
+        try:
+            top_props_result = write_daily_top_props_artifact(
+                str(args.date),
+                out_path=top_props_artifact_path,
+            )
+            top_props_stage = {
+                "status": "ok",
+                "date": str(args.date),
+                "artifact_path": _relative_path_str(top_props_result.get("path")),
+                "group_summaries": dict(top_props_result.get("groupSummaries") or {}),
+            }
+        except Exception as exc:
+            top_props_stage = {
+                "status": "error",
+                "date": str(args.date),
+                "artifact_path": _relative_path_str(top_props_artifact_path),
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            report["errors"].append(f"current-day top-props artifact build failed: {type(exc).__name__}: {exc}")
+    report["stages"]["current_day_top_props_artifact"] = top_props_stage
+
+    season_frontend_stage: Dict[str, Any]
+    season_frontend_dir = game_out / "season_frontend"
+    if str(current_stage.get("status") or "") == "error":
+        season_frontend_stage = {
+            "status": "skipped",
+            "date": str(args.date),
+            "dir": _relative_path_str(season_frontend_dir),
+            "reason": "current-day multi-profile build failed",
+        }
+    else:
+        print(f"[ui-daily] Building current-day season frontend artifacts for {args.date}...")
+        try:
+            season_frontend_result = write_current_day_season_frontend_artifacts(
+                int(args.season),
+                str(args.date),
+                betting_profile=str(getattr(args, "season_betting_profile", "retuned") or "retuned"),
+                out_dir=season_frontend_dir,
+            )
+            season_frontend_stage = {
+                "status": "ok",
+                "date": str(args.date),
+                "dir": _relative_path_str(season_frontend_result.get("dir")),
+                "profile": season_frontend_result.get("profile"),
+                "artifacts": {
+                    str(name): {
+                        "path": _relative_path_str((info or {}).get("path")),
+                        "found": bool((info or {}).get("found")),
+                        "error": (info or {}).get("error"),
+                    }
+                    for name, info in dict(season_frontend_result.get("artifacts") or {}).items()
+                },
+            }
+            artifact_errors = [
+                f"{name}: {info.get('error')}"
+                for name, info in dict(season_frontend_stage.get("artifacts") or {}).items()
+                if info.get("error")
+            ]
+            if artifact_errors:
+                season_frontend_stage["status"] = "error"
+                report["errors"].append(
+                    "current-day season frontend artifact build failed: " + "; ".join(artifact_errors)
+                )
+        except Exception as exc:
+            season_frontend_stage = {
+                "status": "error",
+                "date": str(args.date),
+                "dir": _relative_path_str(season_frontend_dir),
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            report["errors"].append(f"current-day season frontend artifact build failed: {type(exc).__name__}: {exc}")
+    report["stages"]["current_day_season_frontend_artifacts"] = season_frontend_stage
 
     current_inputs = _current_day_inputs_stage(game_out=game_out, date_str=str(args.date))
     report["stages"]["current_day_roster_snapshot"] = current_inputs["roster_snapshot"]
@@ -5193,6 +5284,24 @@ def main() -> int:
     }
     summary_path = out_root / f"daily_summary_{args.date.replace('-', '_')}.json"
     _write_json(summary_path, summary)
+    try:
+        top_props_result = write_daily_top_props_artifact(
+            str(args.date),
+            out_path=(out_root / "top_props" / f"daily_top_props_{args.date.replace('-', '_')}.json"),
+        )
+        print(f"Wrote top-props artifact: {top_props_result.get('path')}")
+    except Exception as exc:
+        print(f"Warning: failed to write top-props artifact for {args.date}: {type(exc).__name__}: {exc}")
+    try:
+        season_frontend_result = write_current_day_season_frontend_artifacts(
+            int(args.season),
+            str(args.date),
+            betting_profile="retuned",
+            out_dir=(out_root / "season_frontend"),
+        )
+        print(f"Wrote season frontend artifacts: {season_frontend_result.get('dir')}")
+    except Exception as exc:
+        print(f"Warning: failed to write season frontend artifacts for {args.date}: {type(exc).__name__}: {exc}")
 
     # Persist lineup artifacts (best-effort).
     try:
