@@ -10,7 +10,7 @@
     loading: false,
   };
 
-  const AUTO_REFRESH_MS = 15000;
+  const AUTO_REFRESH_MS = 30000;
 
   const metaNode = document.getElementById("liveLensMeta");
   const overviewNode = document.getElementById("liveLensOverview");

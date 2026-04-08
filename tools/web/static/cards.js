@@ -12,7 +12,7 @@
     loadingCards: false,
   };
 
-  const AUTO_REFRESH_MS = 15000;
+  const AUTO_REFRESH_MS = 30000;
   const HYDRATE_CARD_CONCURRENCY = 4;
 
   const root = {

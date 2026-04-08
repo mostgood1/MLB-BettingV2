@@ -154,7 +154,7 @@ def _live_lens_optimization_regime(d: Any) -> Dict[str, Any]:
 
 _DEMO_DATE = "2025-06-04"
 _CARDS_PRESEASON_DEFAULT_WINDOW_DAYS = 21
-_LIVE_PROP_MARKET_MAX_AGE_SECONDS = 15
+_LIVE_PROP_MARKET_MAX_AGE_SECONDS = 90
 _LIVE_FEED_CACHE_TTL_SECONDS = float(_env_int("MLB_LIVE_FEED_CACHE_TTL_SECONDS", 5, minimum=1))
 _LIVE_HITTER_PROP_MIN_MARKET_EDGE = 0.05
 _LIVE_PROP_RANKING_CONFIG_PATH = Path(
@@ -10666,10 +10666,10 @@ def _normalize_live_lens_live_prop_row(row: Dict[str, Any], snapshot: Optional[D
     }
 
 
-def _live_lens_payload(d: str, *, persist: bool = False) -> Dict[str, Any]:
+def _live_lens_payload(d: str, *, persist: bool = False, refresh_markets: bool = False) -> Dict[str, Any]:
     started_at = time.perf_counter()
     market_refresh_started_at = time.perf_counter()
-    markets_refreshed = _maybe_refresh_live_oddsapi_markets(d)
+    markets_refreshed = _maybe_refresh_live_oddsapi_markets(d) if refresh_markets else False
     market_refresh_ms = round((time.perf_counter() - market_refresh_started_at) * 1000.0, 1)
     artifacts = _load_cards_artifacts(d)
     archive = _load_cards_archive_context(d) if _should_load_cards_archive_context(d, artifacts) else {}
@@ -10924,8 +10924,8 @@ def _live_lens_reports_payload(d: str) -> Dict[str, Any]:
     }
 
 
-def _persist_live_lens_tick(d: str, *, trigger: str = "api") -> Dict[str, Any]:
-    payload = _live_lens_payload(d, persist=True)
+def _persist_live_lens_tick(d: str, *, trigger: str = "api", refresh_markets: bool = True) -> Dict[str, Any]:
+    payload = _live_lens_payload(d, persist=True, refresh_markets=refresh_markets)
     meta = {
         "recordedAt": _local_timestamp_text(),
         "date": str(d),
@@ -11004,7 +11004,7 @@ def _season_live_lens_payload(season: int, d: str) -> Dict[str, Any]:
         payload["detail"] = f"Date {date_str} belongs to season {date_season}, not {int(season)}"
         return payload
 
-    live_payload = _live_lens_payload(date_str, persist=False)
+    live_payload = _live_lens_payload(date_str, persist=False, refresh_markets=False)
     counts = dict(live_payload.get("counts") or {})
     live_payload.update(
         {
@@ -11249,7 +11249,7 @@ def api_live_lens() -> Response:
     _ensure_live_lens_background_loop_running()
     d = str(request.args.get("date") or "").strip() or _default_cards_date()
     persist = str(request.args.get("persist") or "off").strip().lower() == "on"
-    return jsonify(_live_lens_payload(d, persist=persist))
+    return jsonify(_live_lens_payload(d, persist=persist, refresh_markets=False))
 
 
 @app.get("/api/season/<int:season>/live-lens")
@@ -12257,7 +12257,7 @@ def api_game_sim(game_pk: int) -> Response:
                     "abstract": str((((snapshot or {}).get("status") or {}).get("abstractGameState") or "")),
                 },
             }
-        out["livePropRows"] = _current_live_prop_rows(live_card, snapshot, out, d)
+        out["livePropRows"] = _current_live_prop_rows(live_card, snapshot, out, d, ensure_market_fresh=False)
         out["gameLens"] = _build_game_lens(
             live_card,
             snapshot,
