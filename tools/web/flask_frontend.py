@@ -1782,6 +1782,32 @@ def _find_preferred_available_oddsapi_file(*, preferred: List[Path], recursive_p
     return fallback
 
 
+def _market_file_summary_from_doc(
+    path: Optional[Path],
+    doc: Any,
+    *,
+    root_key: str,
+    path_override: Optional[str] = None,
+) -> Dict[str, Any]:
+    counts: Dict[str, Any] = {}
+    if isinstance(doc, dict):
+        counts = dict(((doc.get("meta") or {}).get("counts") or {}))
+        if not counts:
+            if root_key == "games":
+                counts = _count_game_line_markets(doc.get("games") or [])
+            else:
+                counts = _count_prop_market_rows(doc.get(root_key) or {})
+    available = int(counts.get("games") or 0) > 0 if root_key == "games" else int(counts.get("players") or 0) > 0
+    return {
+        "exists": bool(path and path.exists() and path.is_file()),
+        "available": bool(available),
+        "path": path_override if path_override is not None else _relative_path_str(path),
+        "mode": str((doc or {}).get("mode") or "") if isinstance(doc, dict) else "",
+        "retrievedAt": (doc or {}).get("retrieved_at") if isinstance(doc, dict) else None,
+        "counts": counts,
+    }
+
+
 def _find_preferred_file(preferred: Sequence[Path]) -> Optional[Path]:
     seen: set[str] = set()
     for p in preferred:
@@ -2074,29 +2100,88 @@ def _count_prop_market_rows(props_by_name: Any) -> Dict[str, Any]:
 
 def _market_file_summary(path: Optional[Path], *, root_key: str) -> Dict[str, Any]:
     doc = _load_json_file(path)
-    counts: Dict[str, Any] = {}
-    if isinstance(doc, dict):
-        counts = dict(((doc.get("meta") or {}).get("counts") or {}))
-        if not counts:
-            if root_key == "games":
-                counts = _count_game_line_markets(doc.get("games") or [])
-            else:
-                counts = _count_prop_market_rows(doc.get(root_key) or {})
-    available = int(counts.get("games") or 0) > 0 if root_key == "games" else int(counts.get("players") or 0) > 0
+    return _market_file_summary_from_doc(path, doc, root_key=root_key)
+
+
+def _extract_game_line_rows(doc: Any) -> List[Dict[str, Any]]:
+    rows = (doc or {}).get("games") or []
+    if not isinstance(rows, list):
+        return []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _load_game_line_market_context(d: str) -> Dict[str, Any]:
+    current_path = _resolve_oddsapi_market_file(d, "oddsapi_game_lines")
+    current_doc = _load_json_file(current_path)
+    current_mode = str((current_doc or {}).get("mode") or "").strip().lower()
+    current_rows = _extract_game_line_rows(current_doc)
+
+    pregame_path = _resolve_pregame_oddsapi_market_file(d, "oddsapi_game_lines")
+    pregame_doc = _load_json_file(pregame_path) if pregame_path else None
+    pregame_rows = _extract_game_line_rows(pregame_doc) if isinstance(pregame_doc, dict) else []
+    pregame_source = _relative_path_str(pregame_path) if pregame_path else None
+    if not pregame_rows:
+        archived_path = _resolve_earliest_archived_oddsapi_market_file(d, "oddsapi_game_lines")
+        archived_doc = _load_json_file(archived_path) if archived_path else None
+        archived_rows = _extract_game_line_rows(archived_doc) if isinstance(archived_doc, dict) else []
+        if archived_rows:
+            pregame_path = archived_path
+            pregame_doc = archived_doc
+            pregame_rows = archived_rows
+            pregame_source = _relative_path_str(archived_path)
+
+    effective_mode = current_mode
+    schedule_counts = _schedule_status_counts(d) if current_mode == "live" else {"known": False, "live": 0}
+    if current_mode == "live" and bool(schedule_counts.get("known")) and int(schedule_counts.get("live") or 0) <= 0:
+        effective_mode = "pregame"
+
+    use_pregame = bool(pregame_rows) and (effective_mode != "live" or not current_rows)
+    display_doc = pregame_doc if use_pregame else current_doc
+    display_path = pregame_path if use_pregame else current_path
+    display_rows = pregame_rows if use_pregame else current_rows
+    display_source = pregame_source if use_pregame else _relative_path_str(current_path)
+
     return {
-        "exists": bool(path and path.exists() and path.is_file()),
-        "available": bool(available),
-        "path": _relative_path_str(path),
-        "mode": str((doc or {}).get("mode") or "") if isinstance(doc, dict) else "",
-        "retrievedAt": (doc or {}).get("retrieved_at") if isinstance(doc, dict) else None,
-        "counts": counts,
+        "currentPath": current_path,
+        "currentDoc": current_doc,
+        "currentMode": current_mode,
+        "currentRows": current_rows,
+        "effectiveMode": effective_mode,
+        "displayDoc": display_doc,
+        "displayPath": display_path,
+        "displayRows": display_rows,
+        "displaySource": display_source,
+        "pregamePath": pregame_path,
+        "pregameDoc": pregame_doc,
+        "pregameRows": pregame_rows,
+        "pregameSource": pregame_source,
+        "scheduleCounts": schedule_counts,
     }
 
 
 def _load_market_availability(d: str) -> Dict[str, Any]:
-    game_lines = _market_file_summary(_resolve_oddsapi_market_file(d, "oddsapi_game_lines"), root_key="games")
-    pitcher_props = _market_file_summary(_resolve_oddsapi_market_file(d, "oddsapi_pitcher_props"), root_key="pitcher_props")
-    hitter_props = _market_file_summary(_resolve_oddsapi_market_file(d, "oddsapi_hitter_props"), root_key="hitter_props")
+    game_ctx = _load_game_line_market_context(d)
+    pitcher_ctx = _load_pitcher_ladder_market_context(d)
+    hitter_ctx = _load_hitter_ladder_market_context(d)
+
+    game_lines = _market_file_summary_from_doc(
+        game_ctx.get("displayPath") if isinstance(game_ctx.get("displayPath"), Path) else None,
+        game_ctx.get("displayDoc"),
+        root_key="games",
+        path_override=str(game_ctx.get("displaySource") or "") or None,
+    )
+    pitcher_props = _market_file_summary_from_doc(
+        pitcher_ctx.get("displayPath") if isinstance(pitcher_ctx.get("displayPath"), Path) else None,
+        pitcher_ctx.get("displayDoc"),
+        root_key="pitcher_props",
+        path_override=str(pitcher_ctx.get("displaySource") or "") or None,
+    )
+    hitter_props = _market_file_summary_from_doc(
+        hitter_ctx.get("displayPath") if isinstance(hitter_ctx.get("displayPath"), Path) else None,
+        hitter_ctx.get("displayDoc"),
+        root_key="hitter_props",
+        path_override=str(hitter_ctx.get("displaySource") or "") or None,
+    )
 
     warnings: List[str] = []
     game_counts = dict(game_lines.get("counts") or {})
@@ -2700,17 +2785,24 @@ def _load_pitcher_ladder_market_context(d: str) -> Dict[str, Any]:
     schedule_counts = _schedule_status_counts(d) if current_mode == "live" else {"known": False, "live": 0}
     if current_mode == "live" and bool(schedule_counts.get("known")) and int(schedule_counts.get("live") or 0) <= 0:
         effective_mode = "pregame"
-    display_lines = pregame_lines if effective_mode != "live" and pregame_lines else current_lines
-    display_source = pregame_source if effective_mode != "live" and pregame_lines else _relative_path_str(current_path)
+    use_pregame = bool(pregame_lines) and (effective_mode != "live" or not current_lines)
+    display_lines = pregame_lines if use_pregame else current_lines
+    display_source = pregame_source if use_pregame else _relative_path_str(current_path)
+    display_doc = pregame_doc if use_pregame else current_doc
+    display_path = pregame_path if use_pregame else current_path
 
     return {
         "currentPath": current_path,
+        "currentDoc": current_doc,
         "currentMode": current_mode,
         "effectiveMode": effective_mode,
         "currentLines": current_lines,
         "displayLines": display_lines,
+        "displayDoc": display_doc,
+        "displayPath": display_path,
         "displaySource": display_source,
         "pregamePath": pregame_path,
+        "pregameDoc": pregame_doc,
         "pregameLines": pregame_lines,
         "pregameSource": pregame_source,
         "scheduleCounts": schedule_counts,
@@ -2738,17 +2830,24 @@ def _load_hitter_ladder_market_context(d: str) -> Dict[str, Any]:
     schedule_counts = _schedule_status_counts(d) if current_mode == "live" else {"known": False, "live": 0}
     if current_mode == "live" and bool(schedule_counts.get("known")) and int(schedule_counts.get("live") or 0) <= 0:
         effective_mode = "pregame"
-    display_lines = pregame_lines if effective_mode != "live" and pregame_lines else current_lines
-    display_source = pregame_source if effective_mode != "live" and pregame_lines else _relative_path_str(current_path)
+    use_pregame = bool(pregame_lines) and (effective_mode != "live" or not current_lines)
+    display_lines = pregame_lines if use_pregame else current_lines
+    display_source = pregame_source if use_pregame else _relative_path_str(current_path)
+    display_doc = pregame_doc if use_pregame else current_doc
+    display_path = pregame_path if use_pregame else current_path
 
     return {
         "currentPath": current_path,
+        "currentDoc": current_doc,
         "currentMode": current_mode,
         "effectiveMode": effective_mode,
         "currentLines": current_lines,
         "displayLines": display_lines,
+        "displayDoc": display_doc,
+        "displayPath": display_path,
         "displaySource": display_source,
         "pregamePath": pregame_path,
+        "pregameDoc": pregame_doc,
         "pregameLines": pregame_lines,
         "pregameSource": pregame_source,
         "scheduleCounts": schedule_counts,
@@ -9487,8 +9586,12 @@ def _current_live_prop_rows(
 
     progress_fraction = float((_live_game_progress(snapshot, card).get("fraction") or 0.0))
     actual_teams = ((snapshot or {}).get("teams") or {})
-    _, pitcher_market_lines = _load_pitcher_prop_market_lines(d)
-    _, hitter_market_lines = _load_hitter_prop_market_lines(d)
+    pitcher_market_ctx = _load_pitcher_ladder_market_context(d)
+    hitter_market_ctx = _load_hitter_ladder_market_context(d)
+    pitcher_market_lines = pitcher_market_ctx.get("displayLines") if isinstance(pitcher_market_ctx.get("displayLines"), dict) else {}
+    hitter_market_lines = hitter_market_ctx.get("displayLines") if isinstance(hitter_market_ctx.get("displayLines"), dict) else {}
+    pitcher_market_source = str(pitcher_market_ctx.get("displaySource") or "")
+    hitter_market_source = str(hitter_market_ctx.get("displaySource") or "")
     pitcher_models = _sim_prop_models(sim_context, "pitchers")
     hitter_models = _sim_prop_models(sim_context, "hitters")
     rows: List[Dict[str, Any]] = []
@@ -9541,7 +9644,8 @@ def _current_live_prop_rows(
                 rows.append(
                     {
                         "recommendation_tier": "live",
-                        "source": "current_market",
+                        "source": "current_market" if not pitcher_market_source or pitcher_market_source.endswith("oddsapi_pitcher_props_" + _date_slug(d) + ".json") else "market_fallback",
+                        "market_source": pitcher_market_source or None,
                         "market": "pitcher_props",
                         "market_label": cfg.get("label"),
                         "prop": prop_key,
@@ -9609,7 +9713,8 @@ def _current_live_prop_rows(
                 continue
             item = {
                 "recommendation_tier": "live",
-                "source": "current_market",
+                "source": "current_market" if not hitter_market_source or hitter_market_source.endswith("oddsapi_hitter_props_" + _date_slug(d) + ".json") else "market_fallback",
+                "market_source": hitter_market_source or None,
                 "market": "hitter_props",
                 "market_label": cfg.get("label"),
                 "prop": prop_key,
@@ -9959,8 +10064,9 @@ def _card_event_id(card: Dict[str, Any]) -> Optional[str]:
 
 
 def _load_game_line_market_index(d: str) -> Dict[str, Any]:
-    path = _resolve_oddsapi_market_file(d, "oddsapi_game_lines")
-    doc = _load_json_file(path)
+    market_ctx = _load_game_line_market_context(d)
+    path = market_ctx.get("displayPath") if isinstance(market_ctx.get("displayPath"), Path) else market_ctx.get("currentPath")
+    doc = market_ctx.get("displayDoc") if isinstance(market_ctx.get("displayDoc"), dict) else _load_json_file(path)
     by_event_id: Dict[str, Dict[str, Any]] = {}
     by_matchup: Dict[Tuple[str, str], Dict[str, Any]] = {}
     if isinstance(doc, dict):
