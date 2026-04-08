@@ -522,6 +522,14 @@ def _date_slug(d: str) -> str:
     return str(d or "").strip().replace("-", "_")
 
 
+def _oddsapi_market_root_key(prefix: str) -> str:
+    if str(prefix or "").endswith("game_lines"):
+        return "games"
+    if str(prefix or "").endswith("pitcher_props"):
+        return "pitcher_props"
+    return "hitter_props"
+
+
 def _data_roots() -> List[Path]:
     roots: List[Path] = []
     for candidate in (_DATA_DIR, _TRACKED_DATA_DIR.resolve()):
@@ -1577,9 +1585,10 @@ def _resolve_oddsapi_market_file(d: str, prefix: str) -> Optional[Path]:
     for data_root in _data_roots():
         preferred.append(data_root / "daily" / "snapshots" / str(d) / filename)
         preferred.append(data_root / "market" / "oddsapi" / filename)
-    return _find_candidate_file(
+    return _find_preferred_available_oddsapi_file(
         preferred=preferred,
         recursive_pattern=f"**/{filename}",
+        prefix=prefix,
     )
 
 
@@ -1735,6 +1744,42 @@ def _find_candidate_file(*, preferred: List[Path], recursive_pattern: str) -> Op
         except Exception:
             continue
     return None
+
+
+def _find_preferred_available_oddsapi_file(*, preferred: List[Path], recursive_pattern: str, prefix: str) -> Optional[Path]:
+    root_key = _oddsapi_market_root_key(prefix)
+    seen: set[str] = set()
+    fallback: Optional[Path] = None
+
+    def _consider(path: Path) -> Optional[Path]:
+        nonlocal fallback
+        key = str(path)
+        if key in seen:
+            return None
+        seen.add(key)
+        if not path.exists() or not path.is_file():
+            return None
+        if fallback is None:
+            fallback = path
+        summary = _market_file_summary(path, root_key=root_key)
+        if bool(summary.get("available")):
+            return path
+        return None
+
+    for path in preferred:
+        chosen = _consider(path)
+        if chosen is not None:
+            return chosen
+
+    for data_dir in _data_roots():
+        try:
+            for path in sorted(data_dir.glob(recursive_pattern)):
+                chosen = _consider(path)
+                if chosen is not None:
+                    return chosen
+        except Exception:
+            continue
+    return fallback
 
 
 def _find_preferred_file(preferred: Sequence[Path]) -> Optional[Path]:

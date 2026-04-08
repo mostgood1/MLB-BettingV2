@@ -32,6 +32,54 @@ from tools.oddsapi.backfill_oddsapi_historical_2025 import (
 )
 
 
+class OddsApiLiveFetchError(RuntimeError):
+    pass
+
+
+def _http_error_details(exc: requests.HTTPError) -> Tuple[Optional[int], Optional[str], Optional[str]]:
+    response = getattr(exc, "response", None)
+    status_code: Optional[int] = None
+    error_code: Optional[str] = None
+    message: Optional[str] = None
+    if response is None:
+        return status_code, error_code, message
+    try:
+        status_code = int(response.status_code)
+    except Exception:
+        status_code = None
+    try:
+        payload = response.json()
+    except Exception:
+        payload = None
+    if isinstance(payload, dict):
+        raw_error = payload.get("error_code")
+        raw_message = payload.get("message")
+        error_code = str(raw_error).strip() or None
+        message = str(raw_message).strip() or None
+    else:
+        try:
+            text = str(response.text or "").strip()
+        except Exception:
+            text = ""
+        if text:
+            message = text
+            upper = text.upper()
+            if "OUT_OF_USAGE_CREDITS" in upper:
+                error_code = "OUT_OF_USAGE_CREDITS"
+            elif "INVALID_API_KEY" in upper:
+                error_code = "INVALID_API_KEY"
+    return status_code, error_code, message
+
+
+def _is_fatal_live_odds_error(status_code: Optional[int], error_code: Optional[str]) -> bool:
+    code = str(error_code or "").strip().upper()
+    if code in {"OUT_OF_USAGE_CREDITS", "INVALID_API_KEY", "MISSING_API_KEY", "SUBSCRIPTION_INACTIVE"}:
+        return True
+    if status_code in {401, 403, 429}:
+        return True
+    return False
+
+
 def _ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
@@ -79,8 +127,12 @@ def _fetch_live_event_odds(
         params["bookmakers"] = str(bookmakers)
     try:
         raw, _ = _http_get(url, params)
-    except requests.HTTPError:
-        return None
+    except requests.HTTPError as exc:
+        status_code, error_code, message = _http_error_details(exc)
+        if _is_fatal_live_odds_error(status_code, error_code):
+            detail = str(message or error_code or f"HTTP {status_code or 'error'}").strip()
+            raise OddsApiLiveFetchError(f"OddsAPI live odds request failed: {detail}") from exc
+        raise
     return _unwrap_live_odds_payload(raw)
 
 
@@ -165,13 +217,16 @@ def fetch_live_game_lines_for_date(
         event_id = str(event.get("id") or "").strip()
         if not event_id:
             continue
-        payload = _fetch_live_event_odds(
-            api_key,
-            event_id,
-            markets_csv=",".join(game_market_keys),
-            regions=regions,
-            bookmakers=bookmakers,
-        )
+        try:
+            payload = _fetch_live_event_odds(
+                api_key,
+                event_id,
+                markets_csv=",".join(game_market_keys),
+                regions=regions,
+                bookmakers=bookmakers,
+            )
+        except requests.HTTPError:
+            continue
         if not isinstance(payload, dict):
             continue
         home_team = str(event.get("home_team") or payload.get("home_team") or "")
@@ -239,15 +294,18 @@ def fetch_live_pitcher_props_for_date(
         except requests.HTTPError as exc:
             fallback_markets = [market for market in desired_markets if market != "pitcher_earned_runs"]
             if not fallback_markets:
-                raise
+                continue
             market_warnings.append(f"pitcher_earned_runs unavailable for event {event_id}; fetched legacy pitcher markets only")
-            payload = _fetch_live_event_odds(
-                api_key,
-                event_id,
-                markets_csv=",".join(fallback_markets),
-                regions=regions,
-                bookmakers=bookmakers,
-            )
+            try:
+                payload = _fetch_live_event_odds(
+                    api_key,
+                    event_id,
+                    markets_csv=",".join(fallback_markets),
+                    regions=regions,
+                    bookmakers=bookmakers,
+                )
+            except requests.HTTPError:
+                continue
         if not isinstance(payload, dict):
             continue
         for bookmaker in (payload.get("bookmakers") or []):
@@ -298,13 +356,16 @@ def fetch_live_hitter_props_for_date(
         event_id = str(event.get("id") or "").strip()
         if not event_id:
             continue
-        payload = _fetch_live_event_odds(
-            api_key,
-            event_id,
-            markets_csv=markets_csv,
-            regions=regions,
-            bookmakers=bookmakers,
-        )
+        try:
+            payload = _fetch_live_event_odds(
+                api_key,
+                event_id,
+                markets_csv=markets_csv,
+                regions=regions,
+                bookmakers=bookmakers,
+            )
+        except requests.HTTPError:
+            continue
         if not isinstance(payload, dict):
             continue
         for bookmaker in (payload.get("bookmakers") or []):
