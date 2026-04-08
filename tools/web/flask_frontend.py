@@ -6715,8 +6715,83 @@ def _rebuild_season_betting_manifest_payload(
     payload["days"] = days_out
     payload["profile"] = profile_name
     payload["available_profiles"] = list(available_profiles)
+    payload["source_kind"] = "season_manifest_rebuilt"
     payload["found"] = True
     return payload
+
+
+def _season_betting_manifest_needs_refresh(season: int, manifest: Dict[str, Any]) -> bool:
+    if not isinstance(manifest, dict):
+        return False
+
+    manifest_dates: List[str] = []
+    for raw_row in manifest.get("days") or []:
+        if not isinstance(raw_row, dict):
+            continue
+        date_str = str(raw_row.get("date") or "").strip()
+        if date_str:
+            manifest_dates.append(date_str)
+        selected_counts = _betting_selected_counts_with_defaults(raw_row.get("selected_counts") or {})
+        if int(selected_counts.get("combined") or 0) <= 0:
+            return True
+
+    available_daily_dates = _available_daily_locked_card_dates(int(season))
+    if not available_daily_dates:
+        return False
+
+    latest_manifest_date = max(manifest_dates) if manifest_dates else ""
+    latest_daily_date = str(available_daily_dates[-1] or "")
+    if not latest_manifest_date:
+        return True
+    return latest_daily_date > latest_manifest_date
+
+
+def _season_betting_manifest_response_payload(
+    season: int,
+    profile_name: str,
+    manifest_path: Path,
+    manifest: Dict[str, Any],
+    available_profiles: Sequence[str],
+) -> Dict[str, Any]:
+    if _season_betting_manifest_needs_refresh(int(season), manifest):
+        return _rebuild_season_betting_manifest_payload(
+            int(season),
+            profile_name,
+            manifest_path,
+            manifest,
+            available_profiles,
+        )
+    return _season_betting_manifest_static_payload(
+        int(season),
+        profile_name,
+        manifest_path,
+        manifest,
+        available_profiles,
+    )
+
+
+def _official_betting_card_manifest_response_payload(
+    season: int,
+    profile_name: str,
+    manifest_path: Path,
+    manifest: Dict[str, Any],
+    available_profiles: Sequence[str],
+) -> Dict[str, Any]:
+    if _season_betting_manifest_needs_refresh(int(season), manifest):
+        return _official_betting_card_manifest_payload(
+            int(season),
+            profile_name,
+            manifest_path,
+            manifest,
+            available_profiles,
+        )
+    return _official_betting_card_manifest_static_payload(
+        int(season),
+        profile_name,
+        manifest_path,
+        manifest,
+        available_profiles,
+    )
 
 
 def _season_betting_manifest_static_payload(
@@ -8938,6 +9013,8 @@ def _status_is_live(status_text: Any) -> bool:
     else:
         abstract = str(status_text or "").strip().lower()
         detailed = ""
+    if _status_is_final({"abstract": abstract, "detailed": detailed}):
+        return False
     if detailed == "warmup":
         return False
     if detailed in {"in progress", "manager challenge"}:
@@ -8948,7 +9025,19 @@ def _status_is_live(status_text: Any) -> bool:
 
 
 def _status_is_final(status_text: Any) -> bool:
-    return str(status_text or "").strip().lower() == "final"
+    if isinstance(status_text, dict):
+        abstract = str(
+            status_text.get("abstract")
+            or status_text.get("abstractGameState")
+            or ""
+        ).strip().lower()
+        detailed = str(
+            status_text.get("detailed")
+            or status_text.get("detailedState")
+            or ""
+        ).strip().lower()
+        return _is_final_game_status(abstract) or _is_final_game_status(detailed)
+    return _is_final_game_status(status_text)
 
 
 def _format_matchup_live_text(current: Dict[str, Any]) -> str:
@@ -11301,6 +11390,9 @@ def _load_sim_context_for_game(
 def _live_matchup_text(snapshot: Optional[Dict[str, Any]]) -> str:
     if not isinstance(snapshot, dict):
         return ""
+    status = (snapshot.get("status") or {}) if isinstance(snapshot.get("status"), dict) else {}
+    if _status_is_final(status) or (not _status_is_live(status)):
+        return ""
     current = snapshot.get("current") or {}
     inning = current.get("inning")
     half = str(current.get("halfInning") or "").title()
@@ -11697,7 +11789,10 @@ def _live_lens_payload(d: str, *, persist: bool = False, refresh_markets: bool =
         sim_context = _load_sim_context_for_game(int(game_pk), d, artifacts=artifacts, archive=archive, feed=game_feed)
         sim_context_ms_total += (time.perf_counter() - sim_context_started_at) * 1000.0
         status = ((snapshot or {}).get("status") or {})
+        status_detailed = str(status.get("detailedState") or ((card.get("status") or {}).get("detailed") or ""))
         status_abstract = str(status.get("abstractGameState") or ((card.get("status") or {}).get("abstract") or ""))
+        status_is_live = _status_is_live({"abstract": status_abstract, "detailed": status_detailed})
+        status_is_final = _status_is_final({"abstract": status_abstract, "detailed": status_detailed})
         tracked_prop_rows = _prop_lens_rows(card, snapshot, sim_context if sim_context.get("found") else None)
         prop_eval_started_at = time.perf_counter()
         live_prop_rows = [
@@ -11713,17 +11808,17 @@ def _live_lens_payload(d: str, *, persist: bool = False, refresh_markets: bool =
             if isinstance(row, dict)
         ]
         archived_live_prop_rows: List[Dict[str, Any]] = []
-        if status_abstract.lower() == "final" and live_prop_rows:
+        if status_is_final and live_prop_rows:
             archived_live_prop_rows = list(live_prop_rows)
             live_prop_rows = []
         prop_eval_ms_total += (time.perf_counter() - prop_eval_started_at) * 1000.0
         game_lens_started_at = time.perf_counter()
         game_lens = _build_game_lens(card, snapshot, sim_context if sim_context.get("found") else None, _game_line_market_for_card(card, game_line_index))
         game_lens_ms_total += (time.perf_counter() - game_lens_started_at) * 1000.0
-        if status_abstract.lower() == "live":
-            counts["live"] += 1
-        elif status_abstract.lower() == "final":
+        if status_is_final:
             counts["final"] += 1
+        elif status_is_live:
+            counts["live"] += 1
         else:
             counts["pregame"] += 1
         counts["games"] += 1
@@ -11736,7 +11831,7 @@ def _live_lens_payload(d: str, *, persist: bool = False, refresh_markets: bool =
                 "gamePk": int(game_pk),
                 "status": {
                     "abstract": status_abstract,
-                    "detailed": str(status.get("detailedState") or ((card.get("status") or {}).get("detailed") or "")),
+                    "detailed": status_detailed,
                 },
                 "startTime": card.get("startTime"),
                 "matchup": {
@@ -12896,7 +12991,7 @@ def api_season_betting_cards(season: int) -> Response:
             404,
         )
 
-    payload = _season_betting_manifest_static_payload(
+    payload = _season_betting_manifest_response_payload(
         int(season),
         profile_name,
         manifest_path,
@@ -12930,7 +13025,7 @@ def api_season_official_betting_card(season: int) -> Response:
             404,
         )
 
-    payload = _official_betting_card_manifest_static_payload(
+    payload = _official_betting_card_manifest_response_payload(
         int(season),
         profile_name,
         manifest_path,
