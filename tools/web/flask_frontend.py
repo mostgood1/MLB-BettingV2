@@ -40,6 +40,7 @@ from sim_engine.data.statsapi import (
     fetch_schedule_date_buckets,
     fetch_schedule_for_date,
 )
+from sim_engine.live_prop_ranking import predict_live_prop_win_probability
 from sim_engine.market_pitcher_props import market_side_probabilities, normalize_pitcher_name
 from tools.daily_update_multi_profile import (
     _hitter_pitch_mix_reason,
@@ -156,6 +157,9 @@ _CARDS_PRESEASON_DEFAULT_WINDOW_DAYS = 21
 _LIVE_PROP_MARKET_MAX_AGE_SECONDS = 15
 _LIVE_FEED_CACHE_TTL_SECONDS = float(_env_int("MLB_LIVE_FEED_CACHE_TTL_SECONDS", 5, minimum=1))
 _LIVE_HITTER_PROP_MIN_MARKET_EDGE = 0.05
+_LIVE_PROP_RANKING_CONFIG_PATH = Path(
+    str(os.environ.get("MLB_LIVE_PROP_RANKING_CONFIG") or (_ROOT_DIR / "data" / "tuning" / "live_prop_ranking" / "default.json")).strip()
+).resolve()
 _PERSON_CACHE_MAXSIZE = _env_int("MLB_PERSON_CACHE_MAXSIZE", 1024, minimum=64)
 _PERSON_GAMELOG_CACHE_MAXSIZE = _env_int("MLB_PERSON_GAMELOG_CACHE_MAXSIZE", 512, minimum=64)
 _PERSON_SEASON_CACHE_MAXSIZE = _env_int("MLB_PERSON_SEASON_CACHE_MAXSIZE", 1024, minimum=64)
@@ -1789,6 +1793,73 @@ def _logical_path_str(path: Optional[Path]) -> Optional[str]:
         return str(resolved.relative_to(_ROOT_DIR)).replace("\\", "/")
     except Exception:
         return str(resolved).replace("\\", "/")
+
+
+def _load_live_prop_ranking_cfg() -> Optional[Dict[str, Any]]:
+    raw = str(_LIVE_PROP_RANKING_CONFIG_PATH or "").strip()
+    if not raw or raw.lower() == "off":
+        return None
+    try:
+        path = Path(raw)
+        if not path.exists() or not path.is_file():
+            return None
+        loaded = _load_json_file(path)
+        return loaded if isinstance(loaded, dict) else None
+    except Exception:
+        try:
+            app.logger.exception("live prop ranking config load failed: %s", raw)
+        except Exception:
+            pass
+        return None
+
+
+def _apply_live_prop_ranking_scores(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not rows:
+        return []
+    cfg: Optional[Dict[str, Any]] = None
+    try:
+        cfg = _load_live_prop_ranking_cfg()
+    except Exception:
+        try:
+            app.logger.exception("live prop ranking setup failed")
+        except Exception:
+            pass
+        cfg = None
+    scored_rows: List[Dict[str, Any]] = []
+    ranking_failed = False
+    for row in rows:
+        item = dict(row)
+        if cfg:
+            try:
+                probability = predict_live_prop_win_probability(item, cfg, prop_key=str(item.get("prop") or ""))
+            except Exception:
+                probability = None
+                if not ranking_failed:
+                    ranking_failed = True
+                    try:
+                        app.logger.exception("live prop ranking failed for current payload; falling back to baseline ordering")
+                    except Exception:
+                        pass
+            if probability is not None:
+                item["estimated_win_prob"] = float(probability)
+                item["ranking_score"] = float(probability)
+        scored_rows.append(item)
+    scored_rows.sort(
+        key=lambda row: (
+            -float(_safe_float(row.get("ranking_score")) or -1.0),
+            -float(_safe_float(row.get("edge")) or -999.0),
+            -float(_safe_float(row.get("live_edge")) or -999.0),
+            -float(_safe_float(row.get("projection_gap")) or -999.0),
+            str(_prop_owner_name(row) or ""),
+            str(row.get("market") or ""),
+        )
+    )
+    out: List[Dict[str, Any]] = []
+    for idx, row in enumerate(scored_rows, start=1):
+        item = dict(row)
+        item["rank"] = int(idx)
+        out.append(item)
+    return out
 
 
 def _same_daily_card_path(left: Optional[Path], right: Optional[Path]) -> bool:
@@ -9342,21 +9413,7 @@ def _final_live_prop_rows_from_registry(
         elif reason_summary:
             item["reasons"] = [reason_summary]
         rows.append(item)
-
-    rows.sort(
-        key=lambda row: (
-            -float(_safe_float(row.get("live_edge")) or -999.0),
-            str(row.get("first_seen_at") or ""),
-            str(_prop_owner_name(row) or ""),
-            str(row.get("market") or ""),
-        )
-    )
-    out: List[Dict[str, Any]] = []
-    for idx, row in enumerate(rows, start=1):
-        item = dict(row)
-        item["rank"] = int(idx)
-        out.append(item)
-    return out
+    return _apply_live_prop_ranking_scores(rows)
 
 
 def _current_live_prop_rows(
@@ -9539,24 +9596,14 @@ def _current_live_prop_rows(
                 continue
             rows.append(item)
 
-    rows.sort(
-        key=lambda row: (
-            -float(_safe_float(row.get("edge")) or -999.0),
-            -float(_safe_float(row.get("live_edge")) or -999.0),
-            -float(_safe_float(row.get("projection_gap")) or -999.0),
-            str(_prop_owner_name(row) or ""),
-            str(row.get("market") or ""),
-        )
-    )
     out: List[Dict[str, Any]] = []
     current = (snapshot or {}).get("current") or {}
     count = current.get("count") or {}
     status = (snapshot or {}).get("status") or {}
     away_totals = ((((snapshot or {}).get("teams") or {}).get("away") or {}).get("totals") or {})
     home_totals = ((((snapshot or {}).get("teams") or {}).get("home") or {}).get("totals") or {})
-    for idx, row in enumerate(rows, start=1):
+    for row in rows:
         item = dict(row)
-        item["rank"] = int(idx)
         item["game_pk"] = _safe_int(card.get("gamePk"))
         item["status_abstract"] = str(status.get("abstractGameState") or ((card.get("status") or {}).get("abstract") or ""))
         item["status_detailed"] = str(status.get("detailedState") or ((card.get("status") or {}).get("detailed") or ""))
@@ -9567,8 +9614,10 @@ def _current_live_prop_rows(
         item["score_away"] = _safe_int(away_totals.get("R"))
         item["score_home"] = _safe_int(home_totals.get("R"))
         item["live_text"] = _live_matchup_text(snapshot)
-        out.append(_annotate_live_prop_reason_fields(item, snapshot=snapshot, sim_context=sim_context))
-    return _enrich_live_prop_rows_with_registry(out, d, write_observation_log=write_observation_log)
+        out.append(item)
+    ranked_rows = _apply_live_prop_ranking_scores(out)
+    annotated_rows = [_annotate_live_prop_reason_fields(item, snapshot=snapshot, sim_context=sim_context) for item in ranked_rows]
+    return _enrich_live_prop_rows_with_registry(annotated_rows, d, write_observation_log=write_observation_log)
 
 
 def _normalize_two_way_probs(first_prob: Optional[float], second_prob: Optional[float]) -> Tuple[Optional[float], Optional[float]]:
@@ -10567,6 +10616,8 @@ def _normalize_live_lens_live_prop_row(row: Dict[str, Any], snapshot: Optional[D
         "firstSeenLiveProjection": _safe_float(row.get("first_seen_live_projection")),
         "firstSeenLiveEdge": _safe_float(row.get("first_seen_live_edge")),
         "seenCount": _safe_int(row.get("seen_count")),
+        "estimatedWinProb": _safe_float(row.get("estimated_win_prob")),
+        "rankingScore": _safe_float(row.get("ranking_score")),
     }
 
 
