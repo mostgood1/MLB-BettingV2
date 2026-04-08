@@ -11715,16 +11715,14 @@ def api_hitter_ladders() -> Response:
 def api_pitcher_top_props() -> Response:
     d = str(request.args.get("date") or "").strip() or _default_cards_date()
     payload = _with_app_build(_daily_top_props_payload(d, "pitcher", request.args.get("limit")))
-    status_code = 200 if payload.get("found") else 404
-    return jsonify(payload), status_code
+    return jsonify(payload)
 
 
 @app.get("/api/hitter-top-props")
 def api_hitter_top_props() -> Response:
     d = str(request.args.get("date") or "").strip() or _default_cards_date()
     payload = _with_app_build(_daily_top_props_payload(d, "hitter", request.args.get("limit")))
-    status_code = 200 if payload.get("found") else 404
-    return jsonify(payload), status_code
+    return jsonify(payload)
 
 
 @app.get("/api/season/<int:season>")
