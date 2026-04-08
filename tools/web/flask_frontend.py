@@ -4,6 +4,7 @@ from bisect import bisect_left
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import redirect_stderr, redirect_stdout
 from functools import lru_cache
+import copy
 import gzip
 import io
 import json
@@ -166,6 +167,7 @@ _PERSON_SEASON_CACHE_MAXSIZE = _env_int("MLB_PERSON_SEASON_CACHE_MAXSIZE", 1024,
 _JSON_FILE_CACHE_MAXSIZE = _env_int("MLB_JSON_FILE_CACHE_MAXSIZE", 256, minimum=32)
 _JSON_FILE_CACHE_MAX_BYTES = _env_int("MLB_JSON_FILE_CACHE_MAX_BYTES", 786432, minimum=0)
 _SCHEDULE_FETCH_CACHE_MAXSIZE = _env_int("MLB_SCHEDULE_FETCH_CACHE_MAXSIZE", 32, minimum=4)
+_LADDERS_CACHE_TTL_SECONDS = float(_env_int("MLB_LADDERS_CACHE_TTL_SECONDS", 60, minimum=1))
 _TOP_PROPS_CACHE_TTL_SECONDS = float(_env_int("MLB_TOP_PROPS_CACHE_TTL_SECONDS", 60, minimum=1))
 _CARDS_CACHE_TTL_SECONDS = float(_env_int("MLB_CARDS_CACHE_TTL_SECONDS", 30, minimum=1))
 _LIVE_ROUTE_CACHE_TTL_SECONDS = float(_env_int("MLB_LIVE_ROUTE_CACHE_TTL_SECONDS", 5, minimum=1))
@@ -4048,6 +4050,481 @@ def _hitter_ladders_payload(
         "topN": int(max(topn_limits)) if topn_limits else None,
     }
     return payload
+
+
+def _pitcher_ladders_signature(d: str) -> Tuple[Any, ...]:
+    artifacts = _load_cards_artifacts(d)
+    sim_dir = artifacts.get("sim_dir") if isinstance(artifacts.get("sim_dir"), Path) else None
+    market_ctx = _load_pitcher_ladder_market_context(d)
+    return (
+        str(d),
+        _dir_signature(sim_dir),
+        _path_signature(market_ctx.get("displayPath") if isinstance(market_ctx.get("displayPath"), Path) else None),
+        _path_signature(market_ctx.get("currentPath") if isinstance(market_ctx.get("currentPath"), Path) else None),
+        _path_signature(market_ctx.get("pregamePath") if isinstance(market_ctx.get("pregamePath"), Path) else None),
+    )
+
+
+def _hitter_ladders_signature(d: str) -> Tuple[Any, ...]:
+    artifacts = _load_cards_artifacts(d)
+    sim_dir = artifacts.get("sim_dir") if isinstance(artifacts.get("sim_dir"), Path) else None
+    market_ctx = _load_hitter_ladder_market_context(d)
+    return (
+        str(d),
+        _dir_signature(sim_dir),
+        _path_signature(market_ctx.get("displayPath") if isinstance(market_ctx.get("displayPath"), Path) else None),
+        _path_signature(market_ctx.get("currentPath") if isinstance(market_ctx.get("currentPath"), Path) else None),
+        _path_signature(market_ctx.get("pregamePath") if isinstance(market_ctx.get("pregamePath"), Path) else None),
+    )
+
+
+def _pitcher_ladder_game_options(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [
+        {
+            "value": str(int(row.get("gamePk") or 0)),
+            "label": str(row.get("matchup") or f"Game {int(row.get('gamePk') or 0)}"),
+            "gamePk": int(row.get("gamePk") or 0),
+            "matchup": str(row.get("matchup") or ""),
+        }
+        for row in sorted(
+            {
+                int(row.get("gamePk") or 0): {
+                    "gamePk": int(row.get("gamePk") or 0),
+                    "matchup": str(row.get("matchup") or ""),
+                }
+                for row in rows
+                if _safe_int(row.get("gamePk")) is not None
+            }.values(),
+            key=lambda item: (str(item.get("matchup") or ""), int(item.get("gamePk") or 0)),
+        )
+    ]
+
+
+def _pitcher_ladder_pitcher_options(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [
+        {
+            "value": str(int(row.get("pitcherId") or 0)),
+            "label": f"{row.get('pitcherName') or 'Unknown'} ({row.get('team') or '-'} vs {row.get('opponent') or '-'})",
+            "pitcherId": int(row.get("pitcherId") or 0),
+            "pitcherName": str(row.get("pitcherName") or ""),
+            "headshotUrl": row.get("headshotUrl"),
+            "teamLogoUrl": row.get("teamLogoUrl"),
+            "opponentLogoUrl": row.get("opponentLogoUrl"),
+        }
+        for row in rows
+    ]
+
+
+def _hitter_ladder_game_options(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [
+        {
+            "value": str(int(row.get("gamePk") or 0)),
+            "label": str(row.get("matchup") or f"Game {int(row.get('gamePk') or 0)}"),
+            "gamePk": int(row.get("gamePk") or 0),
+            "matchup": str(row.get("matchup") or ""),
+        }
+        for row in sorted(
+            {
+                int(row.get("gamePk") or 0): {
+                    "gamePk": int(row.get("gamePk") or 0),
+                    "matchup": str(row.get("matchup") or ""),
+                }
+                for row in rows
+                if _safe_int(row.get("gamePk")) is not None
+            }.values(),
+            key=lambda item: (str(item.get("matchup") or ""), int(item.get("gamePk") or 0)),
+        )
+    ]
+
+
+def _hitter_ladder_team_options(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [
+        {
+            "value": str(team_key),
+            "label": str(team_key),
+            "team": str(team_key),
+            "teamId": int(team_data.get("teamId")) if _safe_int(team_data.get("teamId")) is not None else None,
+            "teamLogoUrl": team_data.get("teamLogoUrl"),
+        }
+        for team_key, team_data in sorted(
+            {
+                str(row.get("team") or "").upper(): {
+                    "teamId": row.get("teamId"),
+                    "teamLogoUrl": row.get("teamLogoUrl"),
+                }
+                for row in rows
+                if str(row.get("team") or "").strip()
+            }.items(),
+            key=lambda item: item[0],
+        )
+    ]
+
+
+def _hitter_ladder_hitter_options(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [
+        {
+            "value": str(int(row.get("hitterId") or 0)),
+            "label": f"{row.get('hitterName') or 'Unknown'} ({row.get('team') or '-'} vs {row.get('opponent') or '-'})",
+            "hitterId": int(row.get("hitterId") or 0),
+            "hitterName": str(row.get("hitterName") or ""),
+            "headshotUrl": row.get("headshotUrl"),
+            "teamLogoUrl": row.get("teamLogoUrl"),
+            "opponentLogoUrl": row.get("opponentLogoUrl"),
+        }
+        for row in rows
+    ]
+
+
+def daily_ladders_artifact_path(d: str, *, data_root: Optional[Path] = None) -> Path:
+    root = data_root.resolve() if isinstance(data_root, Path) else _DATA_DIR
+    return root / "daily" / "ladders" / f"daily_ladders_{_date_slug(d)}.json"
+
+
+def _load_daily_ladders_artifact(d: str) -> Tuple[Optional[Path], Optional[Dict[str, Any]]]:
+    candidates: List[Path] = []
+    for root in _data_roots():
+        candidate = daily_ladders_artifact_path(d, data_root=root)
+        if candidate not in candidates:
+            candidates.append(candidate)
+    artifact_path = _find_preferred_file(candidates)
+    if not artifact_path:
+        return None, None
+    return artifact_path, _load_json_file(artifact_path)
+
+
+def _prebuilt_pitcher_ladders_payload(
+    d: str,
+    prop_value: Any,
+    sort_value: Any,
+    *,
+    selected_game_value: Any = None,
+    selected_pitcher_value: Any = None,
+) -> Optional[Dict[str, Any]]:
+    prop = _normalize_pitcher_ladder_prop(prop_value)
+    sort_key = _normalize_pitcher_ladder_sort(sort_value)
+    selected_game = _normalize_game_selector(selected_game_value)
+    selected_pitcher = _normalize_pitcher_selector(selected_pitcher_value)
+    artifact_path, artifact_doc = _load_daily_ladders_artifact(d)
+    if not artifact_path or not isinstance(artifact_doc, dict):
+        return None
+    groups = artifact_doc.get("groups") or {}
+    pitcher_group = groups.get("pitcher") if isinstance(groups, dict) else None
+    base_payload = pitcher_group.get(prop) if isinstance(pitcher_group, dict) else None
+    if not isinstance(base_payload, dict):
+        return None
+
+    rows_all = [dict(row) for row in (base_payload.get("rows") or []) if isinstance(row, dict)]
+    payload = copy.deepcopy(base_payload)
+    payload["date"] = str(d)
+    payload["prop"] = prop
+    payload["selectedGame"] = selected_game
+    payload["selectedPitcher"] = selected_pitcher
+    payload["selectedSort"] = sort_key
+    payload["gameOptions"] = _pitcher_ladder_game_options(rows_all)
+    payload["artifactPath"] = _relative_path_str(artifact_path)
+    payload["artifactGeneratedAt"] = artifact_doc.get("generatedAt")
+    payload["artifactSource"] = "daily_update"
+
+    rows = list(rows_all)
+    if selected_game:
+        rows = [row for row in rows if str(int(row.get("gamePk") or 0)) == selected_game]
+    rows = _sort_pitcher_ladder_rows(rows, sort_key)
+    payload["pitcherOptions"] = _pitcher_ladder_pitcher_options(rows)
+
+    if selected_pitcher:
+        if selected_pitcher.isdigit():
+            rows = [row for row in rows if str(int(row.get("pitcherId") or 0)) == selected_pitcher]
+        else:
+            target_name = normalize_pitcher_name(selected_pitcher)
+            rows = [row for row in rows if normalize_pitcher_name(row.get("pitcherName")) == target_name]
+
+    attach_history = _should_attach_ladder_history(selected_player=selected_pitcher)
+    if attach_history:
+        rows = _attach_history_summary_rows(rows, season=_season_from_date_str(d), group="pitching", prop=prop)
+
+    if not rows:
+        payload["found"] = False
+        payload["rows"] = []
+        payload.pop("featuredRow", None)
+        payload["error"] = "pitcher_ladders_missing"
+        if selected_game:
+            payload["error"] = "pitcher_ladders_game_missing"
+        if selected_pitcher:
+            payload["error"] = "pitcher_ladders_pitcher_missing"
+        payload["historyMode"] = "selected_player" if attach_history else "deferred"
+        payload["summary"] = {
+            "games": int((((base_payload.get("summary") or {}).get("games")) or len(payload.get("gameOptions") or []))),
+            "starters": 0,
+            "simCounts": [],
+            "availableGames": int(len(payload.get("gameOptions") or [])),
+            "availableStarters": int(len(payload.get("pitcherOptions") or [])),
+        }
+        return payload
+
+    payload["found"] = True
+    payload.pop("error", None)
+    payload["rows"] = rows
+    if rows:
+        payload["featuredRow"] = (
+            _attach_history_summary(rows[0], season=_season_from_date_str(d), group="pitching", prop=prop)
+            if attach_history
+            else dict(rows[0])
+        )
+    payload["historyMode"] = "selected_player" if attach_history else "deferred"
+    payload["summary"] = {
+        "games": int((((base_payload.get("summary") or {}).get("games")) or len(payload.get("gameOptions") or []))),
+        "starters": int(len(rows)),
+        "simCounts": sorted({int(row.get("simCount") or 0) for row in rows if int(row.get("simCount") or 0) > 0}),
+        "availableGames": int(len(payload.get("gameOptions") or [])),
+        "availableStarters": int(len(payload.get("pitcherOptions") or [])),
+    }
+    return payload
+
+
+def _prebuilt_hitter_ladders_payload(
+    d: str,
+    prop_value: Any,
+    *,
+    selected_game_value: Any = None,
+    selected_team_value: Any = None,
+    selected_hitter_value: Any = None,
+    sort_value: Any = None,
+) -> Optional[Dict[str, Any]]:
+    prop = _normalize_hitter_ladder_prop(prop_value)
+    sort_key = _normalize_hitter_ladder_sort(sort_value)
+    selected_game = _normalize_game_selector(selected_game_value)
+    selected_team = _normalize_hitter_team_selector(selected_team_value)
+    selected_hitter = _normalize_hitter_selector(selected_hitter_value)
+    artifact_path, artifact_doc = _load_daily_ladders_artifact(d)
+    if not artifact_path or not isinstance(artifact_doc, dict):
+        return None
+    groups = artifact_doc.get("groups") or {}
+    hitter_group = groups.get("hitter") if isinstance(groups, dict) else None
+    base_payload = hitter_group.get(prop) if isinstance(hitter_group, dict) else None
+    if not isinstance(base_payload, dict):
+        return None
+
+    rows_all = [dict(row) for row in (base_payload.get("rows") or []) if isinstance(row, dict)]
+    payload = copy.deepcopy(base_payload)
+    payload["date"] = str(d)
+    payload["prop"] = prop
+    payload["selectedGame"] = selected_game
+    payload["selectedTeam"] = selected_team
+    payload["selectedHitter"] = selected_hitter
+    payload["selectedSort"] = sort_key
+    payload["gameOptions"] = _hitter_ladder_game_options(rows_all)
+    payload["artifactPath"] = _relative_path_str(artifact_path)
+    payload["artifactGeneratedAt"] = artifact_doc.get("generatedAt")
+    payload["artifactSource"] = "daily_update"
+
+    rows = list(rows_all)
+    if selected_game:
+        rows = [row for row in rows if str(int(row.get("gamePk") or 0)) == selected_game]
+    payload["teamOptions"] = _hitter_ladder_team_options(rows)
+
+    if selected_team:
+        rows = [row for row in rows if str(row.get("team") or "").strip().upper() == selected_team]
+    rows = _sort_hitter_ladder_rows(rows, sort_key)
+    payload["hitterOptions"] = _hitter_ladder_hitter_options(rows)
+
+    if selected_hitter:
+        if selected_hitter.isdigit():
+            rows = [row for row in rows if str(int(row.get("hitterId") or 0)) == selected_hitter]
+        else:
+            target_name = normalize_pitcher_name(selected_hitter)
+            rows = [row for row in rows if normalize_pitcher_name(row.get("hitterName")) == target_name]
+
+    attach_history = _should_attach_ladder_history(selected_player=selected_hitter)
+    if attach_history:
+        rows = _attach_history_summary_rows(rows, season=_season_from_date_str(d), group="hitting", prop=prop)
+
+    top_n = (base_payload.get("summary") or {}).get("topN")
+    if not rows:
+        payload["found"] = False
+        payload["rows"] = []
+        payload.pop("featuredRow", None)
+        payload["error"] = "hitter_ladders_missing"
+        if selected_game:
+            payload["error"] = "hitter_ladders_game_missing"
+        if selected_team:
+            payload["error"] = "hitter_ladders_team_missing"
+        if selected_hitter:
+            payload["error"] = "hitter_ladders_hitter_missing"
+        payload["historyMode"] = "selected_player" if attach_history else "deferred"
+        payload["summary"] = {
+            "games": int((((base_payload.get("summary") or {}).get("games")) or len(payload.get("gameOptions") or []))),
+            "hitters": 0,
+            "simCounts": [],
+            "availableGames": int(len(payload.get("gameOptions") or [])),
+            "availableTeams": int(len(payload.get("teamOptions") or [])),
+            "availableHitters": int(len(payload.get("hitterOptions") or [])),
+            "topN": int(top_n) if _safe_int(top_n) is not None else None,
+        }
+        return payload
+
+    payload["found"] = True
+    payload.pop("error", None)
+    payload["rows"] = rows
+    payload["ladderShape"] = "exact" if any(str(row.get("ladderShape") or "") == "exact" for row in rows) else "threshold"
+    if rows:
+        payload["featuredRow"] = (
+            _attach_history_summary(rows[0], season=_season_from_date_str(d), group="hitting", prop=prop)
+            if attach_history
+            else dict(rows[0])
+        )
+    payload["historyMode"] = "selected_player" if attach_history else "deferred"
+    payload["summary"] = {
+        "games": int((((base_payload.get("summary") or {}).get("games")) or len(payload.get("gameOptions") or []))),
+        "hitters": int(len(rows)),
+        "simCounts": sorted({int(row.get("simCount") or 0) for row in rows if int(row.get("simCount") or 0) > 0}),
+        "availableGames": int(len(payload.get("gameOptions") or [])),
+        "availableTeams": int(len(payload.get("teamOptions") or [])),
+        "availableHitters": int(len(payload.get("hitterOptions") or [])),
+        "topN": int(top_n) if _safe_int(top_n) is not None else None,
+    }
+    return payload
+
+
+def _build_daily_pitcher_ladders_artifact_group(d: str) -> Dict[str, Any]:
+    return {
+        prop_key: _pitcher_ladders_payload(
+            d,
+            prop_key,
+            "team",
+            selected_game_value="",
+            selected_pitcher_value="",
+        )
+        for prop_key in _PITCHER_LADDER_PROPS.keys()
+    }
+
+
+def _build_daily_hitter_ladders_artifact_group(d: str) -> Dict[str, Any]:
+    return {
+        prop_key: _hitter_ladders_payload(
+            d,
+            prop_key,
+            selected_game_value="",
+            selected_team_value="",
+            selected_hitter_value="",
+            sort_value="team",
+        )
+        for prop_key in _HITTER_LADDER_PROPS.keys()
+    }
+
+
+def build_daily_ladders_artifact(d: str) -> Dict[str, Any]:
+    date_str = str(d or "").strip()
+    return {
+        "date": date_str,
+        "generatedAt": _local_timestamp_text(),
+        "groups": {
+            "pitcher": _build_daily_pitcher_ladders_artifact_group(date_str),
+            "hitter": _build_daily_hitter_ladders_artifact_group(date_str),
+        },
+    }
+
+
+def write_daily_ladders_artifact(d: str, *, out_path: Optional[Path] = None) -> Dict[str, Any]:
+    date_str = str(d or "").strip()
+    destination = out_path.resolve() if isinstance(out_path, Path) else daily_ladders_artifact_path(date_str)
+    artifact = build_daily_ladders_artifact(date_str)
+    _write_json_file(destination, artifact)
+    groups = artifact.get("groups") if isinstance(artifact.get("groups"), dict) else {}
+    return {
+        "date": date_str,
+        "path": destination,
+        "groupSummaries": {
+            str(group): {
+                str(prop): {
+                    "found": bool((payload or {}).get("found")),
+                    "rowCount": int(len((payload or {}).get("rows") or [])),
+                    "error": (payload or {}).get("error"),
+                }
+                for prop, payload in dict(group_payload or {}).items()
+                if isinstance(payload, dict)
+            }
+            for group, group_payload in groups.items()
+            if isinstance(group_payload, dict)
+        },
+    }
+
+
+def _pitcher_ladders_payload_cached(
+    d: str,
+    prop_value: Any,
+    sort_value: Any,
+    *,
+    selected_game_value: Any = None,
+    selected_pitcher_value: Any = None,
+) -> Dict[str, Any]:
+    prop = _normalize_pitcher_ladder_prop(prop_value)
+    sort_key = _normalize_pitcher_ladder_sort(sort_value)
+    selected_game = _normalize_game_selector(selected_game_value)
+    selected_pitcher = _normalize_pitcher_selector(selected_pitcher_value)
+    prebuilt_payload = _prebuilt_pitcher_ladders_payload(
+        d,
+        prop,
+        sort_key,
+        selected_game_value=selected_game,
+        selected_pitcher_value=selected_pitcher,
+    )
+    if isinstance(prebuilt_payload, dict):
+        return prebuilt_payload
+    cache_key = f"{str(d)}:{prop}:{sort_key}:{selected_game}:{selected_pitcher}"
+    return _payload_cache_get_or_build(
+        "pitcher_ladders",
+        cache_key,
+        signature_factory=lambda: _pitcher_ladders_signature(d),
+        max_age_seconds=_LADDERS_CACHE_TTL_SECONDS,
+        builder=lambda: _pitcher_ladders_payload(
+            d,
+            prop,
+            sort_key,
+            selected_game_value=selected_game,
+            selected_pitcher_value=selected_pitcher,
+        ),
+    )
+
+
+def _hitter_ladders_payload_cached(
+    d: str,
+    prop_value: Any,
+    *,
+    selected_game_value: Any = None,
+    selected_team_value: Any = None,
+    selected_hitter_value: Any = None,
+    sort_value: Any = None,
+) -> Dict[str, Any]:
+    prop = _normalize_hitter_ladder_prop(prop_value)
+    sort_key = _normalize_hitter_ladder_sort(sort_value)
+    selected_game = _normalize_game_selector(selected_game_value)
+    selected_team = _normalize_hitter_team_selector(selected_team_value)
+    selected_hitter = _normalize_hitter_selector(selected_hitter_value)
+    prebuilt_payload = _prebuilt_hitter_ladders_payload(
+        d,
+        prop,
+        selected_game_value=selected_game,
+        selected_team_value=selected_team,
+        selected_hitter_value=selected_hitter,
+        sort_value=sort_key,
+    )
+    if isinstance(prebuilt_payload, dict):
+        return prebuilt_payload
+    cache_key = f"{str(d)}:{prop}:{sort_key}:{selected_game}:{selected_team}:{selected_hitter}"
+    return _payload_cache_get_or_build(
+        "hitter_ladders",
+        cache_key,
+        signature_factory=lambda: _hitter_ladders_signature(d),
+        max_age_seconds=_LADDERS_CACHE_TTL_SECONDS,
+        builder=lambda: _hitter_ladders_payload(
+            d,
+            prop,
+            selected_game_value=selected_game,
+            selected_team_value=selected_team,
+            selected_hitter_value=selected_hitter,
+            sort_value=sort_key,
+        ),
+    )
 
 
 def _daily_top_props_row(row: Dict[str, Any], *, stat_key: str, stat_label: str, group: str) -> Optional[Dict[str, Any]]:
@@ -12312,7 +12789,13 @@ def api_cards() -> Response:
 @app.get("/api/pitcher-ladders")
 def api_pitcher_ladders() -> Response:
     d = str(request.args.get("date") or "").strip() or _default_cards_date()
-    payload = _pitcher_ladders_payload(d, request.args.get("prop"), request.args.get("sort"))
+    payload = _pitcher_ladders_payload_cached(
+        d,
+        request.args.get("prop"),
+        request.args.get("sort"),
+        selected_game_value=request.args.get("game"),
+        selected_pitcher_value=request.args.get("pitcher"),
+    )
     status_code = 200 if payload.get("found") else 404
     return jsonify(payload), status_code
 
@@ -12320,7 +12803,14 @@ def api_pitcher_ladders() -> Response:
 @app.get("/api/hitter-ladders")
 def api_hitter_ladders() -> Response:
     d = str(request.args.get("date") or "").strip() or _default_cards_date()
-    payload = _hitter_ladders_payload(d, request.args.get("prop"))
+    payload = _hitter_ladders_payload_cached(
+        d,
+        request.args.get("prop"),
+        selected_game_value=request.args.get("game"),
+        selected_team_value=request.args.get("team"),
+        selected_hitter_value=request.args.get("hitter"),
+        sort_value=request.args.get("sort"),
+    )
     status_code = 200 if payload.get("found") else 404
     return jsonify(payload), status_code
 
