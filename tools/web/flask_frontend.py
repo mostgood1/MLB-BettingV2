@@ -6726,7 +6726,10 @@ def _season_betting_manifest_static_payload(
     manifest: Dict[str, Any],
     available_profiles: Sequence[str],
 ) -> Dict[str, Any]:
-    payload = _supplement_season_manifest_payload(int(season), dict(manifest))
+    # Season betting-card manifests are already published as frontend-ready JSON.
+    # Keep this route on the artifact fast path instead of rehydrating season-day
+    # state from daily files on every request.
+    payload = dict(manifest)
     meta = dict(payload.get("meta") or {})
     sources = dict(meta.get("sources") or {})
     sources["manifest"] = _relative_path_str(manifest_path)
