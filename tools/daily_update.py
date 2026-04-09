@@ -1560,6 +1560,7 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
             "date": str(prior_date),
             "season": int(prior_season),
             "eval_report_path": _relative_path_str(prior_report_path),
+            "top_props_artifact_path": _relative_path_str(game_out / "top_props" / f"daily_top_props_{prior_token}.json"),
         },
         "current_day": {
             "date": str(args.date),
@@ -1872,6 +1873,45 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
         }
     report["stages"]["prior_day_eval_report"] = prior_eval_stage
     report["stages"]["season_publish"] = publish_stage
+
+    prior_top_props_stage: Dict[str, Any]
+    prior_top_props_artifact_path = game_out / "top_props" / f"daily_top_props_{prior_token}.json"
+    if int(prior_season) != int(args.season):
+        prior_top_props_stage = {
+            "status": "skipped",
+            "date": str(prior_date),
+            "artifact_path": _relative_path_str(prior_top_props_artifact_path),
+            "reason": "prior-day season differs from requested season",
+        }
+    elif str(refresh_stage.get("status") or "") == "error":
+        prior_top_props_stage = {
+            "status": "skipped",
+            "date": str(prior_date),
+            "artifact_path": _relative_path_str(prior_top_props_artifact_path),
+            "reason": "prior-day feed/live refresh failed",
+        }
+    else:
+        print(f"[ui-daily] Building prior-day top-props artifact for {prior_date}...")
+        try:
+            prior_top_props_result = write_daily_top_props_artifact(
+                str(prior_date),
+                out_path=prior_top_props_artifact_path,
+            )
+            prior_top_props_stage = {
+                "status": "ok",
+                "date": str(prior_date),
+                "artifact_path": _relative_path_str(prior_top_props_result.get("path")),
+                "group_summaries": dict(prior_top_props_result.get("groupSummaries") or {}),
+            }
+        except Exception as exc:
+            prior_top_props_stage = {
+                "status": "error",
+                "date": str(prior_date),
+                "artifact_path": _relative_path_str(prior_top_props_artifact_path),
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            report["errors"].append(f"prior-day top-props artifact build failed: {type(exc).__name__}: {exc}")
+    report["stages"]["prior_day_top_props_artifact"] = prior_top_props_stage
 
     odds_stage: Dict[str, Any]
     if str(getattr(args, "refresh_current_oddsapi", "on") or "on") == "on":
