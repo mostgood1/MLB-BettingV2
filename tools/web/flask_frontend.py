@@ -5120,6 +5120,21 @@ def _cards_list_from_sources(
         has_game_date = 0 if game_date else 1
         return (status_weight, has_game_date, game_date, int(card.get("gamePk") or 0))
 
+    def _merge_output_status(card_status: Dict[str, Any], row: Dict[str, Any]) -> None:
+        row_status = {
+            "abstract": _first_text(row.get("status_abstract")),
+            "detailed": _first_text(row.get("status_detailed")),
+        }
+        if not row_status["abstract"] and not row_status["detailed"]:
+            return
+        if not card_status.get("abstract"):
+            card_status["abstract"] = row_status["abstract"]
+        if not card_status.get("detailed"):
+            card_status["detailed"] = row_status["detailed"]
+        if _status_is_final(row_status) and not _status_is_final(card_status):
+            card_status["abstract"] = row_status["abstract"]
+            card_status["detailed"] = row_status["detailed"]
+
     def _ensure_card(game_pk: int, sort_order: int) -> Dict[str, Any]:
         card = cards_by_game.get(int(game_pk))
         if card is None:
@@ -5202,10 +5217,7 @@ def _cards_list_from_sources(
             if not card["probable"].get("home"):
                 card["probable"]["home"] = _normalized_probable_entry(probable.get("home"))
 
-        if not card["status"].get("abstract"):
-            card["status"]["abstract"] = _first_text(row.get("status_abstract"))
-        if not card["status"].get("detailed"):
-            card["status"]["detailed"] = _first_text(row.get("status_detailed"))
+        _merge_output_status(card["status"], row)
 
         if not card["gameType"]:
             card["gameType"] = _first_text(row.get("game_type"), card.get("gameType"))
@@ -12369,7 +12381,12 @@ def api_live_lens() -> Response:
     persist = str(request.args.get("persist") or "off").strip().lower() == "on"
     report_path = _live_lens_report_path(d)
     report_age_seconds = _path_age_seconds(report_path)
-    if not persist and report_age_seconds is not None and report_age_seconds <= _LIVE_ROUTE_CACHE_TTL_SECONDS:
+    if (
+        not persist
+        and _is_historical_date(d)
+        and report_age_seconds is not None
+        and report_age_seconds <= _LIVE_ROUTE_CACHE_TTL_SECONDS
+    ):
         report_payload = _load_json_file(report_path)
         if isinstance(report_payload, dict) and report_payload:
             return jsonify(_with_app_build(report_payload))
