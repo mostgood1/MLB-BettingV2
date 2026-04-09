@@ -3994,9 +3994,9 @@ def main() -> int:
                         "abbreviation": _abbr(t),
                     }
 
-        roster_types: List[str] = ["active"]
+        roster_types: List[str] = ["active", "40Man"]
         if spring_mode:
-            roster_types.extend(["40Man", "nonRosterInvitees"])
+            roster_types.append("nonRosterInvitees")
 
         def _status_is_injured(status_obj: Any) -> bool:
             if not isinstance(status_obj, dict) or not status_obj:
@@ -4237,19 +4237,20 @@ def main() -> int:
         rosters = (team_block.get("rosters") or {}) if isinstance(team_block, dict) else {}
         excluded_ids = set(int(x) for x in (injuries_by_team_id.get(int(team_id), []) or []) if int(x) > 0)
 
+        keys: List[str] = []
         active_pool = _extract_hitter_ids_from_roster_entries(rosters.get("active") or [], excluded_ids=excluded_ids)
         if active_pool:
-            return ["active"]
+            keys.append("active")
 
         fallback_pool = _extract_hitter_ids_from_roster_entries(rosters.get("40Man") or [], excluded_ids=excluded_ids)
         if fallback_pool:
-            return ["40Man"]
+            keys.append("40Man")
 
         nri_pool = _extract_hitter_ids_from_roster_entries(rosters.get("nonRosterInvitees") or [], excluded_ids=excluded_ids)
         if nri_pool:
-            return ["nonRosterInvitees"]
+            keys.append("nonRosterInvitees")
 
-        return []
+        return keys
 
     def _tighten_projected_lineup(team_id: int, projected_ids: Any) -> Dict[str, Any]:
         raw_ids = _normalize_lineup_ids(projected_ids)
@@ -4268,11 +4269,23 @@ def main() -> int:
         rosters = (team_block.get("rosters") or {}) if isinstance(team_block, dict) else {}
         excluded_ids = set(int(x) for x in (injuries_by_team_id.get(int(team_id), []) or []) if int(x) > 0)
         active_pool = _extract_hitter_ids_from_roster_entries(rosters.get("active") or [], excluded_ids=excluded_ids)
-        fallback_pool = _extract_hitter_ids_from_roster_entries(rosters.get("40Man") or [], excluded_ids=excluded_ids)
-        if not fallback_pool:
-            fallback_pool = _extract_hitter_ids_from_roster_entries(rosters.get("nonRosterInvitees") or [], excluded_ids=excluded_ids)
-        usable_pool = list(active_pool or fallback_pool)
-        pool_source = "active" if active_pool else ("fallback" if usable_pool else "none")
+        fallback_40_pool = _extract_hitter_ids_from_roster_entries(rosters.get("40Man") or [], excluded_ids=excluded_ids)
+        nri_pool = _extract_hitter_ids_from_roster_entries(rosters.get("nonRosterInvitees") or [], excluded_ids=excluded_ids)
+
+        usable_pool: List[int] = []
+        seen_pool_ids: set[int] = set()
+        pool_labels: List[str] = []
+        for roster_key, pool in (("active", active_pool), ("40Man", fallback_40_pool), ("nonRosterInvitees", nri_pool)):
+            if not pool:
+                continue
+            pool_labels.append(str(roster_key))
+            for pid in pool:
+                pid_i = int(pid)
+                if pid_i <= 0 or pid_i in seen_pool_ids:
+                    continue
+                seen_pool_ids.add(pid_i)
+                usable_pool.append(pid_i)
+        pool_source = "+".join(pool_labels) if pool_labels else "none"
         usable_set = set(int(pid) for pid in usable_pool)
 
         kept_ids = [int(pid) for pid in raw_ids if int(pid) in usable_set]
@@ -4303,6 +4316,79 @@ def main() -> int:
             "pool_source": str(pool_source),
             "pool_size": int(len(usable_pool)),
         }
+
+    def _preferred_roster_entries_for_builder(
+        team_id: int,
+        *,
+        probable_pitcher_id: Any,
+        lineup_ids: Any,
+    ) -> Optional[List[Dict[str, Any]]]:
+        team_block = ((roster_artifacts.get("teams") or {}).get(str(int(team_id))) or {}) if isinstance(roster_artifacts, dict) else {}
+        rosters = (team_block.get("rosters") or {}) if isinstance(team_block, dict) else {}
+        active_entries = list(rosters.get("active") or []) if isinstance(rosters, dict) else []
+        if not active_entries and not rosters:
+            return None
+
+        required_ids: set[int] = set(int(pid) for pid in (_normalize_lineup_ids(lineup_ids) or []) if int(pid) > 0)
+        try:
+            probable_id = int(probable_pitcher_id or 0)
+        except Exception:
+            probable_id = 0
+        if probable_id > 0:
+            required_ids.add(int(probable_id))
+
+        merged: List[Dict[str, Any]] = []
+        seen_ids: set[int] = set()
+
+        def _append_entries(entries: Any, *, required_only: bool = False, pitcher_only: bool = False, hitter_only: bool = False, max_add: int = 0) -> int:
+            added = 0
+            for entry in entries or []:
+                if not isinstance(entry, dict):
+                    continue
+                pid = _roster_entry_player_id(entry)
+                if pid <= 0 or pid in seen_ids:
+                    continue
+                if required_only and pid not in required_ids:
+                    continue
+                pos_obj = entry.get("position") or {}
+                pos = str(entry.get("primary_pos_abbr") or entry.get("pos") or pos_obj.get("abbreviation") or "").strip().upper()
+                pos_type = str(pos_obj.get("type") or "").strip().lower() if isinstance(pos_obj, dict) else ""
+                is_pitcher = pos == "P" or pos_type == "pitcher"
+                if pitcher_only and not is_pitcher:
+                    continue
+                if hitter_only and is_pitcher:
+                    continue
+                seen_ids.add(pid)
+                merged.append(entry)
+                added += 1
+                if max_add > 0 and added >= int(max_add):
+                    break
+            return added
+
+        _append_entries(active_entries)
+
+        supplemental_keys = [key for key in ("40Man", "nonRosterInvitees") if isinstance(rosters.get(key), list)]
+        for roster_key in supplemental_keys:
+            _append_entries(rosters.get(roster_key) or [], required_only=True)
+
+        pitcher_count = 0
+        hitter_count = 0
+        for entry in merged:
+            pos_obj = entry.get("position") or {}
+            pos = str(entry.get("primary_pos_abbr") or entry.get("pos") or pos_obj.get("abbreviation") or "").strip().upper()
+            pos_type = str(pos_obj.get("type") or "").strip().lower() if isinstance(pos_obj, dict) else ""
+            if pos == "P" or pos_type == "pitcher":
+                pitcher_count += 1
+            else:
+                hitter_count += 1
+
+        for roster_key in supplemental_keys:
+            if pitcher_count < 8:
+                pitcher_count += _append_entries(rosters.get(roster_key) or [], pitcher_only=True, max_add=(8 - pitcher_count))
+            if hitter_count < 11:
+                hitter_count += _append_entries(rosters.get(roster_key) or [], hitter_only=True, max_add=(11 - hitter_count))
+
+        return merged or active_entries or None
 
     def _normalize_player_name(name: Any) -> str:
         text = unicodedata.normalize("NFKD", str(name or ""))
@@ -4835,14 +4921,16 @@ def main() -> int:
                 away_roster_entries = None
                 home_roster_entries = None
                 try:
-                    tblock_away = (roster_artifacts.get("teams") or {}).get(str(int(away_id))) or {}
-                    tblock_home = (roster_artifacts.get("teams") or {}).get(str(int(home_id))) or {}
-                    rosters_away = tblock_away.get("rosters") or {}
-                    rosters_home = tblock_home.get("rosters") or {}
-                    if isinstance(rosters_away, dict):
-                        away_roster_entries = rosters_away.get("active")
-                    if isinstance(rosters_home, dict):
-                        home_roster_entries = rosters_home.get("active")
+                    away_roster_entries = _preferred_roster_entries_for_builder(
+                        int(away_id),
+                        probable_pitcher_id=away_prob_id,
+                        lineup_ids=(away_lineup_ids or away_projected_ids),
+                    )
+                    home_roster_entries = _preferred_roster_entries_for_builder(
+                        int(home_id),
+                        probable_pitcher_id=home_prob_id,
+                        lineup_ids=(home_lineup_ids or home_projected_ids),
+                    )
                 except Exception:
                     away_roster_entries = None
                     home_roster_entries = None
@@ -4859,7 +4947,7 @@ def main() -> int:
                     projected_lineup_ids=away_projected_ids,
                     pitcher_availability=pitcher_availability_by_team.get(int(away_id), {}),
                     roster_type="active",
-                    fallback_roster_types=(["40Man", "nonRosterInvitees"] if spring_mode else None),
+                    fallback_roster_types=(["40Man", "nonRosterInvitees"] if spring_mode else ["40Man"]),
                     injured_player_ids=injuries_by_team_id.get(int(away_id)),
                     roster_entries=away_roster_entries,
                     fast_mode=bool(spring_mode),
@@ -4876,7 +4964,7 @@ def main() -> int:
                     projected_lineup_ids=home_projected_ids,
                     pitcher_availability=pitcher_availability_by_team.get(int(home_id), {}),
                     roster_type="active",
-                    fallback_roster_types=(["40Man", "nonRosterInvitees"] if spring_mode else None),
+                    fallback_roster_types=(["40Man", "nonRosterInvitees"] if spring_mode else ["40Man"]),
                     injured_player_ids=injuries_by_team_id.get(int(home_id)),
                     roster_entries=home_roster_entries,
                     fast_mode=bool(spring_mode),
