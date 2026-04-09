@@ -914,6 +914,7 @@ def build_team_roster(
     season: int,
     as_of_date: Optional[str] = None,
     probable_pitcher_id: Optional[int] = None,
+    excluded_starter_ids: Optional[List[int]] = None,
     statcast_cache: Optional[DiskCache] = None,
     statcast_ttl_seconds: Optional[int] = None,
     confirmed_lineup_ids: Optional[List[int]] = None,
@@ -942,6 +943,14 @@ def build_team_roster(
     use_profile_cache: bool = True,
 ) -> TeamRoster:
     roster: List[Dict[str, Any]] = []
+    excluded_starter_set: set[int] = set()
+    for value in excluded_starter_ids or []:
+        try:
+            player_id = int(value or 0)
+        except Exception:
+            player_id = 0
+        if player_id > 0:
+            excluded_starter_set.add(player_id)
 
     batter_rec_cfg = RecencyConfig(games=int(batter_recency_games), weight=float(batter_recency_weight))
     pitcher_rec_cfg = RecencyConfig(games=int(pitcher_recency_games), weight=float(pitcher_recency_weight))
@@ -975,7 +984,7 @@ def build_team_roster(
 
     wanted_hitters: set[int] = set(wanted_lineup_ids)
     wanted_pitchers: set[int] = set()
-    if probable_pitcher_id:
+    if probable_pitcher_id and int(probable_pitcher_id) not in excluded_starter_set:
         try:
             wanted_pitchers.add(int(probable_pitcher_id))
         except Exception:
@@ -1364,12 +1373,13 @@ def build_team_roster(
     # Choose starter
     starter: Optional[PitcherProfile] = None
     starter_selection_source = ""
-    if probable_pitcher_id:
+    if probable_pitcher_id and int(probable_pitcher_id) not in excluded_starter_set:
         for p in pitchers:
             if p.player.mlbam_id == probable_pitcher_id:
                 starter = p
                 break
-    if starter is None and pitchers:
+    eligible_pitchers = [p for p in pitchers if int(getattr(getattr(p, "player", None), "mlbam_id", 0) or 0) not in excluded_starter_set]
+    if starter is None and eligible_pitchers:
         # Heuristic fallback when we don't have a probable starter:
         # prefer starter-like pitchers (gamesStarted) and higher stamina,
         # while down-weighting clear late-inning relievers (saves/gamesFinished).
@@ -1383,7 +1393,9 @@ def build_team_roster(
             stamina = float(getattr(p, "stamina_pitches", 0) or 0)
             return 1000.0 * gs + 1.0 * stamina + 0.05 * bf - 50.0 * saves - 10.0 * gf
 
-        starter = max(pitchers, key=_starter_score)
+        starter = max(eligible_pitchers, key=_starter_score)
+    elif starter is None and pitchers:
+        starter = max(pitchers, key=lambda p: float(getattr(p, "stamina_pitches", 0) or 0.0))
     if starter is None:
         # fallback synthetic pitcher
         starter = PitcherProfile(

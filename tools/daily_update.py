@@ -3808,6 +3808,7 @@ def main() -> int:
     pitch_model_overrides = _load_jsonish(str(getattr(args, "pitch_model_overrides", "") or ""))
     pitcher_distribution_overrides = _load_jsonish(str(getattr(args, "pitcher_distribution_overrides", "") or ""))
     manager_pitching_overrides = _load_jsonish(str(getattr(args, "manager_pitching_overrides", "") or ""))
+    probable_pitcher_overrides = _load_json_if_exists(_TRACKED_DATA_DIR / "manager" / "probable_pitcher_overrides.json")
 
     # Merge convenience pitch-model knobs into overrides (CLI flags win).
     pitch_model_overrides = dict(pitch_model_overrides or {})
@@ -4412,6 +4413,312 @@ def main() -> int:
             return ""
         return str(entry.get("full_name") or entry.get("name") or ((entry.get("person") or {}).get("fullName") or "")).strip()
 
+    roster_player_ids_by_team: Dict[int, set[int]] = {}
+    roster_team_ids_by_player: Dict[int, set[int]] = {}
+    for team_key, team_block in ((roster_artifacts.get("teams") or {}).items() if isinstance(roster_artifacts, dict) else []):
+        try:
+            team_id_i = int(team_key)
+        except Exception:
+            team_id_i = 0
+        if team_id_i <= 0 or not isinstance(team_block, dict):
+            continue
+        rosters = team_block.get("rosters") or {}
+        if not isinstance(rosters, dict):
+            continue
+        team_player_ids = roster_player_ids_by_team.setdefault(team_id_i, set())
+        for roster_key in ("active", "40Man", "nonRosterInvitees"):
+            entries = rosters.get(roster_key) or []
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                pid = _roster_entry_player_id(entry)
+                if pid <= 0:
+                    continue
+                team_player_ids.add(pid)
+                roster_team_ids_by_player.setdefault(pid, set()).add(team_id_i)
+
+    registry_team_ids_by_player: Dict[int, set[int]] = {}
+    registry_dir = _TRACKED_DATA_DIR / "roster_registry"
+    if registry_dir.exists():
+        for registry_path in sorted(registry_dir.glob("team_*.json")):
+            try:
+                registry_doc = json.loads(registry_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not isinstance(registry_doc, dict):
+                continue
+            try:
+                registry_team_id = int(registry_doc.get("team_id") or 0)
+            except Exception:
+                registry_team_id = 0
+            if registry_team_id <= 0:
+                continue
+            snapshots = registry_doc.get("snapshots") or {}
+            if not isinstance(snapshots, dict):
+                continue
+            today_snapshot = snapshots.get(str(args.date)) or {}
+            if not isinstance(today_snapshot, dict):
+                continue
+            for roster_key in ("active", "40Man", "nonRosterInvitees"):
+                roster_snapshot = today_snapshot.get(roster_key) or {}
+                if not isinstance(roster_snapshot, dict):
+                    continue
+                players = roster_snapshot.get("players") or []
+                if not isinstance(players, list):
+                    continue
+                for player in players:
+                    pid = _roster_entry_player_id(player)
+                    if pid <= 0:
+                        try:
+                            pid = int((player or {}).get("player_id") or 0)
+                        except Exception:
+                            pid = 0
+                    if pid <= 0:
+                        continue
+                    registry_team_ids_by_player.setdefault(pid, set()).add(registry_team_id)
+
+    def _validate_probable_pitcher_candidate(team_id: Any, player_id: Any, *, opponent_team_id: Any = None) -> Dict[str, Any]:
+        try:
+            tid = int(team_id or 0)
+        except Exception:
+            tid = 0
+        try:
+            pid = int(player_id or 0)
+        except Exception:
+            pid = 0
+        try:
+            opp_tid = int(opponent_team_id or 0)
+        except Exception:
+            opp_tid = 0
+
+        if tid <= 0 or pid <= 0:
+            return {
+                "status": "none",
+                "accepted": False,
+                "team_id": (tid if tid > 0 else None),
+                "player_id": (pid if pid > 0 else None),
+                "opponent_team_id": (opp_tid if opp_tid > 0 else None),
+                "roster_team_ids": [],
+                "on_expected_team": False,
+                "on_opponent_team": False,
+            }
+
+        roster_team_ids = sorted(int(x) for x in (roster_team_ids_by_player.get(pid) or set()) if int(x) > 0)
+        registry_team_ids = sorted(int(x) for x in (registry_team_ids_by_player.get(pid) or set()) if int(x) > 0)
+        on_expected_team = int(tid) in roster_team_ids
+        on_opponent_team = int(opp_tid) in roster_team_ids if opp_tid > 0 else False
+        on_expected_registry_team = int(tid) in registry_team_ids
+        on_opponent_registry_team = int(opp_tid) in registry_team_ids if opp_tid > 0 else False
+
+        if len(registry_team_ids) > 1:
+            status = "conflicting_registry_team_membership"
+            accepted = False
+        elif registry_team_ids and not on_expected_registry_team:
+            status = "wrong_team"
+            accepted = False
+        elif len(roster_team_ids) > 1:
+            status = "conflicting_roster_team_membership"
+            accepted = False
+        elif on_expected_team:
+            status = "ok"
+            accepted = True
+        elif roster_team_ids:
+            status = "wrong_team"
+            accepted = False
+        else:
+            status = "unverified"
+            accepted = True
+
+        return {
+            "status": str(status),
+            "accepted": bool(accepted),
+            "team_id": int(tid),
+            "player_id": int(pid),
+            "opponent_team_id": (int(opp_tid) if opp_tid > 0 else None),
+            "roster_team_ids": roster_team_ids,
+            "registry_team_ids": registry_team_ids,
+            "on_expected_team": bool(on_expected_team),
+            "on_opponent_team": bool(on_opponent_team),
+            "on_expected_registry_team": bool(on_expected_registry_team),
+            "on_opponent_registry_team": bool(on_opponent_registry_team),
+        }
+
+    def _lookup_probable_pitcher_override(game_pk: Any, team_id: Any) -> Dict[str, Any]:
+        try:
+            game_pk_i = int(game_pk or 0)
+        except Exception:
+            game_pk_i = 0
+        try:
+            team_id_i = int(team_id or 0)
+        except Exception:
+            team_id_i = 0
+        if game_pk_i <= 0 or team_id_i <= 0:
+            return {}
+        date_block = probable_pitcher_overrides.get(str(args.date)) or {}
+        if not isinstance(date_block, dict):
+            return {}
+        game_block = date_block.get(str(game_pk_i)) or {}
+        if not isinstance(game_block, dict):
+            return {}
+        override = game_block.get(str(team_id_i)) or {}
+        return dict(override) if isinstance(override, dict) else {}
+
+    def _suppressed_probable_candidate_ids(probable_override: Any, *candidate_ids: Any) -> List[int]:
+        if not isinstance(probable_override, dict) or "player_id" not in probable_override:
+            return []
+        override_player_id = _safe_int(probable_override.get("player_id"))
+        if override_player_id is not None:
+            return []
+        blocked: set[int] = set()
+        for candidate_id in candidate_ids:
+            try:
+                player_id = int(candidate_id or 0)
+            except Exception:
+                player_id = 0
+            if player_id > 0:
+                blocked.add(player_id)
+        return sorted(blocked)
+
+    def _select_probable_pitcher_for_team(
+        team_id: Any,
+        *,
+        probable_override: Optional[Dict[str, Any]] = None,
+        opponent_team_id: Any,
+        feed_id: Any,
+        feed_name: Any,
+        schedule_id: Any,
+        schedule_name: Any,
+    ) -> Tuple[Optional[int], str, float, Dict[str, Any]]:
+        candidates: List[Dict[str, Any]] = []
+        probable_override = dict(probable_override or {})
+        try:
+            feed_id_i = int(feed_id or 0)
+        except Exception:
+            feed_id_i = 0
+        try:
+            schedule_id_i = int(schedule_id or 0)
+        except Exception:
+            schedule_id_i = 0
+
+        override_has_player_id = isinstance(probable_override, dict) and ("player_id" in probable_override)
+        override_player_id = _safe_int((probable_override.get("player_id") if isinstance(probable_override, dict) else None))
+        override_name = str((probable_override.get("name") if isinstance(probable_override, dict) else "") or "")
+        override_reason = str((probable_override.get("reason") if isinstance(probable_override, dict) else "") or "")
+
+        if override_has_player_id and (override_player_id or 0) <= 0:
+            return (
+                None,
+                "manual_probable_override",
+                1.0,
+                {
+                    "status": "manual_override_suppressed",
+                    "selected_id": None,
+                    "selected_name": override_name,
+                    "selected_source": "manual_probable_override",
+                    "override_reason": override_reason,
+                    "roster_team_ids": [],
+                    "registry_team_ids": [],
+                    "on_expected_team": False,
+                    "on_opponent_team": False,
+                    "on_expected_registry_team": False,
+                    "on_opponent_registry_team": False,
+                    "rejected_candidates": [],
+                },
+            )
+
+        if (override_player_id or 0) > 0:
+            candidates.append(
+                {
+                    "id": int(override_player_id or 0),
+                    "source": "manual_probable_override",
+                    "confidence": 1.0,
+                    "name": override_name,
+                    "override_reason": override_reason,
+                }
+            )
+
+        if feed_id_i > 0:
+            candidates.append(
+                {
+                    "id": int(feed_id_i),
+                    "source": "feed_gameData_probablePitchers",
+                    "confidence": 0.75,
+                    "name": str(feed_name or ""),
+                }
+            )
+        if schedule_id_i > 0:
+            candidates.append(
+                {
+                    "id": int(schedule_id_i),
+                    "source": "schedule_probablePitcher",
+                    "confidence": 0.80,
+                    "name": str(schedule_name or ""),
+                }
+            )
+
+        rejected_candidates: List[Dict[str, Any]] = []
+        for candidate in candidates:
+            validation = _validate_probable_pitcher_candidate(
+                team_id,
+                candidate.get("id"),
+                opponent_team_id=opponent_team_id,
+            )
+            if bool(validation.get("accepted")):
+                return (
+                    int(candidate.get("id") or 0),
+                    str(candidate.get("source") or "none"),
+                    float(candidate.get("confidence") or 0.0),
+                    {
+                        "status": str(validation.get("status") or "none"),
+                        "selected_id": int(candidate.get("id") or 0),
+                        "selected_name": str(candidate.get("name") or ""),
+                        "selected_source": str(candidate.get("source") or "none"),
+                        "override_reason": str(candidate.get("override_reason") or ""),
+                        "roster_team_ids": [int(x) for x in (validation.get("roster_team_ids") or [])],
+                        "registry_team_ids": [int(x) for x in (validation.get("registry_team_ids") or [])],
+                        "on_expected_team": bool(validation.get("on_expected_team")),
+                        "on_opponent_team": bool(validation.get("on_opponent_team")),
+                        "on_expected_registry_team": bool(validation.get("on_expected_registry_team")),
+                        "on_opponent_registry_team": bool(validation.get("on_opponent_registry_team")),
+                        "rejected_candidates": rejected_candidates,
+                    },
+                )
+            rejected_candidates.append(
+                {
+                    "id": int(candidate.get("id") or 0),
+                    "name": str(candidate.get("name") or ""),
+                    "source": str(candidate.get("source") or "none"),
+                    "status": str(validation.get("status") or "none"),
+                    "override_reason": str(candidate.get("override_reason") or ""),
+                    "roster_team_ids": [int(x) for x in (validation.get("roster_team_ids") or [])],
+                    "registry_team_ids": [int(x) for x in (validation.get("registry_team_ids") or [])],
+                    "on_expected_team": bool(validation.get("on_expected_team")),
+                    "on_opponent_team": bool(validation.get("on_opponent_team")),
+                    "on_expected_registry_team": bool(validation.get("on_expected_registry_team")),
+                    "on_opponent_registry_team": bool(validation.get("on_opponent_registry_team")),
+                }
+            )
+
+        return (
+            None,
+            "none",
+            0.0,
+            {
+                "status": ("rejected" if rejected_candidates else "none"),
+                "selected_id": None,
+                "selected_name": "",
+                "selected_source": "none",
+                "override_reason": "",
+                "roster_team_ids": [],
+                "registry_team_ids": [],
+                "on_expected_team": False,
+                "on_opponent_team": False,
+                "on_expected_registry_team": False,
+                "on_opponent_registry_team": False,
+                "rejected_candidates": rejected_candidates,
+            },
+        )
+
     projected_name_index_by_team: Dict[int, Dict[str, List[Dict[str, Any]]]] = {}
 
     def _build_team_hitter_name_index(team_id: int) -> Dict[str, List[Dict[str, Any]]]:
@@ -4760,24 +5067,27 @@ def main() -> int:
         if len(home_lineup_ids) < 9 and len(home_official_lineup_ids) >= 9:
             home_lineup_ids = home_official_lineup_ids[:9]
 
-        # Probable starters: prefer feed (gameData.probablePitchers) when present; else schedule.hydrate probablePitcher.
-        if away_prob_feed_id:
-            away_prob_id = away_prob_feed_id
-            away_prob_source = "feed_gameData_probablePitchers"
-            away_prob_confidence = 0.75
-        elif away_prob_schedule_id:
-            away_prob_id = away_prob_schedule_id
-            away_prob_source = "schedule_probablePitcher"
-            away_prob_confidence = 0.80
+        away_prob_override = _lookup_probable_pitcher_override(game_pk, away_id)
+        home_prob_override = _lookup_probable_pitcher_override(game_pk, home_id)
 
-        if home_prob_feed_id:
-            home_prob_id = home_prob_feed_id
-            home_prob_source = "feed_gameData_probablePitchers"
-            home_prob_confidence = 0.75
-        elif home_prob_schedule_id:
-            home_prob_id = home_prob_schedule_id
-            home_prob_source = "schedule_probablePitcher"
-            home_prob_confidence = 0.80
+        away_prob_id, away_prob_source, away_prob_confidence, away_prob_validation = _select_probable_pitcher_for_team(
+            away_id,
+            probable_override=away_prob_override,
+            opponent_team_id=home_id,
+            feed_id=away_prob_feed_id,
+            feed_name=away_prob_feed_name,
+            schedule_id=away_prob_schedule_id,
+            schedule_name=away_prob_schedule_name,
+        )
+        home_prob_id, home_prob_source, home_prob_confidence, home_prob_validation = _select_probable_pitcher_for_team(
+            home_id,
+            probable_override=home_prob_override,
+            opponent_team_id=away_id,
+            feed_id=home_prob_feed_id,
+            feed_name=home_prob_feed_name,
+            schedule_id=home_prob_schedule_id,
+            schedule_name=home_prob_schedule_name,
+        )
 
         # Projected lineups: last-known confirmed lineup for the team.
         try:
@@ -4872,6 +5182,8 @@ def main() -> int:
                 "home_source": str(home_prob_source),
                 "away_confidence": float(away_prob_confidence),
                 "home_confidence": float(home_prob_confidence),
+                "away_validation": dict(away_prob_validation or {}),
+                "home_validation": dict(home_prob_validation or {}),
                 "raw": {
                     "away_schedule_id": (int(away_prob_schedule_id) if away_prob_schedule_id else None),
                     "home_schedule_id": (int(home_prob_schedule_id) if home_prob_schedule_id else None),
@@ -4899,11 +5211,24 @@ def main() -> int:
         if game_pk:
             roster_obj_path = roster_obj_dir / f"roster_obj_{idx}_{t_away.abbreviation}_at_{t_home.abbreviation}_pk{game_pk}{gn}.json"
 
+        away_excluded_starter_ids = _suppressed_probable_candidate_ids(
+            away_prob_override,
+            away_prob_feed_id,
+            away_prob_schedule_id,
+        )
+        home_excluded_starter_ids = _suppressed_probable_candidate_ids(
+            home_prob_override,
+            home_prob_feed_id,
+            home_prob_schedule_id,
+        )
+        has_probable_override = bool(away_prob_override) or bool(home_prob_override)
+
         used_roster_artifact = False
         if (
             str(getattr(args, "use_roster_artifacts", "off")) == "on"
             and roster_obj_path is not None
             and roster_obj_path.exists()
+            and not has_probable_override
         ):
             try:
                 rr = read_game_roster_artifact(roster_obj_path)
@@ -4941,6 +5266,7 @@ def main() -> int:
                     int(args.stats_season),
                     as_of_date=str(args.date),
                     probable_pitcher_id=int(away_prob_id) if away_prob_id else None,
+                    excluded_starter_ids=away_excluded_starter_ids,
                     statcast_cache=statcast_cache,
                     statcast_ttl_seconds=statcast_ttl_seconds,
                     confirmed_lineup_ids=away_lineup_ids,
@@ -4958,6 +5284,7 @@ def main() -> int:
                     int(args.stats_season),
                     as_of_date=str(args.date),
                     probable_pitcher_id=int(home_prob_id) if home_prob_id else None,
+                    excluded_starter_ids=home_excluded_starter_ids,
                     statcast_cache=statcast_cache,
                     statcast_ttl_seconds=statcast_ttl_seconds,
                     confirmed_lineup_ids=home_lineup_ids,
