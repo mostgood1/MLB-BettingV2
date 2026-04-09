@@ -147,6 +147,18 @@
     }).format(parsed);
   }
 
+  function liveRowFreshnessText(reco, fallbackLabel) {
+    const updatedAt = reco?.last_seen_at ? formatTimestampShort(reco.last_seen_at) : "";
+    if (updatedAt && updatedAt !== '-') {
+      return `Updated ${updatedAt}`;
+    }
+    const activeSince = reco?.first_seen_at ? formatTimestampShort(reco.first_seen_at) : "";
+    if (activeSince && activeSince !== '-') {
+      return `Active since ${activeSince}`;
+    }
+    return String(fallbackLabel || "");
+  }
+
   function shiftIsoDate(value, days) {
     const text = String(value || "").trim();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return "";
@@ -1815,7 +1827,7 @@
               ${reasonText ? `<div class="cards-live-lens-reasons"><div class="cards-live-lens-reason">${escapeHtml(reasonText)}</div></div>` : ''}
               <div class="cards-prop-overview-foot">
                 <span>${escapeHtml(stateObj.modelMean == null ? 'Model mean -' : `Model mean ${formatLine(stateObj.modelMean)}`)}</span>
-                <span>${escapeHtml(reco?.first_seen_at ? `Live since ${formatTimestampShort(reco.first_seen_at)} | ${formatOdds(reco?.odds)}` : `${stateObj.tierLabel} | ${formatOdds(reco?.odds)}`)}</span>
+                <span>${escapeHtml(`${liveRowFreshnessText(reco, stateObj.tierLabel)} | ${formatOdds(reco?.odds)}`)}</span>
               </div>
             </div>`;
         }).join('')}
@@ -1991,7 +2003,8 @@
         { label: "Sim row", value: simLabel },
         { label: "Model mean", value: modelMean == null ? "-" : `${formatLine(modelMean)} ${metricLabel(selected)}` },
         { label: "Live proj", value: liveProjection == null ? "-" : `${formatLine(liveProjection)} ${metricLabel(selected)}` },
-        { label: "Live since", value: selected?.first_seen_at ? formatTimestampShort(selected.first_seen_at) : "-" },
+        { label: "Updated", value: selected?.last_seen_at ? formatTimestampShort(selected.last_seen_at) : "-" },
+        { label: "Active since", value: selected?.first_seen_at ? formatTimestampShort(selected.first_seen_at) : "-" },
         { label: "Opened at", value: selected?.first_seen_odds != null ? formatOdds(selected.first_seen_odds) : formatOdds(selected?.odds) },
         { label: "Line", value: lineLabel },
         { label: "Live edge", value: liveEdge == null ? "-" : formatSigned(liveEdge, 2) },
@@ -2169,7 +2182,8 @@
       { label: "Sim row", value: simLabel },
       { label: "Model mean", value: modelMean == null ? "-" : `${formatLine(modelMean)} ${metricLabel(selected)}` },
       { label: "Live proj", value: liveProjection == null ? "-" : `${formatLine(liveProjection)} ${metricLabel(selected)}` },
-      { label: "Live since", value: selected?.first_seen_at ? formatTimestampShort(selected.first_seen_at) : "-" },
+      { label: "Updated", value: selected?.last_seen_at ? formatTimestampShort(selected.last_seen_at) : "-" },
+      { label: "Active since", value: selected?.first_seen_at ? formatTimestampShort(selected.first_seen_at) : "-" },
       { label: "Opened at", value: selected?.first_seen_odds != null ? formatOdds(selected.first_seen_odds) : formatOdds(selected?.odds) },
       { label: "Line", value: lineLabel },
       { label: "Live edge", value: liveEdge == null ? "-" : formatSigned(liveEdge, 2) },
