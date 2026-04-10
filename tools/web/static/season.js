@@ -12,8 +12,12 @@
     bettingProfile: "retuned",
     day: null,
     liveLens: null,
+    liveLensLoading: false,
+    liveLensAutoRefreshHandle: null,
     dayPicksMode: "official",
   };
+
+  const LIVE_LENS_AUTO_REFRESH_MS = 30000;
 
   const BETTING_MARKET_ORDER = [
     "combined",
@@ -213,6 +217,25 @@
       }
       return response.json();
     });
+  }
+
+  function shouldAutoRefreshLiveLens() {
+    return Boolean(root.liveLens && state.selectedDate && String(state.selectedDate) === localTodayIso());
+  }
+
+  function installLiveLensAutoRefresh() {
+    if (state.liveLensAutoRefreshHandle) {
+      window.clearInterval(state.liveLensAutoRefreshHandle);
+      state.liveLensAutoRefreshHandle = null;
+    }
+    if (!shouldAutoRefreshLiveLens()) {
+      return;
+    }
+    state.liveLensAutoRefreshHandle = window.setInterval(() => {
+      if (!document.hidden) {
+        loadLiveLens(state.selectedDate, { silent: true });
+      }
+    }, LIVE_LENS_AUTO_REFRESH_MS);
   }
 
   function updateUrl(dateStr) {
@@ -1622,17 +1645,22 @@
       </div>`;
   }
 
-  async function loadLiveLens(dateStr) {
+  async function loadLiveLens(dateStr, options) {
     if (!root.liveLens) return;
     const targetDate = String(dateStr || state.selectedDate || '');
+    const silent = Boolean(options && options.silent);
     if (!targetDate) {
       state.liveLens = null;
       renderLiveLensPanel();
       return;
     }
-    root.liveLens.innerHTML = '<div class="cards-loading-state">Loading live lens...</div>';
+    if (state.liveLensLoading) return;
+    state.liveLensLoading = true;
+    if (!silent || !state.liveLens) {
+      root.liveLens.innerHTML = '<div class="cards-loading-state">Loading live lens...</div>';
+    }
     try {
-      const response = await fetch(seasonLiveLensApiUrl(targetDate), { cache: 'no-store' });
+      const response = await fetch(`${seasonLiveLensApiUrl(targetDate)}&_ts=${Date.now()}`, { cache: 'no-store' });
       if (response.status === 404) {
         state.liveLens = { found: false, date: targetDate };
         renderLiveLensPanel();
@@ -1654,6 +1682,8 @@
           <a class="cards-nav-pill" href="${escapeHtml(seasonLiveLensPageUrl(targetDate))}">Open full live lens</a>
         </div>
         <div class="cards-empty-state season-error">Failed to load live-lens recos.<div class="season-inline-note">${escapeHtml(message)}</div></div>`;
+    } finally {
+      state.liveLensLoading = false;
     }
   }
 
@@ -2012,6 +2042,7 @@
   async function loadDay(dateStr) {
     if (!dateStr) return;
     state.selectedDate = String(dateStr);
+    installLiveLensAutoRefresh();
     updateUrl(state.selectedDate);
     if (root.dayTitle) root.dayTitle.textContent = formatDateLong(state.selectedDate);
     if (root.dayMeta) root.dayMeta.textContent = "Loading day report...";
@@ -2072,6 +2103,7 @@
         state.selectedDate = String(todayRow?.date || days[days.length - 1]?.date || "");
       }
       renderDays();
+      installLiveLensAutoRefresh();
       await loadDay(state.selectedDate);
       await bettingCardsPromise;
     } catch (error) {
@@ -2091,6 +2123,12 @@
       }
     }
   }
+
+  window.addEventListener("visibilitychange", function () {
+    if (!document.hidden && shouldAutoRefreshLiveLens()) {
+      loadLiveLens(state.selectedDate, { silent: true });
+    }
+  });
 
   if (root.months) {
     root.months.addEventListener("click", function (event) {

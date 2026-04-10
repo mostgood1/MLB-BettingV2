@@ -12401,6 +12401,7 @@ def api_live_lens() -> Response:
 
 @app.get("/api/season/<int:season>/live-lens")
 def api_season_live_lens(season: int) -> Response:
+    _ensure_live_lens_background_loop_running()
     d = str(request.args.get("date") or "").strip() or _default_cards_date()
     payload = _season_live_lens_payload(int(season), d)
     if payload.get("found"):
