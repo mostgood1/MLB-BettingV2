@@ -82,6 +82,8 @@ DEFAULT_LOCK_POLICY: Dict[str, Any] = {
     "pitcher_market": "best",
     "pitcher_side": "best_edge_side",
     "pitcher_edge_min": 0.01,
+    "pitcher_strikeout_under_edge_min": 0.03,
+    "pitcher_strikeout_under_mean_gap": 0.5,
     "pitcher_max_favorite_odds": -200,
 }
 
@@ -448,6 +450,39 @@ def _passes_mean_alignment(mean_value: Any, line_value: Any, selection: Any, min
     except Exception:
         threshold = 0.0
     return float(support) >= float(threshold)
+
+
+def _passes_pitcher_prop_guardrail(
+    *,
+    market_name: Any,
+    selection: Any,
+    edge: Any,
+    mean_value: Any,
+    line_value: Any,
+    policy: Optional[Dict[str, Any]],
+) -> bool:
+    prop = str(market_name or "").strip().lower()
+    choice = str(selection or "").strip().lower()
+    if prop != "strikeouts" or choice != "under":
+        return True
+    cfg = dict(policy or {})
+    try:
+        edge_floor = float(cfg.get("pitcher_strikeout_under_edge_min"))
+    except Exception:
+        edge_floor = None
+    try:
+        mean_gap_floor = float(cfg.get("pitcher_strikeout_under_mean_gap"))
+    except Exception:
+        mean_gap_floor = None
+    try:
+        edge_value = float(edge)
+    except Exception:
+        edge_value = 0.0
+    if edge_floor is not None and float(edge_value) < float(edge_floor):
+        return False
+    if mean_gap_floor is not None and not _passes_mean_alignment(mean_value, line_value, choice, mean_gap_floor):
+        return False
+    return True
 
 
 def _select_moneyline_side(
@@ -3121,6 +3156,15 @@ def _collect_pitcher_recommendations(
                     continue
                 mean_key = str(market_spec.get("mean_key") or "")
                 if not _passes_mean_alignment(pred.get(mean_key), line_value, side_pick.get("selection"), 0.0):
+                    continue
+                if not _passes_pitcher_prop_guardrail(
+                    market_name=market_name,
+                    selection=side_pick.get("selection"),
+                    edge=side_pick.get("edge"),
+                    mean_value=pred.get(mean_key),
+                    line_value=line_value,
+                    policy=policy,
+                ):
                     continue
 
                 baseball_reasons: List[str] = []
