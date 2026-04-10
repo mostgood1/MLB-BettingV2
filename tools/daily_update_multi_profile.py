@@ -84,6 +84,7 @@ DEFAULT_LOCK_POLICY: Dict[str, Any] = {
     "pitcher_edge_min": 0.01,
     "pitcher_strikeout_under_edge_min": 0.03,
     "pitcher_strikeout_under_mean_gap": 0.5,
+    "pitcher_strikeout_under_min_line": 7.5,
     "pitcher_max_favorite_odds": -200,
 }
 
@@ -475,10 +476,20 @@ def _passes_pitcher_prop_guardrail(
     except Exception:
         mean_gap_floor = None
     try:
+        min_line_floor = float(cfg.get("pitcher_strikeout_under_min_line"))
+    except Exception:
+        min_line_floor = None
+    try:
         edge_value = float(edge)
     except Exception:
         edge_value = 0.0
+    try:
+        line_floor_value = float(line_value)
+    except Exception:
+        line_floor_value = None
     if edge_floor is not None and float(edge_value) < float(edge_floor):
+        return False
+    if min_line_floor is not None and line_floor_value is not None and float(line_floor_value) < float(min_line_floor):
         return False
     if mean_gap_floor is not None and not _passes_mean_alignment(mean_value, line_value, choice, mean_gap_floor):
         return False
@@ -4066,6 +4077,12 @@ def main() -> int:
         help="Maximum allowed favorite price for official pitcher props; more negative prices are discarded.",
     )
     ap.add_argument(
+        "--official-pitcher-strikeout-under-min-line",
+        type=float,
+        default=float(DEFAULT_LOCK_POLICY["pitcher_strikeout_under_min_line"]),
+        help="Minimum market line required before official pitcher strikeout unders are eligible.",
+    )
+    ap.add_argument(
         "--official-hitter-props-topn",
         type=int,
         default=24,
@@ -4249,6 +4266,7 @@ def main() -> int:
             "hitter_max_favorite_odds": args.official_hitter_max_favorite_odds,
             "hitter_hr_under_0_5_max_favorite_odds": args.official_hitter_hr_under_0_5_max_favorite_odds,
             "pitcher_max_favorite_odds": args.official_pitcher_max_favorite_odds,
+            "pitcher_strikeout_under_min_line": args.official_pitcher_strikeout_under_min_line,
         },
         hitter_edge_updates={
             "hitter_runs": args.official_hitter_runs_edge_min,
