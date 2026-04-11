@@ -1095,6 +1095,10 @@ def _is_live_lens_loop_enabled() -> bool:
     return _env_bool("MLB_ENABLE_LIVE_LENS_LOOP", default=False)
 
 
+def _is_live_lens_background_report_enabled() -> bool:
+    return _env_bool("MLB_ENABLE_LIVE_LENS_BACKGROUND_REPORTS", default=True)
+
+
 def _is_inline_season_manifest_rebuild_enabled() -> bool:
     return _env_bool("MLB_ENABLE_INLINE_SEASON_MANIFEST_REBUILD", default=False)
 
@@ -1155,6 +1159,7 @@ def _live_lens_loop_status_payload() -> Dict[str, Any]:
     flask_debug = str(os.environ.get("FLASK_DEBUG") or "").strip()
     return {
         "enabled": _is_live_lens_loop_enabled(),
+        "backgroundReportEnabled": _is_live_lens_background_report_enabled(),
         "intervalSeconds": int(_live_lens_loop_interval_seconds()),
         "oddsapiRefreshIntervalSeconds": int(_live_oddsapi_refresh_interval_seconds()),
         "threadAlive": _live_lens_loop_thread_alive(),
@@ -12679,13 +12684,14 @@ def _live_lens_background_loop() -> None:
     interval_seconds = _live_lens_loop_interval_seconds()
     oddsapi_refresh_interval_seconds = _live_oddsapi_refresh_interval_seconds()
     report_refresh_interval_seconds = _live_lens_report_refresh_interval_seconds()
+    background_report_enabled = _is_live_lens_background_report_enabled()
     status_path = _cron_meta_dir() / "live_lens_loop_status.json"
     next_oddsapi_refresh_at = 0.0
     next_report_refresh_at = 0.0
     while not _LIVE_LENS_LOOP_STOP.is_set():
         started_at = time.time()
         refresh_markets = bool(started_at >= next_oddsapi_refresh_at)
-        refresh_report = bool(started_at >= next_report_refresh_at)
+        refresh_report = bool(background_report_enabled and started_at >= next_report_refresh_at)
         result: Dict[str, Any] = {}
         markets_refreshed = False
         try:
@@ -12710,6 +12716,7 @@ def _live_lens_background_loop() -> None:
                     "recordedAt": _local_timestamp_text(),
                     "intervalSeconds": int(interval_seconds),
                     "oddsapiRefreshIntervalSeconds": int(oddsapi_refresh_interval_seconds),
+                    "backgroundReportEnabled": bool(background_report_enabled),
                     "reportRefreshIntervalSeconds": int(report_refresh_interval_seconds),
                     "reportRefreshTriggered": bool(refresh_report),
                     "marketsRefreshTriggered": bool(refresh_markets),
@@ -12732,6 +12739,7 @@ def _live_lens_background_loop() -> None:
                     "recordedAt": _local_timestamp_text(),
                     "intervalSeconds": int(interval_seconds),
                     "oddsapiRefreshIntervalSeconds": int(oddsapi_refresh_interval_seconds),
+                    "backgroundReportEnabled": bool(background_report_enabled),
                     "reportRefreshIntervalSeconds": int(report_refresh_interval_seconds),
                     "reportRefreshTriggered": bool(refresh_report),
                     "marketsRefreshTriggered": bool(refresh_markets),
@@ -13026,10 +13034,14 @@ def api_live_lens() -> Response:
     serve_report_max_age_seconds = float(_LIVE_ROUTE_CACHE_TTL_SECONDS)
     if not _is_historical_date(d) and _is_live_lens_loop_enabled():
         serve_report_max_age_seconds = float(_live_lens_report_max_age_seconds())
+    background_report_enabled = _is_live_lens_background_report_enabled()
     if (
         not persist
         and report_age_seconds is not None
-        and report_age_seconds <= float(serve_report_max_age_seconds)
+        and (
+            report_age_seconds <= float(serve_report_max_age_seconds)
+            or (not _is_historical_date(d) and not background_report_enabled)
+        )
     ):
         report_payload = _load_json_file(report_path)
         if isinstance(report_payload, dict) and report_payload:
