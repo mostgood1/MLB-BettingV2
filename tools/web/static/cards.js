@@ -415,14 +415,33 @@
     return text.includes("live") || text.includes("in progress") || text.includes("manager challenge");
   }
 
+  function isFinalStatus(statusText) {
+    const text = String(statusText || "").trim().toLowerCase();
+    return text === "final" || text.includes("game over") || text.includes("completed early");
+  }
+
+  function cardStatusTexts(card, snapshot) {
+    return {
+      abstract: String(snapshot?.status?.abstractGameState || card?.status?.abstract || "").trim(),
+      detailed: String(snapshot?.status?.detailedState || card?.status?.detailed || "").trim(),
+    };
+  }
+
+  function cardStatusWeight(card, snapshot) {
+    const status = cardStatusTexts(card, snapshot);
+    if (isLiveStatus(status.abstract) || isLiveStatus(status.detailed)) return 0;
+    if (isFinalStatus(status.abstract) || isFinalStatus(status.detailed)) return 2;
+    return 1;
+  }
+
   function gameProgress(snapshot, card) {
-    const status = snapshot?.status || {};
-    const abstract = String(status.abstractGameState || card?.status?.abstract || "").trim().toLowerCase();
-    const detailed = String(status.detailedState || card?.status?.detailed || "").trim();
-    if (abstract === "final") {
+    const status = cardStatusTexts(card, snapshot);
+    const abstract = status.abstract.toLowerCase();
+    const detailed = status.detailed;
+    if (isFinalStatus(status.abstract) || isFinalStatus(status.detailed)) {
       return { fraction: 1, inning: 9, half: "final", outs: 3, label: detailed || "Final", isLive: false, isFinal: true };
     }
-    if (!isLiveStatus(abstract)) {
+    if (!isLiveStatus(status.abstract) && !isLiveStatus(status.detailed)) {
       return { fraction: 0, inning: null, half: null, outs: 0, label: detailed || "Pregame", isLive: false, isFinal: false };
     }
     const current = snapshot?.current || {};
@@ -2268,10 +2287,7 @@
 
   function stripSortWeight(card) {
     const detail = ensureDetail(card);
-    const progress = gameProgress(detail?.snapshot, card);
-    if (progress.isLive) return 0;
-    if (progress.isFinal) return 2;
-    return 1;
+    return cardStatusWeight(card, detail?.snapshot);
   }
 
   function scheduledStartSortValue(card) {
@@ -2601,13 +2617,13 @@
 
   function cardIsLive(card) {
     const detail = state.details.get(Number(card?.gamePk));
-    const snapshotState = String(detail?.snapshot?.status?.abstractGameState || "").toLowerCase();
-    const cardState = String(card?.status?.abstract || "").toLowerCase();
-    return snapshotState === "live" || cardState === "live";
+    const status = cardStatusTexts(card, detail?.snapshot);
+    return isLiveStatus(status.abstract) || isLiveStatus(status.detailed);
   }
 
   function cardIsLiveByStatus(card) {
-    return String(card?.status?.abstract || "").toLowerCase() === "live";
+    const status = cardStatusTexts(card, null);
+    return isLiveStatus(status.abstract) || isLiveStatus(status.detailed);
   }
 
   function syncStrip(card, detail) {
@@ -2764,7 +2780,7 @@
       );
       const nextPayload = payload || {};
       const nextDate = String(nextPayload?.date || state.date || "");
-      const nextCards = Array.isArray(nextPayload?.cards) ? nextPayload.cards : [];
+      const nextCards = sortCardsForStrip(Array.isArray(nextPayload?.cards) ? nextPayload.cards : []);
       const slateUnchanged = sameSlate(nextCards, state.cards);
 
       state.payload = nextPayload;

@@ -5131,10 +5131,12 @@ def _cards_list_from_sources(
         return _normalized_full_game_probs(merged) if normalize_full else merged
 
     def _card_sort_key(card: Dict[str, Any]) -> Tuple[int, int, str, int]:
-        status = str(((card.get("status") or {}).get("abstract")) or "").strip().lower()
-        if status == "live":
+        status_block = card.get("status") or {}
+        abstract = str(status_block.get("abstract") or "").strip().lower()
+        detailed = str(status_block.get("detailed") or "").strip().lower()
+        if any(token in abstract or token in detailed for token in ("live", "in progress", "manager challenge")):
             status_weight = 0
-        elif status == "final":
+        elif abstract == "final" or "game over" in detailed or "completed early" in detailed:
             status_weight = 2
         else:
             status_weight = 1
