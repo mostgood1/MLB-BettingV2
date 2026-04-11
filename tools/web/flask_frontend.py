@@ -5151,6 +5151,61 @@ def _schedule_games_for_date(d: str) -> List[Dict[str, Any]]:
     return [dict(game) for game in _fetch_schedule_games_remote_cached(str(d))]
 
 
+def _supplement_card_status_from_live_feed(
+    card: Dict[str, Any],
+    d: str,
+    *,
+    feed: Optional[Dict[str, Any]] = None,
+) -> None:
+    if not _is_current_local_date(str(d or "")):
+        return
+    if not isinstance(card, dict):
+        return
+    game_pk = _safe_int(card.get("gamePk"))
+    if not game_pk or int(game_pk) <= 0:
+        return
+
+    current_status = card.get("status") if isinstance(card.get("status"), dict) else {}
+    current_abstract = str(current_status.get("abstract") or "").strip()
+    current_detailed = str(current_status.get("detailed") or "").strip()
+
+    if not isinstance(feed, dict) or not feed:
+        feed = _load_live_lens_feed(int(game_pk), str(d))
+    if not isinstance(feed, dict) or not feed:
+        return
+
+    feed_status = (((feed.get("gameData") or {}).get("status") or {}))
+    feed_abstract = str(feed_status.get("abstractGameState") or "").strip()
+    feed_detailed = str(feed_status.get("detailedState") or "").strip()
+    if not feed_abstract and not feed_detailed:
+        return
+
+    should_override = False
+    if _status_is_final({"abstract": feed_abstract, "detailed": feed_detailed}):
+        should_override = True
+    elif _status_is_live({"abstract": feed_abstract, "detailed": feed_detailed}):
+        should_override = True
+    elif str(feed_detailed).strip().lower() == "warmup":
+        should_override = True
+    elif not current_abstract and not current_detailed:
+        should_override = True
+
+    if not should_override:
+        return
+
+    card["status"] = {
+        "abstract": feed_abstract or current_abstract,
+        "detailed": feed_detailed or current_detailed,
+    }
+
+    away_totals = _team_totals(feed, "away")
+    home_totals = _team_totals(feed, "home")
+    away_runs = _safe_int(away_totals.get("R"))
+    home_runs = _safe_int(home_totals.get("R"))
+    if away_runs is not None or home_runs is not None:
+        card["score"] = {"away": away_runs, "home": home_runs}
+
+
 def _cards_list_from_sources(
     *,
     d: str,
@@ -13644,9 +13699,17 @@ def _build_cards_api_payload(
         outputs_by_game=outputs_by_game,
         recos_by_game=recos_by_game,
     )
+    feed_cache: Dict[int, Optional[Dict[str, Any]]] = {}
     for card in cards:
         if not isinstance(card, dict):
             continue
+        game_pk = _safe_int(card.get("gamePk"))
+        if game_pk:
+            feed = feed_cache.get(int(game_pk))
+            if int(game_pk) not in feed_cache:
+                feed = _load_live_lens_feed(int(game_pk), d)
+                feed_cache[int(game_pk)] = feed
+            _supplement_card_status_from_live_feed(card, d, feed=feed)
         market_row = _game_line_market_for_card(card, game_line_index)
         card["trackedGameLines"] = (market_row.get("markets") or {}) if isinstance(market_row, dict) else None
     return _cards_api_payload(d, artifacts=artifacts, archive=archive, cards=cards)

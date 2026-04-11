@@ -428,6 +428,32 @@
     };
   }
 
+  function statusBadgePresentation(card, snapshot) {
+    const status = cardStatusTexts(card, snapshot);
+    const abstract = String(status.abstract || "").trim();
+    const detailed = String(status.detailed || "").trim();
+    const normalizedAbstract = abstract.toLowerCase();
+    const normalizedDetailed = detailed.toLowerCase();
+    let text = abstract || detailed || "Scheduled";
+
+    if (
+      (!abstract || normalizedAbstract === "preview" || normalizedAbstract === "pregame")
+      && detailed
+      && !["preview", "pregame", "pre-game", "scheduled"].includes(normalizedDetailed)
+    ) {
+      text = detailed;
+    }
+
+    let className = statusClass(text);
+    if (isLiveStatus(abstract) || isLiveStatus(detailed)) {
+      className = "is-live";
+    } else if (isFinalStatus(abstract) || isFinalStatus(detailed)) {
+      className = "is-final";
+    }
+
+    return { text, className };
+  }
+
   function cardStatusWeight(card, snapshot) {
     const status = cardStatusTexts(card, snapshot);
     if (isLiveStatus(status.abstract) || isLiveStatus(status.detailed)) return 0;
@@ -1191,6 +1217,7 @@
     article.className = "cards-game-card";
     article.id = `game-card-${card.gamePk}`;
     article.dataset.gamePk = String(card.gamePk);
+    const statusBadge = statusBadgePresentation(card, null);
     article.innerHTML = `
       <div class="cards-strip-head">
         <div class="cards-head-left cards-head-matchup">
@@ -1209,7 +1236,7 @@
             <span class="cards-game-time-label">First pitch</span>
             <span class="cards-game-time-value">${escapeHtml(card.startTime || "-")}</span>
           </div>
-          <span class="cards-status-badge ${escapeHtml(statusClass(card.status?.abstract))}" data-role="status-badge">${escapeHtml(card.status?.abstract || "Scheduled")}</span>
+          <span class="cards-status-badge ${escapeHtml(statusBadge.className)}" data-role="status-badge">${escapeHtml(statusBadge.text)}</span>
           <div class="cards-start-time" data-role="status-detail">${escapeHtml(statusDetailText(null, card) || card.startTime || "")}</div>
           <a class="cards-game-link" href="/game/${encodeURIComponent(card.gamePk)}?date=${encodeURIComponent(state.date)}">Open game view</a>
         </div>
@@ -2366,13 +2393,14 @@
   }
 
   function createStripNode(card) {
+    const statusBadge = statusBadgePresentation(card, null);
     const anchor = document.createElement("a");
     anchor.className = "cards-strip-card";
     anchor.href = `#game-card-${encodeURIComponent(card.gamePk)}`;
     anchor.dataset.gamePk = String(card.gamePk);
     anchor.innerHTML = `
       <div class="cards-strip-head">
-        <span>${escapeHtml(card.status?.abstract || "Game")}</span>
+        <span>${escapeHtml(statusBadge.text || "Game")}</span>
         <span data-role="strip-detail">${escapeHtml(statusDetailText(null, card) || card.startTime || "")}</span>
       </div>
       <div class="cards-linescore is-compact">
@@ -2658,9 +2686,9 @@
     const sim = detail.sim;
 
     if (statusBadge) {
-      const text = snapshot?.status?.abstractGameState || card?.status?.abstract || "Game";
-      statusBadge.textContent = text;
-      statusBadge.className = `cards-status-badge ${statusClass(text)}`.trim();
+      const status = statusBadgePresentation(card, snapshot);
+      statusBadge.textContent = status.text;
+      statusBadge.className = `cards-status-badge ${status.className}`.trim();
     }
     if (statusDetail) statusDetail.textContent = statusDetailText(snapshot, card) || card.startTime || "";
     if (awayScore) awayScore.textContent = snapshot?.teams?.away?.totals?.R ?? "-";
