@@ -174,6 +174,7 @@ _SCHEDULE_FETCH_CACHE_MAXSIZE = _env_int("MLB_SCHEDULE_FETCH_CACHE_MAXSIZE", 32,
 _LADDERS_CACHE_TTL_SECONDS = float(_env_int("MLB_LADDERS_CACHE_TTL_SECONDS", 60, minimum=1))
 _TOP_PROPS_CACHE_TTL_SECONDS = float(_env_int("MLB_TOP_PROPS_CACHE_TTL_SECONDS", 60, minimum=1))
 _CARDS_CACHE_TTL_SECONDS = float(_env_int("MLB_CARDS_CACHE_TTL_SECONDS", 30, minimum=1))
+_CARDS_CONTEXT_CACHE_TTL_SECONDS = float(_env_int("MLB_CARDS_CONTEXT_CACHE_TTL_SECONDS", 30, minimum=1))
 _LIVE_ROUTE_CACHE_TTL_SECONDS = float(_env_int("MLB_LIVE_ROUTE_CACHE_TTL_SECONDS", 5, minimum=1))
 _LIVE_LENS_LOOP_DEFAULT_INTERVAL_SECONDS = 30
 _LIVE_LENS_LOOP_MIN_INTERVAL_SECONDS = 5
@@ -13440,10 +13441,31 @@ def _cards_api_payload(
 
 
 def _cards_payload_context(d: str) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+    context_payload = _payload_cache_get_or_build(
+        "cards_api_context",
+        str(d),
+        max_age_seconds=_CARDS_CONTEXT_CACHE_TTL_SECONDS,
+        builder=lambda: _build_cards_payload_context(d),
+    )
+    if not isinstance(context_payload, dict):
+        return {}, {}, {}
+    artifacts = context_payload.get("artifacts") if isinstance(context_payload.get("artifacts"), dict) else {}
+    archive = context_payload.get("archive") if isinstance(context_payload.get("archive"), dict) else {}
+    game_line_index = context_payload.get("game_line_index") if isinstance(context_payload.get("game_line_index"), dict) else {}
+    return artifacts, archive, game_line_index
+
+
+def _build_cards_payload_context(d: str) -> Dict[str, Any]:
     artifacts = _load_cards_artifacts(d)
     archive = _load_cards_archive_context(d) if _should_load_cards_archive_context(d, artifacts) else {}
     game_line_index = _load_game_line_market_index(d)
-    return artifacts, archive, game_line_index
+    signature = _cards_payload_signature(d, artifacts, archive, game_line_index)
+    return {
+        "artifacts": artifacts,
+        "archive": archive,
+        "game_line_index": game_line_index,
+        "signature": signature,
+    }
 
 
 def _cards_payload_signature(d: str, artifacts: Dict[str, Any], archive: Dict[str, Any], game_line_index: Dict[str, Any]) -> Tuple[Any, ...]:
@@ -13506,11 +13528,20 @@ def _build_cards_api_payload(
 def api_cards() -> Response:
     d = str(request.args.get("date") or "").strip() or _default_cards_date()
     try:
-        artifacts, archive, game_line_index = _cards_payload_context(d)
+        context_payload = _payload_cache_get_or_build(
+            "cards_api_context",
+            str(d),
+            max_age_seconds=_CARDS_CONTEXT_CACHE_TTL_SECONDS,
+            builder=lambda: _build_cards_payload_context(d),
+        )
+        artifacts = context_payload.get("artifacts") if isinstance(context_payload.get("artifacts"), dict) else {}
+        archive = context_payload.get("archive") if isinstance(context_payload.get("archive"), dict) else {}
+        game_line_index = context_payload.get("game_line_index") if isinstance(context_payload.get("game_line_index"), dict) else {}
+        context_signature = context_payload.get("signature")
         payload = _payload_cache_get_or_build(
             "cards_api",
             str(d),
-            signature_factory=lambda: _cards_payload_signature(d, artifacts, archive, game_line_index),
+            signature=context_signature,
             max_age_seconds=_CARDS_CACHE_TTL_SECONDS,
             builder=lambda: _build_cards_api_payload(
                 d,
