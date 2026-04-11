@@ -13,6 +13,8 @@
   };
 
   const AUTO_REFRESH_MS = 30000;
+  const CARDS_REQUEST_TIMEOUT_MS = 25000;
+  const DETAIL_REQUEST_TIMEOUT_MS = 15000;
   const HYDRATE_CARD_CONCURRENCY = 4;
 
   const root = {
@@ -2548,8 +2550,21 @@
     });
   }
 
-  async function fetchJson(url) {
-    const response = await fetch(url, { cache: "no-store" });
+  async function fetchJson(url, options = {}) {
+    const timeoutMs = Math.max(1000, Number(options.timeoutMs) || DETAIL_REQUEST_TIMEOUT_MS);
+    const controller = new AbortController();
+    const timeoutHandle = window.setTimeout(() => controller.abort(new Error(`Timeout after ${timeoutMs}ms`)), timeoutMs);
+    let response;
+    try {
+      response = await fetch(url, { cache: "no-store", signal: controller.signal });
+    } catch (error) {
+      if (error && error.name === "AbortError") {
+        throw new Error(`HTTP timeout after ${timeoutMs}ms`);
+      }
+      throw error;
+    } finally {
+      window.clearTimeout(timeoutHandle);
+    }
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return await response.json();
   }
@@ -2557,7 +2572,10 @@
   async function loadSnapshot(card, isRefresh) {
     const detail = ensureDetail(card);
     try {
-      const snapshot = await fetchJson(`/api/game/${encodeURIComponent(card.gamePk)}/snapshot?date=${encodeURIComponent(state.date)}`);
+      const snapshot = await fetchJson(
+        `/api/game/${encodeURIComponent(card.gamePk)}/snapshot?date=${encodeURIComponent(state.date)}`,
+        { timeoutMs: DETAIL_REQUEST_TIMEOUT_MS }
+      );
       detail.snapshot = snapshot;
       syncCard(card);
     } catch (_error) {
@@ -2568,7 +2586,10 @@
   async function loadSim(card) {
     const detail = ensureDetail(card);
     try {
-      const sim = await fetchJson(`/api/game/${encodeURIComponent(card.gamePk)}/sim?date=${encodeURIComponent(state.date)}`);
+      const sim = await fetchJson(
+        `/api/game/${encodeURIComponent(card.gamePk)}/sim?date=${encodeURIComponent(state.date)}`,
+        { timeoutMs: DETAIL_REQUEST_TIMEOUT_MS }
+      );
       detail.sim = sim;
       syncCard(card);
     } catch (_error) {
@@ -2694,7 +2715,10 @@
     }
 
     try {
-      const payload = await fetchJson(`/api/cards?date=${encodeURIComponent(state.date)}`);
+      const payload = await fetchJson(
+        `/api/cards?date=${encodeURIComponent(state.date)}`,
+        { timeoutMs: CARDS_REQUEST_TIMEOUT_MS }
+      );
       const nextPayload = payload || {};
       const nextDate = String(nextPayload?.date || state.date || "");
       const nextCards = Array.isArray(nextPayload?.cards) ? nextPayload.cards : [];
@@ -2723,6 +2747,13 @@
 
       await hydrateCards({ liveOnly: Boolean(silent && slateUnchanged) });
     } catch (error) {
+      if (silent && state.cards.length) {
+        if (root.headerMeta) {
+          root.headerMeta.textContent = `Live detail refresh fallback for ${state.date || "the selected slate"}.`;
+        }
+        await hydrateCards({ liveOnly: true });
+        return;
+      }
       const message = error && error.message ? error.message : "Unknown error";
       if (root.headerMeta) {
         root.headerMeta.textContent = `Failed to load ${state.date || "the selected slate"}.`;
