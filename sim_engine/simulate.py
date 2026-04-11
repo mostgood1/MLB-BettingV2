@@ -1609,11 +1609,17 @@ def _batter_profile_by_id(roster: TeamRoster, batter_id: int):
     return None
 
 
-def simulate_game(away: TeamRoster, home: TeamRoster, config: Optional[GameConfig] = None) -> GameResult:
+def simulate_game(
+    away: TeamRoster,
+    home: TeamRoster,
+    config: Optional[GameConfig] = None,
+    *,
+    initial_state: Optional[GameState] = None,
+) -> GameResult:
     cfg = config or GameConfig()
     rng = random.Random(cfg.rng_seed)
     st = StatsTracker()
-    state = GameState(away=away, home=home, config=cfg)
+    state = initial_state if isinstance(initial_state, GameState) else GameState(away=away, home=home, config=cfg)
 
     bip_baserunning = bool(getattr(cfg, "bip_baserunning", True))
     bip_1b_p2_scores_mult = _clamp(float(getattr(cfg, "bip_1b_p2_scores_mult", 1.0) or 1.0), 0.5, 1.5)

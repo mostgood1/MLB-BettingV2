@@ -41,6 +41,9 @@ from sim_engine.data.statsapi import (
     fetch_schedule_date_buckets,
     fetch_schedule_for_date,
 )
+from sim_engine import BaseState
+from sim_engine.data.roster_artifact import roster_from_dict
+from sim_engine.live_mc import LiveSituation, estimate_live
 from sim_engine.live_prop_ranking import predict_live_prop_win_probability
 from sim_engine.market_pitcher_props import market_side_probabilities, normalize_pitcher_name
 from tools.daily_update_multi_profile import (
@@ -157,6 +160,7 @@ _DEMO_DATE = "2025-06-04"
 _CARDS_PRESEASON_DEFAULT_WINDOW_DAYS = 21
 _LIVE_PROP_MARKET_MAX_AGE_SECONDS = 90
 _LIVE_FEED_CACHE_TTL_SECONDS = float(_env_int("MLB_LIVE_FEED_CACHE_TTL_SECONDS", 5, minimum=1))
+_LIVE_GAME_MC_SIMS = _env_int("MLB_LIVE_GAME_MC_SIMS", 120, minimum=20)
 _LIVE_HITTER_PROP_MIN_MARKET_EDGE = 0.05
 _LIVE_PROP_RANKING_CONFIG_PATH = Path(
     str(os.environ.get("MLB_LIVE_PROP_RANKING_CONFIG") or (_ROOT_DIR / "data" / "tuning" / "live_prop_ranking" / "default.json")).strip()
@@ -171,8 +175,9 @@ _LADDERS_CACHE_TTL_SECONDS = float(_env_int("MLB_LADDERS_CACHE_TTL_SECONDS", 60,
 _TOP_PROPS_CACHE_TTL_SECONDS = float(_env_int("MLB_TOP_PROPS_CACHE_TTL_SECONDS", 60, minimum=1))
 _CARDS_CACHE_TTL_SECONDS = float(_env_int("MLB_CARDS_CACHE_TTL_SECONDS", 30, minimum=1))
 _LIVE_ROUTE_CACHE_TTL_SECONDS = float(_env_int("MLB_LIVE_ROUTE_CACHE_TTL_SECONDS", 5, minimum=1))
-_LIVE_LENS_LOOP_DEFAULT_INTERVAL_SECONDS = 15
+_LIVE_LENS_LOOP_DEFAULT_INTERVAL_SECONDS = 30
 _LIVE_LENS_LOOP_MIN_INTERVAL_SECONDS = 5
+_LIVE_ODDSAPI_REFRESH_MIN_INTERVAL_SECONDS = 15
 _LIVE_LENS_LOOP_THREAD: Optional[threading.Thread] = None
 _LIVE_LENS_LOOP_LOCK = threading.Lock()
 _LIVE_LENS_LOOP_STOP = threading.Event()
@@ -1100,6 +1105,15 @@ def _live_lens_loop_interval_seconds() -> int:
     return max(_LIVE_LENS_LOOP_MIN_INTERVAL_SECONDS, int(value))
 
 
+def _live_oddsapi_refresh_interval_seconds() -> int:
+    raw = str(os.environ.get("MLB_LIVE_ODDSAPI_REFRESH_INTERVAL_SECONDS") or "").strip()
+    try:
+        value = int(raw or _LIVE_PROP_MARKET_MAX_AGE_SECONDS)
+    except Exception:
+        value = _LIVE_PROP_MARKET_MAX_AGE_SECONDS
+    return max(_LIVE_ODDSAPI_REFRESH_MIN_INTERVAL_SECONDS, int(value))
+
+
 def _live_lens_loop_thread_alive() -> bool:
     thread = _LIVE_LENS_LOOP_THREAD
     return bool(thread is not None and thread.is_alive())
@@ -1108,20 +1122,25 @@ def _live_lens_loop_thread_alive() -> bool:
 def _live_lens_loop_status_payload() -> Dict[str, Any]:
     status_path = _cron_meta_dir() / "live_lens_loop_status.json"
     latest_tick_path = _cron_meta_dir() / "latest_live_lens_tick.json"
+    latest_oddsapi_refresh_path = _cron_meta_dir() / "latest_refresh_oddsapi.json"
     status = _load_json_file(status_path) or {}
     latest_tick = _load_json_file(latest_tick_path) or {}
+    latest_oddsapi_refresh = _load_json_file(latest_oddsapi_refresh_path) or {}
     werkzeug_run_main = str(os.environ.get("WERKZEUG_RUN_MAIN") or "").strip()
     flask_debug = str(os.environ.get("FLASK_DEBUG") or "").strip()
     return {
         "enabled": _is_live_lens_loop_enabled(),
         "intervalSeconds": int(_live_lens_loop_interval_seconds()),
+        "oddsapiRefreshIntervalSeconds": int(_live_oddsapi_refresh_interval_seconds()),
         "threadAlive": _live_lens_loop_thread_alive(),
         "werkzeugRunMain": werkzeug_run_main,
         "flaskDebug": flask_debug,
         "statusPath": _relative_path_str(status_path),
         "latestTickPath": _relative_path_str(latest_tick_path),
+        "latestOddsapiRefreshPath": _relative_path_str(latest_oddsapi_refresh_path),
         "status": status,
         "latestTick": latest_tick,
+        "latestOddsapiRefresh": latest_oddsapi_refresh,
     }
 
 
@@ -9427,6 +9446,30 @@ def _live_linescore(feed: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _live_offense_state(feed: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        offense = (((feed.get("liveData") or {}).get("linescore") or {}).get("offense") or {})
+        if not isinstance(offense, dict):
+            return {}
+
+        def _runner(base_key: str) -> Dict[str, Any]:
+            row = offense.get(base_key) or {}
+            if not isinstance(row, dict):
+                return {"id": None, "fullName": ""}
+            return {
+                "id": _safe_int(row.get("id")),
+                "fullName": str(row.get("fullName") or ""),
+            }
+
+        return {
+            "first": _runner("first"),
+            "second": _runner("second"),
+            "third": _runner("third"),
+        }
+    except Exception:
+        return {}
+
+
 def _plays_since(feed: Dict[str, Any], *, since_index: int) -> Tuple[int, List[Dict[str, Any]]]:
     """Return (new_index, plays[]) where plays are simplified for UI."""
     try:
@@ -10149,6 +10192,7 @@ def _live_hitter_matchup_reasons(
 
 def _live_pitcher_matchup_context(
     row: Dict[str, Any],
+    snapshot: Optional[Dict[str, Any]],
     sim_context: Optional[Dict[str, Any]],
 ) -> Dict[str, Any]:
     if not isinstance(sim_context, dict):
@@ -10165,15 +10209,20 @@ def _live_pitcher_matchup_context(
     if not isinstance(side_doc, dict) or not isinstance(opp_doc, dict):
         return {}
     pitcher_profile = side_doc.get("starter_profile") if isinstance(side_doc.get("starter_profile"), dict) else None
+    bullpen_profiles = [item for item in (side_doc.get("bullpen_profiles") or []) if isinstance(item, dict)]
     opponent_lineup = opp_doc.get("lineup") if isinstance(opp_doc.get("lineup"), list) else []
     pitcher_models = _sim_prop_models(sim_context, "pitchers")
     pitcher_name = str(row.get("pitcher_name") or (pitcher_profile or {}).get("name") or "").strip()
     pitcher_entry = pitcher_models.get(normalize_pitcher_name(pitcher_name)) if pitcher_name else None
     pitcher_model = pitcher_entry.get("model") if isinstance(pitcher_entry, dict) and isinstance(pitcher_entry.get("model"), dict) else None
+    pitcher_state = _live_pitcher_profile_for_game_state(roster_snapshot, snapshot, side)
     return {
         "pitcher_profile": pitcher_profile,
+        "bullpen_profiles": bullpen_profiles,
         "opponent_lineup": [item for item in opponent_lineup if isinstance(item, dict)],
         "pitcher_model": pitcher_model,
+        "current_profile": pitcher_state.get("current_profile") if isinstance(pitcher_state.get("current_profile"), dict) else None,
+        "current_is_starter": bool(pitcher_state.get("current_is_starter")),
     }
 
 
@@ -10277,7 +10326,7 @@ def _live_pitcher_matchup_reasons(
     sim_context: Optional[Dict[str, Any]],
     actual_row: Optional[Dict[str, Any]],
 ) -> List[str]:
-    ctx = _live_pitcher_matchup_context(row, sim_context)
+    ctx = _live_pitcher_matchup_context(row, snapshot, sim_context)
     pitcher_profile = ctx.get("pitcher_profile") if isinstance(ctx.get("pitcher_profile"), dict) else None
     opponent_lineup = ctx.get("opponent_lineup") if isinstance(ctx.get("opponent_lineup"), list) else []
     pitcher_model = ctx.get("pitcher_model") if isinstance(ctx.get("pitcher_model"), dict) else None
@@ -10623,8 +10672,10 @@ def _current_live_prop_rows(
         market_entry = pitcher_market_lines.get(starter_key) if starter_key else None
         actual_row = _lookup_boxscore_row((((actual_teams.get(side) or {}).get("boxscore") or {}).get("pitching") or []), starter_name)
         if isinstance(model_entry, dict) and isinstance(market_entry, dict):
-            pitcher_ctx = _live_pitcher_matchup_context({"team_side": side}, sim_context)
+            pitcher_ctx = _live_pitcher_matchup_context({"team_side": side}, snapshot, sim_context)
             pitcher_profile = pitcher_ctx.get("pitcher_profile") if isinstance(pitcher_ctx.get("pitcher_profile"), dict) else None
+            current_profile = pitcher_ctx.get("current_profile") if isinstance(pitcher_ctx.get("current_profile"), dict) else None
+            bullpen_profiles = pitcher_ctx.get("bullpen_profiles") if isinstance(pitcher_ctx.get("bullpen_profiles"), list) else []
             for prop_key, cfg in _PITCHER_LADDER_PROPS.items():
                 market_key = cfg.get("market_key")
                 if not market_key:
@@ -10643,12 +10694,16 @@ def _current_live_prop_rows(
                     continue
                 live_projection = _project_live_pitcher_value(
                     prop=prop_key,
+                    team_side=side,
                     actual_value=actual_value,
                     model_mean=model_mean,
                     progress_fraction=progress_fraction,
                     actual_row=actual_row,
                     model_row=model_row,
                     pitcher_profile=pitcher_profile,
+                    current_profile=current_profile,
+                    bullpen_profiles=bullpen_profiles,
+                    snapshot=snapshot,
                 )
                 side_pick = _select_live_prop_side(
                     model_prob_over=model_prob_over,
@@ -10718,7 +10773,17 @@ def _current_live_prop_rows(
             actual_value = _live_stat_value(actual_row, {"market": "hitter_props", "prop": prop_key})
             if _live_prop_market_resolved(actual_value, line_value):
                 continue
-            live_projection = _project_live_value(actual_value, model_mean, progress_fraction)
+            live_projection = _project_live_hitter_value(
+                prop=prop_key,
+                player_name=hitter_name,
+                team_side=side,
+                actual_value=actual_value,
+                model_mean=model_mean,
+                progress_fraction=progress_fraction,
+                actual_row=actual_row,
+                model_row=model_row,
+                snapshot=snapshot,
+            )
             side_pick = _select_live_prop_side(
                 model_prob_over=model_prob_over,
                 live_projection=live_projection,
@@ -11145,6 +11210,122 @@ def _project_live_value(actual_value: Optional[float], model_mean: Optional[floa
     return round(actual + remaining, 3)
 
 
+def _current_batting_side(snapshot: Optional[Dict[str, Any]]) -> Optional[str]:
+    half = str((((snapshot or {}).get("current") or {}).get("halfInning") or "")).strip().lower()
+    if half == "top":
+        return "away"
+    if half == "bottom":
+        return "home"
+    return None
+
+
+def _lineup_slot_from_snapshot(snapshot: Optional[Dict[str, Any]], side: str, player_name: str) -> Optional[int]:
+    lineup_rows = ((((snapshot or {}).get("teams") or {}).get(side) or {}).get("lineup") or [])
+    if not isinstance(lineup_rows, list):
+        return None
+    target_name = normalize_pitcher_name(player_name)
+    if not target_name:
+        return None
+    for row in lineup_rows:
+        if not isinstance(row, dict):
+            continue
+        if normalize_pitcher_name(str(row.get("name") or "")) != target_name:
+            continue
+        order_value = _safe_int(row.get("order"))
+        if order_value is None:
+            return None
+        if int(order_value) >= 100:
+            return max(1, int(order_value) // 100)
+        return max(1, int(order_value))
+    return None
+
+
+def _current_batter_slot(snapshot: Optional[Dict[str, Any]], side: str) -> Optional[int]:
+    current_batting_side = _current_batting_side(snapshot)
+    if current_batting_side != side:
+        return None
+    batter = (((snapshot or {}).get("current") or {}).get("batter") or {}) if isinstance(snapshot, dict) else {}
+    batter_name = _first_text(batter.get("fullName"), batter.get("name"))
+    return _lineup_slot_from_snapshot(snapshot, side, batter_name)
+
+
+def _live_hitter_actual_pa(actual_row: Optional[Dict[str, Any]]) -> Optional[float]:
+    if not isinstance(actual_row, dict):
+        return None
+    ab = _safe_float(actual_row.get("AB"))
+    bb = _safe_float(actual_row.get("BB"))
+    hbp = _safe_float(actual_row.get("HBP"))
+    sf = _safe_float(actual_row.get("SF"))
+    sh = _safe_float(actual_row.get("SH"))
+    components = [value for value in (ab, bb, hbp, sf, sh) if value is not None]
+    if not components:
+        return None
+    return float(sum(float(value) for value in components))
+
+
+def _project_live_hitter_value(
+    *,
+    prop: str,
+    player_name: str,
+    team_side: str,
+    actual_value: Optional[float],
+    model_mean: Optional[float],
+    progress_fraction: float,
+    actual_row: Optional[Dict[str, Any]] = None,
+    model_row: Optional[Dict[str, Any]] = None,
+    snapshot: Optional[Dict[str, Any]] = None,
+) -> Optional[float]:
+    mean = _safe_float(model_mean)
+    if mean is None:
+        return None
+    if not isinstance(model_row, dict) or team_side not in {"away", "home"}:
+        return _project_live_value(actual_value, model_mean, progress_fraction)
+
+    actual = float(_safe_float(actual_value) or 0.0)
+    prop_key = str(prop or "").strip().lower()
+    pa_mean = _safe_float(model_row.get("pa_mean"))
+    ab_mean = _safe_float(model_row.get("ab_mean"))
+    actual_pa = _live_hitter_actual_pa(actual_row)
+    actual_ab = _safe_float((actual_row or {}).get("AB"))
+
+    use_ab_opportunity = prop_key in {"hits", "home_runs", "total_bases", "doubles", "triples"}
+    opportunity_mean = ab_mean if use_ab_opportunity else pa_mean
+    actual_opportunity = actual_ab if use_ab_opportunity else actual_pa
+    if opportunity_mean is None or float(opportunity_mean) <= 0.0:
+        return _project_live_value(actual_value, model_mean, progress_fraction)
+
+    remaining_opportunity = max(float(opportunity_mean) - float(actual_opportunity or 0.0), 0.0)
+    lineup_slot = _safe_int(model_row.get("lineup_order"))
+    current_batting_side = _current_batting_side(snapshot)
+    current_slot = _current_batter_slot(snapshot, team_side)
+    if current_batting_side == team_side:
+        if current_slot is not None and lineup_slot is not None:
+            normalized_player_slot = max(1, int(lineup_slot))
+            steps_until = (normalized_player_slot - int(current_slot)) % 9
+            if steps_until == 0:
+                remaining_opportunity = max(remaining_opportunity, 0.6 if use_ab_opportunity else 0.8)
+            elif steps_until == 1:
+                remaining_opportunity += 0.2
+            elif steps_until == 2:
+                remaining_opportunity += 0.1
+        elif normalize_pitcher_name(player_name) == normalize_pitcher_name(_first_text((((snapshot or {}).get("current") or {}).get("batter") or {}).get("fullName"))):
+            remaining_opportunity = max(remaining_opportunity, 0.6 if use_ab_opportunity else 0.8)
+
+    current = (snapshot or {}).get("current") if isinstance(snapshot, dict) else {}
+    inning = _safe_int(current.get("inning")) or 0
+    away_score = _safe_float((((snapshot or {}).get("teams") or {}).get("away") or {}).get("totals", {}).get("R"))
+    home_score = _safe_float((((snapshot or {}).get("teams") or {}).get("home") or {}).get("totals", {}).get("R"))
+    if inning >= 9 and away_score is not None and home_score is not None:
+        if team_side == "home" and current_batting_side == "top" and float(home_score) > float(away_score):
+            remaining_opportunity = 0.0
+        if team_side == "away" and current_batting_side == "bottom" and abs(float(home_score) - float(away_score)) > 1e-9:
+            remaining_opportunity = 0.0
+
+    rate = float(mean) / float(max(float(opportunity_mean), 1e-6))
+    projection = float(actual) + max(0.0, float(remaining_opportunity)) * float(rate)
+    return round(max(float(actual), projection), 3)
+
+
 def _model_pitcher_stat(model_row: Optional[Dict[str, Any]], *keys: str) -> Optional[float]:
     if not isinstance(model_row, dict):
         return None
@@ -11158,12 +11339,16 @@ def _model_pitcher_stat(model_row: Optional[Dict[str, Any]], *keys: str) -> Opti
 def _project_live_pitcher_value(
     *,
     prop: str,
+    team_side: str,
     actual_value: Optional[float],
     model_mean: Optional[float],
     progress_fraction: float,
     actual_row: Optional[Dict[str, Any]] = None,
     model_row: Optional[Dict[str, Any]] = None,
     pitcher_profile: Optional[Dict[str, Any]] = None,
+    current_profile: Optional[Dict[str, Any]] = None,
+    bullpen_profiles: Optional[List[Dict[str, Any]]] = None,
+    snapshot: Optional[Dict[str, Any]] = None,
 ) -> Optional[float]:
     prop_key = str(prop or "").strip().lower()
     mean = _safe_float(model_mean)
@@ -11192,14 +11377,12 @@ def _project_live_pitcher_value(
     if model_pitches is not None and float(model_pitches) > 0.0:
         pitches_per_bf = float(model_pitches) / float(max(model_bf, 1e-6))
 
+    workload_limit = float(model_pitches) if model_pitches is not None else None
+    stamina = _safe_float((pitcher_profile or {}).get("stamina_pitches")) if isinstance(pitcher_profile, dict) else None
+    if stamina is not None:
+        workload_limit = float(stamina) if workload_limit is None else min(float(workload_limit), float(stamina))
+
     if pitches_per_bf is not None and actual_pitches is not None:
-        workload_limit = float(model_pitches) if model_pitches is not None else None
-        stamina = _safe_float((pitcher_profile or {}).get("stamina_pitches")) if isinstance(pitcher_profile, dict) else None
-        if stamina is not None:
-            leash_limit = float(stamina)
-            if actual_bf is not None and float(actual_bf) >= 18.0:
-                leash_limit = max(0.0, leash_limit - 3.0)
-            workload_limit = leash_limit if workload_limit is None else min(float(workload_limit), leash_limit)
         if workload_limit is not None:
             pitch_headroom = max(float(workload_limit) - float(actual_pitches), 0.0)
             bf_from_pitch_budget = float(pitch_headroom) / float(max(pitches_per_bf, 1e-6))
@@ -11218,7 +11401,73 @@ def _project_live_pitcher_value(
     if remaining_bf is None:
         return _project_live_value(actual_value, model_mean, progress_fraction)
 
+    hook_factor = 1.0
+    if actual_pitches is not None and workload_limit is not None and float(workload_limit) > 0.0:
+        usage_ratio = float(actual_pitches) / float(workload_limit)
+        if usage_ratio >= 0.75:
+            hook_factor *= max(0.35, 1.0 - ((usage_ratio - 0.75) * 1.45))
+    if actual_bf is not None:
+        if float(actual_bf) >= 18.0:
+            hook_factor *= 0.92
+        if float(actual_bf) >= 21.0:
+            hook_factor *= 0.78
+        if float(actual_bf) >= 24.0:
+            hook_factor *= 0.72
+
+    progress = _live_game_progress(snapshot)
+    inning = _safe_int(progress.get("inning")) or 0
+    remaining_outs = _safe_int(progress.get("remainingOuts")) or 0
+    if inning >= 6:
+        hook_factor *= 0.93
+    if inning >= 7:
+        hook_factor *= 0.84
+    if remaining_outs <= 9:
+        hook_factor *= 0.88
+
+    team_score = _safe_float((((snapshot or {}).get("teams") or {}).get(team_side) or {}).get("totals", {}).get("R")) if team_side in {"away", "home"} else None
+    opp_side = "home" if team_side == "away" else ("away" if team_side == "home" else "")
+    opp_score = _safe_float((((snapshot or {}).get("teams") or {}).get(opp_side) or {}).get("totals", {}).get("R")) if opp_side else None
+    if team_score is not None and opp_score is not None:
+        margin = float(team_score) - float(opp_score)
+        if margin <= -4.0:
+            hook_factor *= 0.72
+        elif margin <= -2.0 and inning >= 5:
+            hook_factor *= 0.84
+        elif margin >= 4.0 and inning >= 6:
+            hook_factor *= 0.86
+
+    bullpen_availability = []
+    bullpen_leverage = []
+    for profile in bullpen_profiles or []:
+        if not isinstance(profile, dict):
+            continue
+        avail = _safe_float(profile.get("availability_mult"))
+        lev = _safe_float(profile.get("leverage_skill"))
+        if avail is not None:
+            bullpen_availability.append(float(avail))
+        if lev is not None:
+            bullpen_leverage.append(float(lev))
+    if bullpen_availability:
+        avg_avail = sum(bullpen_availability) / float(len(bullpen_availability))
+        avg_lev = sum(bullpen_leverage) / float(len(bullpen_leverage)) if bullpen_leverage else 0.5
+        if avg_avail >= 0.92 and avg_lev >= 0.58 and inning >= 6:
+            hook_factor *= 0.9
+        elif avg_avail <= 0.78:
+            hook_factor *= 1.06
+
+    if isinstance(current_profile, dict):
+        current_id = _safe_int(current_profile.get("id"))
+        starter_id = _safe_int((pitcher_profile or {}).get("id")) if isinstance(pitcher_profile, dict) else None
+        if current_id is not None and starter_id is not None and int(current_id) != int(starter_id):
+            hook_factor = 0.0
+
+    remaining_bf = max(0.0, float(remaining_bf) * max(0.0, min(1.1, float(hook_factor))))
+
     per_bf_rate = float(mean) / float(max(model_bf, 1e-6))
+    if prop_key == "strikeouts" and actual_bf is not None and float(actual_bf) >= 3.0:
+        actual_k_rate = float(actual) / float(max(float(actual_bf), 1e-6))
+        weight = min(0.55, max(0.12, float(actual_bf) / 36.0))
+        per_bf_rate = ((1.0 - weight) * float(per_bf_rate)) + (weight * float(actual_k_rate))
     projection = float(actual) + max(0.0, float(remaining_bf)) * float(per_bf_rate)
     return round(max(float(actual), projection), 3)
 
@@ -11501,10 +11750,12 @@ def _load_live_lens_snapshot(game_pk: int, d: str, *, feed: Optional[Dict[str, A
             "gamePk": int(game_pk),
             "status": (feed.get("gameData") or {}).get("status") or {},
             "current": _current_matchup(feed),
+            "offense": _live_offense_state(feed),
             "linescore": _live_linescore(feed),
             "teams": {
                 "away": {
                     "starter": {"id": away_sp, "name": _player_name_from_box(feed, away_sp) if away_sp else ""},
+                    "lineup": _lineup_from_box(feed, "away"),
                     "totals": _team_totals(feed, "away"),
                     "boxscore": {
                         "batting": _boxscore_batting(feed, "away"),
@@ -11513,6 +11764,7 @@ def _load_live_lens_snapshot(game_pk: int, d: str, *, feed: Optional[Dict[str, A
                 },
                 "home": {
                     "starter": {"id": home_sp, "name": _player_name_from_box(feed, home_sp) if home_sp else ""},
+                    "lineup": _lineup_from_box(feed, "home"),
                     "totals": _team_totals(feed, "home"),
                     "boxscore": {
                         "batting": _boxscore_batting(feed, "home"),
@@ -11538,6 +11790,302 @@ def _prop_model_mean_value(reco: Dict[str, Any], sim_row: Optional[Dict[str, Any
     return None
 
 
+def _live_base_state(snapshot: Optional[Dict[str, Any]]) -> Tuple[BaseState, int, int, int]:
+    offense = (snapshot or {}).get("offense") if isinstance(snapshot, dict) else {}
+    first_id = _safe_int(((offense.get("first") or {}).get("id")) if isinstance(offense, dict) else None) or 0
+    second_id = _safe_int(((offense.get("second") or {}).get("id")) if isinstance(offense, dict) else None) or 0
+    third_id = _safe_int(((offense.get("third") or {}).get("id")) if isinstance(offense, dict) else None) or 0
+    if first_id and second_id and third_id:
+        bases = BaseState.LOADED
+    elif first_id and second_id:
+        bases = BaseState.FIRST_SECOND
+    elif first_id and third_id:
+        bases = BaseState.FIRST_THIRD
+    elif second_id and third_id:
+        bases = BaseState.SECOND_THIRD
+    elif first_id:
+        bases = BaseState.FIRST
+    elif second_id:
+        bases = BaseState.SECOND
+    elif third_id:
+        bases = BaseState.THIRD
+    else:
+        bases = BaseState.EMPTY
+    return bases, int(first_id), int(second_id), int(third_id)
+
+
+def _live_team_next_batter_index(snapshot: Optional[Dict[str, Any]], roster: Any, side: str, *, current_batter_id: Optional[int] = None, batting_side: Optional[str] = None) -> int:
+    batters = list(getattr(getattr(roster, "lineup", None), "batters", []) or [])
+    if not batters:
+        return 0
+
+    if batting_side == side and current_batter_id is not None:
+        for idx, batter in enumerate(batters):
+            try:
+                if int(getattr(getattr(batter, "player", None), "mlbam_id", 0) or 0) == int(current_batter_id):
+                    return idx
+            except Exception:
+                continue
+        lineup_rows = ((((snapshot or {}).get("teams") or {}).get(side) or {}).get("lineup") or [])
+        if isinstance(lineup_rows, list):
+            for row in lineup_rows:
+                if not isinstance(row, dict):
+                    continue
+                if int(_safe_int(row.get("id")) or 0) != int(current_batter_id):
+                    continue
+                order_value = _safe_int(row.get("order"))
+                if order_value is not None:
+                    slot = max(0, int(order_value) // 100 - 1)
+                    return slot % len(batters)
+
+    batting_rows = (((((snapshot or {}).get("teams") or {}).get(side) or {}).get("boxscore") or {}).get("batting") or [])
+    approx_pa_total = 0
+    if isinstance(batting_rows, list):
+        for row in batting_rows:
+            if not isinstance(row, dict):
+                continue
+            approx_pa_total += int(_safe_int(row.get("AB")) or 0)
+            approx_pa_total += int(_safe_int(row.get("BB")) or 0)
+            approx_pa_total += int(_safe_int(row.get("HBP")) or 0)
+    return int(max(0, approx_pa_total)) % len(batters)
+
+
+def _live_pitcher_usage(snapshot: Optional[Dict[str, Any]]) -> Tuple[Dict[int, int], Dict[int, int]]:
+    pitch_counts: Dict[int, int] = {}
+    batters_faced: Dict[int, int] = {}
+    teams = ((snapshot or {}).get("teams") or {}) if isinstance(snapshot, dict) else {}
+    for side in ("away", "home"):
+        rows = ((((teams.get(side) or {}).get("boxscore") or {}).get("pitching")) or [])
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            pid = _safe_int(row.get("id"))
+            if pid is None or int(pid) <= 0:
+                continue
+            pitch_counts[int(pid)] = int(_safe_int(row.get("P")) or 0)
+            batters_faced[int(pid)] = int(_safe_int(row.get("BF")) or 0)
+    return pitch_counts, batters_faced
+
+
+def _snapshot_batter_to_roster_dict(row: Dict[str, Any]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {
+        "player": {
+            "mlbam_id": int(_safe_int(row.get("id")) or 0),
+            "full_name": str(row.get("name") or ""),
+            "primary_position": str(row.get("pos") or ""),
+            "bat_side": str(row.get("bat") or "R"),
+            "throw_side": str(row.get("throw") or "R"),
+        }
+    }
+    for key in (
+        "k_rate",
+        "bb_rate",
+        "hbp_rate",
+        "hr_rate",
+        "inplay_hit_rate",
+        "xb_hit_share",
+        "triple_share_of_xb",
+        "sb_attempt_rate",
+        "sb_success_rate",
+        "bb_gb_rate",
+        "bb_fb_rate",
+        "bb_ld_rate",
+        "bb_pu_rate",
+        "bb_inplay_n",
+    ):
+        if key in row:
+            out[key] = row.get(key)
+    for key in (
+        "vs_pitch_type",
+        "platoon_mult_vs_lhp",
+        "platoon_mult_vs_rhp",
+        "venue_mult_home",
+        "venue_mult_away",
+        "statcast_quality_mult",
+        "vs_pitcher_hr_mult",
+        "vs_pitcher_k_mult",
+        "vs_pitcher_bb_mult",
+        "vs_pitcher_inplay_mult",
+        "vs_pitcher_history",
+    ):
+        if isinstance(row.get(key), dict):
+            out[key] = dict(row.get(key) or {})
+    return out
+
+
+def _snapshot_pitcher_to_roster_dict(row: Dict[str, Any]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {
+        "player": {
+            "mlbam_id": int(_safe_int(row.get("id")) or 0),
+            "full_name": str(row.get("name") or ""),
+            "primary_position": "P",
+            "bat_side": "R",
+            "throw_side": str(row.get("throw") or "R"),
+        },
+        "role": str(row.get("role") or "RP"),
+    }
+    for key in (
+        "k_rate",
+        "bb_rate",
+        "hbp_rate",
+        "hr_rate",
+        "inplay_hit_rate",
+        "batters_faced",
+        "balls_in_play",
+        "availability_mult",
+        "bb_gb_rate",
+        "bb_fb_rate",
+        "bb_ld_rate",
+        "bb_pu_rate",
+        "leverage_skill",
+        "stamina_pitches",
+        "statcast_splits_n_pitches",
+        "arsenal_sample_size",
+        "bb_inplay_n",
+    ):
+        if key in row:
+            out[key] = row.get(key)
+    for key in (
+        "arsenal_source",
+        "statcast_splits_source",
+        "statcast_splits_start_date",
+        "statcast_splits_end_date",
+    ):
+        if key in row:
+            out[key] = row.get(key)
+    for key in (
+        "arsenal",
+        "pitch_type_whiff_mult",
+        "pitch_type_inplay_mult",
+        "platoon_mult_vs_lhb",
+        "platoon_mult_vs_rhb",
+        "venue_mult_home",
+        "venue_mult_away",
+        "statcast_quality_mult",
+    ):
+        if isinstance(row.get(key), dict):
+            out[key] = dict(row.get(key) or {})
+    return out
+
+
+def _snapshot_side_to_roster_doc(doc: Dict[str, Any]) -> Dict[str, Any]:
+    starter_profile = doc.get("starter_profile") if isinstance(doc.get("starter_profile"), dict) else {}
+    bullpen_profiles = [row for row in (doc.get("bullpen_profiles") or []) if isinstance(row, dict)]
+    lineup_rows = [row for row in (doc.get("lineup") or []) if isinstance(row, dict)]
+    bench_rows = [row for row in (doc.get("bench") or []) if isinstance(row, dict)]
+    team = doc.get("team") if isinstance(doc.get("team"), dict) else {}
+    manager = doc.get("manager") if isinstance(doc.get("manager"), dict) else {}
+    return {
+        "schema_version": 4,
+        "team": {
+            "team_id": int(_safe_int(team.get("team_id")) or 0),
+            "name": str(team.get("name") or ""),
+            "abbreviation": str(team.get("abbreviation") or ""),
+        },
+        "manager": dict(manager),
+        "lineup": {
+            "batters": [_snapshot_batter_to_roster_dict(row) for row in lineup_rows],
+            "pitcher": _snapshot_pitcher_to_roster_dict(starter_profile),
+            "bench": [_snapshot_batter_to_roster_dict(row) for row in bench_rows],
+            "bullpen": [_snapshot_pitcher_to_roster_dict(row) for row in bullpen_profiles],
+        },
+    }
+
+
+def _roster_from_snapshot_side(doc: Optional[Dict[str, Any]]) -> Any:
+    if not isinstance(doc, dict):
+        raise ValueError("missing_roster_doc")
+    try:
+        return roster_from_dict(doc)
+    except Exception:
+        return roster_from_dict(_snapshot_side_to_roster_doc(doc))
+
+
+def _live_mc_projection(snapshot: Optional[Dict[str, Any]], sim_context: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not isinstance(snapshot, dict) or not isinstance(sim_context, dict):
+        return None
+    if not sim_context.get("found"):
+        return None
+    status = (snapshot.get("status") or {}) if isinstance(snapshot.get("status"), dict) else {}
+    if not _status_is_live(status):
+        return None
+
+    roster_snapshot = sim_context.get("roster_snapshot") if isinstance(sim_context.get("roster_snapshot"), dict) else None
+    if not isinstance(roster_snapshot, dict):
+        return None
+    away_doc = roster_snapshot.get("away") if isinstance(roster_snapshot.get("away"), dict) else None
+    home_doc = roster_snapshot.get("home") if isinstance(roster_snapshot.get("home"), dict) else None
+    if not isinstance(away_doc, dict) or not isinstance(home_doc, dict):
+        return None
+
+    try:
+        away_roster = _roster_from_snapshot_side(away_doc)
+        home_roster = _roster_from_snapshot_side(home_doc)
+    except Exception:
+        return None
+
+    current = snapshot.get("current") if isinstance(snapshot.get("current"), dict) else {}
+    inning = _safe_int(current.get("inning"))
+    half = str(current.get("halfInning") or "").strip().lower()
+    outs = _safe_int(((current.get("count") or {}).get("outs")))
+    if inning is None or half not in {"top", "bottom"} or outs is None:
+        return None
+
+    away_score = _safe_int((((snapshot.get("teams") or {}).get("away") or {}).get("totals") or {}).get("R"))
+    home_score = _safe_int((((snapshot.get("teams") or {}).get("home") or {}).get("totals") or {}).get("R"))
+    if away_score is None or home_score is None:
+        return None
+
+    batting_side = "away" if half == "top" else "home"
+    fielding_side = "home" if batting_side == "away" else "away"
+    current_batter_id = _safe_int(((current.get("batter") or {}).get("id")))
+    current_pitcher_id = _safe_int(((current.get("pitcher") or {}).get("id")))
+    away_next_index = _live_team_next_batter_index(snapshot, away_roster, "away", current_batter_id=current_batter_id, batting_side=batting_side)
+    home_next_index = _live_team_next_batter_index(snapshot, home_roster, "home", current_batter_id=current_batter_id, batting_side=batting_side)
+    pitch_counts, batters_faced = _live_pitcher_usage(snapshot)
+    bases, runner_on_1b, runner_on_2b, runner_on_3b = _live_base_state(snapshot)
+
+    try:
+        result = estimate_live(
+            away_roster,
+            home_roster,
+            LiveSituation(
+                inning=int(inning),
+                top=(batting_side == "away"),
+                outs=int(outs),
+                bases=bases,
+                away_score=int(away_score),
+                home_score=int(home_score),
+                runner_on_1b=int(runner_on_1b),
+                runner_on_2b=int(runner_on_2b),
+                runner_on_3b=int(runner_on_3b),
+                away_next_batter_index=int(away_next_index),
+                home_next_batter_index=int(home_next_index),
+                away_pitcher_id=int(current_pitcher_id) if fielding_side == "away" and current_pitcher_id is not None else None,
+                home_pitcher_id=int(current_pitcher_id) if fielding_side == "home" and current_pitcher_id is not None else None,
+                pitcher_pitch_count=pitch_counts,
+                pitcher_batters_faced=batters_faced,
+            ),
+            sims=int(_LIVE_GAME_MC_SIMS),
+            seed=int(_safe_int(sim_context.get("gamePk")) or 0) or None,
+        )
+    except Exception:
+        return None
+
+    return {
+        "away": round(float(result.avg_away_runs), 2),
+        "home": round(float(result.avg_home_runs), 2),
+        "total": round(float(result.avg_total_runs), 2),
+        "homeMargin": round(float(result.avg_home_runs) - float(result.avg_away_runs), 2),
+        "homeWinProb": round(float(result.home_win_prob), 4),
+        "awayWinProb": round(float(result.away_win_prob), 4),
+        "closed": False,
+        "source": "live_mc",
+    }
+
+
 def _build_game_lens(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], sim_context: Optional[Dict[str, Any]], market_row: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
     predicted = (sim_context or {}).get("predicted") or {}
     pregame_away = _safe_float(predicted.get("away"))
@@ -11545,6 +12093,7 @@ def _build_game_lens(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], s
     away_score = _safe_float((((snapshot or {}).get("teams") or {}).get("away") or {}).get("totals", {}).get("R"))
     home_score = _safe_float((((snapshot or {}).get("teams") or {}).get("home") or {}).get("totals", {}).get("R"))
     progress = _live_game_progress(snapshot, card)
+    live_mc_projection = _live_mc_projection(snapshot, sim_context)
     predictions = card.get("predictions") or {}
     markets = (market_row or {}).get("markets") or {}
 
@@ -11566,6 +12115,14 @@ def _build_game_lens(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], s
             progress_fraction=float(progress.get("fraction") or 0.0),
             target_innings=int(lane["innings"]),
         )
+        if lane["key"] in {"live", "full"} and isinstance(live_mc_projection, dict):
+            projection = {
+                "away": _safe_float(live_mc_projection.get("away")),
+                "home": _safe_float(live_mc_projection.get("home")),
+                "total": _safe_float(live_mc_projection.get("total")),
+                "homeMargin": _safe_float(live_mc_projection.get("homeMargin")),
+                "closed": False,
+            }
         baseline_probs = predictions.get(lane["key"]) if isinstance(predictions.get(lane["key"]), dict) else {}
         baseline_home_prob = None
         if baseline_probs:
@@ -11576,6 +12133,8 @@ def _build_game_lens(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], s
                 away_prob = _safe_float(baseline_probs.get("awayWin"))
                 baseline_home_prob, _ = _normalize_two_way_probs(baseline_home_prob, away_prob)
         model_home_prob = _live_margin_win_prob(projection.get("homeMargin")) if not projection.get("closed") else None
+        if lane["key"] in {"live", "full"} and isinstance(live_mc_projection, dict):
+            model_home_prob = _safe_float(live_mc_projection.get("homeWinProb"))
 
         lane_markets = _game_lens_markets_for_lane(markets, str(lane["key"]))
         h2h = lane_markets.get("h2h") if isinstance(lane_markets.get("h2h"), dict) else {}
@@ -11639,7 +12198,7 @@ def _build_game_lens(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], s
                 "progress": progress,
                 "baselineHomeWinProb": baseline_home_prob,
                 "modelHomeWinProb": model_home_prob,
-                "source": "live_projection" if lane["key"] == "live" else "segment_projection",
+                "source": str(live_mc_projection.get("source") or "live_projection") if lane["key"] in {"live", "full"} and isinstance(live_mc_projection, dict) else ("live_projection" if lane["key"] == "live" else "segment_projection"),
                 "markets": {
                     "moneyline": moneyline_market,
                     "spread": spread_market,
@@ -11693,18 +12252,34 @@ def _prop_lens_rows(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], si
             model_mean = _prop_model_mean_value(reco, sim_row)
             pitcher_profile = None
             if is_pitcher:
-                pitcher_ctx = _live_pitcher_matchup_context({"team_side": side}, sim_context)
+                pitcher_ctx = _live_pitcher_matchup_context({"team_side": side}, snapshot, sim_context)
                 if isinstance(pitcher_ctx.get("pitcher_profile"), dict):
                     pitcher_profile = pitcher_ctx.get("pitcher_profile")
+                current_profile = pitcher_ctx.get("current_profile") if isinstance(pitcher_ctx.get("current_profile"), dict) else None
+                bullpen_profiles = pitcher_ctx.get("bullpen_profiles") if isinstance(pitcher_ctx.get("bullpen_profiles"), list) else []
             live_projection = _project_live_pitcher_value(
                 prop=str(reco.get("prop") or ""),
+                team_side=str(side or ""),
                 actual_value=actual_value,
                 model_mean=model_mean,
                 progress_fraction=progress_fraction,
                 actual_row=actual_row,
                 model_row=sim_row,
                 pitcher_profile=pitcher_profile,
-            ) if is_pitcher else _project_live_value(actual_value, model_mean, progress_fraction)
+                current_profile=current_profile,
+                bullpen_profiles=bullpen_profiles,
+                snapshot=snapshot,
+            ) if is_pitcher else _project_live_hitter_value(
+                prop=str(reco.get("prop") or ""),
+                player_name=owner_name,
+                team_side=str(side or ""),
+                actual_value=actual_value,
+                model_mean=model_mean,
+                progress_fraction=progress_fraction,
+                actual_row=actual_row,
+                model_row=sim_row,
+                snapshot=snapshot,
+            )
             market_line = _safe_float(reco.get("market_line"))
             selection = str(reco.get("selection") or "").strip().lower()
             rows.append(
@@ -12056,10 +12631,12 @@ def _live_lens_reports_payload(d: str) -> Dict[str, Any]:
 
 def _persist_live_lens_tick(d: str, *, trigger: str = "api", refresh_markets: bool = True) -> Dict[str, Any]:
     payload = _live_lens_payload(d, persist=True, refresh_markets=refresh_markets)
+    performance = payload.get("performance") if isinstance(payload.get("performance"), dict) else {}
     meta = {
         "recordedAt": _local_timestamp_text(),
         "date": str(d),
         "counts": payload.get("counts"),
+        "marketsRefreshed": bool(performance.get("marketsRefreshed")),
         "reportPath": _relative_path_str(_live_lens_report_path(d)),
         "logPath": _relative_path_str(_live_lens_log_path(d)),
         "propObservationLogPath": _relative_path_str(_live_prop_observation_log_path(d)),
@@ -12071,28 +12648,44 @@ def _persist_live_lens_tick(d: str, *, trigger: str = "api", refresh_markets: bo
 
 def _live_lens_background_loop() -> None:
     interval_seconds = _live_lens_loop_interval_seconds()
+    oddsapi_refresh_interval_seconds = _live_oddsapi_refresh_interval_seconds()
     status_path = _cron_meta_dir() / "live_lens_loop_status.json"
+    next_oddsapi_refresh_at = 0.0
     while not _LIVE_LENS_LOOP_STOP.is_set():
         started_at = time.time()
+        refresh_markets = bool(started_at >= next_oddsapi_refresh_at)
         try:
-            result = _persist_live_lens_tick(_today_iso(), trigger="background_loop")
+            result = _persist_live_lens_tick(
+                _today_iso(),
+                trigger="background_loop",
+                refresh_markets=refresh_markets,
+            )
+            if refresh_markets:
+                next_oddsapi_refresh_at = float(started_at) + float(oddsapi_refresh_interval_seconds)
             _write_json_file(
                 status_path,
                 {
                     "ok": True,
                     "recordedAt": _local_timestamp_text(),
                     "intervalSeconds": int(interval_seconds),
+                    "oddsapiRefreshIntervalSeconds": int(oddsapi_refresh_interval_seconds),
+                    "marketsRefreshTriggered": bool(refresh_markets),
+                    "marketsRefreshed": bool((result.get("report") or {}).get("marketsRefreshed")),
                     "date": result.get("date"),
                     "counts": result.get("counts"),
                 },
             )
         except Exception as exc:
+            if refresh_markets:
+                next_oddsapi_refresh_at = float(started_at) + float(oddsapi_refresh_interval_seconds)
             _write_json_file(
                 status_path,
                 {
                     "ok": False,
                     "recordedAt": _local_timestamp_text(),
                     "intervalSeconds": int(interval_seconds),
+                    "oddsapiRefreshIntervalSeconds": int(oddsapi_refresh_interval_seconds),
+                    "marketsRefreshTriggered": bool(refresh_markets),
                     "error": f"{type(exc).__name__}: {exc}",
                 },
             )
