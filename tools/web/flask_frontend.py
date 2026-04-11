@@ -173,8 +173,8 @@ _JSON_FILE_CACHE_MAX_BYTES = _env_int("MLB_JSON_FILE_CACHE_MAX_BYTES", 786432, m
 _SCHEDULE_FETCH_CACHE_MAXSIZE = _env_int("MLB_SCHEDULE_FETCH_CACHE_MAXSIZE", 32, minimum=4)
 _LADDERS_CACHE_TTL_SECONDS = float(_env_int("MLB_LADDERS_CACHE_TTL_SECONDS", 60, minimum=1))
 _TOP_PROPS_CACHE_TTL_SECONDS = float(_env_int("MLB_TOP_PROPS_CACHE_TTL_SECONDS", 60, minimum=1))
-_CARDS_CACHE_TTL_SECONDS = float(_env_int("MLB_CARDS_CACHE_TTL_SECONDS", 30, minimum=1))
-_CARDS_CONTEXT_CACHE_TTL_SECONDS = float(_env_int("MLB_CARDS_CONTEXT_CACHE_TTL_SECONDS", 30, minimum=1))
+_CARDS_CACHE_TTL_SECONDS = float(_env_int("MLB_CARDS_CACHE_TTL_SECONDS", 60, minimum=1))
+_CARDS_CONTEXT_CACHE_TTL_SECONDS = float(_env_int("MLB_CARDS_CONTEXT_CACHE_TTL_SECONDS", 60, minimum=1))
 _LIVE_ROUTE_CACHE_TTL_SECONDS = float(_env_int("MLB_LIVE_ROUTE_CACHE_TTL_SECONDS", 5, minimum=1))
 _LIVE_LENS_LOOP_DEFAULT_INTERVAL_SECONDS = 30
 _LIVE_LENS_LOOP_MIN_INTERVAL_SECONDS = 5
@@ -12663,6 +12663,7 @@ def _live_lens_background_loop() -> None:
                 trigger="background_loop",
                 refresh_markets=refresh_markets,
             )
+            cards_payload = _warm_cards_api_cache(_today_iso())
             if refresh_markets:
                 next_oddsapi_refresh_at = float(started_at) + float(oddsapi_refresh_interval_seconds)
             _write_json_file(
@@ -12676,6 +12677,8 @@ def _live_lens_background_loop() -> None:
                     "marketsRefreshed": bool((result.get("report") or {}).get("marketsRefreshed")),
                     "date": result.get("date"),
                     "counts": result.get("counts"),
+                    "cardsCacheDate": str(cards_payload.get("date") or ""),
+                    "cardsCacheCount": int(len(cards_payload.get("cards") or [])) if isinstance(cards_payload.get("cards"), list) else 0,
                 },
             )
         except Exception as exc:
@@ -13466,6 +13469,32 @@ def _build_cards_payload_context(d: str) -> Dict[str, Any]:
         "game_line_index": game_line_index,
         "signature": signature,
     }
+
+
+def _warm_cards_api_cache(d: str) -> Dict[str, Any]:
+    context_payload = _payload_cache_get_or_build(
+        "cards_api_context",
+        str(d),
+        max_age_seconds=_CARDS_CONTEXT_CACHE_TTL_SECONDS,
+        builder=lambda: _build_cards_payload_context(d),
+    )
+    artifacts = context_payload.get("artifacts") if isinstance(context_payload.get("artifacts"), dict) else {}
+    archive = context_payload.get("archive") if isinstance(context_payload.get("archive"), dict) else {}
+    game_line_index = context_payload.get("game_line_index") if isinstance(context_payload.get("game_line_index"), dict) else {}
+    context_signature = context_payload.get("signature")
+    payload = _payload_cache_get_or_build(
+        "cards_api",
+        str(d),
+        signature=context_signature,
+        max_age_seconds=_CARDS_CACHE_TTL_SECONDS,
+        builder=lambda: _build_cards_api_payload(
+            d,
+            artifacts=artifacts,
+            archive=archive,
+            game_line_index=game_line_index,
+        ),
+    )
+    return payload if isinstance(payload, dict) else {}
 
 
 def _cards_payload_signature(d: str, artifacts: Dict[str, Any], archive: Dict[str, Any], game_line_index: Dict[str, Any]) -> Tuple[Any, ...]:
