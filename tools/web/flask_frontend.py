@@ -1919,15 +1919,17 @@ def _payload_cache_get_or_build(
             age_matches = max_age_seconds is None or (now - created_at) <= float(max_age_seconds)
             if age_matches and isinstance(entry.get("payload"), dict):
                 return entry["payload"]
+            has_signature_check = signature_factory is not None or signature is not None
             if signature_factory is not None:
                 try:
                     signature = signature_factory()
                 except Exception:
                     signature = None
-            signature_matches = signature is None or cached_signature == signature
-            if signature_matches and isinstance(entry.get("payload"), dict):
-                entry["createdAt"] = now
-                return entry["payload"]
+            if has_signature_check:
+                signature_matches = signature is None or cached_signature == signature
+                if signature_matches and isinstance(entry.get("payload"), dict):
+                    entry["createdAt"] = now
+                    return entry["payload"]
 
     payload = builder()
     if signature_factory is not None and signature is None:
