@@ -179,6 +179,8 @@ _LIVE_ROUTE_CACHE_TTL_SECONDS = float(_env_int("MLB_LIVE_ROUTE_CACHE_TTL_SECONDS
 _LIVE_LENS_LOOP_DEFAULT_INTERVAL_SECONDS = 30
 _LIVE_LENS_LOOP_MIN_INTERVAL_SECONDS = 5
 _LIVE_ODDSAPI_REFRESH_MIN_INTERVAL_SECONDS = 15
+_LIVE_LENS_REPORT_REFRESH_DEFAULT_INTERVAL_SECONDS = 120
+_LIVE_LENS_REPORT_MAX_AGE_DEFAULT_SECONDS = 180
 _LIVE_LENS_LOOP_THREAD: Optional[threading.Thread] = None
 _LIVE_LENS_LOOP_LOCK = threading.Lock()
 _LIVE_LENS_LOOP_STOP = threading.Event()
@@ -1113,6 +1115,28 @@ def _live_oddsapi_refresh_interval_seconds() -> int:
     except Exception:
         value = _LIVE_PROP_MARKET_MAX_AGE_SECONDS
     return max(_LIVE_ODDSAPI_REFRESH_MIN_INTERVAL_SECONDS, int(value))
+
+
+def _live_lens_report_refresh_interval_seconds() -> int:
+    raw = str(os.environ.get("MLB_LIVE_LENS_REPORT_REFRESH_INTERVAL_SECONDS") or "").strip()
+    try:
+        value = int(raw or _LIVE_LENS_REPORT_REFRESH_DEFAULT_INTERVAL_SECONDS)
+    except Exception:
+        value = _LIVE_LENS_REPORT_REFRESH_DEFAULT_INTERVAL_SECONDS
+    return max(int(_live_lens_loop_interval_seconds()), int(value))
+
+
+def _live_lens_report_max_age_seconds() -> int:
+    raw = str(os.environ.get("MLB_LIVE_LENS_REPORT_MAX_AGE_SECONDS") or "").strip()
+    default_value = max(
+        _LIVE_LENS_REPORT_MAX_AGE_DEFAULT_SECONDS,
+        int(_live_lens_report_refresh_interval_seconds()) + int(_live_lens_loop_interval_seconds()) + 15,
+    )
+    try:
+        value = int(raw or default_value)
+    except Exception:
+        value = default_value
+    return max(int(_live_lens_loop_interval_seconds()), int(value))
 
 
 def _live_lens_loop_thread_alive() -> bool:
@@ -12654,20 +12678,31 @@ def _persist_live_lens_tick(d: str, *, trigger: str = "api", refresh_markets: bo
 def _live_lens_background_loop() -> None:
     interval_seconds = _live_lens_loop_interval_seconds()
     oddsapi_refresh_interval_seconds = _live_oddsapi_refresh_interval_seconds()
+    report_refresh_interval_seconds = _live_lens_report_refresh_interval_seconds()
     status_path = _cron_meta_dir() / "live_lens_loop_status.json"
     next_oddsapi_refresh_at = 0.0
+    next_report_refresh_at = 0.0
     while not _LIVE_LENS_LOOP_STOP.is_set():
         started_at = time.time()
         refresh_markets = bool(started_at >= next_oddsapi_refresh_at)
+        refresh_report = bool(started_at >= next_report_refresh_at)
+        result: Dict[str, Any] = {}
+        markets_refreshed = False
         try:
-            result = _persist_live_lens_tick(
-                _today_iso(),
-                trigger="background_loop",
-                refresh_markets=refresh_markets,
-            )
+            if refresh_report:
+                result = _persist_live_lens_tick(
+                    _today_iso(),
+                    trigger="background_loop",
+                    refresh_markets=refresh_markets,
+                )
+                next_report_refresh_at = float(started_at) + float(report_refresh_interval_seconds)
+                markets_refreshed = bool((result.get("report") or {}).get("marketsRefreshed"))
+            elif refresh_markets:
+                markets_refreshed = bool(_maybe_refresh_live_oddsapi_markets(_today_iso()))
             cards_payload = _warm_cards_api_cache(_today_iso())
             if refresh_markets:
                 next_oddsapi_refresh_at = float(started_at) + float(oddsapi_refresh_interval_seconds)
+            latest_tick = _load_json_file(_cron_meta_dir() / "latest_live_lens_tick.json") or {}
             _write_json_file(
                 status_path,
                 {
@@ -12675,10 +12710,12 @@ def _live_lens_background_loop() -> None:
                     "recordedAt": _local_timestamp_text(),
                     "intervalSeconds": int(interval_seconds),
                     "oddsapiRefreshIntervalSeconds": int(oddsapi_refresh_interval_seconds),
+                    "reportRefreshIntervalSeconds": int(report_refresh_interval_seconds),
+                    "reportRefreshTriggered": bool(refresh_report),
                     "marketsRefreshTriggered": bool(refresh_markets),
-                    "marketsRefreshed": bool((result.get("report") or {}).get("marketsRefreshed")),
-                    "date": result.get("date"),
-                    "counts": result.get("counts"),
+                    "marketsRefreshed": bool(markets_refreshed),
+                    "date": result.get("date") or latest_tick.get("date"),
+                    "counts": result.get("counts") or latest_tick.get("counts"),
                     "cardsCacheDate": str(cards_payload.get("date") or ""),
                     "cardsCacheCount": int(len(cards_payload.get("cards") or [])) if isinstance(cards_payload.get("cards"), list) else 0,
                 },
@@ -12686,6 +12723,8 @@ def _live_lens_background_loop() -> None:
         except Exception as exc:
             if refresh_markets:
                 next_oddsapi_refresh_at = float(started_at) + float(oddsapi_refresh_interval_seconds)
+            if refresh_report:
+                next_report_refresh_at = float(started_at) + float(report_refresh_interval_seconds)
             _write_json_file(
                 status_path,
                 {
@@ -12693,6 +12732,8 @@ def _live_lens_background_loop() -> None:
                     "recordedAt": _local_timestamp_text(),
                     "intervalSeconds": int(interval_seconds),
                     "oddsapiRefreshIntervalSeconds": int(oddsapi_refresh_interval_seconds),
+                    "reportRefreshIntervalSeconds": int(report_refresh_interval_seconds),
+                    "reportRefreshTriggered": bool(refresh_report),
                     "marketsRefreshTriggered": bool(refresh_markets),
                     "error": f"{type(exc).__name__}: {exc}",
                 },
@@ -12982,11 +13023,13 @@ def api_live_lens() -> Response:
     persist = str(request.args.get("persist") or "off").strip().lower() == "on"
     report_path = _live_lens_report_path(d)
     report_age_seconds = _path_age_seconds(report_path)
+    serve_report_max_age_seconds = float(_LIVE_ROUTE_CACHE_TTL_SECONDS)
+    if not _is_historical_date(d) and _is_live_lens_loop_enabled():
+        serve_report_max_age_seconds = float(_live_lens_report_max_age_seconds())
     if (
         not persist
-        and _is_historical_date(d)
         and report_age_seconds is not None
-        and report_age_seconds <= _LIVE_ROUTE_CACHE_TTL_SECONDS
+        and report_age_seconds <= float(serve_report_max_age_seconds)
     ):
         report_payload = _load_json_file(report_path)
         if isinstance(report_payload, dict) and report_payload:
