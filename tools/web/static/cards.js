@@ -16,7 +16,8 @@
   const AUTO_REFRESH_MS = 30000;
   const CARDS_REQUEST_TIMEOUT_MS = 25000;
   const DETAIL_REQUEST_TIMEOUT_MS = 15000;
-  const HYDRATE_CARD_CONCURRENCY = 4;
+  const HYDRATE_CARD_CONCURRENCY = 2;
+  const INITIAL_LIVE_PRIORITY_CARD_LIMIT = 2;
 
   const root = {
     headerMeta: document.getElementById("cardsHeaderMeta"),
@@ -2729,8 +2730,12 @@
     state.hydrationGeneration += 1;
     const generation = state.hydrationGeneration;
     const { liveTargets, deferredTargets } = partitionHydrationTargets(state.cards, options);
-    const priorityTargets = liveTargets.length ? liveTargets : deferredTargets;
-    const backgroundTargets = liveTargets.length ? deferredTargets : [];
+    const priorityTargets = liveTargets.length
+      ? liveTargets.slice(0, INITIAL_LIVE_PRIORITY_CARD_LIMIT)
+      : deferredTargets;
+    const backgroundTargets = liveTargets.length
+      ? [...liveTargets.slice(INITIAL_LIVE_PRIORITY_CARD_LIMIT), ...deferredTargets]
+      : [];
 
     await runHydrationQueue(priorityTargets, HYDRATE_CARD_CONCURRENCY, async function (card) {
       if (generation !== state.hydrationGeneration) return;
