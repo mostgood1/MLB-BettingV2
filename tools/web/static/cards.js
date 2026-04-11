@@ -2586,32 +2586,19 @@
     return await response.json();
   }
 
-  async function loadSnapshot(card, isRefresh) {
+  async function loadCardDetail(card, isRefresh) {
     const detail = ensureDetail(card);
     try {
-      const snapshot = await fetchJson(
-        `/api/game/${encodeURIComponent(card.gamePk)}/snapshot?date=${encodeURIComponent(state.date)}`,
+      const payload = await fetchJson(
+        `/api/game/${encodeURIComponent(card.gamePk)}/card-detail?date=${encodeURIComponent(state.date)}`,
         { timeoutMs: DETAIL_REQUEST_TIMEOUT_MS }
       );
-      detail.snapshot = snapshot;
+      detail.snapshot = payload?.snapshot || null;
+      detail.sim = payload?.sim || { found: false };
       syncCard(card);
     } catch (_error) {
+      detail.sim = detail.sim || { found: false };
       if (!isRefresh) syncCard(card);
-    }
-  }
-
-  async function loadSim(card) {
-    const detail = ensureDetail(card);
-    try {
-      const sim = await fetchJson(
-        `/api/game/${encodeURIComponent(card.gamePk)}/sim?date=${encodeURIComponent(state.date)}`,
-        { timeoutMs: DETAIL_REQUEST_TIMEOUT_MS }
-      );
-      detail.sim = sim;
-      syncCard(card);
-    } catch (_error) {
-      detail.sim = { found: false };
-      syncCard(card);
     }
   }
 
@@ -2728,7 +2715,7 @@
       if (generation !== state.hydrationGeneration) return;
       runHydrationQueue(deferred, HYDRATE_CARD_CONCURRENCY, async function (card) {
         if (generation !== state.hydrationGeneration) return;
-        await Promise.allSettled([loadSnapshot(card, !!options.liveOnly), loadSim(card)]);
+        await loadCardDetail(card, !!options.liveOnly);
       });
     };
     if (typeof window.requestIdleCallback === "function") {
@@ -2747,7 +2734,7 @@
 
     await runHydrationQueue(priorityTargets, HYDRATE_CARD_CONCURRENCY, async function (card) {
       if (generation !== state.hydrationGeneration) return;
-      await Promise.allSettled([loadSnapshot(card, !!options.liveOnly), loadSim(card)]);
+      await loadCardDetail(card, !!options.liveOnly);
     });
 
     if (generation !== state.hydrationGeneration) return;

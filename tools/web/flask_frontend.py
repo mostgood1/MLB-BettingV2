@@ -13955,10 +13955,7 @@ def api_schedule() -> Response:
 def api_game_snapshot(game_pk: int) -> Response:
     d = str(request.args.get("date") or "").strip()
     use_archive = _is_historical_date(d)
-    feed = _load_game_feed_for_date(int(game_pk), d) if use_archive else None
-    if not isinstance(feed, dict) or not feed:
-        c = _client()
-        feed = fetch_game_feed_live(c, int(game_pk))
+    feed = _load_live_lens_feed(int(game_pk), d)
     if not isinstance(feed, dict) or not feed:
         abort(404)
 
@@ -13995,6 +13992,75 @@ def api_game_snapshot(game_pk: int) -> Response:
         },
     }
     return jsonify(out)
+
+
+def _build_game_card_detail_payload(game_pk: int, d: str) -> Dict[str, Any]:
+    feed = _load_live_lens_feed(int(game_pk), d)
+    if not isinstance(feed, dict) or not feed:
+        return {
+            "gamePk": int(game_pk),
+            "date": d or None,
+            "found": False,
+            "error": "missing_feed",
+            "snapshot": None,
+            "sim": {"found": False, "error": "missing_feed"},
+        }
+
+    away_sp = _get_box_starting_pitcher_id(feed, "away")
+    home_sp = _get_box_starting_pitcher_id(feed, "home")
+    snapshot = {
+        "gamePk": int(game_pk),
+        "date": d or None,
+        "archived": bool(_is_historical_date(d)),
+        "streamAvailable": bool(not _is_historical_date(d) and d == _today_iso()),
+        "generatedAt": _local_timestamp_text(),
+        "status": (feed.get("gameData") or {}).get("status") or {},
+        "current": _current_matchup(feed),
+        "teams": {
+            "away": {
+                "lineup": _lineup_from_box(feed, "away"),
+                "starter": {"id": away_sp, "name": _player_name_from_box(feed, away_sp) if away_sp else ""},
+                "totals": _team_totals(feed, "away"),
+                "boxscore": {
+                    "batting": _boxscore_batting(feed, "away"),
+                    "pitching": _boxscore_pitching(feed, "away"),
+                },
+            },
+            "home": {
+                "lineup": _lineup_from_box(feed, "home"),
+                "starter": {"id": home_sp, "name": _player_name_from_box(feed, home_sp) if home_sp else ""},
+                "totals": _team_totals(feed, "home"),
+                "boxscore": {
+                    "batting": _boxscore_batting(feed, "home"),
+                    "pitching": _boxscore_pitching(feed, "home"),
+                },
+            },
+        },
+    }
+    sim = _build_game_sim_payload(int(game_pk), d, feed=feed)
+    return {
+        "gamePk": int(game_pk),
+        "date": d or None,
+        "found": True,
+        "generatedAt": _local_timestamp_text(),
+        "snapshot": snapshot,
+        "sim": sim,
+    }
+
+
+@app.get("/api/game/<int:game_pk>/card-detail")
+def api_game_card_detail(game_pk: int) -> Response:
+    d = str(request.args.get("date") or "").strip()
+    if not d:
+        return jsonify({"gamePk": int(game_pk), "found": False, "error": "missing_date"}), 400
+    out = _payload_cache_get_or_build(
+        "game_card_detail_api",
+        f"{str(d)}:{int(game_pk)}",
+        max_age_seconds=_LIVE_ROUTE_CACHE_TTL_SECONDS,
+        builder=lambda: _build_game_card_detail_payload(int(game_pk), d),
+    )
+    status = 200 if out.get("found") else 404
+    return jsonify(out), status
 
 
 @app.get("/api/game/<int:game_pk>/stream")
@@ -14177,10 +14243,14 @@ def api_game_stream(game_pk: int) -> Response:
 
     return Response(gen(), mimetype="text/event-stream", headers={"Cache-Control": "no-cache"})
 
-def _build_game_sim_payload(game_pk: int, d: str) -> Dict[str, Any]:
-    artifacts = _load_cards_artifacts(d)
-    archive = _load_cards_archive_context(d) if _should_load_cards_archive_context(d, artifacts) else {}
-    feed = _load_live_lens_feed(int(game_pk), d)
+def _build_game_sim_payload(
+    game_pk: int,
+    d: str,
+    *,
+    feed: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    artifacts, archive, game_line_index = _cards_payload_context(d)
+    feed = feed if isinstance(feed, dict) else _load_live_lens_feed(int(game_pk), d)
     out = _load_sim_context_for_game(int(game_pk), d, artifacts=artifacts, archive=archive, feed=feed)
     if out.get("found"):
         snapshot = _load_live_lens_snapshot(int(game_pk), d, feed=feed)
@@ -14205,7 +14275,7 @@ def _build_game_sim_payload(game_pk: int, d: str) -> Dict[str, Any]:
             live_card,
             snapshot,
             out,
-            _game_line_market_for_card(live_card, _load_game_line_market_index(d)),
+            _game_line_market_for_card(live_card, game_line_index),
         )
         out.pop("propModels", None)
     return out
