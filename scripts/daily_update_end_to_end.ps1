@@ -96,6 +96,31 @@ function Invoke-GitCommand {
     Invoke-ExternalCommand -FilePath 'git' -Arguments (@('-C', $RepoRoot) + $Arguments) -StepName $StepName -WorkingDirectory $RepoRoot
 }
 
+function Get-GitCurrentBranch {
+    param([string]$RepoRoot)
+
+    $branch = (& git -C $RepoRoot rev-parse --abbrev-ref HEAD 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Failed to determine current git branch.'
+    }
+    $branch = ($branch | Select-Object -First 1).Trim()
+    if (-not $branch -or $branch -eq 'HEAD') {
+        throw 'Detached HEAD is not supported for workflow auto-push.'
+    }
+    return $branch
+}
+
+function Sync-GitBranchBeforePush {
+    param(
+        [string]$RepoRoot,
+        [string]$Remote,
+        [string]$Branch
+    )
+
+    Invoke-GitCommand -RepoRoot $RepoRoot -Arguments @('fetch', $Remote, $Branch) -StepName "Fetch $Remote/$Branch before push"
+    Invoke-GitCommand -RepoRoot $RepoRoot -Arguments @('rebase', "$Remote/$Branch") -StepName "Rebase onto $Remote/$Branch before push"
+}
+
 $repoRoot = Get-RepoRoot
 $python = Resolve-PythonExe -RepoRoot $repoRoot -Requested $PythonExe
 $dailyUpdatePy = Join-Path $repoRoot 'tools\daily_update.py'
@@ -170,6 +195,7 @@ Invoke-ExternalCommand -FilePath $python -Arguments $nextArgs -StepName "Next-da
 
 if ($GitPush -eq 'on') {
     $commitMessage = $GitCommitMessage.Replace('{date}', $Date).Replace('{next_date}', $resolvedNextDate).Replace('{workflow}', 'end-to-end')
+    $pushBranch = if ($GitPushBranch) { $GitPushBranch } else { Get-GitCurrentBranch -RepoRoot $repoRoot }
     Invoke-GitCommand -RepoRoot $repoRoot -Arguments @('add', '-A') -StepName 'Stage workflow outputs'
 
     $postAddStatus = (& git -C $repoRoot status --porcelain) -join "`n"
@@ -178,10 +204,8 @@ if ($GitPush -eq 'on') {
     }
     else {
         Invoke-GitCommand -RepoRoot $repoRoot -Arguments @('commit', '-m', $commitMessage) -StepName 'Commit workflow outputs'
-        $pushArgs = @('push', $GitPushRemote)
-        if ($GitPushBranch) {
-            $pushArgs += $GitPushBranch
-        }
+        Sync-GitBranchBeforePush -RepoRoot $repoRoot -Remote $GitPushRemote -Branch $pushBranch
+        $pushArgs = @('push', $GitPushRemote, $pushBranch)
         Invoke-GitCommand -RepoRoot $repoRoot -Arguments $pushArgs -StepName 'Push workflow outputs'
     }
 }
