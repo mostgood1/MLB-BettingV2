@@ -10,6 +10,7 @@
     details: new Map(),
     autoRefreshHandle: null,
     loadingCards: false,
+    hydrationGeneration: 0,
   };
 
   const AUTO_REFRESH_MS = 30000;
@@ -2605,6 +2606,10 @@
     return snapshotState === "live" || cardState === "live";
   }
 
+  function cardIsLiveByStatus(card) {
+    return String(card?.status?.abstract || "").toLowerCase() === "live";
+  }
+
   function syncStrip(card, detail) {
     const stripNode = state.stripNodes.get(Number(card.gamePk));
     if (!stripNode) return;
@@ -2688,11 +2693,49 @@
     await Promise.all(workers);
   }
 
-  async function hydrateCards(options = {}) {
+  function partitionHydrationTargets(cards, options = {}) {
     const targets = state.cards.filter((card) => shouldHydrateCard(card, options));
-    await runHydrationQueue(targets, HYDRATE_CARD_CONCURRENCY, async function (card) {
+    const liveTargets = [];
+    const deferredTargets = [];
+    targets.forEach((card) => {
+      if (cardIsLive(card) || cardIsLiveByStatus(card)) liveTargets.push(card);
+      else deferredTargets.push(card);
+    });
+    return { liveTargets, deferredTargets };
+  }
+
+  function queueDeferredHydration(cards, options = {}) {
+    const deferred = Array.isArray(cards) ? cards.slice() : [];
+    if (!deferred.length) return;
+    const generation = state.hydrationGeneration;
+    const kickoff = function () {
+      if (generation !== state.hydrationGeneration) return;
+      runHydrationQueue(deferred, HYDRATE_CARD_CONCURRENCY, async function (card) {
+        if (generation !== state.hydrationGeneration) return;
+        await Promise.allSettled([loadSnapshot(card, !!options.liveOnly), loadSim(card)]);
+      });
+    };
+    if (typeof window.requestIdleCallback === "function") {
+      window.requestIdleCallback(kickoff, { timeout: 1500 });
+      return;
+    }
+    window.setTimeout(kickoff, 0);
+  }
+
+  async function hydrateCards(options = {}) {
+    state.hydrationGeneration += 1;
+    const generation = state.hydrationGeneration;
+    const { liveTargets, deferredTargets } = partitionHydrationTargets(state.cards, options);
+    const priorityTargets = liveTargets.length ? liveTargets : deferredTargets;
+    const backgroundTargets = liveTargets.length ? deferredTargets : [];
+
+    await runHydrationQueue(priorityTargets, HYDRATE_CARD_CONCURRENCY, async function (card) {
+      if (generation !== state.hydrationGeneration) return;
       await Promise.allSettled([loadSnapshot(card, !!options.liveOnly), loadSim(card)]);
     });
+
+    if (generation !== state.hydrationGeneration) return;
+    queueDeferredHydration(backgroundTargets, options);
   }
 
   function sameSlate(nextCards, currentCards) {
