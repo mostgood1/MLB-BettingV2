@@ -171,6 +171,7 @@ _PERSON_SEASON_CACHE_MAXSIZE = _env_int("MLB_PERSON_SEASON_CACHE_MAXSIZE", 1024,
 _JSON_FILE_CACHE_MAXSIZE = _env_int("MLB_JSON_FILE_CACHE_MAXSIZE", 256, minimum=32)
 _JSON_FILE_CACHE_MAX_BYTES = _env_int("MLB_JSON_FILE_CACHE_MAX_BYTES", 786432, minimum=0)
 _SCHEDULE_FETCH_CACHE_MAXSIZE = _env_int("MLB_SCHEDULE_FETCH_CACHE_MAXSIZE", 32, minimum=4)
+_SCHEDULE_REMOTE_CACHE_TTL_SECONDS = float(_env_int("MLB_SCHEDULE_REMOTE_CACHE_TTL_SECONDS", 15, minimum=5))
 _LADDERS_CACHE_TTL_SECONDS = float(_env_int("MLB_LADDERS_CACHE_TTL_SECONDS", 60, minimum=1))
 _TOP_PROPS_CACHE_TTL_SECONDS = float(_env_int("MLB_TOP_PROPS_CACHE_TTL_SECONDS", 60, minimum=1))
 _CARDS_CACHE_TTL_SECONDS = float(_env_int("MLB_CARDS_CACHE_TTL_SECONDS", 60, minimum=1))
@@ -184,6 +185,8 @@ _LIVE_LENS_REPORT_MAX_AGE_DEFAULT_SECONDS = 180
 _LIVE_LENS_LOOP_THREAD: Optional[threading.Thread] = None
 _LIVE_LENS_LOOP_LOCK = threading.Lock()
 _LIVE_LENS_LOOP_STOP = threading.Event()
+_SCHEDULE_REMOTE_CACHE_LOCK = threading.Lock()
+_SCHEDULE_REMOTE_CACHE: Dict[str, Tuple[float, Tuple[Dict[str, Any], ...]]] = {}
 _LIVE_FEED_CACHE_LOCK = threading.Lock()
 _LIVE_FEED_CACHE: Dict[Tuple[str, int], Tuple[float, Dict[str, Any]]] = {}
 _PAYLOAD_CACHE_LOCK = threading.Lock()
@@ -1031,6 +1034,25 @@ def _local_now() -> datetime:
 
 def _local_today() -> date:
     return _local_now().date()
+
+
+def _is_current_local_date(date_str: str) -> bool:
+    try:
+        return date.fromisoformat(str(date_str or "").strip()) == _local_today()
+    except Exception:
+        return False
+
+
+def _cards_cache_ttl_seconds_for_date(d: str) -> float:
+    if _is_current_local_date(d):
+        return min(float(_CARDS_CACHE_TTL_SECONDS), 15.0)
+    return float(_CARDS_CACHE_TTL_SECONDS)
+
+
+def _cards_context_cache_ttl_seconds_for_date(d: str) -> float:
+    if _is_current_local_date(d):
+        return min(float(_CARDS_CONTEXT_CACHE_TTL_SECONDS), 15.0)
+    return float(_CARDS_CONTEXT_CACHE_TTL_SECONDS)
 
 
 def _local_timestamp_text(value: Optional[datetime] = None) -> str:
@@ -5078,13 +5100,33 @@ def _schedule_context_by_game_pk(d: str) -> Dict[int, Dict[str, Any]]:
     return out
 
 
-@lru_cache(maxsize=_SCHEDULE_FETCH_CACHE_MAXSIZE)
 def _fetch_schedule_games_remote_cached(d: str) -> Tuple[Dict[str, Any], ...]:
-    try:
-        schedule_games = fetch_schedule_for_date(_client(), d) or []
-    except Exception:
+    cache_key = str(d or "").strip()
+    if not cache_key:
         return tuple()
-    return tuple(game for game in schedule_games if isinstance(game, dict))
+    now = time.time()
+    with _SCHEDULE_REMOTE_CACHE_LOCK:
+        cached = _SCHEDULE_REMOTE_CACHE.get(cache_key)
+        if cached is not None and (now - float(cached[0])) <= _SCHEDULE_REMOTE_CACHE_TTL_SECONDS:
+            return cached[1]
+    try:
+        schedule_games = fetch_schedule_for_date(_client(), cache_key) or []
+    except Exception:
+        schedule_games = []
+    payload = tuple(game for game in schedule_games if isinstance(game, dict))
+    with _SCHEDULE_REMOTE_CACHE_LOCK:
+        _SCHEDULE_REMOTE_CACHE[cache_key] = (now, payload)
+        expired_keys = [
+            key
+            for key, value in _SCHEDULE_REMOTE_CACHE.items()
+            if (now - float(value[0])) > (_SCHEDULE_REMOTE_CACHE_TTL_SECONDS * 4.0)
+        ]
+        for key in expired_keys:
+            _SCHEDULE_REMOTE_CACHE.pop(key, None)
+        while len(_SCHEDULE_REMOTE_CACHE) > int(_SCHEDULE_FETCH_CACHE_MAXSIZE):
+            oldest_key = min(_SCHEDULE_REMOTE_CACHE, key=lambda key: float((_SCHEDULE_REMOTE_CACHE.get(key) or (0.0, tuple()))[0]))
+            _SCHEDULE_REMOTE_CACHE.pop(oldest_key, None)
+    return payload
 
 
 def _schedule_games_for_date(d: str) -> List[Dict[str, Any]]:
@@ -13504,7 +13546,7 @@ def _cards_payload_context(d: str) -> Tuple[Dict[str, Any], Dict[str, Any], Dict
     context_payload = _payload_cache_get_or_build(
         "cards_api_context",
         str(d),
-        max_age_seconds=_CARDS_CONTEXT_CACHE_TTL_SECONDS,
+        max_age_seconds=_cards_context_cache_ttl_seconds_for_date(d),
         builder=lambda: _build_cards_payload_context(d),
     )
     if not isinstance(context_payload, dict):
@@ -13532,7 +13574,7 @@ def _warm_cards_api_cache(d: str) -> Dict[str, Any]:
     context_payload = _payload_cache_get_or_build(
         "cards_api_context",
         str(d),
-        max_age_seconds=_CARDS_CONTEXT_CACHE_TTL_SECONDS,
+        max_age_seconds=_cards_context_cache_ttl_seconds_for_date(d),
         builder=lambda: _build_cards_payload_context(d),
     )
     artifacts = context_payload.get("artifacts") if isinstance(context_payload.get("artifacts"), dict) else {}
@@ -13543,7 +13585,7 @@ def _warm_cards_api_cache(d: str) -> Dict[str, Any]:
         "cards_api",
         str(d),
         signature=context_signature,
-        max_age_seconds=_CARDS_CACHE_TTL_SECONDS,
+        max_age_seconds=_cards_cache_ttl_seconds_for_date(d),
         builder=lambda: _build_cards_api_payload(
             d,
             artifacts=artifacts,
@@ -13617,7 +13659,7 @@ def api_cards() -> Response:
         context_payload = _payload_cache_get_or_build(
             "cards_api_context",
             str(d),
-            max_age_seconds=_CARDS_CONTEXT_CACHE_TTL_SECONDS,
+            max_age_seconds=_cards_context_cache_ttl_seconds_for_date(d),
             builder=lambda: _build_cards_payload_context(d),
         )
         artifacts = context_payload.get("artifacts") if isinstance(context_payload.get("artifacts"), dict) else {}
@@ -13628,7 +13670,7 @@ def api_cards() -> Response:
             "cards_api",
             str(d),
             signature=context_signature,
-            max_age_seconds=_CARDS_CACHE_TTL_SECONDS,
+            max_age_seconds=_cards_cache_ttl_seconds_for_date(d),
             builder=lambda: _build_cards_api_payload(
                 d,
                 artifacts=artifacts,
