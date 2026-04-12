@@ -2206,12 +2206,27 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
                 },
             }
             soft_artifact_warnings = []
+            odds_stage = dict((report.get("stages") or {}).get("current_day_oddsapi") or {})
+            odds_counts = dict(odds_stage.get("counts") or {})
+            game_line_counts = dict(odds_counts.get("game_lines") or {})
+            no_current_day_game_lines = int(game_line_counts.get("games") or 0) <= 0
             for name, info in dict(season_frontend_stage.get("artifacts") or {}).items():
                 error_code = str(info.get("error") or "")
                 if name == "season_official_betting_day" and error_code == "official_betting_card_day_missing":
                     soft_artifact_warnings.append(
                         "current-day official betting card day artifact has no selected rows yet"
                     )
+                    info["error"] = None
+                    info["found"] = True
+                elif error_code == "season_betting_day_missing" and no_current_day_game_lines:
+                    if name == "season_official_betting_day":
+                        soft_artifact_warnings.append(
+                            "current-day official betting card day artifact was skipped because no game lines were available"
+                        )
+                    else:
+                        soft_artifact_warnings.append(
+                            "current-day season betting day artifact was skipped because no game lines were available"
+                        )
                     info["error"] = None
                     info["found"] = True
             artifact_errors = [
