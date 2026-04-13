@@ -216,6 +216,23 @@ function Sync-GitBranchBeforePush {
     Invoke-GitCommand -RepoRoot $RepoRoot -Arguments @('rebase', "$Remote/$Branch") -StepName "Rebase onto $Remote/$Branch before push"
 }
 
+function Sync-GitBranchBeforeRun {
+    param(
+        [string]$RepoRoot,
+        [string]$Remote,
+        [string]$Branch
+    )
+
+    $remoteRef = "$Remote/$Branch"
+    Invoke-GitCommand -RepoRoot $RepoRoot -Arguments @('fetch', $Remote, $Branch) -StepName "Fetch $remoteRef before workflow run"
+    $divergence = Get-GitAheadBehind -RepoRoot $RepoRoot -RemoteRef $remoteRef
+    if ($divergence.Behind -le 0) {
+        return
+    }
+
+    Invoke-GitCommand -RepoRoot $RepoRoot -Arguments @('rebase', $remoteRef) -StepName "Rebase onto $remoteRef before workflow run"
+}
+
 $repoRoot = Get-RepoRoot
 $python = Resolve-PythonExe -RepoRoot $repoRoot -Requested $PythonExe
 $dailyUpdatePy = Join-Path $repoRoot 'tools\daily_update.py'
@@ -248,10 +265,16 @@ if ($ExtraArgs) {
 }
 
 $initialGitStatus = ''
+$pushBranch = ''
 if ($GitPush -eq 'on') {
     $initialGitStatus = (& git -C $repoRoot status --porcelain) -join "`n"
     if ($initialGitStatus -and -not $AllowDirtyGit.IsPresent) {
         throw 'Git working tree is already dirty. Re-run with -AllowDirtyGit to permit a final auto-push.'
+    }
+
+    $pushBranch = if ($GitPushBranch) { $GitPushBranch } else { Get-GitCurrentBranch -RepoRoot $repoRoot }
+    if (-not $initialGitStatus) {
+        Sync-GitBranchBeforeRun -RepoRoot $repoRoot -Remote $GitPushRemote -Branch $pushBranch
     }
 }
 
@@ -291,7 +314,6 @@ Invoke-ExternalCommand -FilePath $python -Arguments $nextArgs -StepName "Next-da
 
 if ($GitPush -eq 'on') {
     $commitMessage = $GitCommitMessage.Replace('{date}', $Date).Replace('{next_date}', $resolvedNextDate).Replace('{workflow}', 'end-to-end')
-    $pushBranch = if ($GitPushBranch) { $GitPushBranch } else { Get-GitCurrentBranch -RepoRoot $repoRoot }
     Assert-SafeArtifactPush -RepoRoot $repoRoot -Remote $GitPushRemote -Branch $pushBranch -ArtifactPaths $artifactPaths -AllowArtifactRebase:$AllowArtifactRebase
     Invoke-GitCommand -RepoRoot $repoRoot -Arguments @('add', '-A') -StepName 'Stage workflow outputs'
 
