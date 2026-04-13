@@ -2400,7 +2400,7 @@
     anchor.dataset.gamePk = String(card.gamePk);
     anchor.innerHTML = `
       <div class="cards-strip-head">
-        <span>${escapeHtml(statusBadge.text || "Game")}</span>
+        <span data-role="strip-badge" class="${escapeHtml(statusBadge.className || "")}">${escapeHtml(statusBadge.text || "Game")}</span>
         <span data-role="strip-detail">${escapeHtml(statusDetailText(null, card) || card.startTime || "")}</span>
       </div>
       <div class="cards-linescore is-compact">
@@ -2645,6 +2645,7 @@
   function syncStrip(card, detail) {
     const stripNode = state.stripNodes.get(Number(card.gamePk));
     if (!stripNode) return;
+    const badgeNode = stripNode.querySelector('[data-role="strip-badge"]');
     const awayRuns = stripNode.querySelector('[data-role="strip-away-r"]');
     const awayHits = stripNode.querySelector('[data-role="strip-away-h"]');
     const awayErrors = stripNode.querySelector('[data-role="strip-away-e"]');
@@ -2654,6 +2655,11 @@
     const detailNode = stripNode.querySelector('[data-role="strip-detail"]');
     const liveNode = stripNode.querySelector('[data-role="strip-live"]');
     const snapshot = detail.snapshot;
+    if (badgeNode) {
+      const status = statusBadgePresentation(card, snapshot);
+      badgeNode.textContent = status.text || "Game";
+      badgeNode.className = status.className || "";
+    }
     if (awayRuns) awayRuns.textContent = linescoreValue(snapshot?.teams?.away?.totals?.R);
     if (awayHits) awayHits.textContent = linescoreValue(snapshot?.teams?.away?.totals?.H);
     if (awayErrors) awayErrors.textContent = linescoreValue(snapshot?.teams?.away?.totals?.E);
