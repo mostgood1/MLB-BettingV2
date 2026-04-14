@@ -371,6 +371,32 @@
     return `${awayStarter} vs ${homeStarter}`;
   }
 
+  function starterLadderBadgesMarkup(probable) {
+    const badges = Array.isArray(probable?.ladderBadges) ? probable.ladderBadges : [];
+    if (!badges.length) return "";
+    return `<div class="cards-starter-ladder-badges">${badges.map((badge) => {
+      const label = String(badge?.label || "").trim();
+      if (!label) return "";
+      const tone = String(badge?.tone || "soft").trim();
+      const detail = String(badge?.detail || "").trim();
+      const prob = toNumber(badge?.hitProb);
+      const titleParts = [];
+      if (detail) titleParts.push(detail);
+      if (prob != null) titleParts.push(`Sim hit rate ${formatPercent(prob, 1)}`);
+      const titleAttr = titleParts.length ? ` title="${escapeHtml(titleParts.join(" • "))}"` : "";
+      return `<span class="cards-chip cards-starter-ladder-badge is-${escapeHtml(tone)}"${titleAttr}>${escapeHtml(label)}</span>`;
+    }).join("")}</div>`;
+  }
+
+  function starterMetricMarkup(label, probable) {
+    return `
+      <div class="cards-mini-metric">
+        <span class="cards-section-label">${escapeHtml(label)}</span>
+        <strong>${escapeHtml(probable?.fullName || "TBD")}</strong>
+        ${starterLadderBadgesMarkup(probable)}
+      </div>`;
+  }
+
   function ensureDetail(card) {
     const gamePk = Number(card.gamePk);
     if (!state.details.has(gamePk)) {
@@ -1261,14 +1287,8 @@
           <button class="cards-tab" type="button" data-tab-target="props">Props</button>
         </div>
         <div class="cards-mini-metrics cards-mini-metrics--rail">
-          <div class="cards-mini-metric">
-            <span class="cards-section-label">Away starter</span>
-            <strong>${escapeHtml(card?.probable?.away?.fullName || "TBD")}</strong>
-          </div>
-          <div class="cards-mini-metric">
-            <span class="cards-section-label">Home starter</span>
-            <strong>${escapeHtml(card?.probable?.home?.fullName || "TBD")}</strong>
-          </div>
+          ${starterMetricMarkup("Away starter", card?.probable?.away)}
+          ${starterMetricMarkup("Home starter", card?.probable?.home)}
         </div>
       </div>
 

@@ -2564,6 +2564,7 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
     lineups_path = (snapshot_dir / "lineups.json") if snapshot_dir else None
     lineups = _load_json_file(lineups_path)
     market_availability = _load_market_availability(d)
+    daily_ladders_path, daily_ladders = _load_daily_ladders_artifact(str(d))
 
     return {
         "profile_bundle_path": profile_bundle_path,
@@ -2579,6 +2580,8 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
         "snapshot_dir": snapshot_dir,
         "lineups_path": lineups_path,
         "lineups": lineups,
+        "daily_ladders_path": daily_ladders_path,
+        "daily_ladders": daily_ladders,
         "ops_report_path": ops_report_path,
         "ops_report": ops_report,
         "market_availability": market_availability,
@@ -13927,6 +13930,7 @@ def _cards_payload_signature(d: str, artifacts: Dict[str, Any], archive: Dict[st
         _path_signature(artifacts.get("profile_bundle_path") if isinstance(artifacts.get("profile_bundle_path"), Path) else None),
         _path_signature(artifacts.get("locked_policy_path") if isinstance(artifacts.get("locked_policy_path"), Path) else None),
         _path_signature(artifacts.get("game_summary_path") if isinstance(artifacts.get("game_summary_path"), Path) else None),
+        _path_signature(artifacts.get("daily_ladders_path") if isinstance(artifacts.get("daily_ladders_path"), Path) else None),
         _path_signature(artifacts.get("settlement_path") if isinstance(artifacts.get("settlement_path"), Path) else None),
         _path_signature(artifacts.get("ops_report_path") if isinstance(artifacts.get("ops_report_path"), Path) else None),
         _path_signature(artifacts.get("lineups_path") if isinstance(artifacts.get("lineups_path"), Path) else None),
@@ -13969,6 +13973,7 @@ def _build_cards_api_payload(
         outputs_by_game=outputs_by_game,
         recos_by_game=recos_by_game,
     )
+    _attach_cards_starter_ladder_badges(cards, artifacts.get("daily_ladders"))
     feed_cache: Dict[int, Optional[Dict[str, Any]]] = {}
     for card in cards:
         if not isinstance(card, dict):
@@ -13983,6 +13988,122 @@ def _build_cards_api_payload(
         market_row = _game_line_market_for_card(card, game_line_index)
         card["trackedGameLines"] = (market_row.get("markets") or {}) if isinstance(market_row, dict) else None
     return _cards_api_payload(d, artifacts=artifacts, archive=archive, cards=cards)
+
+
+def _starter_ladder_badge_from_row(
+    row: Optional[Dict[str, Any]],
+    *,
+    short_label: str,
+    min_hit_prob: float = 0.2,
+) -> Optional[Dict[str, Any]]:
+    if not isinstance(row, dict):
+        return None
+    market_line = _safe_float(row.get("marketLine"))
+    ladder_rows = [entry for entry in (row.get("ladder") or []) if isinstance(entry, dict)]
+    if market_line is None or not ladder_rows:
+        return None
+
+    candidate_total: Optional[int] = None
+    candidate_prob: Optional[float] = None
+    for entry in ladder_rows:
+        total = _safe_int(entry.get("total"))
+        hit_prob = _safe_float(entry.get("hitProb"))
+        if total is None or hit_prob is None:
+            continue
+        if float(total) <= float(market_line):
+            continue
+        if float(hit_prob) < float(min_hit_prob):
+            continue
+        if candidate_total is None or int(total) > int(candidate_total):
+            candidate_total = int(total)
+            candidate_prob = float(hit_prob)
+
+    if candidate_total is None or candidate_prob is None:
+        return None
+
+    tone = "soft"
+    if float(candidate_prob) >= 0.35:
+        tone = "strong"
+    elif float(candidate_prob) >= 0.25:
+        tone = "solid"
+
+    return {
+        "label": f"{short_label} {int(candidate_total)}+",
+        "target": int(candidate_total),
+        "hitProb": round(float(candidate_prob), 3),
+        "tone": tone,
+        "detail": str(row.get("matchupSummary") or "").strip(),
+    }
+
+
+def _starter_ladder_badges_for_pitcher(
+    game_groups: Optional[Dict[str, Any]],
+    *,
+    game_pk: Optional[int],
+    pitcher_id: Optional[int],
+    pitcher_name: str,
+) -> List[Dict[str, Any]]:
+    if not isinstance(game_groups, dict) or game_pk is None or int(game_pk) <= 0:
+        return []
+
+    def _resolve_row(group_key: str) -> Optional[Dict[str, Any]]:
+        group = game_groups.get(group_key)
+        rows = (group or {}).get("rows") if isinstance(group, dict) else None
+        if not isinstance(rows, list):
+            return None
+        normalized_target_name = normalize_pitcher_name(pitcher_name)
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            row_game_pk = _safe_int(row.get("gamePk"))
+            if row_game_pk is None or int(row_game_pk) != int(game_pk):
+                continue
+            row_pitcher_id = _safe_int(row.get("pitcherId"))
+            if pitcher_id is not None and row_pitcher_id is not None and int(row_pitcher_id) == int(pitcher_id):
+                return row
+            if normalized_target_name and normalize_pitcher_name(row.get("pitcherName")) == normalized_target_name:
+                return row
+        return None
+
+    badges: List[Dict[str, Any]] = []
+    strikeout_badge = _starter_ladder_badge_from_row(_resolve_row("strikeouts"), short_label="K")
+    if isinstance(strikeout_badge, dict):
+        badges.append(strikeout_badge)
+    outs_badge = _starter_ladder_badge_from_row(_resolve_row("outs"), short_label="O")
+    if isinstance(outs_badge, dict):
+        badges.append(outs_badge)
+    return badges
+
+
+def _attach_cards_starter_ladder_badges(cards: Any, daily_ladders: Any) -> None:
+    if not isinstance(cards, list) or not isinstance(daily_ladders, dict):
+        return
+    groups = daily_ladders.get("groups") if isinstance(daily_ladders.get("groups"), dict) else {}
+    pitcher_groups = groups.get("pitcher") if isinstance(groups.get("pitcher"), dict) else None
+    if not isinstance(pitcher_groups, dict):
+        return
+
+    for card in cards:
+        if not isinstance(card, dict):
+            continue
+        game_pk = _safe_int(card.get("gamePk"))
+        probable = card.get("probable") if isinstance(card.get("probable"), dict) else None
+        if game_pk is None or not isinstance(probable, dict):
+            continue
+        for side in ("away", "home"):
+            entry = probable.get(side)
+            if not isinstance(entry, dict):
+                continue
+            starter_name = _first_text(entry.get("fullName"), entry.get("name"))
+            starter_id = _safe_int(entry.get("id"))
+            badges = _starter_ladder_badges_for_pitcher(
+                pitcher_groups,
+                game_pk=int(game_pk),
+                pitcher_id=starter_id,
+                pitcher_name=starter_name,
+            )
+            if badges:
+                entry["ladderBadges"] = badges
 
 
 @app.get("/api/cards")
