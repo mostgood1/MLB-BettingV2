@@ -397,6 +397,23 @@
       </div>`;
   }
 
+  function starterLadderStripMarkup(card) {
+    const renderRow = (prefix, probable) => {
+      const badges = Array.isArray(probable?.ladderBadges) ? probable.ladderBadges : [];
+      if (!badges.length) return "";
+      return `
+        <div class="cards-strip-starter-line">
+          <span class="cards-strip-starter-name">${escapeHtml(prefix)} ${escapeHtml(probable?.fullName || "Starter")}</span>
+          ${starterLadderBadgesMarkup(probable)}
+        </div>`;
+    };
+
+    const awayRow = renderRow("A:", card?.probable?.away);
+    const homeRow = renderRow("H:", card?.probable?.home);
+    if (!awayRow && !homeRow) return "";
+    return `<div class="cards-strip-starters">${awayRow}${homeRow}</div>`;
+  }
+
   function ensureDetail(card) {
     const gamePk = Number(card.gamePk);
     if (!state.details.has(gamePk)) {
@@ -2450,7 +2467,8 @@
         </div>
       </div>
       <div class="cards-strip-live" data-role="strip-live" hidden></div>
-      <div class="cards-strip-meta">${escapeHtml(marketCountSummary(card))}</div>`;
+      <div class="cards-strip-meta">${escapeHtml(marketCountSummary(card))}</div>
+      ${starterLadderStripMarkup(card)}`;
     return anchor;
   }
 
