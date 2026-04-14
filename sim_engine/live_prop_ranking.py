@@ -16,6 +16,9 @@ DEFAULT_LIVE_PROP_FEATURES: tuple[str, ...] = (
     "state_available",
 )
 
+_MAX_RUNTIME_SIDE_PRIOR_BLEND_CAP = 0.5
+_MAX_RUNTIME_PROBABILITY_CEILING = 0.9
+
 
 def _safe_float(value: Any) -> Optional[float]:
     try:
@@ -164,7 +167,10 @@ def _resolve_side_prior(row: Mapping[str, Any], cfg: Optional[Mapping[str, Any]]
     if probability is None:
         return None, 0.0
     blend_k = max(1.0, float(_safe_float(cfg.get("prior_blend_k")) or 25.0))
-    blend_cap = min(0.95, max(0.0, float(_safe_float(cfg.get("prior_blend_cap")) or 0.75)))
+    blend_cap = min(
+        _MAX_RUNTIME_SIDE_PRIOR_BLEND_CAP,
+        min(0.95, max(0.0, float(_safe_float(cfg.get("prior_blend_cap")) or 0.75))),
+    )
     weight = min(blend_cap, samples / (samples + blend_k))
     return _clip_prob(probability), float(weight)
 
@@ -177,7 +183,10 @@ def predict_live_prop_win_probability_from_features(feature_map: Mapping[str, An
     if str(cfg.get("mode") or "").strip().lower() != "logistic_linear":
         return None
     probability_floor = float(_safe_float(cfg.get("probability_floor")) or 0.03)
-    probability_ceiling = float(_safe_float(cfg.get("probability_ceiling")) or 0.97)
+    probability_ceiling = min(
+        _MAX_RUNTIME_PROBABILITY_CEILING,
+        float(_safe_float(cfg.get("probability_ceiling")) or 0.97),
+    )
 
     intercept = _safe_float(cfg.get("intercept"))
     weights = cfg.get("weights") if isinstance(cfg.get("weights"), Mapping) else {}
