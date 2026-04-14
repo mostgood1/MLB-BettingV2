@@ -4734,6 +4734,54 @@ def main() -> int:
             },
         )
 
+    def _artifact_lineup_ids(value: Any) -> List[int]:
+        out: List[int] = []
+        for item in (value or []):
+            pid = _safe_int(item)
+            if pid is not None and int(pid) > 0:
+                out.append(int(pid))
+        return out[:9]
+
+    def _roster_artifact_matches_inputs(
+        meta: Any,
+        *,
+        away_probable_pitcher_id: Any,
+        home_probable_pitcher_id: Any,
+        away_lineup_ids: Any,
+        home_lineup_ids: Any,
+    ) -> Tuple[bool, str]:
+        if not isinstance(meta, dict):
+            return False, "missing_meta"
+
+        builder = meta.get("roster_builder") if isinstance(meta.get("roster_builder"), dict) else {}
+        artifact_date = str(meta.get("date") or builder.get("as_of_date") or "").strip()
+        if artifact_date != str(args.date):
+            return False, "date_mismatch"
+        if _safe_int(meta.get("stats_season")) != int(args.stats_season):
+            return False, "stats_season_mismatch"
+        if bool(meta.get("spring_mode")) != bool(spring_mode):
+            return False, "spring_mode_mismatch"
+
+        current_away_probable = _safe_int(away_probable_pitcher_id)
+        current_home_probable = _safe_int(home_probable_pitcher_id)
+        artifact_away_probable = _safe_int(builder.get("away_probable_pitcher_id"))
+        artifact_home_probable = _safe_int(builder.get("home_probable_pitcher_id"))
+        if artifact_away_probable != current_away_probable:
+            return False, "away_probable_mismatch"
+        if artifact_home_probable != current_home_probable:
+            return False, "home_probable_mismatch"
+
+        artifact_away_lineup = _artifact_lineup_ids(builder.get("away_lineup_ids"))
+        artifact_home_lineup = _artifact_lineup_ids(builder.get("home_lineup_ids"))
+        current_away_lineup = _artifact_lineup_ids(away_lineup_ids)
+        current_home_lineup = _artifact_lineup_ids(home_lineup_ids)
+        if artifact_away_lineup != current_away_lineup:
+            return False, "away_lineup_mismatch"
+        if artifact_home_lineup != current_home_lineup:
+            return False, "home_lineup_mismatch"
+
+        return True, "ok"
+
     projected_name_index_by_team: Dict[int, Dict[str, List[Dict[str, Any]]]] = {}
 
     def _build_team_hitter_name_index(team_id: int) -> Dict[str, List[Dict[str, Any]]]:
@@ -5247,10 +5295,22 @@ def main() -> int:
         ):
             try:
                 rr = read_game_roster_artifact(roster_obj_path)
-                away_roster = rr["away"]
-                home_roster = rr["home"]
-                used_roster_artifact = True
-                print(f"[{idx+1}/{len(games)}] Loaded roster artifact: {roster_obj_path.name}")
+                expected_away_lineup_ids = away_lineup_ids if away_lineup_ids else away_projected_ids
+                expected_home_lineup_ids = home_lineup_ids if home_lineup_ids else home_projected_ids
+                artifact_ok, artifact_reason = _roster_artifact_matches_inputs(
+                    rr.get("meta"),
+                    away_probable_pitcher_id=away_prob_id,
+                    home_probable_pitcher_id=home_prob_id,
+                    away_lineup_ids=expected_away_lineup_ids,
+                    home_lineup_ids=expected_home_lineup_ids,
+                )
+                if artifact_ok:
+                    away_roster = rr["away"]
+                    home_roster = rr["home"]
+                    used_roster_artifact = True
+                    print(f"[{idx+1}/{len(games)}] Loaded roster artifact: {roster_obj_path.name}")
+                else:
+                    print(f"[{idx+1}/{len(games)}] Ignoring roster artifact ({artifact_reason}): {roster_obj_path.name}")
             except KeyboardInterrupt:
                 raise
             except Exception:
@@ -5401,6 +5461,10 @@ def main() -> int:
                             "pitcher_platoon_alpha": 0.55,
                             "away_probable_pitcher_id": (int(away_prob_id) if away_prob_id else None),
                             "home_probable_pitcher_id": (int(home_prob_id) if home_prob_id else None),
+                            "away_lineup_ids": [int(pid) for pid in ((away_lineup_ids or away_projected_ids) or [])[:9]],
+                            "home_lineup_ids": [int(pid) for pid in ((home_lineup_ids or home_projected_ids) or [])[:9]],
+                            "away_lineup_source": str(away_lineup_source or "none"),
+                            "home_lineup_source": str(home_lineup_source or "none"),
                         },
                     },
                 )
