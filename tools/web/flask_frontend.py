@@ -9887,6 +9887,53 @@ def _sim_prop_models(sim_context: Optional[Dict[str, Any]], kind: str) -> Dict[s
     return out if isinstance(out, dict) else {}
 
 
+def _live_pitcher_model_entry(
+    pitcher_models: Optional[Dict[str, Dict[str, Any]]],
+    *,
+    team_side: str,
+    starter_name: str,
+) -> Optional[Dict[str, Any]]:
+    if team_side not in {"away", "home"} or not isinstance(pitcher_models, dict):
+        return None
+    starter_key = normalize_pitcher_name(starter_name)
+    if starter_key:
+        exact_entry = pitcher_models.get(starter_key)
+        if isinstance(exact_entry, dict) and str(exact_entry.get("team_side") or "").strip().lower() == team_side:
+            return exact_entry
+    return None
+
+
+def _live_pitcher_model_mismatch(
+    pitcher_models: Optional[Dict[str, Dict[str, Any]]],
+    *,
+    team_side: str,
+    starter_name: str,
+) -> Optional[Dict[str, Any]]:
+    if team_side not in {"away", "home"} or not isinstance(pitcher_models, dict):
+        return None
+    starter_key = normalize_pitcher_name(starter_name)
+    if starter_key and isinstance(pitcher_models.get(starter_key), dict):
+        return None
+    team_entries = [
+        entry
+        for entry in pitcher_models.values()
+        if isinstance(entry, dict) and str(entry.get("team_side") or "").strip().lower() == team_side
+    ]
+    if len(team_entries) != 1:
+        return None
+    entry = team_entries[0]
+    sim_starter_name = _first_text(entry.get("name"))
+    if not sim_starter_name:
+        return None
+    if starter_key and normalize_pitcher_name(sim_starter_name) == starter_key:
+        return None
+    return {
+        "team_side": team_side,
+        "live_starter_name": starter_name,
+        "sim_starter_name": sim_starter_name,
+    }
+
+
 def _live_prop_market_label(market: str, prop: str) -> str:
     market_text = str(market or "").strip().lower()
     prop_text = str(prop or "").strip().lower()
@@ -10793,14 +10840,18 @@ def _current_live_prop_rows(
     pitcher_models = _sim_prop_models(sim_context, "pitchers")
     hitter_models = _sim_prop_models(sim_context, "hitters")
     rows: List[Dict[str, Any]] = []
+    pitcher_model_mismatches: List[Dict[str, Any]] = []
 
     for side in ("away", "home"):
         if _starter_removed_from_snapshot(snapshot, side):
             continue
         starter_name = _first_text((((actual_teams.get(side) or {}).get("starter") or {}).get("name")))
         starter_key = normalize_pitcher_name(starter_name)
-        model_entry = pitcher_models.get(starter_key) if starter_key else None
+        model_entry = _live_pitcher_model_entry(pitcher_models, team_side=side, starter_name=starter_name)
         market_entry = pitcher_market_lines.get(starter_key) if starter_key else None
+        mismatch = _live_pitcher_model_mismatch(pitcher_models, team_side=side, starter_name=starter_name)
+        if isinstance(mismatch, dict):
+            pitcher_model_mismatches.append(mismatch)
         actual_row = _lookup_boxscore_row((((actual_teams.get(side) or {}).get("boxscore") or {}).get("pitching") or []), starter_name)
         if isinstance(model_entry, dict) and isinstance(market_entry, dict):
             pitcher_ctx = _live_pitcher_matchup_context({"team_side": side}, snapshot, sim_context)
@@ -10981,7 +11032,15 @@ def _current_live_prop_rows(
         out.append(item)
     ranked_rows = _apply_live_prop_ranking_scores(out)
     annotated_rows = [_annotate_live_prop_reason_fields(item, snapshot=snapshot, sim_context=sim_context) for item in ranked_rows]
-    return _enrich_live_prop_rows_with_registry(annotated_rows, d, write_observation_log=write_observation_log)
+    enriched_rows = _enrich_live_prop_rows_with_registry(annotated_rows, d, write_observation_log=write_observation_log)
+    if pitcher_model_mismatches:
+        if isinstance(sim_context, dict):
+            sim_context["livePitcherModelMismatches"] = pitcher_model_mismatches
+        for item in enriched_rows:
+            item.setdefault("meta", {})
+            if isinstance(item.get("meta"), dict):
+                item["meta"].setdefault("livePitcherModelMismatches", pitcher_model_mismatches)
+    return enriched_rows
 
 
 def _normalize_two_way_probs(first_prob: Optional[float], second_prob: Optional[float]) -> Tuple[Optional[float], Optional[float]]:
@@ -14382,6 +14441,7 @@ def _build_game_sim_payload(
             out,
             _game_line_market_for_card(live_card, game_line_index),
         )
+        out["livePitcherModelMismatches"] = list(out.get("livePitcherModelMismatches") or [])
         out.pop("propModels", None)
     return out
 
