@@ -64,12 +64,12 @@ class PitchModelConfig:
     # - k_logit_mult < 1.0 shrinks extremes toward 0.5 (less confident)
     # - k_logit_mult > 1.0 amplifies extremes (more confident)
     # - k_logit_bias shifts overall K propensity up/down in logit space
-    k_logit_mult: float = 1.02
-    k_logit_bias: float = 0.04
+    k_logit_mult: float = 0.95
+    k_logit_bias: float = 0.0
 
     # Mapping from PA-level HR target to per-ball-in-play HR probability.
     # Keep conservative; tuning this affects run environment materially.
-    hr_on_ball_in_play_factor: float = 0.68
+    hr_on_ball_in_play_factor: float = 0.62
 
     # Matchup-aware batted-ball type modeling.
     # Uses batter/pitcher Statcast gb/fb/ld/pu rates (when available) and shrinks to a
@@ -93,9 +93,9 @@ class PitchModelConfig:
     # Deterministic run-environment multipliers (neutral by default).
     # These apply before weather/park and can be used to calibrate mean totals/margins
     # without injecting extra variance.
-    hr_rate_mult: float = 1.06
-    inplay_hit_rate_mult: float = 1.05
-    xb_share_mult: float = 0.98
+    hr_rate_mult: float = 1.03
+    inplay_hit_rate_mult: float = 1.03
+    xb_share_mult: float = 0.94
 
     # Optional: per-game run environment multiplier (latent).
     # If run_env_sigma > 0, simulate_game() will sample a mean-1 lognormal multiplier

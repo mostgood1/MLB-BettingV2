@@ -66,6 +66,95 @@ def _overlaps(a0: date, a1: date, b0: date, b1: date) -> bool:
     return not (a1 < b0 or b1 < a0)
 
 
+def _query_seasons_for_window(season: int, start_date: date, end_date: date, raw_root: Optional[Path] = None) -> Tuple[int, ...]:
+    if raw_root is not None:
+        return (int(season),)
+    lo = min(start_date, end_date)
+    hi = max(start_date, end_date)
+    seasons = {int(season)}
+    for year in range(int(lo.year), int(hi.year) + 1):
+        seasons.add(int(year))
+    return tuple(sorted(seasons))
+
+
+def _counts_from_cache_doc(doc: Any) -> Optional[Dict[int, BvPCounts]]:
+    if not isinstance(doc, dict) or "by_batter" not in doc:
+        return None
+    out: Dict[int, BvPCounts] = {}
+    by_b = doc.get("by_batter") or {}
+    if not isinstance(by_b, dict):
+        return out
+    for k, v in by_b.items():
+        try:
+            bid = int(k)
+        except Exception:
+            continue
+        if not isinstance(v, dict):
+            continue
+        try:
+            pa = int(v.get("pa") or 0)
+            hr = int(v.get("hr") or 0)
+            hits = int(v.get("hits") or 0)
+            so = int(v.get("so") or 0)
+            bb = int(v.get("bb") or 0)
+            hbp = int(v.get("hbp") or 0)
+            inplay_pa = int(v.get("inplay_pa") or 0)
+            inplay_hits = int(v.get("inplay_hits") or 0)
+        except Exception:
+            continue
+        if pa > 0:
+            out[bid] = BvPCounts(
+                pa=pa,
+                hr=hr,
+                hits=hits,
+                so=so,
+                bb=bb,
+                hbp=hbp,
+                inplay_pa=inplay_pa,
+                inplay_hits=inplay_hits,
+            )
+    return out
+
+
+def _counts_to_cache_doc(result: Dict[int, BvPCounts], *, seasons: Tuple[int, ...]) -> Dict[str, Any]:
+    return {
+        "seasons": [int(x) for x in seasons],
+        "by_batter": {
+            str(bid): {
+                "pa": c.pa,
+                "hr": c.hr,
+                "hits": c.hits,
+                "so": c.so,
+                "bb": c.bb,
+                "hbp": c.hbp,
+                "inplay_pa": c.inplay_pa,
+                "inplay_hits": c.inplay_hits,
+            }
+            for bid, c in result.items()
+        },
+    }
+
+
+def _merge_bvp_counts(dst: Dict[int, BvPCounts], src: Dict[int, BvPCounts]) -> Dict[int, BvPCounts]:
+    out = dict(dst)
+    for bid, counts in src.items():
+        current = out.get(int(bid))
+        if current is None:
+            out[int(bid)] = counts
+            continue
+        out[int(bid)] = BvPCounts(
+            pa=int(current.pa) + int(counts.pa),
+            hr=int(current.hr) + int(counts.hr),
+            hits=int(current.hits) + int(counts.hits),
+            so=int(current.so) + int(counts.so),
+            bb=int(current.bb) + int(counts.bb),
+            hbp=int(current.hbp) + int(counts.hbp),
+            inplay_pa=int(current.inplay_pa) + int(counts.inplay_pa),
+            inplay_hits=int(current.inplay_hits) + int(counts.inplay_hits),
+        )
+    return out
+
+
 def pitcher_vs_batters_counts(
     *,
     season: int,
@@ -87,49 +176,20 @@ def pitcher_vs_batters_counts(
     if pid <= 0:
         return {}
 
+    seasons = _query_seasons_for_window(int(season), start_date, end_date, raw_root=raw_root)
+
     parts = {
         "season": int(season),
+        "seasons": ",".join(str(int(x)) for x in seasons),
         "pitcher_id": int(pid),
         "start": start_date.isoformat(),
         "end": end_date.isoformat(),
     }
     if cache is not None:
         hit = cache.get("statcast_bvp_pitcher", parts, ttl_seconds=ttl_seconds)
-        if isinstance(hit, dict) and hit.get("by_batter"):
-            out: Dict[int, BvPCounts] = {}
-            by_b = hit.get("by_batter") or {}
-            if isinstance(by_b, dict):
-                for k, v in by_b.items():
-                    try:
-                        bid = int(k)
-                    except Exception:
-                        continue
-                    if not isinstance(v, dict):
-                        continue
-                    try:
-                        pa = int(v.get("pa") or 0)
-                        hr = int(v.get("hr") or 0)
-                        hits = int(v.get("hits") or 0)
-                        so = int(v.get("so") or 0)
-                        bb = int(v.get("bb") or 0)
-                        hbp = int(v.get("hbp") or 0)
-                        inplay_pa = int(v.get("inplay_pa") or 0)
-                        inplay_hits = int(v.get("inplay_hits") or 0)
-                    except Exception:
-                        continue
-                    if pa > 0:
-                        out[bid] = BvPCounts(
-                            pa=pa,
-                            hr=hr,
-                            hits=hits,
-                            so=so,
-                            bb=bb,
-                            hbp=hbp,
-                            inplay_pa=inplay_pa,
-                            inplay_hits=inplay_hits,
-                        )
-            if out:
-                return out
+        cached = _counts_from_cache_doc(hit)
+        if cached is not None:
+            return cached
 
     out_pa: Dict[int, int] = {}
     out_hr: Dict[int, int] = {}
@@ -145,58 +205,59 @@ def pitcher_vs_batters_counts(
     hbp_events = {"hit_by_pitch"}
     inplay_hit_events = {"single", "double", "triple"}
 
-    for path in _iter_statcast_pitch_files(season, raw_root=raw_root):
-        w = _file_window(path)
-        if w is None:
-            continue
-        f0, f1 = w
-        if not _overlaps(f0, f1, start_date, end_date):
-            continue
+    for query_season in seasons:
+        for path in _iter_statcast_pitch_files(int(query_season), raw_root=raw_root):
+            w = _file_window(path)
+            if w is None:
+                continue
+            f0, f1 = w
+            if not _overlaps(f0, f1, start_date, end_date):
+                continue
 
-        with gzip.open(path, "rt", encoding="utf-8", newline="") as f:
-            r = csv.DictReader(f)
-            for row in r:
-                try:
-                    if int(row.get("pitcher") or 0) != pid:
-                        continue
-                except Exception:
-                    continue
-
-                gd = row.get("game_date")
-                if gd:
+            with gzip.open(path, "rt", encoding="utf-8", newline="") as f:
+                r = csv.DictReader(f)
+                for row in r:
                     try:
-                        d = _parse_date(gd)
-                        if d < start_date or d > end_date:
+                        if int(row.get("pitcher") or 0) != pid:
                             continue
                     except Exception:
-                        pass
+                        continue
 
-                ev = (row.get("events") or "").strip().lower()
-                if not ev:
-                    continue
+                    gd = row.get("game_date")
+                    if gd:
+                        try:
+                            d = _parse_date(gd)
+                            if d < start_date or d > end_date:
+                                continue
+                        except Exception:
+                            pass
 
-                try:
-                    bid = int(row.get("batter") or 0)
-                except Exception:
-                    continue
-                if bid <= 0:
-                    continue
+                    ev = (row.get("events") or "").strip().lower()
+                    if not ev:
+                        continue
 
-                out_pa[bid] = out_pa.get(bid, 0) + 1
-                if ev in hit_events:
-                    out_hits[bid] = out_hits.get(bid, 0) + 1
-                if ev == "home_run":
-                    out_hr[bid] = out_hr.get(bid, 0) + 1
-                elif ev in walk_events:
-                    out_bb[bid] = out_bb.get(bid, 0) + 1
-                elif ev in hbp_events:
-                    out_hbp[bid] = out_hbp.get(bid, 0) + 1
-                elif ev.startswith("strikeout"):
-                    out_so[bid] = out_so.get(bid, 0) + 1
-                else:
-                    out_inplay_pa[bid] = out_inplay_pa.get(bid, 0) + 1
-                    if ev in inplay_hit_events:
-                        out_inplay_hits[bid] = out_inplay_hits.get(bid, 0) + 1
+                    try:
+                        bid = int(row.get("batter") or 0)
+                    except Exception:
+                        continue
+                    if bid <= 0:
+                        continue
+
+                    out_pa[bid] = out_pa.get(bid, 0) + 1
+                    if ev in hit_events:
+                        out_hits[bid] = out_hits.get(bid, 0) + 1
+                    if ev == "home_run":
+                        out_hr[bid] = out_hr.get(bid, 0) + 1
+                    elif ev in walk_events:
+                        out_bb[bid] = out_bb.get(bid, 0) + 1
+                    elif ev in hbp_events:
+                        out_hbp[bid] = out_hbp.get(bid, 0) + 1
+                    elif ev.startswith("strikeout"):
+                        out_so[bid] = out_so.get(bid, 0) + 1
+                    else:
+                        out_inplay_pa[bid] = out_inplay_pa.get(bid, 0) + 1
+                        if ev in inplay_hit_events:
+                            out_inplay_hits[bid] = out_inplay_hits.get(bid, 0) + 1
 
     result: Dict[int, BvPCounts] = {
         bid: BvPCounts(
@@ -214,25 +275,7 @@ def pitcher_vs_batters_counts(
     }
 
     if cache is not None:
-        cache.set(
-            "statcast_bvp_pitcher",
-            parts,
-            {
-                "by_batter": {
-                    str(bid): {
-                        "pa": c.pa,
-                        "hr": c.hr,
-                        "hits": c.hits,
-                        "so": c.so,
-                        "bb": c.bb,
-                        "hbp": c.hbp,
-                        "inplay_pa": c.inplay_pa,
-                        "inplay_hits": c.inplay_hits,
-                    }
-                    for bid, c in result.items()
-                },
-            },
-        )
+        cache.set("statcast_bvp_pitcher", parts, _counts_to_cache_doc(result, seasons=seasons))
 
     return result
 

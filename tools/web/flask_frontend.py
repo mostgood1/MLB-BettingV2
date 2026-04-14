@@ -44,6 +44,8 @@ from sim_engine.data.statsapi import (
 from sim_engine import BaseState
 from sim_engine.data.roster_artifact import roster_from_dict
 from sim_engine.live_mc import LiveSituation, estimate_live
+from sim_engine.forward_tuning import should_use_forward_tuning
+from sim_engine.live_mc import LiveSituation, estimate_live, _forward_live_cfg_kwargs
 from sim_engine.live_prop_ranking import predict_live_prop_win_probability
 from sim_engine.market_pitcher_props import market_side_probabilities, normalize_pitcher_name
 from tools.daily_update_multi_profile import (
@@ -151,6 +153,16 @@ def _live_lens_optimization_regime(d: Any) -> Dict[str, Any]:
                 "label": "Clean baseline",
                 "isCleanBaseline": True,
                 "recommendedUse": "optimization_baseline",
+            }
+        )
+    if should_use_forward_tuning(date_str):
+        regime.update(
+            {
+                "kind": "forward_tuned_live",
+                "label": "Forward tuned live",
+                "isCleanBaseline": False,
+                "forwardTuningStartDate": "2026-04-14",
+                "recommendedUse": "post_retune_monitoring",
             }
         )
     return regime
@@ -3478,6 +3490,186 @@ def _sort_hitter_ladder_rows(rows: List[Dict[str, Any]], sort_key: str) -> List[
     )
 
 
+def _pitcher_ladder_roster_snapshot(
+    d: str,
+    sim_path: Path,
+    sim_obj: Dict[str, Any],
+    snapshot_cache: Dict[Path, Optional[Dict[str, Any]]],
+) -> Optional[Dict[str, Any]]:
+    if sim_path in snapshot_cache:
+        return snapshot_cache.get(sim_path)
+    roster_path = _find_roster_snapshot_for_sim(d=str(d), sim_file=sim_path, sim_obj=sim_obj)
+    roster_obj = _load_json_file(roster_path) if isinstance(roster_path, Path) else None
+    roster_snapshot = roster_obj if isinstance(roster_obj, dict) else None
+    snapshot_cache[sim_path] = roster_snapshot
+    return roster_snapshot
+
+
+def _pitcher_ladder_lineup_k_rate(opponent_lineup: List[Dict[str, Any]]) -> Optional[float]:
+    values: List[float] = []
+    for batter in opponent_lineup:
+        if not isinstance(batter, dict):
+            continue
+        k_rate = _safe_float(batter.get("k_rate"))
+        if k_rate is None:
+            continue
+        values.append(float(k_rate))
+    if not values:
+        return None
+    return float(sum(values) / float(len(values)))
+
+
+def _pitcher_ladder_pitch_type_k_factor(
+    pitcher_profile: Dict[str, Any],
+    opponent_lineup: List[Dict[str, Any]],
+) -> Optional[float]:
+    if not isinstance(pitcher_profile, dict) or not isinstance(opponent_lineup, list):
+        return None
+    arsenal_map = pitcher_profile.get("arsenal") if isinstance(pitcher_profile.get("arsenal"), dict) else {}
+    whiff_map = pitcher_profile.get("pitch_type_whiff_mult") if isinstance(pitcher_profile.get("pitch_type_whiff_mult"), dict) else {}
+
+    pitch_weights: List[Tuple[str, float]] = []
+    for pitch_type, usage_raw in arsenal_map.items():
+        usage = _safe_float(usage_raw)
+        if usage is None or float(usage) <= 0.0:
+            continue
+        pitch_weights.append((str(pitch_type), float(usage)))
+    if not pitch_weights:
+        for pitch_type in whiff_map.keys():
+            pitch_weights.append((str(pitch_type), 1.0))
+    total_weight = float(sum(weight for _, weight in pitch_weights))
+    if total_weight <= 0.0:
+        return None
+
+    batter_factors: List[float] = []
+    for batter in opponent_lineup:
+        if not isinstance(batter, dict):
+            continue
+        vs_pitch_type = batter.get("vs_pitch_type") if isinstance(batter.get("vs_pitch_type"), dict) else {}
+        if not isinstance(vs_pitch_type, dict):
+            continue
+        factor_sum = 0.0
+        matched = False
+        for pitch_type, weight in pitch_weights:
+            whiff_mult = _safe_float(whiff_map.get(pitch_type))
+            batter_mult = _safe_float(vs_pitch_type.get(pitch_type))
+            whiff_value = float(whiff_mult) if whiff_mult is not None else 1.0
+            batter_value = float(batter_mult) if batter_mult is not None else 1.0
+            batter_value = max(0.4, min(1.6, batter_value))
+            factor_sum += (float(weight) / total_weight) * (whiff_value / batter_value)
+            matched = True
+        if matched:
+            batter_factors.append(float(factor_sum))
+    if not batter_factors:
+        return None
+    return float(sum(batter_factors) / float(len(batter_factors)))
+
+
+def _pitcher_ladder_bvp_k_context(
+    pitcher_id: int,
+    opponent_lineup: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    total_pa = 0.0
+    hitter_matches = 0
+    total_so = 0.0
+    weighted_k = 0.0
+    for batter in opponent_lineup:
+        if not isinstance(batter, dict):
+            continue
+        history_map = batter.get("vs_pitcher_history")
+        if not isinstance(history_map, dict):
+            continue
+        history = history_map.get(str(int(pitcher_id))) if str(int(pitcher_id)) in history_map else history_map.get(int(pitcher_id))
+        if not isinstance(history, dict):
+            continue
+        pa = _safe_float(history.get("pa"))
+        if pa is None or float(pa) <= 0.0:
+            continue
+        total_pa += float(pa)
+        hitter_matches += 1
+        total_so += float(_safe_float(history.get("so")) or 0.0)
+        weighted_k += float(pa) * float(_safe_float(history.get("k_mult")) or 1.0)
+    avg_k_mult = float(weighted_k / total_pa) if total_pa > 0.0 else None
+    so_rate = float(total_so / total_pa) if total_pa > 0.0 else None
+    return {
+        "totalPa": total_pa,
+        "hitterMatches": int(hitter_matches),
+        "totalSo": total_so,
+        "avgKMult": avg_k_mult,
+        "soRate": so_rate,
+    }
+
+
+def _pitcher_ladder_strikeout_matchup_summary(
+    d: str,
+    sim_path: Path,
+    sim_obj: Dict[str, Any],
+    pitcher_side: str,
+    pitcher_id: int,
+    snapshot_cache: Dict[Path, Optional[Dict[str, Any]]],
+) -> Optional[Dict[str, Any]]:
+    roster_snapshot = _pitcher_ladder_roster_snapshot(d, sim_path, sim_obj, snapshot_cache)
+    if not isinstance(roster_snapshot, dict) or pitcher_side not in {"away", "home"}:
+        return None
+    opponent_side = "home" if pitcher_side == "away" else "away"
+    side_doc = roster_snapshot.get(pitcher_side) if isinstance(roster_snapshot.get(pitcher_side), dict) else None
+    opponent_doc = roster_snapshot.get(opponent_side) if isinstance(roster_snapshot.get(opponent_side), dict) else None
+    if not isinstance(side_doc, dict) or not isinstance(opponent_doc, dict):
+        return None
+
+    pitcher_profile = side_doc.get("starter_profile") if isinstance(side_doc.get("starter_profile"), dict) else None
+    opponent_lineup = [row for row in (opponent_doc.get("lineup") or []) if isinstance(row, dict)]
+    if not isinstance(pitcher_profile, dict) or not opponent_lineup:
+        return None
+
+    lineup_k_rate = _pitcher_ladder_lineup_k_rate(opponent_lineup)
+    pitch_type_k_factor = _pitcher_ladder_pitch_type_k_factor(pitcher_profile, opponent_lineup)
+    bvp_ctx = _pitcher_ladder_bvp_k_context(int(pitcher_id), opponent_lineup)
+
+    reasons: List[str] = []
+    metrics: Dict[str, Any] = {}
+    if lineup_k_rate is not None:
+        metrics["lineupKRate"] = round(float(lineup_k_rate), 4)
+        lineup_pct = 100.0 * float(lineup_k_rate)
+        if float(lineup_k_rate) >= 0.235:
+            reasons.append(f"Projected lineup baseline K rate is {lineup_pct:.1f}%, which is above neutral for a strikeout ceiling.")
+        elif float(lineup_k_rate) <= 0.205:
+            reasons.append(f"Projected lineup baseline K rate is only {lineup_pct:.1f}%, so this is a more contact-heavy draw.")
+        else:
+            reasons.append(f"Projected lineup baseline K rate is {lineup_pct:.1f}%.")
+    if pitch_type_k_factor is not None:
+        metrics["pitchTypeKFactor"] = round(float(pitch_type_k_factor), 3)
+        delta_pct = (float(pitch_type_k_factor) - 1.0) * 100.0
+        if float(pitch_type_k_factor) >= 1.04:
+            reasons.append(f"Pitch-type matchup grades {delta_pct:.0f}% above neutral on whiff pressure against this lineup.")
+        elif float(pitch_type_k_factor) <= 0.96:
+            reasons.append(f"Pitch-type matchup grades {abs(delta_pct):.0f}% below neutral on whiff pressure against this lineup.")
+    total_pa = float(bvp_ctx.get("totalPa") or 0.0)
+    hitter_matches = int(bvp_ctx.get("hitterMatches") or 0)
+    avg_k_mult = _safe_float(bvp_ctx.get("avgKMult"))
+    total_so = float(bvp_ctx.get("totalSo") or 0.0)
+    if total_pa >= 12.0 and hitter_matches >= 2:
+        metrics["bvpPa"] = int(round(total_pa))
+        metrics["bvpSo"] = int(round(total_so))
+        metrics["bvpKFactor"] = round(float(avg_k_mult or 1.0), 3)
+        if avg_k_mult is not None and float(avg_k_mult) >= 1.05:
+            reasons.append(
+                f"Prior matchup history logged {int(round(total_so))} strikeouts in {int(round(total_pa))} PA, a {float(avg_k_mult):.2f}x K multiplier versus baseline."
+            )
+        elif avg_k_mult is not None and float(avg_k_mult) <= 0.95:
+            reasons.append(
+                f"Prior matchup history logged only {int(round(total_so))} strikeouts in {int(round(total_pa))} PA, a {float(avg_k_mult):.2f}x K multiplier versus baseline."
+            )
+    reasons = _dedupe_reason_texts(reasons)
+    if not reasons:
+        return None
+    return {
+        "summary": " ".join(reasons[:3]).strip(),
+        "reasons": reasons,
+        "metrics": metrics,
+    }
+
+
 def _pitcher_ladders_payload(
     d: str,
     prop_value: Any,
@@ -3532,6 +3724,7 @@ def _pitcher_ladders_payload(
         return payload
 
     sim_files = _list_unique_sim_files(sim_dir)
+    roster_snapshot_cache: Dict[Path, Optional[Dict[str, Any]]] = {}
     rows: List[Dict[str, Any]] = []
     for sim_path in sim_files:
         sim_obj = _load_json_file(sim_path)
@@ -3576,45 +3769,62 @@ def _pitcher_ladders_payload(
             if market_line is not None:
                 over_line_count = int(sum(row.get("exactCount") or 0 for row in ladder_rows if float(row.get("total") or 0) > float(market_line)))
                 over_line_prob = float(over_line_count / float(max(1, sim_count)))
+            matchup_summary = None
+            if prop == "strikeouts":
+                matchup_summary = _pitcher_ladder_strikeout_matchup_summary(
+                    str(d),
+                    sim_path,
+                    sim_obj,
+                    str(side),
+                    int(starter_id),
+                    roster_snapshot_cache,
+                )
             mode_row = max(
                 ladder_rows,
                 key=lambda row: (int(row.get("exactCount") or 0), -int(row.get("total") or 0)),
             )
-            rows.append(
-                {
-                    "gamePk": int(game_pk) if game_pk is not None else None,
-                    "pitcherId": int(starter_id),
-                    "pitcherName": starter_name,
-                    "headshotUrl": _mlb_headshot_url(int(starter_id)),
-                    "team": team,
-                    "teamId": int(team_id) if team_id is not None else None,
-                    "teamLogoUrl": (_mlb_logo_url(int(team_id)) if team_id is not None else None),
-                    "opponent": opponent,
-                    "opponentTeamId": int(opponent_team_id) if opponent_team_id is not None else None,
-                    "opponentLogoUrl": (_mlb_logo_url(int(opponent_team_id)) if opponent_team_id is not None else None),
-                    "side": side,
-                    "matchup": f"{team} @ {opponent}" if side == "away" else f"{opponent} @ {team}",
-                    "mean": _safe_float(pred.get(str(prop_cfg.get("mean_key")))),
-                    "mode": int(mode_row.get("total") or 0),
-                    "modeCount": int(mode_row.get("exactCount") or 0),
-                    "modeProb": float(mode_row.get("exactProb") or 0.0),
-                    "simCount": int(sim_count),
-                    "minTotal": min_total,
-                    "maxTotal": max_total,
-                    "marketLine": market_line,
-                    "pregameMarketLine": pregame_market_line,
-                    "marketLinesByStat": _pitcher_market_lines_by_stat(
-                        player_market_lines,
-                        pregame_markets=player_pregame_market_lines,
-                        live_markets=player_current_market_lines if market_mode == "live" else None,
-                        current_mode=market_mode,
-                    ),
-                    "overLineCount": over_line_count,
-                    "overLineProb": over_line_prob,
-                    "ladder": ladder_rows,
-                    "sourceFile": _relative_path_str(sim_path),
-                }
-            )
+            row_out = {
+                "gamePk": int(game_pk) if game_pk is not None else None,
+                "pitcherId": int(starter_id),
+                "pitcherName": starter_name,
+                "headshotUrl": _mlb_headshot_url(int(starter_id)),
+                "team": team,
+                "teamId": int(team_id) if team_id is not None else None,
+                "teamLogoUrl": (_mlb_logo_url(int(team_id)) if team_id is not None else None),
+                "opponent": opponent,
+                "opponentTeamId": int(opponent_team_id) if opponent_team_id is not None else None,
+                "opponentLogoUrl": (_mlb_logo_url(int(opponent_team_id)) if opponent_team_id is not None else None),
+                "side": side,
+                "matchup": f"{team} @ {opponent}" if side == "away" else f"{opponent} @ {team}",
+                "mean": _safe_float(pred.get(str(prop_cfg.get("mean_key")))),
+                "mode": int(mode_row.get("total") or 0),
+                "modeCount": int(mode_row.get("exactCount") or 0),
+                "modeProb": float(mode_row.get("exactProb") or 0.0),
+                "simCount": int(sim_count),
+                "minTotal": min_total,
+                "maxTotal": max_total,
+                "marketLine": market_line,
+                "pregameMarketLine": pregame_market_line,
+                "marketLinesByStat": _pitcher_market_lines_by_stat(
+                    player_market_lines,
+                    pregame_markets=player_pregame_market_lines,
+                    live_markets=player_current_market_lines if market_mode == "live" else None,
+                    current_mode=market_mode,
+                ),
+                "overLineCount": over_line_count,
+                "overLineProb": over_line_prob,
+                "ladder": ladder_rows,
+                "sourceFile": _relative_path_str(sim_path),
+            }
+            if isinstance(matchup_summary, dict):
+                row_out["matchupSummary"] = str(matchup_summary.get("summary") or "").strip()
+                row_out["matchupReasons"] = [
+                    str(reason).strip()
+                    for reason in (matchup_summary.get("reasons") or [])
+                    if str(reason).strip()
+                ]
+                row_out["matchupMetrics"] = dict(matchup_summary.get("metrics") or {})
+            rows.append(row_out)
 
     payload["gameOptions"] = [
         {
@@ -12193,7 +12403,7 @@ def _roster_from_snapshot_side(doc: Optional[Dict[str, Any]]) -> Any:
         return roster_from_dict(_snapshot_side_to_roster_doc(doc))
 
 
-def _live_mc_projection(snapshot: Optional[Dict[str, Any]], sim_context: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def _live_mc_projection(snapshot: Optional[Dict[str, Any]], sim_context: Optional[Dict[str, Any]], *, date_str: Optional[str] = None) -> Optional[Dict[str, Any]]:
     if not isinstance(snapshot, dict) or not isinstance(sim_context, dict):
         return None
     if not sim_context.get("found"):
@@ -12260,6 +12470,7 @@ def _live_mc_projection(snapshot: Optional[Dict[str, Any]], sim_context: Optiona
             ),
             sims=int(_LIVE_GAME_MC_SIMS),
             seed=int(_safe_int(sim_context.get("gamePk")) or 0) or None,
+            cfg_kwargs=_forward_live_cfg_kwargs(date_str),
         )
     except Exception:
         return None
@@ -12276,14 +12487,14 @@ def _live_mc_projection(snapshot: Optional[Dict[str, Any]], sim_context: Optiona
     }
 
 
-def _build_game_lens(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], sim_context: Optional[Dict[str, Any]], market_row: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _build_game_lens(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], sim_context: Optional[Dict[str, Any]], market_row: Optional[Dict[str, Any]], *, date_str: Optional[str] = None) -> List[Dict[str, Any]]:
     predicted = (sim_context or {}).get("predicted") or {}
     pregame_away = _safe_float(predicted.get("away"))
     pregame_home = _safe_float(predicted.get("home"))
     away_score = _safe_float((((snapshot or {}).get("teams") or {}).get("away") or {}).get("totals", {}).get("R"))
     home_score = _safe_float((((snapshot or {}).get("teams") or {}).get("home") or {}).get("totals", {}).get("R"))
     progress = _live_game_progress(snapshot, card)
-    live_mc_projection = _live_mc_projection(snapshot, sim_context)
+    live_mc_projection = _live_mc_projection(snapshot, sim_context, date_str=date_str)
     predictions = card.get("predictions") or {}
     markets = (market_row or {}).get("markets") or {}
 
@@ -12621,7 +12832,7 @@ def _live_lens_payload(d: str, *, persist: bool = False, refresh_markets: bool =
             live_prop_rows = []
         prop_eval_ms_total += (time.perf_counter() - prop_eval_started_at) * 1000.0
         game_lens_started_at = time.perf_counter()
-        game_lens = _build_game_lens(card, snapshot, sim_context if sim_context.get("found") else None, _game_line_market_for_card(card, game_line_index))
+        game_lens = _build_game_lens(card, snapshot, sim_context if sim_context.get("found") else None, _game_line_market_for_card(card, game_line_index), date_str=str(d))
         game_lens_ms_total += (time.perf_counter() - game_lens_started_at) * 1000.0
         if status_is_final:
             counts["final"] += 1
@@ -14440,6 +14651,7 @@ def _build_game_sim_payload(
             snapshot,
             out,
             _game_line_market_for_card(live_card, game_line_index),
+            date_str=str(d),
         )
         out["livePitcherModelMismatches"] = list(out.get("livePitcherModelMismatches") or [])
         out.pop("propModels", None)

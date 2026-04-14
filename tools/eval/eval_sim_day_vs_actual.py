@@ -42,6 +42,13 @@ from sim_engine.data.statsapi import (
 from sim_engine.data.statcast_bvp import apply_starter_bvp_hr_multipliers, default_bvp_cache
 from sim_engine.data.build_roster import build_team, build_team_roster
 from sim_engine.data.roster_artifact import read_game_roster_artifact, write_game_roster_artifact
+from sim_engine.forward_tuning import (
+    FORWARD_BVP_MATCHUP_MODE,
+    FORWARD_BVP_MIN_PA,
+    FORWARD_MANAGER_PITCHING_OVERRIDES_PATH,
+    FORWARD_PITCH_MODEL_OVERRIDES_PATH,
+    should_use_forward_tuning,
+)
 from sim_engine.models import GameConfig
 from sim_engine.market_pitcher_props import (
     load_pitcher_prop_lines,
@@ -84,6 +91,30 @@ def _write_json(path: Path, obj: Any) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(obj, indent=2), encoding="utf-8")
     tmp.replace(path)
+
+
+def _argv_has_flag(argv: List[str], flag: str) -> bool:
+    needle = str(flag or "").strip()
+    if not needle:
+        return False
+    for raw in argv:
+        arg = str(raw or "")
+        if arg == needle or arg.startswith(f"{needle}="):
+            return True
+    return False
+
+
+def _apply_forward_tuning_defaults(args: argparse.Namespace, raw_argv: List[str]) -> None:
+    if not should_use_forward_tuning(str(getattr(args, "date", "") or "")):
+        return
+    if not _argv_has_flag(list(raw_argv), "--pitch-model-overrides"):
+        args.pitch_model_overrides = str(FORWARD_PITCH_MODEL_OVERRIDES_PATH)
+    if not _argv_has_flag(list(raw_argv), "--manager-pitching-overrides"):
+        args.manager_pitching_overrides = str(FORWARD_MANAGER_PITCHING_OVERRIDES_PATH)
+    if not _argv_has_flag(list(raw_argv), "--bvp-hr"):
+        args.bvp_hr = str(FORWARD_BVP_MATCHUP_MODE)
+    if not _argv_has_flag(list(raw_argv), "--bvp-min-pa"):
+        args.bvp_min_pa = int(FORWARD_BVP_MIN_PA)
 
 
 def _abbr(team_obj: dict) -> str:
@@ -1625,7 +1656,7 @@ def main() -> int:
         "--bvp-hr",
         choices=["on", "off"],
         default="off",
-        help="If on, apply a shrunk batter-vs-starter HR multiplier from local Statcast raw pitch files.",
+        help="If on, apply shrunk batter-vs-starter matchup multipliers from local Statcast raw pitch files for HR, K, BB, and contact quality.",
     )
     ap.add_argument("--bvp-days-back", type=int, default=365, help="How many days of history to consider for BvP lookup.")
     ap.add_argument("--bvp-min-pa", type=int, default=10, help="Minimum BvP PA required to apply a multiplier.")
@@ -1929,7 +1960,9 @@ def main() -> int:
         default="data/tuning/hitter_props_calibration/default.json",
         help="JSON dict or path to JSON file; applies calibration to hitter prop top-N probabilities (supports per-prop wrapper schema).",
     )
-    args = ap.parse_args()
+    raw_argv = list(sys.argv[1:])
+    args = ap.parse_args(raw_argv)
+    _apply_forward_tuning_defaults(args, raw_argv)
 
     season = int(args.season) if int(args.season or 0) > 0 else int(args.date.split("-")[0])
     spring_mode = True if str(args.spring_mode) == "on" else False

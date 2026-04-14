@@ -11,6 +11,19 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
+_ROOT = Path(__file__).resolve().parents[2]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from sim_engine.forward_tuning import (
+    FORWARD_BVP_MATCHUP_MODE,
+    FORWARD_BVP_MIN_PA,
+    FORWARD_MANAGER_PITCHING_OVERRIDES_PATH,
+    FORWARD_PITCH_MODEL_OVERRIDES_PATH,
+    should_use_forward_tuning,
+)
+
+
 def _write_json(path: Path, obj: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -100,7 +113,19 @@ def _release_out_dir_lock(lock_path: Path) -> None:
         return
 
 
+def _argv_has_flag(argv: List[str], flag: str) -> bool:
+    needle = str(flag or "").strip()
+    if not needle:
+        return False
+    for raw in argv:
+        arg = str(raw or "")
+        if arg == needle or arg.startswith(f"{needle}="):
+            return True
+    return False
+
+
 def main() -> int:
+    raw_argv = list(sys.argv[1:])
     ap = argparse.ArgumentParser(description="Run eval_sim_day_vs_actual.py across multiple dates")
     ap.add_argument("--dates", default="", help="Comma-separated YYYY-MM-DD list")
     ap.add_argument("--date-file", default="", help="Text file with one YYYY-MM-DD per line")
@@ -149,7 +174,7 @@ def main() -> int:
         "--bvp-hr",
         choices=["on", "off"],
         default="off",
-        help="If on, apply a shrunk batter-vs-starter HR multiplier from local Statcast raw pitch files (passed through).",
+        help="If on, apply shrunk batter-vs-starter matchup multipliers from local Statcast raw pitch files for HR, K, BB, and contact quality (passed through).",
     )
     ap.add_argument("--bvp-days-back", type=int, default=365, help="How many days of history to consider for BvP lookup (passed through).")
     ap.add_argument("--bvp-min-pa", type=int, default=10, help="Minimum BvP PA required to apply a multiplier (passed through).")
@@ -449,7 +474,7 @@ def main() -> int:
         help="Print per-date progress/timing (helps when child stdout is quiet)",
     )
     ap.add_argument("--batch-out", default="", help="Output folder (default: data/eval/batches/<timestamp>)")
-    args = ap.parse_args()
+    args = ap.parse_args(raw_argv)
 
     v2_root = Path(__file__).resolve().parents[2]
     tool_path = v2_root / "tools" / "eval" / "eval_sim_day_vs_actual.py"
@@ -562,6 +587,19 @@ def main() -> int:
         n_dates = len(dates)
         for i, d in enumerate(dates, start=1):
             out_path = out_dir / f"sim_vs_actual_{d}.json"
+            pitch_model_overrides_arg = str(args.pitch_model_overrides or "")
+            manager_pitching_overrides_arg = str(args.manager_pitching_overrides or "")
+            bvp_hr_arg = str(args.bvp_hr)
+            bvp_min_pa_arg = int(args.bvp_min_pa)
+            if should_use_forward_tuning(str(d)):
+                if not _argv_has_flag(raw_argv, "--pitch-model-overrides"):
+                    pitch_model_overrides_arg = str(FORWARD_PITCH_MODEL_OVERRIDES_PATH)
+                if not _argv_has_flag(raw_argv, "--manager-pitching-overrides"):
+                    manager_pitching_overrides_arg = str(FORWARD_MANAGER_PITCHING_OVERRIDES_PATH)
+                if not _argv_has_flag(raw_argv, "--bvp-hr"):
+                    bvp_hr_arg = str(FORWARD_BVP_MATCHUP_MODE)
+                if not _argv_has_flag(raw_argv, "--bvp-min-pa"):
+                    bvp_min_pa_arg = int(FORWARD_BVP_MIN_PA)
             if str(args.progress) == "on":
                 print(f"[{i}/{n_dates}] {d} -> {out_path.name}", flush=True)
             t0 = time.perf_counter()
@@ -585,11 +623,11 @@ def main() -> int:
                 "--sims-per-game",
                 str(int(args.sims_per_game)),
                 "--bvp-hr",
-                str(args.bvp_hr),
+                str(bvp_hr_arg),
                 "--bvp-days-back",
                 str(int(args.bvp_days_back)),
                 "--bvp-min-pa",
-                str(int(args.bvp_min_pa)),
+                str(int(bvp_min_pa_arg)),
                 "--bvp-shrink-pa",
                 str(float(args.bvp_shrink_pa)),
                 "--bvp-clamp-lo",
@@ -609,7 +647,7 @@ def main() -> int:
                 "--market-push-policy",
                 str(args.market_push_policy),
                 "--pitch-model-overrides",
-                str(args.pitch_model_overrides or ""),
+                str(pitch_model_overrides_arg),
                 "--market-game-config-overrides",
                 str(args.market_game_config_overrides or ""),
                 "--batter-vs-pitch-type",
@@ -647,7 +685,7 @@ def main() -> int:
                 "--manager-pitching",
                 str(args.manager_pitching),
                 "--manager-pitching-overrides",
-                str(args.manager_pitching_overrides or ""),
+                str(manager_pitching_overrides_arg),
                 "--so-prob-calibration",
                 str(args.so_prob_calibration or ""),
             ]

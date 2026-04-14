@@ -61,6 +61,13 @@ from sim_engine.pitch_model import PitchModelConfig
 from sim_engine.prob_calibration import apply_prop_prob_calibration
 from sim_engine.data.roster_artifact import read_game_roster_artifact, write_game_roster_artifact
 from sim_engine.data.roster_registry import build_roster_events_for_date, update_team_roster_registry
+from sim_engine.forward_tuning import (
+    FORWARD_BVP_MATCHUP_MODE,
+    FORWARD_BVP_MIN_PA,
+    FORWARD_MANAGER_PITCHING_OVERRIDES_PATH,
+    FORWARD_PITCH_MODEL_OVERRIDES_PATH,
+    should_use_forward_tuning,
+)
 from tools.eval.build_season_eval_manifest import build_manifest as build_season_eval_manifest
 from tools.eval.build_season_eval_manifest import write_manifest_artifacts as write_season_eval_manifest_artifacts
 from tools.eval.settle_locked_policy_cards import _feed_is_final, _load_feed, _settle_card
@@ -1066,6 +1073,19 @@ def _argv_has_flag(argv: List[str], flag: str) -> bool:
         if arg.startswith(f"{needle}="):
             return True
     return False
+
+
+def _apply_forward_tuning_defaults(args: argparse.Namespace, raw_argv: List[str]) -> None:
+    if not should_use_forward_tuning(str(getattr(args, "date", "") or "")):
+        return
+    if not _argv_has_flag(list(raw_argv), "--pitch-model-overrides"):
+        args.pitch_model_overrides = str(FORWARD_PITCH_MODEL_OVERRIDES_PATH)
+    if not _argv_has_flag(list(raw_argv), "--manager-pitching-overrides"):
+        args.manager_pitching_overrides = str(FORWARD_MANAGER_PITCHING_OVERRIDES_PATH)
+    if not _argv_has_flag(list(raw_argv), "--bvp-hr"):
+        args.bvp_hr = str(FORWARD_BVP_MATCHUP_MODE)
+    if not _argv_has_flag(list(raw_argv), "--bvp-min-pa"):
+        args.bvp_min_pa = int(FORWARD_BVP_MIN_PA)
 
 
 def _fresh_auto_seed() -> int:
@@ -3206,7 +3226,7 @@ def main() -> int:
         "--bvp-hr",
         choices=["on", "off"],
         default="on",
-        help="If on, apply shrunk batter-vs-starter matchup multipliers from local Statcast raw pitch files.",
+        help="If on, apply shrunk batter-vs-starter matchup multipliers from local Statcast raw pitch files for HR, K, BB, and contact quality.",
     )
     ap.add_argument("--bvp-days-back", type=int, default=365, help="How many days of history to consider for BvP lookup.")
     ap.add_argument("--bvp-min-pa", type=int, default=10, help="Minimum BvP PA required to apply a multiplier.")
@@ -3747,6 +3767,7 @@ def main() -> int:
     args.seed = int(effective_seed)
     args.seed_source = str(seed_source)
     args.seed_explicit = bool(seed_explicit)
+    _apply_forward_tuning_defaults(args, raw_argv)
 
     if str(getattr(args, "workflow", "core") or "core") == "ui-daily":
         return _run_ui_daily_workflow(args, raw_argv=raw_argv)
@@ -5214,22 +5235,76 @@ def main() -> int:
             home_lineup_confidence = 0.6 if str(home_projected_validation.get("status") or "") == "ok" else (0.35 if len(home_projected_ids) >= 9 else 0.15)
             home_projected_ids = home_projected_ids[:9]
 
+        away_confirmed_ids_out = away_lineup_ids[:9] if len(away_lineup_ids) >= 9 else []
+        home_confirmed_ids_out = home_lineup_ids[:9] if len(home_lineup_ids) >= 9 else []
+        away_projected_ids_out = [int(pid) for pid in away_projected_ids[:9]]
+        home_projected_ids_out = [int(pid) for pid in home_projected_ids[:9]]
+
+        def _lineup_comparison(confirmed_ids: List[int], projected_ids: List[int]) -> Dict[str, Any]:
+            confirmed = [int(pid) for pid in (confirmed_ids or [])[:9] if int(pid) > 0]
+            projected = [int(pid) for pid in (projected_ids or [])[:9] if int(pid) > 0]
+            if confirmed and projected:
+                exact_match = bool(confirmed == projected)
+                return {
+                    "status": ("exact_match" if exact_match else "true_mismatch"),
+                    "is_true_mismatch": bool(not exact_match),
+                    "confirmed_count": int(len(confirmed)),
+                    "projected_count": int(len(projected)),
+                    "overlap_count": int(len(set(confirmed) & set(projected))),
+                    "missing_from_projection": [int(pid) for pid in confirmed if pid not in set(projected)],
+                    "extra_in_projection": [int(pid) for pid in projected if pid not in set(confirmed)],
+                }
+            if confirmed:
+                return {
+                    "status": "confirmed_only",
+                    "is_true_mismatch": False,
+                    "confirmed_count": int(len(confirmed)),
+                    "projected_count": 0,
+                    "overlap_count": 0,
+                    "missing_from_projection": [],
+                    "extra_in_projection": [],
+                }
+            if projected:
+                return {
+                    "status": "projected_only",
+                    "is_true_mismatch": False,
+                    "confirmed_count": 0,
+                    "projected_count": int(len(projected)),
+                    "overlap_count": 0,
+                    "missing_from_projection": [],
+                    "extra_in_projection": [],
+                }
+            return {
+                "status": "none",
+                "is_true_mismatch": False,
+                "confirmed_count": 0,
+                "projected_count": 0,
+                "overlap_count": 0,
+                "missing_from_projection": [],
+                "extra_in_projection": [],
+            }
+
+        away_lineup_comparison = _lineup_comparison(away_confirmed_ids_out, away_projected_ids_out)
+        home_lineup_comparison = _lineup_comparison(home_confirmed_ids_out, home_projected_ids_out)
+
         lineup_games.append(
             {
                 "idx": int(idx),
                 "game_pk": int(game_pk) if game_pk else None,
                 "away": {"team_id": int(away_id), "abbr": _abbr(away_team)},
                 "home": {"team_id": int(home_id), "abbr": _abbr(home_team)},
-                "away_confirmed_ids": away_lineup_ids[:9] if len(away_lineup_ids) >= 9 else [],
-                "home_confirmed_ids": home_lineup_ids[:9] if len(home_lineup_ids) >= 9 else [],
-                "away_projected_ids": [int(pid) for pid in away_projected_ids[:9]],
-                "home_projected_ids": [int(pid) for pid in home_projected_ids[:9]],
+                "away_confirmed_ids": away_confirmed_ids_out,
+                "home_confirmed_ids": home_confirmed_ids_out,
+                "away_projected_ids": away_projected_ids_out,
+                "home_projected_ids": home_projected_ids_out,
                 "away_projected_validation": dict(away_projected_validation or {}),
                 "home_projected_validation": dict(home_projected_validation or {}),
                 "away_source": away_lineup_source,
                 "home_source": home_lineup_source,
                 "away_confidence": float(away_lineup_confidence),
                 "home_confidence": float(home_lineup_confidence),
+                "away_comparison": away_lineup_comparison,
+                "home_comparison": home_lineup_comparison,
             }
         )
 
@@ -5897,6 +5972,12 @@ def main() -> int:
             "adjusted_teams": 0,
             "partial_teams": 0,
             "fallback_pool_teams": 0,
+            "confirmed_teams": 0,
+            "projected_only_teams": 0,
+            "confirmed_only_teams": 0,
+            "comparable_teams": 0,
+            "exact_match_teams": 0,
+            "true_mismatch_teams": 0,
         }
         for row in lineup_games:
             for side in ("away", "home"):
@@ -5911,6 +5992,20 @@ def main() -> int:
                     lineup_summary["partial_teams"] = int(lineup_summary.get("partial_teams") or 0) + 1
                 if str(validation.get("pool_source") or "") == "fallback":
                     lineup_summary["fallback_pool_teams"] = int(lineup_summary.get("fallback_pool_teams") or 0) + 1
+                comparison = dict((row.get(f"{side}_comparison") or {}))
+                comparison_status = str(comparison.get("status") or "none")
+                if comparison_status in {"confirmed_only", "exact_match", "true_mismatch"}:
+                    lineup_summary["confirmed_teams"] = int(lineup_summary.get("confirmed_teams") or 0) + 1
+                if comparison_status == "projected_only":
+                    lineup_summary["projected_only_teams"] = int(lineup_summary.get("projected_only_teams") or 0) + 1
+                elif comparison_status == "confirmed_only":
+                    lineup_summary["confirmed_only_teams"] = int(lineup_summary.get("confirmed_only_teams") or 0) + 1
+                elif comparison_status == "exact_match":
+                    lineup_summary["comparable_teams"] = int(lineup_summary.get("comparable_teams") or 0) + 1
+                    lineup_summary["exact_match_teams"] = int(lineup_summary.get("exact_match_teams") or 0) + 1
+                elif comparison_status == "true_mismatch":
+                    lineup_summary["comparable_teams"] = int(lineup_summary.get("comparable_teams") or 0) + 1
+                    lineup_summary["true_mismatch_teams"] = int(lineup_summary.get("true_mismatch_teams") or 0) + 1
         _write_json(
             snapshot_dir / "lineups.json",
             {

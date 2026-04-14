@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import json
 import random
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, Optional
 
+from .forward_tuning import (
+    FORWARD_MANAGER_PITCHING_OVERRIDES_PATH,
+    FORWARD_PITCH_MODEL_OVERRIDES_PATH,
+    should_use_forward_tuning,
+)
 from .models import BaseState, GameConfig, InningHalfState, TeamRoster
 from .state import GameState
 from .simulate import simulate_game
@@ -36,6 +43,23 @@ class LiveMcResult:
     avg_away_runs: float
     avg_home_runs: float
     total_runs_dist: Dict[int, int]
+
+
+def _load_json_file(path: Path) -> Dict[str, object]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _forward_live_cfg_kwargs(date_str: Optional[str]) -> Dict[str, object]:
+    if not date_str or not should_use_forward_tuning(str(date_str)):
+        return {}
+    return {
+        "pitch_model_overrides": _load_json_file(FORWARD_PITCH_MODEL_OVERRIDES_PATH),
+        "manager_pitching_overrides": _load_json_file(FORWARD_MANAGER_PITCHING_OVERRIDES_PATH),
+    }
 
 
 def _clamp_batter_index(roster: TeamRoster, raw_index: int) -> int:
@@ -117,6 +141,7 @@ def estimate_live(
     situation: LiveSituation,
     sims: int = 300,
     seed: Optional[int] = None,
+    cfg_kwargs: Optional[Dict[str, object]] = None,
 ) -> LiveMcResult:
     """Monte Carlo estimate for winner/total from the actual current game state."""
     rng = random.Random(seed)
@@ -126,9 +151,10 @@ def estimate_live(
     away_sum = 0.0
     home_sum = 0.0
     dist: Dict[int, int] = {}
+    effective_cfg_kwargs = dict(cfg_kwargs or {})
 
     for i in range(max(1, int(sims))):
-        cfg = GameConfig(rng_seed=rng.randint(1, 2**31 - 1))
+        cfg = GameConfig(rng_seed=rng.randint(1, 2**31 - 1), **effective_cfg_kwargs)
         state = _build_initial_state(away, home, situation, cfg)
         res = simulate_game(away, home, cfg, initial_state=state)
         away_final = max(0, int(res.away_score or 0))
