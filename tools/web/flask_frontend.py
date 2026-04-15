@@ -13981,6 +13981,11 @@ def _build_cards_api_payload(
                 feed = _load_live_lens_feed(int(game_pk), d)
                 feed_cache[int(game_pk)] = feed
             _supplement_card_status_from_live_feed(card, d, feed=feed)
+            _attach_cards_final_starter_ladder_badges(
+                card,
+                d=d,
+                feed=feed,
+            )
             _attach_cards_live_starter_ladder_badges(
                 card,
                 d=d,
@@ -13997,6 +14002,7 @@ def _build_cards_api_payload(
 def _starter_ladder_badge_from_row(
     row: Optional[Dict[str, Any]],
     *,
+    stat_key: Optional[str] = None,
     short_label: str,
     min_hit_prob: float = 0.2,
     include_base_over: bool = True,
@@ -14051,6 +14057,7 @@ def _starter_ladder_badge_from_row(
 
     return {
         "label": label,
+        "stat": str(stat_key or "").strip().lower() or None,
         "target": int(supported_totals[-1]),
         "targets": supported_totals,
         "hitProb": round(float(last_supported_prob), 3),
@@ -14062,6 +14069,7 @@ def _starter_ladder_badge_from_row(
 def _starter_ladder_badge_from_supported_totals(
     supported_totals: List[int],
     *,
+    stat_key: Optional[str] = None,
     short_label: str,
     last_supported_prob: Optional[float],
     detail_parts: Optional[List[str]] = None,
@@ -14092,6 +14100,7 @@ def _starter_ladder_badge_from_supported_totals(
 
     out: Dict[str, Any] = {
         "label": label,
+        "stat": str(stat_key or "").strip().lower() or None,
         "target": int(cleaned[-1]),
         "targets": cleaned,
         "tone": tone,
@@ -14245,6 +14254,7 @@ def _live_starter_ladder_badges_for_side(
 
         badge = _starter_ladder_badge_from_supported_totals(
             supported_totals,
+            stat_key=prop_key,
             short_label=short_label,
             last_supported_prob=last_supported_prob,
             detail_parts=detail_parts,
@@ -14293,6 +14303,149 @@ def _attach_cards_live_starter_ladder_badges(
             entry.pop("ladderBadges", None)
 
 
+def _starter_ladder_badge_stat_key(badge: Optional[Dict[str, Any]]) -> Optional[str]:
+    if not isinstance(badge, dict):
+        return None
+    stat_key = str(badge.get("stat") or "").strip().lower()
+    if stat_key in _PITCHER_LADDER_PROPS:
+        return stat_key
+    label = str(badge.get("label") or "").strip().upper()
+    if label.startswith("K"):
+        return "strikeouts"
+    if label.startswith("O"):
+        return "outs"
+    return None
+
+
+def _final_starter_ladder_badges_for_side(
+    *,
+    side: str,
+    entry: Optional[Dict[str, Any]],
+    feed: Optional[Dict[str, Any]],
+    stats_cache: Dict[Tuple[int, str, str, str], Optional[Dict[str, Any]]],
+    game_pk: int,
+) -> List[Dict[str, Any]]:
+    if side not in {"away", "home"} or not isinstance(entry, dict) or not isinstance(feed, dict):
+        return []
+    ladder_badges = [badge for badge in (entry.get("ladderBadges") or []) if isinstance(badge, dict)]
+    if not ladder_badges:
+        return []
+
+    starter_name = _first_text(entry.get("fullName"), entry.get("name"))
+    if not starter_name:
+        return []
+    stats = _top_props_player_stats(
+        feed=feed,
+        player_name=starter_name,
+        stat_group="pitching",
+        side_hint=side,
+        cache=stats_cache,
+        game_pk=int(game_pk),
+    )
+    if not isinstance(stats, dict):
+        return []
+
+    resolved_badges: List[Dict[str, Any]] = []
+    for badge in ladder_badges:
+        stat_key = _starter_ladder_badge_stat_key(badge)
+        actual_key = _TOP_PROPS_PITCHER_ACTUAL_KEYS.get(str(stat_key or ""))
+        if not actual_key:
+            continue
+        actual_value = _safe_float(stats.get(actual_key))
+        if actual_value is None:
+            continue
+
+        targets = [int(total) for total in (badge.get("targets") or []) if _safe_int(total) is not None]
+        if not targets:
+            target_total = _safe_int(badge.get("target"))
+            if target_total is not None:
+                targets = [int(target_total)]
+        if not targets:
+            continue
+
+        wins = sum(1 for total in targets if float(actual_value) + 1e-9 >= float(total))
+        losses = max(0, len(targets) - int(wins))
+        short_label = "K" if stat_key == "strikeouts" else "O" if stat_key == "outs" else str(badge.get("label") or "").split(" ", 1)[0]
+        stat_label = str((_PITCHER_LADDER_PROPS.get(str(stat_key or "")) or {}).get("label") or short_label).strip()
+        supported_label = "/".join(str(int(total)) for total in targets)
+        detail_base = (
+            f"Final {stat_label}: {int(round(float(actual_value)))}. "
+            f"Supported ladders: {supported_label}. Correct ladders: {int(wins)}. Missed ladders: {int(losses)}."
+        )
+
+        if wins > 0:
+            resolved_badges.append(
+                {
+                    "label": f"{short_label} +{int(wins)}",
+                    "stat": stat_key,
+                    "tone": "win",
+                    "detail": detail_base,
+                    "count": int(wins),
+                    "actual": int(round(float(actual_value))),
+                    "source": "final",
+                }
+            )
+        if losses > 0:
+            resolved_badges.append(
+                {
+                    "label": f"{short_label} -{int(losses)}",
+                    "stat": stat_key,
+                    "tone": "loss",
+                    "detail": detail_base,
+                    "count": int(losses),
+                    "actual": int(round(float(actual_value))),
+                    "source": "final",
+                }
+            )
+    return resolved_badges
+
+
+def _attach_cards_final_starter_ladder_badges(
+    card: Dict[str, Any],
+    *,
+    d: str,
+    feed: Optional[Dict[str, Any]],
+) -> None:
+    if not isinstance(card, dict):
+        return
+    if not _status_is_final(card.get("status") if isinstance(card.get("status"), dict) else {}):
+        return
+    probable = card.get("probable") if isinstance(card.get("probable"), dict) else None
+    if not isinstance(probable, dict):
+        return
+    game_pk = _safe_int(card.get("gamePk"))
+    if game_pk is None or int(game_pk) <= 0:
+        return
+
+    settlement_feed = dict(feed) if isinstance(feed, dict) and _settlement_feed_is_final(feed) else None
+    if not isinstance(settlement_feed, dict):
+        try:
+            loaded_feed = _load_settlement_feed(str(d), int(game_pk))
+        except Exception:
+            loaded_feed = None
+        settlement_feed = dict(loaded_feed) if isinstance(loaded_feed, dict) and _settlement_feed_is_final(loaded_feed) else None
+
+    stats_cache: Dict[Tuple[int, str, str, str], Optional[Dict[str, Any]]] = {}
+    for side in ("away", "home"):
+        entry = probable.get(side)
+        if not isinstance(entry, dict):
+            continue
+        if not isinstance(settlement_feed, dict):
+            entry.pop("ladderBadges", None)
+            continue
+        settled_badges = _final_starter_ladder_badges_for_side(
+            side=side,
+            entry=entry,
+            feed=settlement_feed,
+            stats_cache=stats_cache,
+            game_pk=int(game_pk),
+        )
+        if settled_badges:
+            entry["ladderBadges"] = settled_badges
+        else:
+            entry.pop("ladderBadges", None)
+
+
 def _starter_ladder_badges_for_pitcher(
     game_groups: Optional[Dict[str, Any]],
     *,
@@ -14323,11 +14476,16 @@ def _starter_ladder_badges_for_pitcher(
         return None
 
     badges: List[Dict[str, Any]] = []
-    strikeout_badge = _starter_ladder_badge_from_row(_resolve_row("strikeouts"), short_label="K")
+    strikeout_badge = _starter_ladder_badge_from_row(
+        _resolve_row("strikeouts"),
+        stat_key="strikeouts",
+        short_label="K",
+    )
     if isinstance(strikeout_badge, dict):
         badges.append(strikeout_badge)
     outs_badge = _starter_ladder_badge_from_row(
         _resolve_row("outs"),
+        stat_key="outs",
         short_label="O",
         include_base_over=False,
     )
