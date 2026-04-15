@@ -13974,6 +13974,7 @@ def _build_cards_api_payload(
         recos_by_game=recos_by_game,
     )
     _attach_cards_starter_ladder_badges(cards, artifacts.get("daily_ladders"))
+    pitcher_market_ctx = _load_pitcher_ladder_market_context(d)
     feed_cache: Dict[int, Optional[Dict[str, Any]]] = {}
     for card in cards:
         if not isinstance(card, dict):
@@ -13985,6 +13986,14 @@ def _build_cards_api_payload(
                 feed = _load_live_lens_feed(int(game_pk), d)
                 feed_cache[int(game_pk)] = feed
             _supplement_card_status_from_live_feed(card, d, feed=feed)
+            _attach_cards_live_starter_ladder_badges(
+                card,
+                d=d,
+                artifacts=artifacts,
+                archive=archive,
+                feed=feed,
+                pitcher_market_ctx=pitcher_market_ctx,
+            )
         market_row = _game_line_market_for_card(card, game_line_index)
         card["trackedGameLines"] = (market_row.get("markets") or {}) if isinstance(market_row, dict) else None
     return _cards_api_payload(d, artifacts=artifacts, archive=archive, cards=cards)
@@ -13995,6 +14004,7 @@ def _starter_ladder_badge_from_row(
     *,
     short_label: str,
     min_hit_prob: float = 0.2,
+    include_base_over: bool = True,
 ) -> Optional[Dict[str, Any]]:
     if not isinstance(row, dict):
         return None
@@ -14002,9 +14012,10 @@ def _starter_ladder_badge_from_row(
     ladder_rows = [entry for entry in (row.get("ladder") or []) if isinstance(entry, dict)]
     if market_line is None or not ladder_rows:
         return None
+    base_over_total = int(math.floor(float(market_line))) + 1
 
-    candidate_total: Optional[int] = None
-    candidate_prob: Optional[float] = None
+    supported_totals: List[int] = []
+    last_supported_prob: Optional[float] = None
     for entry in ladder_rows:
         total = _safe_int(entry.get("total"))
         hit_prob = _safe_float(entry.get("hitProb"))
@@ -14012,28 +14023,283 @@ def _starter_ladder_badge_from_row(
             continue
         if float(total) <= float(market_line):
             continue
+        if not include_base_over and int(total) <= int(base_over_total):
+            continue
         if float(hit_prob) < float(min_hit_prob):
             continue
-        if candidate_total is None or int(total) > int(candidate_total):
-            candidate_total = int(total)
-            candidate_prob = float(hit_prob)
+        supported_totals.append(int(total))
+        last_supported_prob = float(hit_prob)
 
-    if candidate_total is None or candidate_prob is None:
+    if not supported_totals or last_supported_prob is None:
         return None
 
     tone = "soft"
-    if float(candidate_prob) >= 0.35:
+    if float(last_supported_prob) >= 0.35:
         tone = "strong"
-    elif float(candidate_prob) >= 0.25:
+    elif float(last_supported_prob) >= 0.25:
         tone = "solid"
 
+    supported_label = "/".join(str(int(total)) for total in supported_totals)
+    if short_label == "O" and len(supported_totals) > 1:
+        label = f"{short_label} {supported_label}"
+    elif len(supported_totals) == 1:
+        label = f"{short_label} up to {int(supported_totals[0])}"
+    else:
+        label = f"{short_label} up to {int(supported_totals[-1])}"
+
+    detail_parts: List[str] = []
+    matchup_summary = str(row.get("matchupSummary") or "").strip()
+    if matchup_summary:
+        detail_parts.append(matchup_summary)
+    detail_parts.append(f"Supported ladders: {supported_label}")
+    detail_parts.append(f"Last supported rung: {int(supported_totals[-1])}")
+
     return {
-        "label": f"{short_label} {int(candidate_total)}+",
-        "target": int(candidate_total),
-        "hitProb": round(float(candidate_prob), 3),
+        "label": label,
+        "target": int(supported_totals[-1]),
+        "targets": supported_totals,
+        "hitProb": round(float(last_supported_prob), 3),
         "tone": tone,
-        "detail": str(row.get("matchupSummary") or "").strip(),
+        "detail": " ".join(detail_parts).strip(),
     }
+
+
+def _starter_ladder_badge_from_supported_totals(
+    supported_totals: List[int],
+    *,
+    short_label: str,
+    last_supported_prob: Optional[float],
+    detail_parts: Optional[List[str]] = None,
+) -> Optional[Dict[str, Any]]:
+    cleaned = [int(total) for total in supported_totals if _safe_int(total) is not None]
+    if not cleaned:
+        return None
+
+    probability = _safe_float(last_supported_prob)
+    tone = "soft"
+    if probability is not None:
+        if float(probability) >= 0.35:
+            tone = "strong"
+        elif float(probability) >= 0.25:
+            tone = "solid"
+
+    supported_label = "/".join(str(int(total)) for total in cleaned)
+    if short_label == "O" and len(cleaned) > 1:
+        label = f"{short_label} {supported_label}"
+    elif len(cleaned) == 1:
+        label = f"{short_label} up to {int(cleaned[0])}"
+    else:
+        label = f"{short_label} up to {int(cleaned[-1])}"
+
+    parts = [str(part).strip() for part in (detail_parts or []) if str(part).strip()]
+    parts.append(f"Supported ladders: {supported_label}")
+    parts.append(f"Last supported rung: {int(cleaned[-1])}")
+
+    out: Dict[str, Any] = {
+        "label": label,
+        "target": int(cleaned[-1]),
+        "targets": cleaned,
+        "tone": tone,
+        "detail": " ".join(parts).strip(),
+    }
+    if probability is not None:
+        out["hitProb"] = round(float(probability), 3)
+    return out
+
+
+def _live_pitcher_ladder_market_candidates(market: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not isinstance(market, dict):
+        return []
+
+    candidates: List[Dict[str, Any]] = []
+    base_line = _safe_float(market.get("line"))
+    if base_line is not None:
+        candidates.append(
+            {
+                "line": float(base_line),
+                "over_odds": _safe_int(market.get("over_odds")),
+                "under_odds": _safe_int(market.get("under_odds")),
+            }
+        )
+
+    for alt in (market.get("alternates") or []):
+        if not isinstance(alt, dict):
+            continue
+        line_value = _safe_float(alt.get("line"))
+        if line_value is None:
+            continue
+        candidates.append(
+            {
+                "line": float(line_value),
+                "over_odds": _safe_int(alt.get("over_odds")),
+                "under_odds": _safe_int(alt.get("under_odds")),
+            }
+        )
+
+    deduped: Dict[float, Dict[str, Any]] = {}
+    for item in candidates:
+        line_value = _safe_float(item.get("line"))
+        if line_value is None:
+            continue
+        deduped[float(line_value)] = dict(item)
+    return [deduped[key] for key in sorted(deduped.keys())]
+
+
+def _live_starter_ladder_badges_for_side(
+    *,
+    side: str,
+    snapshot: Optional[Dict[str, Any]],
+    sim_context: Optional[Dict[str, Any]],
+    pitcher_market_ctx: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    if side not in {"away", "home"}:
+        return []
+    if not isinstance(snapshot, dict) or not isinstance(sim_context, dict) or not sim_context.get("found"):
+        return []
+    if _starter_removed_from_snapshot(snapshot, side):
+        return []
+
+    actual_teams = (snapshot.get("teams") or {}) if isinstance(snapshot.get("teams"), dict) else {}
+    starter = (((actual_teams.get(side) or {}).get("starter")) or {}) if isinstance(actual_teams.get(side), dict) else {}
+    starter_name = _first_text(starter.get("name"))
+    starter_key = normalize_pitcher_name(starter_name)
+    if not starter_name or not starter_key:
+        return []
+
+    pitcher_models = _sim_prop_models(sim_context, "pitchers")
+    model_entry = _live_pitcher_model_entry(pitcher_models, team_side=side, starter_name=starter_name)
+    market_lines = (
+        pitcher_market_ctx.get("displayLines")
+        if isinstance(pitcher_market_ctx, dict) and isinstance(pitcher_market_ctx.get("displayLines"), dict)
+        else {}
+    )
+    market_entry = market_lines.get(starter_key) if starter_key else None
+    if not isinstance(model_entry, dict) or not isinstance(market_entry, dict):
+        return []
+
+    actual_row = _lookup_boxscore_row((((actual_teams.get(side) or {}).get("boxscore") or {}).get("pitching") or []), starter_name)
+    pitcher_ctx = _live_pitcher_matchup_context({"team_side": side}, snapshot, sim_context)
+    pitcher_profile = pitcher_ctx.get("pitcher_profile") if isinstance(pitcher_ctx.get("pitcher_profile"), dict) else None
+    current_profile = pitcher_ctx.get("current_profile") if isinstance(pitcher_ctx.get("current_profile"), dict) else None
+    bullpen_profiles = pitcher_ctx.get("bullpen_profiles") if isinstance(pitcher_ctx.get("bullpen_profiles"), list) else []
+    model_row = model_entry.get("model") or {}
+    progress_fraction = float((_live_game_progress(snapshot).get("fraction") or 0.0))
+
+    badges: List[Dict[str, Any]] = []
+    for prop_key, short_label in (("strikeouts", "K"), ("outs", "O")):
+        cfg = _PITCHER_LADDER_PROPS.get(prop_key) or {}
+        market_key = str(cfg.get("market_key") or "").strip()
+        dist_key = str(cfg.get("dist_key") or "").strip()
+        mean_key = str(cfg.get("mean_key") or "").strip()
+        market = market_entry.get(market_key) if market_key else None
+        if not isinstance(market, dict) or not dist_key:
+            continue
+
+        base_line = _safe_float(market.get("line"))
+        if base_line is None:
+            continue
+        base_over_total = int(math.floor(float(base_line))) + 1
+        model_mean = _safe_float(model_row.get(mean_key)) if mean_key else None
+        actual_value = _live_stat_value(actual_row, {"market": "pitcher_props", "prop": prop_key})
+        live_projection = _project_live_pitcher_value(
+            prop=prop_key,
+            team_side=side,
+            actual_value=actual_value,
+            model_mean=model_mean,
+            progress_fraction=progress_fraction,
+            actual_row=actual_row,
+            model_row=model_row,
+            pitcher_profile=pitcher_profile,
+            current_profile=current_profile,
+            bullpen_profiles=bullpen_profiles,
+            snapshot=snapshot,
+        )
+
+        supported_totals: List[int] = []
+        last_supported_prob: Optional[float] = None
+        for candidate in _live_pitcher_ladder_market_candidates(market):
+            line_value = _safe_float(candidate.get("line"))
+            if line_value is None:
+                continue
+            target_total = int(math.floor(float(line_value))) + 1
+            model_prob_over = _prob_over_line_from_dist(model_row.get(dist_key) or {}, float(line_value))
+            side_pick = _select_live_prop_side(
+                model_prob_over=model_prob_over,
+                live_projection=live_projection,
+                line=float(line_value),
+                over_odds=candidate.get("over_odds"),
+                under_odds=candidate.get("under_odds"),
+            )
+            if not isinstance(side_pick, dict) or str(side_pick.get("selection") or "").strip().lower() != "over":
+                continue
+            if model_prob_over is None or float(model_prob_over) < 0.2:
+                continue
+            supported_totals.append(int(target_total))
+            last_supported_prob = float(model_prob_over)
+
+        if short_label == "O":
+            higher_alts = [int(total) for total in supported_totals if int(total) > int(base_over_total)]
+            if higher_alts:
+                supported_totals = higher_alts
+        if not supported_totals:
+            continue
+
+        detail_parts: List[str] = []
+        if live_projection is not None:
+            if actual_value is not None:
+                detail_parts.append(f"Live projection {float(live_projection):.1f} from current {float(actual_value):.1f}.")
+            else:
+                detail_parts.append(f"Live projection {float(live_projection):.1f}.")
+        detail_parts.append("Starter still active in live game state.")
+
+        badge = _starter_ladder_badge_from_supported_totals(
+            supported_totals,
+            short_label=short_label,
+            last_supported_prob=last_supported_prob,
+            detail_parts=detail_parts,
+        )
+        if isinstance(badge, dict):
+            badge["source"] = "live"
+            badges.append(badge)
+    return badges
+
+
+def _attach_cards_live_starter_ladder_badges(
+    card: Dict[str, Any],
+    *,
+    d: str,
+    artifacts: Optional[Dict[str, Any]],
+    archive: Optional[Dict[str, Any]],
+    feed: Optional[Dict[str, Any]],
+    pitcher_market_ctx: Optional[Dict[str, Any]],
+) -> None:
+    if not isinstance(card, dict):
+        return
+    if not _status_is_live(card.get("status") if isinstance(card.get("status"), dict) else {}):
+        return
+    probable = card.get("probable") if isinstance(card.get("probable"), dict) else None
+    if not isinstance(probable, dict):
+        return
+    game_pk = _safe_int(card.get("gamePk"))
+    if game_pk is None or int(game_pk) <= 0:
+        return
+
+    snapshot = _load_live_lens_snapshot(int(game_pk), str(d), feed=feed)
+    sim_context = _load_sim_context_for_game(int(game_pk), str(d), artifacts=artifacts, archive=archive, feed=feed)
+    for side in ("away", "home"):
+        entry = probable.get(side)
+        if not isinstance(entry, dict):
+            continue
+        live_badges = _live_starter_ladder_badges_for_side(
+            side=side,
+            snapshot=snapshot,
+            sim_context=sim_context,
+            pitcher_market_ctx=pitcher_market_ctx,
+        )
+        if live_badges:
+            entry["ladderBadges"] = live_badges
+        else:
+            entry.pop("ladderBadges", None)
 
 
 def _starter_ladder_badges_for_pitcher(
@@ -14069,7 +14335,11 @@ def _starter_ladder_badges_for_pitcher(
     strikeout_badge = _starter_ladder_badge_from_row(_resolve_row("strikeouts"), short_label="K")
     if isinstance(strikeout_badge, dict):
         badges.append(strikeout_badge)
-    outs_badge = _starter_ladder_badge_from_row(_resolve_row("outs"), short_label="O")
+    outs_badge = _starter_ladder_badge_from_row(
+        _resolve_row("outs"),
+        short_label="O",
+        include_base_over=False,
+    )
     if isinstance(outs_badge, dict):
         badges.append(outs_badge)
     return badges
