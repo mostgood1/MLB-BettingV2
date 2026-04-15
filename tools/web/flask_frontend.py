@@ -14184,6 +14184,7 @@ def _live_starter_ladder_badges_for_side(
     bullpen_profiles = pitcher_ctx.get("bullpen_profiles") if isinstance(pitcher_ctx.get("bullpen_profiles"), list) else []
     model_row = model_entry.get("model") or {}
     progress_fraction = float((_live_game_progress(snapshot).get("fraction") or 0.0))
+    live_projection_slack = 1.0
 
     badges: List[Dict[str, Any]] = []
     for prop_key, short_label in (("strikeouts", "K"), ("outs", "O")):
@@ -14222,17 +14223,12 @@ def _live_starter_ladder_badges_for_side(
             if line_value is None:
                 continue
             target_total = int(math.floor(float(line_value))) + 1
-            model_prob_over = _prob_over_line_from_dist(model_row.get(dist_key) or {}, float(line_value))
-            side_pick = _select_live_prop_side(
-                model_prob_over=model_prob_over,
-                live_projection=live_projection,
-                line=float(line_value),
-                over_odds=candidate.get("over_odds"),
-                under_odds=candidate.get("under_odds"),
-            )
-            if not isinstance(side_pick, dict) or str(side_pick.get("selection") or "").strip().lower() != "over":
+            if actual_value is not None and int(target_total) <= int(math.floor(float(actual_value))):
                 continue
+            model_prob_over = _prob_over_line_from_dist(model_row.get(dist_key) or {}, float(line_value))
             if model_prob_over is None or float(model_prob_over) < 0.2:
+                continue
+            if live_projection is None or float(live_projection) + float(live_projection_slack) < float(target_total):
                 continue
             supported_totals.append(int(target_total))
             last_supported_prob = float(model_prob_over)
