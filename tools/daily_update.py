@@ -72,7 +72,12 @@ from tools.eval.build_season_eval_manifest import build_manifest as build_season
 from tools.eval.build_season_eval_manifest import write_manifest_artifacts as write_season_eval_manifest_artifacts
 from tools.eval.settle_locked_policy_cards import _feed_is_final, _load_feed, _settle_card
 from tools.oddsapi.fetch_daily_oddsapi_markets import fetch_and_write_live_odds_for_date
-from tools.web.flask_frontend import write_current_day_season_frontend_artifacts, write_daily_ladders_artifact, write_daily_top_props_artifact
+from tools.web.flask_frontend import (
+    write_current_day_season_frontend_artifacts,
+    write_daily_ladder_audit_artifact,
+    write_daily_ladders_artifact,
+    write_daily_top_props_artifact,
+)
 
 
 # --- multiprocessing helpers (must be top-level for Windows spawn pickling) ---
@@ -2192,6 +2197,38 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
             }
             report["errors"].append(f"current-day ladders artifact build failed: {type(exc).__name__}: {exc}")
     report["stages"]["current_day_ladders_artifact"] = ladders_stage
+
+    ladder_audit_stage: Dict[str, Any]
+    ladder_audit_artifact_path = game_out / "ladders" / f"daily_ladder_audit_{token}.json"
+    if str(current_stage.get("status") or "") == "error":
+        ladder_audit_stage = {
+            "status": "skipped",
+            "date": str(args.date),
+            "artifact_path": _relative_path_str(ladder_audit_artifact_path),
+            "reason": "current-day multi-profile build failed",
+        }
+    else:
+        print(f"[ui-daily] Building current-day ladder audit artifact for {args.date}...")
+        try:
+            ladder_audit_result = write_daily_ladder_audit_artifact(
+                str(args.date),
+                out_path=ladder_audit_artifact_path,
+            )
+            ladder_audit_stage = {
+                "status": "ok",
+                "date": str(args.date),
+                "artifact_path": _relative_path_str(ladder_audit_result.get("path")),
+                "summary": dict(ladder_audit_result.get("summary") or {}),
+            }
+        except Exception as exc:
+            ladder_audit_stage = {
+                "status": "error",
+                "date": str(args.date),
+                "artifact_path": _relative_path_str(ladder_audit_artifact_path),
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            report["errors"].append(f"current-day ladder audit artifact build failed: {type(exc).__name__}: {exc}")
+    report["stages"]["current_day_ladder_audit_artifact"] = ladder_audit_stage
 
     season_frontend_stage: Dict[str, Any]
     season_frontend_dir = game_out / "season_frontend"
@@ -5953,6 +5990,14 @@ def main() -> int:
         print(f"Wrote ladders artifact: {ladders_result.get('path')}")
     except Exception as exc:
         print(f"Warning: failed to write ladders artifact for {args.date}: {type(exc).__name__}: {exc}")
+    try:
+        ladder_audit_result = write_daily_ladder_audit_artifact(
+            str(args.date),
+            out_path=(out_root / "ladders" / f"daily_ladder_audit_{args.date.replace('-', '_')}.json"),
+        )
+        print(f"Wrote ladder audit artifact: {ladder_audit_result.get('path')}")
+    except Exception as exc:
+        print(f"Warning: failed to write ladder audit artifact for {args.date}: {type(exc).__name__}: {exc}")
     try:
         season_frontend_result = write_current_day_season_frontend_artifacts(
             int(args.season),

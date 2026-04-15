@@ -16,7 +16,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -212,6 +212,8 @@ _PITCHER_LADDER_PROPS: Dict[str, Dict[str, Any]] = {
         "mean_key": "so_mean",
         "market_key": "strikeouts",
         "unit": "K",
+        "ladder_min_hit_prob": 0.2,
+        "ladder_max_rungs": 4,
     },
     "outs": {
         "label": "Outs Recorded",
@@ -219,6 +221,8 @@ _PITCHER_LADDER_PROPS: Dict[str, Dict[str, Any]] = {
         "mean_key": "outs_mean",
         "market_key": "outs",
         "unit": "Outs",
+        "ladder_min_hit_prob": 0.24,
+        "ladder_max_rungs": 2,
     },
     "pitches": {
         "label": "Pitches",
@@ -14006,6 +14010,7 @@ def _starter_ladder_badge_from_row(
     short_label: str,
     min_hit_prob: float = 0.2,
     include_base_over: bool = True,
+    max_rungs: Optional[int] = None,
 ) -> Optional[Dict[str, Any]]:
     if not isinstance(row, dict):
         return None
@@ -14030,6 +14035,19 @@ def _starter_ladder_badge_from_row(
             continue
         supported_totals.append(int(total))
         last_supported_prob = float(hit_prob)
+
+    if max_rungs is not None and int(max_rungs) > 0 and len(supported_totals) > int(max_rungs):
+        supported_totals = supported_totals[: int(max_rungs)]
+        last_supported_prob = _safe_float(
+            next(
+                (
+                    entry.get("hitProb")
+                    for entry in ladder_rows
+                    if _safe_int(entry.get("total")) == int(supported_totals[-1])
+                ),
+                last_supported_prob,
+            )
+        )
 
     if not supported_totals or last_supported_prob is None:
         return None
@@ -14073,8 +14091,11 @@ def _starter_ladder_badge_from_supported_totals(
     short_label: str,
     last_supported_prob: Optional[float],
     detail_parts: Optional[List[str]] = None,
+    max_rungs: Optional[int] = None,
 ) -> Optional[Dict[str, Any]]:
     cleaned = [int(total) for total in supported_totals if _safe_int(total) is not None]
+    if max_rungs is not None and int(max_rungs) > 0 and len(cleaned) > int(max_rungs):
+        cleaned = cleaned[: int(max_rungs)]
     if not cleaned:
         return None
 
@@ -14196,6 +14217,8 @@ def _live_starter_ladder_badges_for_side(
         market_key = str(cfg.get("market_key") or "").strip()
         dist_key = str(cfg.get("dist_key") or "").strip()
         mean_key = str(cfg.get("mean_key") or "").strip()
+        min_hit_prob = float(_safe_float(cfg.get("ladder_min_hit_prob")) or 0.2)
+        max_rungs = _safe_int(cfg.get("ladder_max_rungs"))
         market = market_entry.get(market_key) if market_key else None
         if not isinstance(market, dict) or not dist_key:
             continue
@@ -14230,7 +14253,7 @@ def _live_starter_ladder_badges_for_side(
             if actual_value is not None and int(target_total) <= int(math.floor(float(actual_value))):
                 continue
             model_prob_over = _prob_over_line_from_dist(model_row.get(dist_key) or {}, float(line_value))
-            if model_prob_over is None or float(model_prob_over) < 0.2:
+            if model_prob_over is None or float(model_prob_over) < float(min_hit_prob):
                 continue
             if live_projection is None or float(live_projection) + float(live_projection_slack) < float(target_total):
                 continue
@@ -14241,6 +14264,8 @@ def _live_starter_ladder_badges_for_side(
             higher_alts = [int(total) for total in supported_totals if int(total) > int(base_over_total)]
             if higher_alts:
                 supported_totals = higher_alts
+        if max_rungs is not None and int(max_rungs) > 0 and len(supported_totals) > int(max_rungs):
+            supported_totals = supported_totals[: int(max_rungs)]
         if not supported_totals:
             continue
 
@@ -14258,6 +14283,7 @@ def _live_starter_ladder_badges_for_side(
             short_label=short_label,
             last_supported_prob=last_supported_prob,
             detail_parts=detail_parts,
+            max_rungs=max_rungs,
         )
         if isinstance(badge, dict):
             badge["source"] = "live"
@@ -14345,7 +14371,7 @@ def _final_starter_ladder_badges_for_side(
     if not isinstance(stats, dict):
         return []
 
-    resolved_badges: List[Dict[str, Any]] = []
+    grouped_badges: Dict[str, Dict[str, Any]] = {}
     for badge in ladder_badges:
         stat_key = _starter_ladder_badge_stat_key(badge)
         actual_key = _TOP_PROPS_PITCHER_ACTUAL_KEYS.get(str(stat_key or ""))
@@ -14368,35 +14394,62 @@ def _final_starter_ladder_badges_for_side(
         short_label = "K" if stat_key == "strikeouts" else "O" if stat_key == "outs" else str(badge.get("label") or "").split(" ", 1)[0]
         stat_label = str((_PITCHER_LADDER_PROPS.get(str(stat_key or "")) or {}).get("label") or short_label).strip()
         supported_label = "/".join(str(int(total)) for total in targets)
-        detail_base = (
-            f"Final {stat_label}: {int(round(float(actual_value)))}. "
+        entry = grouped_badges.setdefault(
+            str(stat_key or short_label),
+            {
+                "short_label": short_label,
+                "stat": stat_key,
+                "stat_label": stat_label,
+                "actual": int(round(float(actual_value))),
+                "targets": [],
+            },
+        )
+        existing_targets = {int(total) for total in (entry.get("targets") or []) if _safe_int(total) is not None}
+        for total in targets:
+            if int(total) not in existing_targets:
+                cast_targets = entry.get("targets") if isinstance(entry.get("targets"), list) else []
+                cast_targets.append(int(total))
+                entry["targets"] = cast_targets
+                existing_targets.add(int(total))
+
+    resolved_badges: List[Dict[str, Any]] = []
+    for entry in grouped_badges.values():
+        targets = sorted(int(total) for total in (entry.get("targets") or []) if _safe_int(total) is not None)
+        if not targets:
+            continue
+        actual_value = int(entry.get("actual") or 0)
+        wins = sum(1 for total in targets if float(actual_value) + 1e-9 >= float(total))
+        losses = max(0, len(targets) - int(wins))
+        short_label = str(entry.get("short_label") or "").strip() or str(entry.get("stat") or "").strip() or "L"
+        stat_label = str(entry.get("stat_label") or short_label).strip()
+        supported_label = "/".join(str(int(total)) for total in targets)
+        total_rungs = len(targets)
+        tone = "win" if losses == 0 else "loss" if wins == 0 else "split"
+        if tone == "win":
+            label = f"{short_label} +{int(wins)} ({int(actual_value)})"
+        elif tone == "loss":
+            label = f"{short_label} -{int(losses)} ({int(actual_value)})"
+        else:
+            label = f"{short_label} {int(wins)}/{int(total_rungs)} ({int(actual_value)})"
+        detail = (
+            f"Final {stat_label}: {int(actual_value)}. "
             f"Supported ladders: {supported_label}. Correct ladders: {int(wins)}. Missed ladders: {int(losses)}."
         )
-
-        if wins > 0:
-            resolved_badges.append(
-                {
-                    "label": f"{short_label} +{int(wins)}",
-                    "stat": stat_key,
-                    "tone": "win",
-                    "detail": detail_base,
-                    "count": int(wins),
-                    "actual": int(round(float(actual_value))),
-                    "source": "final",
-                }
-            )
-        if losses > 0:
-            resolved_badges.append(
-                {
-                    "label": f"{short_label} -{int(losses)}",
-                    "stat": stat_key,
-                    "tone": "loss",
-                    "detail": detail_base,
-                    "count": int(losses),
-                    "actual": int(round(float(actual_value))),
-                    "source": "final",
-                }
-            )
+        resolved_badges.append(
+            {
+                "label": label,
+                "stat": entry.get("stat"),
+                "tone": tone,
+                "detail": detail,
+                "count": int(wins if tone != "loss" else losses),
+                "wins": int(wins),
+                "losses": int(losses),
+                "targetCount": int(total_rungs),
+                "actual": int(actual_value),
+                "targets": targets,
+                "source": "final",
+            }
+        )
     return resolved_badges
 
 
@@ -14480,6 +14533,8 @@ def _starter_ladder_badges_for_pitcher(
         _resolve_row("strikeouts"),
         stat_key="strikeouts",
         short_label="K",
+        min_hit_prob=float(_safe_float((_PITCHER_LADDER_PROPS.get("strikeouts") or {}).get("ladder_min_hit_prob")) or 0.2),
+        max_rungs=_safe_int((_PITCHER_LADDER_PROPS.get("strikeouts") or {}).get("ladder_max_rungs")),
     )
     if isinstance(strikeout_badge, dict):
         badges.append(strikeout_badge)
@@ -14487,11 +14542,135 @@ def _starter_ladder_badges_for_pitcher(
         _resolve_row("outs"),
         stat_key="outs",
         short_label="O",
+        min_hit_prob=float(_safe_float((_PITCHER_LADDER_PROPS.get("outs") or {}).get("ladder_min_hit_prob")) or 0.2),
         include_base_over=False,
+        max_rungs=_safe_int((_PITCHER_LADDER_PROPS.get("outs") or {}).get("ladder_max_rungs")),
     )
     if isinstance(outs_badge, dict):
         badges.append(outs_badge)
     return badges
+
+
+def daily_ladder_audit_artifact_path(d: str, *, data_root: Optional[Path] = None) -> Path:
+    root = data_root.resolve() if isinstance(data_root, Path) else _DATA_DIR
+    return root / "daily" / "ladders" / f"daily_ladder_audit_{_date_slug(d)}.json"
+
+
+def build_daily_ladder_audit_artifact(d: str) -> Dict[str, Any]:
+    date_str = str(d or "").strip()
+    payload = _build_cards_api_payload(date_str)
+    cards = [card for card in (payload.get("cards") or []) if isinstance(card, dict)]
+    badge_rows: List[Dict[str, Any]] = []
+    source_counts: Counter[str] = Counter()
+    tone_counts: Counter[str] = Counter()
+    stat_counts: Counter[str] = Counter()
+    stat_rung_wins: Counter[str] = Counter()
+    stat_rung_losses: Counter[str] = Counter()
+    loss_size_counts: Counter[int] = Counter()
+    win_size_counts: Counter[int] = Counter()
+    largest_losses: List[Dict[str, Any]] = []
+    mixed_rows: List[Dict[str, Any]] = []
+
+    for card in cards:
+        game_pk = _safe_int(card.get("gamePk"))
+        probable = card.get("probable") if isinstance(card.get("probable"), dict) else {}
+        away_info = card.get("away") if isinstance(card.get("away"), dict) else {}
+        home_info = card.get("home") if isinstance(card.get("home"), dict) else {}
+        matchup = f"{str(away_info.get('abbrev') or away_info.get('team') or '?').strip()} @ {str(home_info.get('abbrev') or home_info.get('team') or '?').strip()}"
+        status = card.get("status") if isinstance(card.get("status"), dict) else {}
+        status_text = str(status.get("display") or status.get("gameState") or "").strip()
+        for side in ("away", "home"):
+            entry = probable.get(side) if isinstance(probable, dict) else None
+            if not isinstance(entry, dict):
+                continue
+            starter_name = _first_text(entry.get("fullName"), entry.get("name"))
+            for badge in (entry.get("ladderBadges") or []):
+                if not isinstance(badge, dict):
+                    continue
+                stat_key = str(badge.get("stat") or "unknown").strip().lower() or "unknown"
+                tone = str(badge.get("tone") or "none").strip().lower() or "none"
+                source = str(badge.get("source") or "none").strip().lower() or "none"
+                wins = int(_safe_int(badge.get("wins")) or 0)
+                losses = int(_safe_int(badge.get("losses")) or 0)
+                target_count = int(_safe_int(badge.get("targetCount")) or len([t for t in (badge.get("targets") or []) if _safe_int(t) is not None]))
+                row = {
+                    "gamePk": int(game_pk) if game_pk is not None else None,
+                    "matchup": matchup,
+                    "status": status_text,
+                    "side": side,
+                    "starter": starter_name,
+                    "label": str(badge.get("label") or "").strip(),
+                    "stat": stat_key,
+                    "tone": tone,
+                    "source": source,
+                    "actual": _safe_int(badge.get("actual")),
+                    "wins": int(wins),
+                    "losses": int(losses),
+                    "targetCount": int(target_count),
+                    "targets": [int(total) for total in (badge.get("targets") or []) if _safe_int(total) is not None],
+                    "detail": str(badge.get("detail") or "").strip(),
+                }
+                badge_rows.append(row)
+                source_counts[source] += 1
+                tone_counts[tone] += 1
+                stat_counts[stat_key] += 1
+                stat_rung_wins[stat_key] += int(wins)
+                stat_rung_losses[stat_key] += int(losses)
+                if int(losses) > 0:
+                    loss_size_counts[int(losses)] += 1
+                    largest_losses.append(row)
+                if int(wins) > 0:
+                    win_size_counts[int(wins)] += 1
+                if int(wins) > 0 and int(losses) > 0:
+                    mixed_rows.append(row)
+
+    final_rows = [row for row in badge_rows if str(row.get("source") or "") == "final"]
+    final_badges = len(final_rows)
+    final_wins = sum(int(row.get("wins") or 0) for row in final_rows)
+    final_losses = sum(int(row.get("losses") or 0) for row in final_rows)
+    final_rungs = final_wins + final_losses
+    return {
+        "date": date_str,
+        "generatedAt": _local_timestamp_text(),
+        "summary": {
+            "cards": int(len(cards)),
+            "badges": int(len(badge_rows)),
+            "sources": dict(source_counts),
+            "tones": dict(tone_counts),
+            "stats": {
+                stat_key: {
+                    "badges": int(stat_counts.get(stat_key) or 0),
+                    "rungWins": int(stat_rung_wins.get(stat_key) or 0),
+                    "rungLosses": int(stat_rung_losses.get(stat_key) or 0),
+                }
+                for stat_key in sorted(stat_counts.keys())
+            },
+            "final": {
+                "badges": int(final_badges),
+                "rungWins": int(final_wins),
+                "rungLosses": int(final_losses),
+                "rungHitRate": round(float(final_wins) / float(final_rungs), 4) if final_rungs > 0 else None,
+                "mixedBadgeCount": int(len([row for row in final_rows if int(row.get("wins") or 0) > 0 and int(row.get("losses") or 0) > 0])),
+            },
+            "lossSizeCounts": {str(int(size)): int(count) for size, count in sorted(loss_size_counts.items())},
+            "winSizeCounts": {str(int(size)): int(count) for size, count in sorted(win_size_counts.items())},
+        },
+        "largestLosses": sorted(largest_losses, key=lambda row: (-int(row.get("losses") or 0), str(row.get("starter") or "")))[:10],
+        "mixedFinalBadges": [row for row in final_rows if int(row.get("wins") or 0) > 0 and int(row.get("losses") or 0) > 0][:10],
+        "rows": badge_rows,
+    }
+
+
+def write_daily_ladder_audit_artifact(d: str, *, out_path: Optional[Path] = None) -> Dict[str, Any]:
+    date_str = str(d or "").strip()
+    destination = out_path.resolve() if isinstance(out_path, Path) else daily_ladder_audit_artifact_path(date_str)
+    artifact = build_daily_ladder_audit_artifact(date_str)
+    _write_json_file(destination, artifact)
+    return {
+        "date": date_str,
+        "path": destination,
+        "summary": dict(artifact.get("summary") or {}),
+    }
 
 
 def _attach_cards_starter_ladder_badges(cards: Any, daily_ladders: Any) -> None:
