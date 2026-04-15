@@ -168,7 +168,6 @@ def _live_lens_optimization_regime(d: Any) -> Dict[str, Any]:
     return regime
 
 
-_DEMO_DATE = "2025-06-04"
 _CARDS_PRESEASON_DEFAULT_WINDOW_DAYS = 21
 _LIVE_PROP_MARKET_MAX_AGE_SECONDS = 90
 _LIVE_FEED_CACHE_TTL_SECONDS = float(_env_int("MLB_LIVE_FEED_CACHE_TTL_SECONDS", 5, minimum=1))
@@ -5764,10 +5763,6 @@ def _default_cards_date() -> str:
             return min_date
     elif max_date and today <= max_date:
         return today
-
-    artifacts = _load_cards_artifacts(_DEMO_DATE)
-    if artifacts.get("locked_policy") or artifacts.get("game_summary"):
-        return _DEMO_DATE
     return today
 
 
