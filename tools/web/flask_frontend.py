@@ -2435,6 +2435,7 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
     data_dir = _DATA_DIR
     canonical_daily_dir = data_dir / "daily"
     canonical_profile_bundle_path = canonical_daily_dir / f"daily_summary_{slug}_profile_bundle.json"
+    canonical_hr_targets_path = canonical_daily_dir / f"daily_summary_{slug}_hr_targets.json"
     canonical_locked_policy_path = canonical_daily_dir / f"daily_summary_{slug}_locked_policy.json"
     canonical_game_summary_path = canonical_daily_dir / f"daily_summary_{slug}.json"
     canonical_sim_dir = canonical_daily_dir / "sims" / str(d)
@@ -2442,6 +2443,7 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
     tracked_daily_dir = _TRACKED_DATA_DIR / "daily"
 
     tracked_profile_bundle_path = tracked_daily_dir / f"daily_summary_{slug}_profile_bundle.json"
+    tracked_hr_targets_path = tracked_daily_dir / f"daily_summary_{slug}_hr_targets.json"
 
     profile_bundle_path = _find_preferred_file([
         canonical_profile_bundle_path,
@@ -2456,7 +2458,15 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
     hr_targets = None
     if isinstance(profile_bundle, dict):
         hr_targets_path = _path_from_maybe_relative(((profile_bundle.get("hr_targets") or {}).get("artifact_path")))
-        hr_targets = _load_json_file(hr_targets_path)
+        hr_targets_path = _prefer_newer_file(hr_targets_path, canonical_hr_targets_path)
+        hr_targets_path = _prefer_newer_file(hr_targets_path, tracked_hr_targets_path)
+    if not hr_targets_path:
+        hr_targets_path = _find_preferred_file([
+            canonical_hr_targets_path,
+            tracked_hr_targets_path,
+        ])
+        hr_targets_path = _prefer_newer_file(hr_targets_path, tracked_hr_targets_path)
+    hr_targets = _load_json_file(hr_targets_path)
 
     settlement_path = _find_preferred_file([
         canonical_daily_dir / "settlements" / f"daily_summary_{slug}_locked_policy_settlement.json",

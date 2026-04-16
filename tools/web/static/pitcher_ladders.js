@@ -13,7 +13,12 @@
     game: String(bootstrap.game || ""),
     pitcher: String(bootstrap.pitcher || ""),
     sort: String(bootstrap.sort || "team"),
+    autoRefreshHandle: null,
+    loadingPayload: false,
   };
+
+  const AUTO_REFRESH_MS = 30000;
+  const REQUEST_TIMEOUT_MS = 20000;
 
   const formEl = document.getElementById("ladderForm");
   const dateInputEl = document.getElementById("ladderDateInput");
@@ -375,18 +380,57 @@
     gridEl.innerHTML = payload.rows.map((row) => renderCard(row, payload)).join("");
   }
 
-  async function loadPayload() {
+  async function loadPayload(options = {}) {
+    const silent = !!options.silent;
+    if (state.loadingPayload) return;
+    state.loadingPayload = true;
     dateInputEl.value = state.date;
     propInputEl.value = state.prop;
     if (gameInputEl) gameInputEl.value = state.game;
     pitcherInputEl.value = state.pitcher;
     if (sortInputEl) sortInputEl.value = state.sort;
-    gridEl.innerHTML = '<div class="cards-loading-state">Loading pitcher ladders...</div>';
-    summaryEl.innerHTML = '<div class="cards-loading-state">Loading ladder summary...</div>';
+    if (!silent) {
+      gridEl.innerHTML = '<div class="cards-loading-state">Loading pitcher ladders...</div>';
+      summaryEl.innerHTML = '<div class="cards-loading-state">Loading ladder summary...</div>';
+    }
 
-    const response = await fetch(apiHref(state.date, state.prop, state.game, state.pitcher, state.sort));
-    const payload = await response.json();
-    renderPayload(payload);
+    const controller = new AbortController();
+    const timeoutHandle = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    try {
+      const response = await fetch(apiHref(state.date, state.prop, state.game, state.pitcher, state.sort), {
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const payload = await response.json();
+      renderPayload(payload);
+    } finally {
+      window.clearTimeout(timeoutHandle);
+      state.loadingPayload = false;
+    }
+  }
+
+  function installAutoRefresh() {
+    if (state.autoRefreshHandle) {
+      window.clearInterval(state.autoRefreshHandle);
+    }
+    const refreshSilently = () => {
+      if (document.visibilityState === "hidden") return;
+      loadPayload({ silent: true }).catch(() => {});
+    };
+    state.autoRefreshHandle = window.setInterval(() => {
+      refreshSilently();
+    }, AUTO_REFRESH_MS);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") refreshSilently();
+    });
+    window.addEventListener("focus", refreshSilently);
+    window.addEventListener("pagehide", () => {
+      if (state.autoRefreshHandle) {
+        window.clearInterval(state.autoRefreshHandle);
+        state.autoRefreshHandle = null;
+      }
+    }, { once: true });
   }
 
   formEl.addEventListener("submit", async (event) => {
@@ -441,6 +485,8 @@
       formEl.dispatchEvent(new Event("submit", { cancelable: true }));
     });
   }
+
+  installAutoRefresh();
 
   loadPayload().catch((error) => {
     headerMetaEl.textContent = "Failed to load pitcher ladders.";

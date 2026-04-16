@@ -2964,9 +2964,23 @@
     if (state.autoRefreshHandle) {
       window.clearInterval(state.autoRefreshHandle);
     }
-    state.autoRefreshHandle = window.setInterval(() => {
+    const refreshSilently = () => {
+      if (document.visibilityState === "hidden") return;
       loadCards({ silent: true });
+    };
+    state.autoRefreshHandle = window.setInterval(() => {
+      refreshSilently();
     }, AUTO_REFRESH_MS);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") refreshSilently();
+    });
+    window.addEventListener("focus", refreshSilently);
+    window.addEventListener("pagehide", () => {
+      if (state.autoRefreshHandle) {
+        window.clearInterval(state.autoRefreshHandle);
+        state.autoRefreshHandle = null;
+      }
+    }, { once: true });
   }
 
   function installErrorHandlers() {
