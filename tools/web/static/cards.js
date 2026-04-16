@@ -2649,15 +2649,6 @@
       </div>`;
   }
 
-  function hrTargetHighlightsMarkup(row) {
-    const highlights = Array.isArray(row?.highlights) ? row.highlights.filter(Boolean).slice(0, 2) : [];
-    if (!highlights.length) return "";
-    return `
-      <div class="cards-hr-target-highlights">
-        ${highlights.map((highlight) => `<div class="cards-hr-target-highlight">${escapeHtml(String(highlight))}</div>`).join("")}
-      </div>`;
-  }
-
   function renderHrTargets() {
     if (!root.hrTargets) return;
     const hrTargets = state.payload?.hrTargets || {};
@@ -2737,8 +2728,7 @@
                 </div>
               </div>
               ${hrTargetDriverMarkup(row)}
-              <div class="cards-hr-target-summary">${escapeHtml(String(row.summary || row.matchup || ""))}</div>
-              ${hrTargetHighlightsMarkup(row)}
+              <div class="cards-hr-target-summary">${escapeHtml(String(row.writeup || row.summary || row.matchup || ""))}</div>
             </a>`).join("")}
         </div>
       </div>`;

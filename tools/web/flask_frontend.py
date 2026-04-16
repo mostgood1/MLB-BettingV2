@@ -14153,7 +14153,7 @@ def _cards_hr_targets_summary_payload(d: str, artifacts: Dict[str, Any]) -> Dict
                 "supportLabel": _first_text(row.get("hr_support_label")),
                 "summary": _first_text(row.get("hr_target_summary")),
                 "drivers": _cards_hr_target_driver_payload(row),
-                "highlights": _cards_hr_target_highlights(row),
+                "writeup": _cards_hr_target_writeup(row),
                 "detailHref": f"/hr-targets?date={d}" + (f"&game={int(game_pk)}" if game_pk is not None else ""),
             }
         )
@@ -14209,6 +14209,56 @@ def _cards_hr_target_driver_payload(row: Dict[str, Any]) -> List[Dict[str, Any]]
     return selected[:3]
 
 
+def _cards_hr_target_join_phrases(parts: List[str]) -> str:
+    filtered = [str(part).strip() for part in parts if str(part).strip()]
+    if not filtered:
+        return ""
+    if len(filtered) == 1:
+        return filtered[0]
+    if len(filtered) == 2:
+        return f"{filtered[0]} and {filtered[1]}"
+    return ", ".join(filtered[:-1]) + f", and {filtered[-1]}"
+
+
+def _cards_hr_target_ordinal(value: Any) -> str:
+    number = _safe_int(value)
+    if number is None:
+        return ""
+    remainder_100 = number % 100
+    remainder_10 = number % 10
+    if 11 <= remainder_100 <= 13:
+        suffix = "th"
+    elif remainder_10 == 1:
+        suffix = "st"
+    elif remainder_10 == 2:
+        suffix = "nd"
+    elif remainder_10 == 3:
+        suffix = "rd"
+    else:
+        suffix = "th"
+    return f"{number}{suffix}"
+
+
+def _cards_hr_target_driver_phrase(driver: Dict[str, Any]) -> str:
+    label = _first_text((driver or {}).get("label"))
+    display = _first_text((driver or {}).get("display"), "1.00x")
+    delta = _safe_float((driver or {}).get("delta")) or 0.0
+    positive = delta >= 0
+    if label == "HR quality":
+        return f"his HR-quality contact is running at {display} of baseline"
+    if label == "Batter platoon":
+        return f"the hitter-side handedness split is {'boosting' if positive else 'trimming'} power to {display}"
+    if label == "Pitcher HR carry":
+        return f"the opposing pitcher's damage profile is {'allowing' if positive else 'holding'} HR carry around {display}"
+    if label == "Pitcher platoon":
+        return f"the pitcher-side handedness split is {'adding' if positive else 'reducing'} damage at {display}"
+    if label == "Park carry":
+        return f"the park is playing at {display} for HR carry"
+    if label == "Weather carry":
+        return f"weather is landing around {display} for HR carry"
+    return f"{label.lower()} is checking in at {display}"
+
+
 def _cards_hr_target_highlights(row: Dict[str, Any]) -> List[str]:
     reasons = [str(reason).strip() for reason in (row.get("hr_target_reasons") or []) if str(reason).strip()]
     filtered = [
@@ -14217,6 +14267,75 @@ def _cards_hr_target_highlights(row: Dict[str, Any]) -> List[str]:
         if "Expected opportunity" not in reason and "lineup slot" not in reason
     ]
     return filtered[:2]
+
+
+def _cards_hr_target_writeup(row: Dict[str, Any]) -> str:
+    metrics = row.get("hr_target_metrics") if isinstance(row.get("hr_target_metrics"), dict) else {}
+    drivers = _cards_hr_target_driver_payload(row)
+    highlights = _cards_hr_target_highlights(row)
+    pa_mean = _safe_float(row.get("pa_mean"))
+    lineup_order = _safe_int(row.get("lineup_order"))
+    lineup_status = _first_text(row.get("lineup_status"), metrics.get("lineupStatus"))
+    lineup_prefix = f"the {lineup_status} " if lineup_status else "the "
+    lineup_slot = _cards_hr_target_ordinal(lineup_order)
+    support_label = _first_text(row.get("hr_support_label")).lower()
+
+    volume_bits: List[str] = []
+    if pa_mean is not None:
+        volume_bits.append(f"about {pa_mean:.1f} PA")
+    if lineup_slot:
+        volume_bits.append(f"out of {lineup_prefix}{lineup_slot} spot")
+
+    setup_parts: List[str] = []
+    if volume_bits:
+        setup_parts.append(_cards_hr_target_join_phrases(volume_bits))
+
+    batter_hr_quality = _safe_float(metrics.get("batterHrQuality"))
+    if batter_hr_quality is not None and float(batter_hr_quality) >= 1.03:
+        setup_parts.append("above-baseline HR contact")
+
+    batter_hand = _first_text(row.get("batter_hand"))
+    pitcher_hand = _first_text(row.get("opponent_pitcher_hand"))
+    batter_platoon = _safe_float(metrics.get("batterPlatoonHr"))
+    pitcher_platoon = _safe_float(metrics.get("pitcherPlatoonHr"))
+    handedness_mult = batter_platoon if batter_platoon is not None else pitcher_platoon
+    if batter_hand and pitcher_hand and handedness_mult is not None and abs(float(handedness_mult) - 1.0) >= 0.03:
+        if float(handedness_mult) > 1.0:
+            setup_parts.append("a favorable handedness matchup")
+        else:
+            setup_parts.append("a tougher handedness matchup than neutral")
+
+    setup_text = _cards_hr_target_join_phrases(setup_parts)
+    opener = "He is in a strong power spot here" if support_label in {"strong", "solid"} else "He stays in play here"
+    if setup_text:
+        sentence_one = f"{opener} because the volume setup is clean and the model is seeing {setup_text}."
+    else:
+        sentence_one = f"{opener} because the underlying power setup is still giving him a live home-run path."
+
+    driver_phrases = [_cards_hr_target_driver_phrase(driver) for driver in drivers[:3]]
+    if driver_phrases:
+        sentence_two = f"The biggest modeled lifts are {_cards_hr_target_join_phrases(driver_phrases)}, which helps keep the one-swing ceiling intact."
+    else:
+        sentence_two = "The biggest modeled lifts still come from a mix of contact quality, matchup context, and environment."
+
+    context_parts: List[str] = []
+    if pa_mean is not None and pa_mean >= 4.4:
+        context_parts.append("the plate-appearance floor is high enough that he should have multiple chances to cash the power upside")
+    if lineup_slot and lineup_order is not None and lineup_order <= 4:
+        context_parts.append("the lineup slot keeps the volume ceiling elevated")
+    if batter_hand and pitcher_hand and handedness_mult is not None and abs(float(handedness_mult) - 1.0) >= 0.03:
+        matchup_tone = "leans his way" if float(handedness_mult) > 1.0 else "is a little less friendly than neutral"
+        context_parts.append(f"the {batter_hand}-on-{pitcher_hand} matchup {matchup_tone}")
+    if highlights:
+        highlight_text = _cards_hr_target_join_phrases([reason.rstrip(".") for reason in highlights[:2]]).lower()
+        if highlight_text:
+            context_parts.append(highlight_text)
+
+    if context_parts:
+        sentence_three = _cards_hr_target_join_phrases(context_parts)
+        sentence_three = sentence_three[:1].upper() + sentence_three[1:] + "."
+        return f"{sentence_one} {sentence_two} {sentence_three}"
+    return f"{sentence_one} {sentence_two}"
 
 
 def _cards_payload_context(d: str) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
