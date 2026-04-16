@@ -28,6 +28,7 @@
     sourceMeta: document.getElementById("cardsSourceMeta"),
     filters: document.getElementById("cardsFilters"),
     scoreboard: document.getElementById("cardsScoreboard"),
+    hrTargets: document.getElementById("cardsHrTargets"),
     grid: document.getElementById("cardsGrid"),
   };
 
@@ -2600,6 +2601,66 @@
     });
   }
 
+  function hrSupportToneClass(label) {
+    const normalized = String(label || "").toLowerCase();
+    if (normalized === "strong") return "is-success";
+    if (normalized === "solid") return "is-soft";
+    if (normalized === "watch") return "is-warning";
+    return "";
+  }
+
+  function renderHrTargets() {
+    if (!root.hrTargets) return;
+    const hrTargets = state.payload?.hrTargets || {};
+    const rows = Array.isArray(hrTargets.topRows) ? hrTargets.topRows : [];
+    const href = String(hrTargets.pageHref || `/hr-targets?date=${encodeURIComponent(state.date)}`);
+
+    if (!hrTargets.found || !rows.length) {
+      root.hrTargets.innerHTML = `
+        <div class="cards-hr-targets-card">
+          <div class="cards-hr-targets-head">
+            <div>
+              <div class="cards-table-title">HR Targets</div>
+              <div class="cards-mini-copy">No HR targets are available for this slate yet.</div>
+            </div>
+            <a class="cards-nav-pill" href="${escapeHtml(href)}">Open board</a>
+          </div>
+        </div>`;
+      return;
+    }
+
+    root.hrTargets.innerHTML = `
+      <div class="cards-hr-targets-card">
+        <div class="cards-hr-targets-head">
+          <div>
+            <div class="cards-table-title">HR Targets</div>
+            <div class="cards-mini-copy">${escapeHtml(String(hrTargets.rows || 0))} targets across ${escapeHtml(String(hrTargets.games || 0))} games.</div>
+          </div>
+          <div class="cards-hr-targets-actions">
+            ${hrTargets.sourcePath ? `<span class="cards-source-meta-pill">${escapeHtml(hrTargets.sourcePath)}</span>` : ""}
+            <a class="cards-nav-pill" href="${escapeHtml(href)}">Open board</a>
+          </div>
+        </div>
+        <div class="cards-hr-targets-grid">
+          ${rows.map((row, index) => `
+            <a class="cards-hr-target-chip" href="${escapeHtml(String(row.detailHref || href))}">
+              <div class="cards-hr-target-chip-top">
+                <span class="cards-overview-badge">#${index + 1}</span>
+                <span class="cards-source-meta-pill ${hrSupportToneClass(row.supportLabel)}">${escapeHtml(String(row.supportLabel || "watch"))}</span>
+              </div>
+              <div class="cards-hr-target-name">${escapeHtml(String(row.playerName || "Unknown"))}</div>
+              <div class="cards-hr-target-meta">${escapeHtml(String(row.team || ""))}${row.opponent ? ` vs ${escapeHtml(String(row.opponent))}` : ""}${row.opponentPitcherName ? ` · ${escapeHtml(String(row.opponentPitcherName))}` : ""}</div>
+              <div class="cards-hr-target-metrics">
+                <span><strong>${escapeHtml(formatPercent(row.pHr1Plus, 1))}</strong> 1+ HR</span>
+                <span><strong>${escapeHtml(formatNumber(row.supportScore, 1))}</strong> support</span>
+                <span><strong>${escapeHtml(row.lineupOrder == null ? "-" : String(row.lineupOrder))}</strong> lineup</span>
+              </div>
+              <div class="cards-mini-copy">${escapeHtml(String(row.summary || row.matchup || ""))}</div>
+            </a>`).join("")}
+        </div>
+      </div>`;
+  }
+
   function renderScoreboard() {
     if (!root.scoreboard) return;
     root.scoreboard.innerHTML = "";
@@ -2854,6 +2915,7 @@
       updateDateControls();
       renderHeaderMeta();
       renderSourceMeta();
+      renderHrTargets();
       renderFilters();
 
       if (!silent || !slateUnchanged) {
@@ -2889,6 +2951,9 @@
       }
       if (root.scoreboard) {
         root.scoreboard.innerHTML = `<div class="cards-loading-strip">Failed to load scoreboard.</div>`;
+      }
+      if (root.hrTargets) {
+        root.hrTargets.innerHTML = `<div class="cards-empty-state">Failed to load HR targets.<div class="cards-mini-copy">${escapeHtml(message)}</div></div>`;
       }
     } finally {
       state.loadingCards = false;

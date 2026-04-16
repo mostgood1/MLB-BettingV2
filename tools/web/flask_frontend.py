@@ -14107,11 +14107,50 @@ def _cards_api_payload(
         "marketAvailability": artifacts.get("market_availability") or {},
         "lineupHealth": _lineup_health_summary(artifacts.get("lineups_path"), artifacts.get("lineups")),
         "workflow": _workflow_summary(artifacts.get("ops_report_path"), artifacts.get("ops_report")),
+        "hrTargets": _cards_hr_targets_summary_payload(d, artifacts),
         "cards": cards,
     }
     if fallback_error:
         payload["warning"] = fallback_error
     return payload
+
+
+def _cards_hr_targets_summary_payload(d: str, artifacts: Dict[str, Any]) -> Dict[str, Any]:
+    doc = artifacts.get("hr_targets") if isinstance(artifacts.get("hr_targets"), dict) else None
+    artifact_path = artifacts.get("hr_targets_path") if isinstance(artifacts.get("hr_targets_path"), Path) else None
+    rows = [row for row in ((doc or {}).get("rows") or []) if isinstance(row, dict)]
+    top_rows: List[Dict[str, Any]] = []
+
+    for row in rows[:5]:
+        game_pk = _safe_int(row.get("game_pk"))
+        batter_id = _safe_int(row.get("batter_id"))
+        top_rows.append(
+            {
+                "gamePk": int(game_pk) if game_pk is not None else None,
+                "batterId": int(batter_id) if batter_id is not None else None,
+                "playerName": _first_text(row.get("player_name"), row.get("hitterName")),
+                "team": _first_text(row.get("team")),
+                "opponent": _first_text(row.get("opponent")),
+                "matchup": _first_text(row.get("matchup")),
+                "opponentPitcherName": _first_text(row.get("opponent_pitcher_name")),
+                "lineupOrder": _safe_int(row.get("lineup_order")),
+                "pHr1Plus": _safe_float(row.get("p_hr_1plus")),
+                "supportScore": _safe_float(row.get("hr_support_score")),
+                "supportLabel": _first_text(row.get("hr_support_label")),
+                "summary": _first_text(row.get("hr_target_summary")),
+                "detailHref": f"/hr-targets?date={d}" + (f"&game={int(game_pk)}" if game_pk is not None else ""),
+            }
+        )
+
+    counts = (doc or {}).get("counts") if isinstance((doc or {}).get("counts"), dict) else {}
+    return {
+        "found": bool(doc and rows),
+        "sourcePath": _relative_path_str(artifact_path),
+        "games": int(counts.get("games") or 0),
+        "rows": int(counts.get("rows") or 0),
+        "topRows": top_rows,
+        "pageHref": f"/hr-targets?date={d}",
+    }
 
 
 def _cards_payload_context(d: str) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
@@ -14172,6 +14211,7 @@ def _cards_payload_signature(d: str, artifacts: Dict[str, Any], archive: Dict[st
     return (
         str(d),
         _path_signature(artifacts.get("profile_bundle_path") if isinstance(artifacts.get("profile_bundle_path"), Path) else None),
+        _path_signature(artifacts.get("hr_targets_path") if isinstance(artifacts.get("hr_targets_path"), Path) else None),
         _path_signature(artifacts.get("locked_policy_path") if isinstance(artifacts.get("locked_policy_path"), Path) else None),
         _path_signature(artifacts.get("game_summary_path") if isinstance(artifacts.get("game_summary_path"), Path) else None),
         _path_signature(artifacts.get("daily_ladders_path") if isinstance(artifacts.get("daily_ladders_path"), Path) else None),
