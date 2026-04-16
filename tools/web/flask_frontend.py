@@ -2452,6 +2452,12 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
     profile_bundle_path = _prefer_newer_file(profile_bundle_path, tracked_profile_bundle_path)
     profile_bundle = _load_json_file(profile_bundle_path)
 
+    hr_targets_path = None
+    hr_targets = None
+    if isinstance(profile_bundle, dict):
+        hr_targets_path = _path_from_maybe_relative(((profile_bundle.get("hr_targets") or {}).get("artifact_path")))
+        hr_targets = _load_json_file(hr_targets_path)
+
     settlement_path = _find_preferred_file([
         canonical_daily_dir / "settlements" / f"daily_summary_{slug}_locked_policy_settlement.json",
         tracked_daily_dir / "settlements" / f"daily_summary_{slug}_locked_policy_settlement.json",
@@ -2572,6 +2578,8 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
     return {
         "profile_bundle_path": profile_bundle_path,
         "profile_bundle": profile_bundle,
+        "hr_targets_path": hr_targets_path,
+        "hr_targets": hr_targets,
         "embedded_settlement_summary": embedded_settlement_summary,
         "settlement_path": settlement_path,
         "settlement": settlement,
@@ -4808,6 +4816,220 @@ def _hitter_ladders_payload_cached(
         builder=lambda: _hitter_ladders_payload(
             d,
             prop,
+            selected_game_value=selected_game,
+            selected_team_value=selected_team,
+            selected_hitter_value=selected_hitter,
+            sort_value=sort_key,
+        ),
+    )
+
+
+def _hr_target_sort_options() -> List[Dict[str, str]]:
+    return [
+        {"value": "score", "label": "Target score"},
+        {"value": "prob", "label": "HR probability"},
+        {"value": "support", "label": "Support score"},
+        {"value": "team", "label": "Team"},
+    ]
+
+
+def _normalize_hr_target_sort(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in {"probability", "p_hr", "hr_prob"}:
+        return "prob"
+    if raw in {"support_score", "confidence", "label"}:
+        return "support"
+    if raw in {"club", "abbr"}:
+        return "team"
+    if raw not in {"score", "prob", "support", "team"}:
+        return "score"
+    return raw
+
+
+def _sort_hr_target_rows(rows: List[Dict[str, Any]], sort_key: str) -> List[Dict[str, Any]]:
+    normalized = _normalize_hr_target_sort(sort_key)
+    if normalized == "prob":
+        return sorted(
+            rows,
+            key=lambda row: (
+                float(row.get("p_hr_1plus") or 0.0),
+                float(row.get("hr_target_score") or 0.0),
+                float(row.get("hr_support_score") or 0.0),
+            ),
+            reverse=True,
+        )
+    if normalized == "support":
+        return sorted(
+            rows,
+            key=lambda row: (
+                float(row.get("hr_support_score") or 0.0),
+                float(row.get("p_hr_1plus") or 0.0),
+                float(row.get("hr_target_score") or 0.0),
+            ),
+            reverse=True,
+        )
+    if normalized == "team":
+        return sorted(
+            rows,
+            key=lambda row: (
+                str(row.get("team") or ""),
+                str(row.get("player_name") or ""),
+                -float(row.get("hr_target_score") or 0.0),
+            ),
+        )
+    return sorted(
+        rows,
+        key=lambda row: (
+            float(row.get("hr_target_score") or 0.0),
+            float(row.get("p_hr_1plus") or 0.0),
+            float(row.get("hr_support_score") or 0.0),
+        ),
+        reverse=True,
+    )
+
+
+def _daily_hr_targets_signature(d: str) -> Tuple[Any, ...]:
+    artifacts = _load_cards_artifacts(d)
+    hr_targets_path = artifacts.get("hr_targets_path") if isinstance(artifacts.get("hr_targets_path"), Path) else None
+    profile_bundle_path = artifacts.get("profile_bundle_path") if isinstance(artifacts.get("profile_bundle_path"), Path) else None
+    return (
+        _path_signature(hr_targets_path),
+        _path_signature(profile_bundle_path),
+        str(d),
+    )
+
+
+def _daily_hr_targets_payload(
+    d: str,
+    *,
+    selected_game_value: Any = None,
+    selected_team_value: Any = None,
+    selected_hitter_value: Any = None,
+    sort_value: Any = None,
+) -> Dict[str, Any]:
+    selected_game = _normalize_game_selector(selected_game_value)
+    selected_team = _normalize_hitter_team_selector(selected_team_value)
+    selected_hitter = _normalize_hitter_selector(selected_hitter_value)
+    sort_key = _normalize_hr_target_sort(sort_value)
+    artifacts = _load_cards_artifacts(d)
+    nav = _cards_nav_from_schedule(d) or {"season": _season_from_date_str(d)}
+    doc = artifacts.get("hr_targets") if isinstance(artifacts.get("hr_targets"), dict) else None
+    artifact_path = artifacts.get("hr_targets_path") if isinstance(artifacts.get("hr_targets_path"), Path) else None
+    rows_all = list((doc or {}).get("rows") or []) if isinstance(doc, dict) else []
+    rows_all = [row for row in rows_all if isinstance(row, dict)]
+
+    filtered_rows: List[Dict[str, Any]] = []
+    for row in rows_all:
+        game_pk = str(int(row.get("game_pk") or 0)) if _safe_int(row.get("game_pk")) is not None else ""
+        team = str(row.get("team") or "").strip().upper()
+        hitter_id = str(int(row.get("batter_id") or 0)) if _safe_int(row.get("batter_id")) is not None else ""
+        if selected_game and game_pk != selected_game:
+            continue
+        if selected_team and team != selected_team:
+            continue
+        if selected_hitter and hitter_id != selected_hitter:
+            continue
+        filtered_rows.append(dict(row))
+
+    rows = _sort_hr_target_rows(filtered_rows, sort_key)
+    for idx, row in enumerate(rows, start=1):
+        row["rank"] = int(idx)
+        batter_id = _safe_int(row.get("batter_id"))
+        team_id = _safe_int(row.get("team_id")) or _safe_int(row.get("teamId"))
+        opponent_team_id = _safe_int(row.get("opponent_team_id")) or _safe_int(row.get("opponentTeamId"))
+        row["gamePk"] = _safe_int(row.get("game_pk"))
+        row["hitterId"] = batter_id
+        row["hitterName"] = _first_text(row.get("player_name"), row.get("hitterName"))
+        row["headshotUrl"] = _mlb_headshot_url(int(batter_id)) if batter_id is not None else None
+        row["teamId"] = team_id
+        row["teamLogoUrl"] = _mlb_logo_url(int(team_id)) if team_id is not None else None
+        row["opponentTeamId"] = opponent_team_id
+        row["opponentLogoUrl"] = _mlb_logo_url(int(opponent_team_id)) if opponent_team_id is not None else None
+
+    payload: Dict[str, Any] = {
+        "date": str(d),
+        "selectedGame": selected_game,
+        "selectedTeam": selected_team,
+        "selectedHitter": selected_hitter,
+        "selectedSort": sort_key,
+        "sortOptions": _hr_target_sort_options(),
+        "gameOptions": _hitter_ladder_game_options(rows_all),
+        "teamOptions": _hitter_ladder_team_options(rows_all),
+        "hitterOptions": _hitter_ladder_hitter_options([
+            {
+                "hitterId": row.get("batter_id"),
+                "hitterName": row.get("player_name"),
+                "team": row.get("team"),
+                "opponent": row.get("opponent"),
+                "headshotUrl": _mlb_headshot_url(int(row.get("batter_id"))) if _safe_int(row.get("batter_id")) is not None else None,
+                "teamLogoUrl": (_mlb_logo_url(int(row.get("team_id"))) if _safe_int(row.get("team_id")) is not None else None),
+                "opponentLogoUrl": (_mlb_logo_url(int(row.get("opponent_team_id"))) if _safe_int(row.get("opponent_team_id")) is not None else None),
+            }
+            for row in rows_all
+            if _safe_int(row.get("batter_id")) is not None and str(row.get("player_name") or "").strip()
+        ]),
+        "rows": rows,
+        "sourcePath": _relative_path_str(artifact_path),
+        "policy": dict((doc or {}).get("policy") or {}) if isinstance(doc, dict) else {},
+        "counts": {
+            "totalRows": int(len(rows_all)),
+            "filteredRows": int(len(rows)),
+            "games": int(len({int(row.get("game_pk") or 0) for row in rows_all if _safe_int(row.get("game_pk")) is not None})),
+        },
+        "nav": nav,
+        "found": bool(isinstance(doc, dict) and bool(rows_all)),
+    }
+
+    grouped: List[Dict[str, Any]] = []
+    seen_games: List[int] = []
+    for row in rows:
+        game_pk = _safe_int(row.get("gamePk"))
+        if game_pk is None:
+            continue
+        if int(game_pk) not in seen_games:
+            seen_games.append(int(game_pk))
+    for game_pk in seen_games:
+        game_rows = [row for row in rows if _safe_int(row.get("gamePk")) == int(game_pk)]
+        if not game_rows:
+            continue
+        first_row = game_rows[0]
+        grouped.append(
+            {
+                "gamePk": int(game_pk),
+                "matchup": str(first_row.get("matchup") or ""),
+                "away": first_row.get("away"),
+                "home": first_row.get("home"),
+                "awayAbbr": first_row.get("away_abbr"),
+                "homeAbbr": first_row.get("home_abbr"),
+                "rows": game_rows,
+            }
+        )
+    payload["games"] = grouped
+    if not payload["found"]:
+        payload["error"] = "hr_targets_missing"
+    return payload
+
+
+def _daily_hr_targets_payload_cached(
+    d: str,
+    *,
+    selected_game_value: Any = None,
+    selected_team_value: Any = None,
+    selected_hitter_value: Any = None,
+    sort_value: Any = None,
+) -> Dict[str, Any]:
+    selected_game = _normalize_game_selector(selected_game_value)
+    selected_team = _normalize_hitter_team_selector(selected_team_value)
+    selected_hitter = _normalize_hitter_selector(selected_hitter_value)
+    sort_key = _normalize_hr_target_sort(sort_value)
+    cache_key = f"{str(d)}:{sort_key}:{selected_game}:{selected_team}:{selected_hitter}"
+    return _payload_cache_get_or_build(
+        "daily_hr_targets",
+        cache_key,
+        signature_factory=lambda: _daily_hr_targets_signature(d),
+        max_age_seconds=_LADDERS_CACHE_TTL_SECONDS,
+        builder=lambda: _daily_hr_targets_payload(
+            d,
             selected_game_value=selected_game,
             selected_team_value=selected_team,
             selected_hitter_value=selected_hitter,
@@ -7762,17 +7984,20 @@ def _fallback_recommendation_from_settled_row(row: Dict[str, Any]) -> Optional[D
     if raw_market.startswith("hitter_") and raw_market != "hitter_props":
         market = "hitter_props"
         prop = raw_market
-    item: Dict[str, Any] = {
-        "game_pk": int(game_pk),
-        "market": market,
-        "prop": prop,
-        "player_name": row.get("player_name"),
-        "pitcher_name": row.get("pitcher_name") or row.get("player_name"),
-        "selection": row.get("selection"),
-        "market_line": row.get("market_line"),
-        "odds": row.get("odds"),
-        "recommendation_tier": row.get("recommendation_tier") or "official",
-    }
+    item: Dict[str, Any] = dict(row)
+    item.update(
+        {
+            "game_pk": int(game_pk),
+            "market": market,
+            "prop": prop,
+            "player_name": row.get("player_name"),
+            "pitcher_name": row.get("pitcher_name") or row.get("player_name"),
+            "selection": row.get("selection"),
+            "market_line": row.get("market_line"),
+            "odds": row.get("odds"),
+            "recommendation_tier": row.get("recommendation_tier") or "official",
+        }
+    )
     if any(key in row for key in ("result", "profit_u", "actual", "stake_u")):
         item["settlement"] = {
             "result": row.get("result"),
@@ -13768,6 +13993,26 @@ def hitter_ladders_view() -> str:
     )
 
 
+@app.get("/hr-targets")
+def hr_targets_view() -> str:
+    d = str(request.args.get("date") or "").strip() or _default_cards_date()
+    game = _normalize_game_selector(request.args.get("game"))
+    team = _normalize_hitter_team_selector(request.args.get("team"))
+    hitter = _normalize_hitter_selector(request.args.get("hitter"))
+    sort = _normalize_hr_target_sort(request.args.get("sort"))
+    season = _season_from_date_str(d) or _season_from_date_str(_today_iso()) or date.today().year
+    return render_template(
+        "hr_targets.html",
+        date=d,
+        game=game,
+        team=team,
+        hitter=hitter,
+        sort=sort,
+        sort_options=_hr_target_sort_options(),
+        season=int(season),
+    )
+
+
 @app.get("/pitcher-top-props")
 def pitcher_top_props_view() -> str:
     d = str(request.args.get("date") or "").strip() or _default_cards_date()
@@ -14777,6 +15022,22 @@ def api_hitter_ladders() -> Response:
         selected_team_value=request.args.get("team"),
         selected_hitter_value=request.args.get("hitter"),
         sort_value=request.args.get("sort"),
+    )
+    status_code = 200 if payload.get("found") else 404
+    return jsonify(payload), status_code
+
+
+@app.get("/api/hr-targets")
+def api_hr_targets() -> Response:
+    d = str(request.args.get("date") or "").strip() or _default_cards_date()
+    payload = _with_app_build(
+        _daily_hr_targets_payload_cached(
+            d,
+            selected_game_value=request.args.get("game"),
+            selected_team_value=request.args.get("team"),
+            selected_hitter_value=request.args.get("hitter"),
+            sort_value=request.args.get("sort"),
+        )
     )
     status_code = 200 if payload.get("found") else 404
     return jsonify(payload), status_code

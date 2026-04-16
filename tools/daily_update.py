@@ -2939,30 +2939,35 @@ def _sim_many(
                 "is_lineup_batter": bool(meta.get("is_lineup_batter")),
             }
 
+        def _hr_row(pid: int) -> Dict[str, Any]:
+            meta = batter_meta.get(int(pid)) or {}
+            p0 = float(_p("hr_1plus", int(pid)))
+            return {
+                "batter_id": int(pid),
+                "name": str(meta.get("name") or ""),
+                "team": str(meta.get("team") or ""),
+                "p_hr_1plus": p0,
+                "p_hr_1plus_cal": float(
+                    apply_prop_prob_calibration(
+                        p0,
+                        hitter_hr_prob_calibration,
+                        prop_key="hr_1plus",
+                    )
+                ),
+                "hr_mean": float(_stat(pid, "HR")) / denom_sims,
+                "pa_mean": float(_stat(pid, "PA")) / denom_sims,
+                "ab_mean": float(_stat(pid, "AB")) / denom_sims,
+                "lineup_order": meta.get("order"),
+                "is_lineup_batter": bool(meta.get("is_lineup_batter")),
+            }
+
+        hr_rows = [_hr_row(pid) for pid in eligible_batter_ids]
+        hr_rows.sort(key=lambda r: float(r.get("p_hr_1plus") or 0.0), reverse=True)
+        out["hitter_hr_likelihood_all"] = {"n": int(len(hr_rows)), "overall": hr_rows}
+
         # HR top-N
         if int(hr_top_n) > 0:
-            rows = []
-            for pid in eligible_batter_ids:
-                rows.append(
-                    {
-                        "batter_id": int(pid),
-                        "name": str((batter_meta.get(int(pid)) or {}).get("name") or ""),
-                        "team": str((batter_meta.get(int(pid)) or {}).get("team") or ""),
-                        "p_hr_1plus": float(_p("hr_1plus", int(pid))),
-                        "p_hr_1plus_cal": float(
-                            apply_prop_prob_calibration(
-                                float(_p("hr_1plus", int(pid))), hitter_hr_prob_calibration, prop_key="hr_1plus"
-                            )
-                        ),
-                        "hr_mean": float(_stat(pid, "HR")) / denom_sims,
-                        "pa_mean": float(_stat(pid, "PA")) / denom_sims,
-                        "ab_mean": float(_stat(pid, "AB")) / denom_sims,
-                        "lineup_order": (batter_meta.get(int(pid)) or {}).get("order"),
-                        "is_lineup_batter": bool((batter_meta.get(int(pid)) or {}).get("is_lineup_batter")),
-                    }
-                )
-            rows.sort(key=lambda r: float(r.get("p_hr_1plus") or 0.0), reverse=True)
-            out["hitter_hr_likelihood_topn"] = {"n": int(hr_top_n), "overall": rows[: int(hr_top_n)]}
+            out["hitter_hr_likelihood_topn"] = {"n": int(hr_top_n), "overall": hr_rows[: int(hr_top_n)]}
 
         # Other hitter props top-N
         if int(props_top_n) > 0:
@@ -3297,6 +3302,15 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=1337)
     ap.add_argument("--seed-source", default="", help=argparse.SUPPRESS)
     ap.add_argument("--out", default=str(_DATA_DIR / "daily"))
+    ap.add_argument(
+        "--write-derived-artifacts",
+        choices=["on", "off"],
+        default="on",
+        help=(
+            "If on, write post-sim derived artifacts such as top props, ladders, ladder audit, "
+            "and season frontend outputs for core runs."
+        ),
+    )
     ap.add_argument(
         "--lineups-last-known",
         default="",
@@ -5599,6 +5613,7 @@ def main() -> int:
                 "inplay_hit_rate": b.inplay_hit_rate,
                 "xb_hit_share": b.xb_hit_share,
                 "vs_pitch_type": {k.value: float(v) for k, v in (b.vs_pitch_type or {}).items()},
+                "vs_pitch_type_hr": {k.value: float(v) for k, v in (getattr(b, "vs_pitch_type_hr", {}) or {}).items()},
                 "platoon_mult_vs_lhp": {str(k): float(v) for k, v in (getattr(b, "platoon_mult_vs_lhp", {}) or {}).items() if isinstance(v, (int, float))},
                 "platoon_mult_vs_rhp": {str(k): float(v) for k, v in (getattr(b, "platoon_mult_vs_rhp", {}) or {}).items() if isinstance(v, (int, float))},
                 "statcast_quality_mult": {str(k): float(v) for k, v in (getattr(b, "statcast_quality_mult", {}) or {}).items() if isinstance(v, (int, float))},
@@ -5640,6 +5655,7 @@ def main() -> int:
                 "arsenal": {k.value: float(v) for k, v in (p.arsenal or {}).items()},
                 "pitch_type_whiff_mult": {k.value: float(v) for k, v in (getattr(p, "pitch_type_whiff_mult", {}) or {}).items()},
                 "pitch_type_inplay_mult": {k.value: float(v) for k, v in (getattr(p, "pitch_type_inplay_mult", {}) or {}).items()},
+                "pitch_type_hr_mult": {k.value: float(v) for k, v in (getattr(p, "pitch_type_hr_mult", {}) or {}).items()},
             }
 
         # Persist a feature snapshot (exact sim inputs)
@@ -5965,6 +5981,7 @@ def main() -> int:
                 "first1": _summary_segment((o.get("sim") or {}).get("segments", {}).get("first1")),
                 "first5": _summary_segment((o.get("sim") or {}).get("segments", {}).get("first5")),
                 "first3": _summary_segment((o.get("sim") or {}).get("segments", {}).get("first3")),
+                "hitter_hr_likelihood_all": (o.get("sim") or {}).get("hitter_hr_likelihood_all"),
                 "hitter_hr_likelihood_topn": (o.get("sim") or {}).get("hitter_hr_likelihood_topn"),
                 "hitter_props_likelihood_topn": (o.get("sim") or {}).get("hitter_props_likelihood_topn"),
                 "pitcher_props": (o.get("sim") or {}).get("pitcher_props"),
@@ -5974,40 +5991,41 @@ def main() -> int:
     }
     summary_path = out_root / f"daily_summary_{args.date.replace('-', '_')}.json"
     _write_json(summary_path, summary)
-    try:
-        top_props_result = write_daily_top_props_artifact(
-            str(args.date),
-            out_path=(out_root / "top_props" / f"daily_top_props_{args.date.replace('-', '_')}.json"),
-        )
-        print(f"Wrote top-props artifact: {top_props_result.get('path')}")
-    except Exception as exc:
-        print(f"Warning: failed to write top-props artifact for {args.date}: {type(exc).__name__}: {exc}")
-    try:
-        ladders_result = write_daily_ladders_artifact(
-            str(args.date),
-            out_path=(out_root / "ladders" / f"daily_ladders_{args.date.replace('-', '_')}.json"),
-        )
-        print(f"Wrote ladders artifact: {ladders_result.get('path')}")
-    except Exception as exc:
-        print(f"Warning: failed to write ladders artifact for {args.date}: {type(exc).__name__}: {exc}")
-    try:
-        ladder_audit_result = write_daily_ladder_audit_artifact(
-            str(args.date),
-            out_path=(out_root / "ladders" / f"daily_ladder_audit_{args.date.replace('-', '_')}.json"),
-        )
-        print(f"Wrote ladder audit artifact: {ladder_audit_result.get('path')}")
-    except Exception as exc:
-        print(f"Warning: failed to write ladder audit artifact for {args.date}: {type(exc).__name__}: {exc}")
-    try:
-        season_frontend_result = write_current_day_season_frontend_artifacts(
-            int(args.season),
-            str(args.date),
-            betting_profile="retuned",
-            out_dir=(out_root / "season_frontend"),
-        )
-        print(f"Wrote season frontend artifacts: {season_frontend_result.get('dir')}")
-    except Exception as exc:
-        print(f"Warning: failed to write season frontend artifacts for {args.date}: {type(exc).__name__}: {exc}")
+    if str(getattr(args, "write_derived_artifacts", "on") or "on") == "on":
+        try:
+            top_props_result = write_daily_top_props_artifact(
+                str(args.date),
+                out_path=(out_root / "top_props" / f"daily_top_props_{args.date.replace('-', '_')}.json"),
+            )
+            print(f"Wrote top-props artifact: {top_props_result.get('path')}")
+        except Exception as exc:
+            print(f"Warning: failed to write top-props artifact for {args.date}: {type(exc).__name__}: {exc}")
+        try:
+            ladders_result = write_daily_ladders_artifact(
+                str(args.date),
+                out_path=(out_root / "ladders" / f"daily_ladders_{args.date.replace('-', '_')}.json"),
+            )
+            print(f"Wrote ladders artifact: {ladders_result.get('path')}")
+        except Exception as exc:
+            print(f"Warning: failed to write ladders artifact for {args.date}: {type(exc).__name__}: {exc}")
+        try:
+            ladder_audit_result = write_daily_ladder_audit_artifact(
+                str(args.date),
+                out_path=(out_root / "ladders" / f"daily_ladder_audit_{args.date.replace('-', '_')}.json"),
+            )
+            print(f"Wrote ladder audit artifact: {ladder_audit_result.get('path')}")
+        except Exception as exc:
+            print(f"Warning: failed to write ladder audit artifact for {args.date}: {type(exc).__name__}: {exc}")
+        try:
+            season_frontend_result = write_current_day_season_frontend_artifacts(
+                int(args.season),
+                str(args.date),
+                betting_profile="retuned",
+                out_dir=(out_root / "season_frontend"),
+            )
+            print(f"Wrote season frontend artifacts: {season_frontend_result.get('dir')}")
+        except Exception as exc:
+            print(f"Warning: failed to write season frontend artifacts for {args.date}: {type(exc).__name__}: {exc}")
 
     # Persist lineup artifacts (best-effort).
     try:

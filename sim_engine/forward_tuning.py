@@ -12,7 +12,9 @@ FORWARD_PITCH_MODEL_OVERRIDES_PATH = (
 FORWARD_MANAGER_PITCHING_OVERRIDES_PATH = (
     _ROOT / "data" / "tuning" / "manager_pitching_overrides" / "forward_start_2026_04_14_v1.json"
 ).resolve()
-FORWARD_BVP_MATCHUP_MODE = "on"
+# Keep explicit CLI opt-in available, but default forward runs away from BvP HR
+# until the matchup path proves net value on a cleaner holdout.
+FORWARD_BVP_MATCHUP_MODE = "off"
 FORWARD_BVP_MIN_PA = 6
 
 

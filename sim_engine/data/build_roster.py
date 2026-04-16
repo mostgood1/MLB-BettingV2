@@ -85,6 +85,43 @@ def _cache_ttl_seconds(client: StatsApiClient, override: Optional[int]) -> int:
     return 24 * 3600
 
 
+def _log_ratio(obs: Any, base: Any) -> float:
+    try:
+        obs_f = float(obs)
+        base_f = float(base)
+        if obs_f <= 0.0 or base_f <= 0.0:
+            return 0.0
+        return float(__import__("math").log(obs_f / base_f))
+    except Exception:
+        return 0.0
+
+
+def _combine_power_log(parts: List[Tuple[float, float]], lo: float, hi: float) -> float:
+    try:
+        score = 0.0
+        for weight, value in parts:
+            score += float(weight) * float(value)
+        mult = float(__import__("math").exp(score))
+        return float(max(lo, min(hi, mult)))
+    except Exception:
+        return 1.0
+
+
+def _pitch_type_hr_mult_from_summary(summary: Dict[str, Any], base: Dict[str, Any]) -> float:
+    return float(
+        _combine_power_log(
+            [
+                (0.45, _log_ratio(summary.get("barrel_rate"), base.get("barrel_rate"))),
+                (0.30, _log_ratio(summary.get("hr_per_bip"), base.get("hr_per_bip"))),
+                (0.15, _log_ratio(summary.get("pulled_air_rate"), base.get("pulled_air_rate"))),
+                (0.10, _log_ratio(summary.get("sweet_spot_rate"), base.get("sweet_spot_rate"))),
+            ],
+            0.80,
+            1.25,
+        )
+    )
+
+
 def _profile_cache_key(
     *,
     pid: int,
@@ -133,9 +170,21 @@ def _bprof_from_cached(player: Player, row: Dict[str, Any]) -> BatterProfile:
     except Exception:
         pass
     try:
+        vpt_hr = row.get("vs_pitch_type_hr") or {}
+        if isinstance(vpt_hr, dict):
+            prof.vs_pitch_type_hr = {PitchType(str(k)): float(v) for k, v in vpt_hr.items() if isinstance(v, (int, float))}
+    except Exception:
+        pass
+    try:
         sqm = row.get("statcast_quality_mult") or {}
         if isinstance(sqm, dict):
             prof.statcast_quality_mult = {str(k): float(v) for k, v in sqm.items() if isinstance(v, (int, float))}
+    except Exception:
+        pass
+    try:
+        hrm = row.get("pitch_type_hr_mult") or {}
+        if isinstance(hrm, dict):
+            prof.pitch_type_hr_mult = {PitchType(str(k)): float(v) for k, v in hrm.items() if isinstance(v, (int, float))}
     except Exception:
         pass
     return prof
@@ -572,9 +621,11 @@ def _apply_statcast_features_to_pitcher(prof: PitcherProfile, season: int) -> bo
             pass
 
     pt_map = entry.get("pitch_type") or {}
+    league_power = ((((m.get("league") or {}).get("overall") or {}).get("pitcher")) or {}) if isinstance(m, dict) else {}
     if isinstance(pt_map, dict) and pt_map:
         whiff_mult: Dict[PitchType, float] = {}
         inplay_mult: Dict[PitchType, float] = {}
+        hr_mult: Dict[PitchType, float] = {}
         for k, v in pt_map.items():
             if not isinstance(v, dict):
                 continue
@@ -588,11 +639,17 @@ def _apply_statcast_features_to_pitcher(prof: PitcherProfile, season: int) -> bo
                 whiff_mult[pt] = float(max(0.70, min(1.40, float(wm))))
             if isinstance(im, (int, float)):
                 inplay_mult[pt] = float(max(0.70, min(1.40, float(im))))
+            summary = v.get("summary") or {}
+            if isinstance(summary, dict) and isinstance(league_power, dict):
+                hr_mult[pt] = _pitch_type_hr_mult_from_summary(summary, league_power)
         if whiff_mult:
             prof.pitch_type_whiff_mult = whiff_mult
             applied = True
         if inplay_mult:
             prof.pitch_type_inplay_mult = inplay_mult
+            applied = True
+        if hr_mult:
+            prof.pitch_type_hr_mult = hr_mult
             applied = True
 
     return applied
@@ -661,6 +718,8 @@ def _apply_statcast_features_to_batter(prof: BatterProfile, season: int) -> bool
         applied = True
 
     vs_pt = entry.get("vs_pitch_type") or {}
+    pt_map = entry.get("pitch_type") or {}
+    league_power = ((((m.get("league") or {}).get("overall") or {}).get("pitcher")) or {}) if isinstance(m, dict) else {}
     if isinstance(vs_pt, dict) and vs_pt:
         out: Dict[PitchType, float] = {}
         for k, v in vs_pt.items():
@@ -673,6 +732,23 @@ def _apply_statcast_features_to_batter(prof: BatterProfile, season: int) -> bool
             out[pt] = float(max(0.80, min(1.25, float(v))))
         if out:
             prof.vs_pitch_type = out
+            applied = True
+
+    if isinstance(pt_map, dict) and pt_map:
+        out_hr: Dict[PitchType, float] = {}
+        for k, v in pt_map.items():
+            if not isinstance(v, dict):
+                continue
+            try:
+                pt = PitchType(str(k))
+            except Exception:
+                continue
+            summary = v.get("summary") or {}
+            if not isinstance(summary, dict) or not isinstance(league_power, dict):
+                continue
+            out_hr[pt] = _pitch_type_hr_mult_from_summary(summary, league_power)
+        if out_hr:
+            prof.vs_pitch_type_hr = out_hr
             applied = True
 
     return applied
@@ -1242,6 +1318,11 @@ def build_team_roster(
                                     "role": str(getattr(prof, "role", "RP") or "RP"),
                                     "leverage_skill": float(getattr(prof, "leverage_skill", 0.5) or 0.5),
                                     "statcast_quality_mult": dict(getattr(prof, "statcast_quality_mult", {}) or {}),
+                                    "pitch_type_hr_mult": {
+                                        str(k.value if isinstance(k, PitchType) else str(k)): float(v)
+                                        for k, v in (getattr(prof, "pitch_type_hr_mult", {}) or {}).items()
+                                        if isinstance(v, (int, float))
+                                    },
                                     "bb_gb_rate": float(getattr(prof, "bb_gb_rate", 0.44) or 0.44),
                                     "bb_fb_rate": float(getattr(prof, "bb_fb_rate", 0.25) or 0.25),
                                     "bb_ld_rate": float(getattr(prof, "bb_ld_rate", 0.20) or 0.20),
@@ -1327,6 +1408,10 @@ def build_team_roster(
                         vs_pt = {str(k.value if isinstance(k, PitchType) else str(k)): float(v) for k, v in (prof.vs_pitch_type or {}).items() if isinstance(v, (int, float))}
                     except Exception:
                         vs_pt = {}
+                    try:
+                        vs_pt_hr = {str(k.value if isinstance(k, PitchType) else str(k)): float(v) for k, v in (getattr(prof, "vs_pitch_type_hr", {}) or {}).items() if isinstance(v, (int, float))}
+                    except Exception:
+                        vs_pt_hr = {}
 
                     prof_cache.set(
                         "player_base_profile",
@@ -1344,6 +1429,7 @@ def build_team_roster(
                                 "sb_attempt_rate": float(prof.sb_attempt_rate),
                                 "sb_success_rate": float(prof.sb_success_rate),
                                 "vs_pitch_type": vs_pt,
+                                "vs_pitch_type_hr": vs_pt_hr,
                                 "statcast_quality_mult": dict(getattr(prof, "statcast_quality_mult", {}) or {}),
                                 "bb_gb_rate": float(getattr(prof, "bb_gb_rate", 0.44) or 0.44),
                                 "bb_fb_rate": float(getattr(prof, "bb_fb_rate", 0.25) or 0.25),
@@ -1360,6 +1446,10 @@ def build_team_roster(
             if not bool(enable_batter_vs_pitch_type):
                 try:
                     prof.vs_pitch_type = {}
+                except Exception:
+                    pass
+                try:
+                    prof.vs_pitch_type_hr = {}
                 except Exception:
                     pass
 

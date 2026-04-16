@@ -271,6 +271,12 @@ def main() -> int:
         help="Toggle Statcast-derived batter vs pitch-type multipliers (passed through)",
     )
     ap.add_argument(
+        "--pitch-type-hr",
+        choices=["on", "off"],
+        default="on",
+        help="Toggle HR-specific pitch-type multipliers while leaving other pitch-type effects intact (passed through).",
+    )
+    ap.add_argument(
         "--batter-platoon",
         choices=["on", "off"],
         default="on",
@@ -652,6 +658,8 @@ def main() -> int:
                 str(args.market_game_config_overrides or ""),
                 "--batter-vs-pitch-type",
                 str(args.batter_vs_pitch_type),
+                "--pitch-type-hr",
+                str(args.pitch_type_hr),
                 "--batter-platoon",
                 str(args.batter_platoon),
                 "--pitcher-platoon",

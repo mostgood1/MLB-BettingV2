@@ -239,6 +239,7 @@ class BatterProfile:
     sb_attempt_rate: float = 0.0
     sb_success_rate: float = 0.72
     vs_pitch_type: Dict[PitchType, float] = field(default_factory=dict)
+    vs_pitch_type_hr: Dict[PitchType, float] = field(default_factory=dict)
 
     # Platoon split multipliers (best-effort). Keys are metric names:
     # "k", "bb", "hr", "inplay". Values are multipliers vs that pitcher hand.
@@ -289,6 +290,7 @@ class PitcherProfile:
     # Optional pitch-type outcome multipliers (e.g., Statcast-derived vs global priors).
     pitch_type_whiff_mult: Dict[PitchType, float] = field(default_factory=dict)
     pitch_type_inplay_mult: Dict[PitchType, float] = field(default_factory=dict)
+    pitch_type_hr_mult: Dict[PitchType, float] = field(default_factory=dict)
     # Cache-only Statcast (pybaseball) provenance for the above multipliers.
     statcast_splits_source: str = ""
     statcast_splits_n_pitches: int = 0

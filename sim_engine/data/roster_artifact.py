@@ -153,6 +153,7 @@ def roster_to_dict(roster: TeamRoster) -> Dict[str, Any]:
             "sb_attempt_rate": float(b.sb_attempt_rate),
             "sb_success_rate": float(b.sb_success_rate),
             "vs_pitch_type": _ser_pitchtype_map(b.vs_pitch_type),
+            "vs_pitch_type_hr": _ser_pitchtype_map(b.vs_pitch_type_hr),
             "platoon_mult_vs_lhp": {str(k): float(v) for k, v in (b.platoon_mult_vs_lhp or {}).items()},
             "platoon_mult_vs_rhp": {str(k): float(v) for k, v in (b.platoon_mult_vs_rhp or {}).items()},
             "venue_mult_home": {str(k): float(v) for k, v in (b.venue_mult_home or {}).items()},
@@ -183,6 +184,7 @@ def roster_to_dict(roster: TeamRoster) -> Dict[str, Any]:
             "arsenal": _ser_pitchtype_map(p.arsenal),
             "pitch_type_whiff_mult": _ser_pitchtype_map(p.pitch_type_whiff_mult),
             "pitch_type_inplay_mult": _ser_pitchtype_map(p.pitch_type_inplay_mult),
+            "pitch_type_hr_mult": _ser_pitchtype_map(p.pitch_type_hr_mult),
             "statcast_splits_source": str(p.statcast_splits_source),
             "statcast_splits_n_pitches": int(p.statcast_splits_n_pitches),
             "statcast_splits_start_date": str(p.statcast_splits_start_date),
@@ -262,6 +264,7 @@ def roster_from_dict(d: Dict[str, Any]) -> TeamRoster:
             pass
 
         prof.vs_pitch_type = _de_pitchtype_map(b.get("vs_pitch_type") or {})
+        prof.vs_pitch_type_hr = _de_pitchtype_map(b.get("vs_pitch_type_hr") or {})
         prof.platoon_mult_vs_lhp = {str(k): float(v) for k, v in (b.get("platoon_mult_vs_lhp") or {}).items()}
         prof.platoon_mult_vs_rhp = {str(k): float(v) for k, v in (b.get("platoon_mult_vs_rhp") or {}).items()}
         prof.venue_mult_home = {str(k): float(v) for k, v in (b.get("venue_mult_home") or {}).items()}
@@ -313,6 +316,7 @@ def roster_from_dict(d: Dict[str, Any]) -> TeamRoster:
         prof.arsenal = _de_pitchtype_map(p.get("arsenal") or {})
         prof.pitch_type_whiff_mult = _de_pitchtype_map(p.get("pitch_type_whiff_mult") or {})
         prof.pitch_type_inplay_mult = _de_pitchtype_map(p.get("pitch_type_inplay_mult") or {})
+        prof.pitch_type_hr_mult = _de_pitchtype_map(p.get("pitch_type_hr_mult") or {})
         prof.platoon_mult_vs_lhb = {str(k): float(v) for k, v in (p.get("platoon_mult_vs_lhb") or {}).items()}
         prof.platoon_mult_vs_rhb = {str(k): float(v) for k, v in (p.get("platoon_mult_vs_rhb") or {}).items()}
         prof.venue_mult_home = {str(k): float(v) for k, v in (p.get("venue_mult_home") or {}).items()}

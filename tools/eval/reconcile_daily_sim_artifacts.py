@@ -230,6 +230,16 @@ def _score_hitter_hr(
     }, int(len(overall) if isinstance(overall, list) else 0)
 
 
+def _preferred_hitter_hr_likelihood(sim_payload: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(sim_payload, dict):
+        return {}
+    full_rows = sim_payload.get("hitter_hr_likelihood_all")
+    if isinstance(full_rows, dict) and isinstance(full_rows.get("overall"), list) and full_rows.get("overall"):
+        return full_rows
+    top_rows = sim_payload.get("hitter_hr_likelihood_topn")
+    return top_rows if isinstance(top_rows, dict) else {}
+
+
 def _build_game_row(
     *,
     sim_obj: Dict[str, Any],
@@ -316,7 +326,7 @@ def _build_game_row(
 
     pitcher_preds = (sim_payload.get("pitcher_props") or {}) if isinstance(sim_payload.get("pitcher_props"), dict) else {}
     hitter_topn = sim_payload.get("hitter_props_likelihood_topn") or {}
-    hitter_hr_topn = sim_payload.get("hitter_hr_likelihood_topn") or {}
+    hitter_hr_topn = _preferred_hitter_hr_likelihood(sim_payload)
     hitter_props_backtest, hitter_prop_rollup, hitter_top_n = _score_hitter_props(
         hitter_topn if isinstance(hitter_topn, dict) else {},
         actual_batter_box,

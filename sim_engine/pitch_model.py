@@ -283,12 +283,14 @@ def simulate_pitch(
     batter_inplay_hit_rate: float,
     batter_xb_hit_share: float,
     batter_pt_mult: float,
+    batter_pt_hr_mult: float,
     batter_triple_share_of_xb: float,
     pitcher_k_rate: float,
     pitcher_bb_rate: float,
     pitcher_hbp_rate: float,
     pitcher_hr_rate: float,
     pitcher_inplay_hit_rate: float,
+    pitcher_pt_hr_mult: float = 1.0,
     batter_bb_gb_rate: float = 0.44,
     batter_bb_fb_rate: float = 0.25,
     batter_bb_ld_rate: float = 0.20,
@@ -328,7 +330,7 @@ def simulate_pitch(
     k_tgt = _combined(batter_k_rate, pitcher_k_rate)
     bb_tgt = _combined(batter_bb_rate, pitcher_bb_rate)
     hbp_tgt = _combined(batter_hbp_rate, pitcher_hbp_rate)
-    hr_tgt = _combined(batter_hr_rate, pitcher_hr_rate)
+    hr_tgt = _combined(float(batter_hr_rate) * float(batter_pt_hr_mult), float(pitcher_hr_rate) * float(pitcher_pt_hr_mult))
     inplay_hit = _combined(batter_inplay_hit_rate, pitcher_inplay_hit_rate)
 
     # Optional K-target calibration (applied before translating k_tgt into call mix).

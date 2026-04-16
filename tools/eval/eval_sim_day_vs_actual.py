@@ -104,6 +104,25 @@ def _argv_has_flag(argv: List[str], flag: str) -> bool:
     return False
 
 
+def _neutralize_pitch_type_hr(roster: Any) -> None:
+    try:
+        lineup = getattr(roster, "lineup", None)
+        batters = getattr(lineup, "batters", None) or []
+        for batter in batters:
+            try:
+                batter.vs_pitch_type_hr = {}
+            except Exception:
+                pass
+        pitcher = getattr(lineup, "pitcher", None)
+        if pitcher is not None:
+            try:
+                pitcher.pitch_type_hr_mult = {}
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 def _apply_forward_tuning_defaults(args: argparse.Namespace, raw_argv: List[str]) -> None:
     if not should_use_forward_tuning(str(getattr(args, "date", "") or "")):
         return
@@ -895,6 +914,14 @@ def _sim_many(
         home_all = _finalize_side_all("home", home_name)
         all_rows = away_all + home_all
 
+        out["hitter_hr_likelihood_all"] = {
+            "top_n": int(hr_top_n),
+            "n": int(len(all_rows)),
+            "away": list(away_all),
+            "home": list(home_all),
+            "overall": list(all_rows),
+        }
+
         def _top(rows: List[Dict[str, Any]], metric: str, tiebreak: str, n: int) -> List[Dict[str, Any]]:
             rs = list(rows)
             rs.sort(
@@ -1324,6 +1351,18 @@ def _load_game_lines_for_date(date_str: str) -> Dict[Tuple[str, str], Dict[str, 
     return out
 
 
+def _preferred_hitter_hr_likelihood(sim_payload: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(sim_payload, dict):
+        return {}
+    full_rows = sim_payload.get("hitter_hr_likelihood_all")
+    if isinstance(full_rows, dict) and isinstance(full_rows.get("overall"), list) and full_rows.get("overall"):
+        return full_rows
+    top_rows = sim_payload.get("hitter_hr_likelihood")
+    if isinstance(top_rows, dict) and isinstance(top_rows.get("overall"), list) and top_rows.get("overall"):
+        return top_rows
+    return top_rows if isinstance(top_rows, dict) else {}
+
+
 def _market_context_from_game_line(game_line: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not isinstance(game_line, dict):
         return {}
@@ -1740,6 +1779,12 @@ def main() -> int:
         choices=["on", "off"],
         default="on",
         help="Toggle Statcast-derived batter vs pitch-type multipliers (ablation hook)",
+    )
+    ap.add_argument(
+        "--pitch-type-hr",
+        choices=["on", "off"],
+        default="on",
+        help="Toggle HR-specific pitch-type multipliers while leaving other pitch-type effects intact.",
     )
     ap.add_argument(
         "--batter-platoon",
@@ -2425,6 +2470,10 @@ def main() -> int:
         _apply_stamina_mode(away_roster, str(args.stamina_mode))
         _apply_stamina_mode(home_roster, str(args.stamina_mode))
 
+        if str(getattr(args, "pitch_type_hr", "on")) != "on":
+            _neutralize_pitch_type_hr(away_roster)
+            _neutralize_pitch_type_hr(home_roster)
+
         # Optional: apply batter-vs-starter HR multipliers derived from local Statcast raw pitch files.
         if bvp_hr_on:
             try:
@@ -2580,7 +2629,7 @@ def main() -> int:
         actual = t["actual"]
         pitcher_props = sims.get("pitcher_props") or {}
         team_batting = sims.get("team_batting") or {}
-        hitter_hr_likelihood = sims.get("hitter_hr_likelihood")
+        hitter_hr_likelihood = _preferred_hitter_hr_likelihood(sims)
         hitter_props_likelihood = sims.get("hitter_props_likelihood")
 
         actual_team_batting = t.get("actual_team_batting") or {}
@@ -2942,6 +2991,7 @@ def main() -> int:
             "pitcher_distribution_overrides": (pitcher_distribution_overrides or {}),
             "bip_baserunning": bool(bip_baserunning),
             "batter_vs_pitch_type": (str(args.batter_vs_pitch_type) == "on"),
+            "pitch_type_hr": (str(args.pitch_type_hr) == "on"),
             "batter_platoon": (str(args.batter_platoon) == "on"),
             "pitcher_platoon": (str(args.pitcher_platoon) == "on"),
             "batter_platoon_alpha": float(args.batter_platoon_alpha),

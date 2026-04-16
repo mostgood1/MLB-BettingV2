@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>HR Targets — {{ date }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='cards.css', v='20260416-hr-targets-v1') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='daily_top_props.css', v='20260416-hr-targets-v1') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='hr_targets.css', v='20260416-hr-targets-v1') }}" />
+  </head>
+  <body class="cards-body hr-targets-body">
+    <div class="hr-targets-shell">
+      <header class="hr-targets-header">
+        <div class="hr-targets-title-block">
+          <div class="hr-targets-kicker">Daily 1+ HR target board</div>
+          <div class="hr-targets-title-row">
+            <h1>HR Targets</h1>
+            <span class="cards-nav-pill is-active" id="hrTargetsDateBadge">{{ date }}</span>
+          </div>
+          <p class="hr-targets-header-meta" id="hrTargetsHeaderMeta">Loading HR target board...</p>
+        </div>
+        <div class="hr-targets-header-actions">
+          <a class="cards-nav-pill" href="/?date={{ date }}">Daily cards</a>
+          <a class="cards-nav-pill" href="/hitter-ladders?date={{ date }}&prop=home_runs">Hitter ladders</a>
+          <a class="cards-nav-pill" href="/hitter-top-props?date={{ date }}">Hitter top props</a>
+          <a class="cards-nav-pill" href="/season/{{ season }}?date={{ date }}">Season review</a>
+        </div>
+      </header>
+
+      <section class="cards-control-card hr-targets-controls" aria-label="HR targets controls">
+        <form class="cards-date-form hr-targets-form" id="hrTargetsForm" method="get" action="/hr-targets">
+          <a class="cards-nav-pill" id="hrTargetsPrevDateLink" href="/hr-targets?date={{ date }}&game={{ game }}&team={{ team }}&hitter={{ hitter }}&sort={{ sort }}" rel="prev">Prev</a>
+          <span class="cards-nav-pill cards-form-pill" aria-hidden="true">Date</span>
+          <input id="hrTargetsDateInput" type="date" name="date" value="{{ date }}" aria-label="HR targets date" />
+          <span class="cards-nav-pill cards-form-pill" aria-hidden="true">Game</span>
+          <select id="hrTargetsGameInput" name="game" aria-label="HR targets game selector">
+            <option value="">All games</option>
+          </select>
+          <span class="cards-nav-pill cards-form-pill" aria-hidden="true">Team</span>
+          <select id="hrTargetsTeamInput" name="team" aria-label="HR targets team selector">
+            <option value="">All teams</option>
+          </select>
+          <span class="cards-nav-pill cards-form-pill" aria-hidden="true">Hitter</span>
+          <select id="hrTargetsHitterInput" name="hitter" aria-label="HR targets hitter selector">
+            <option value="">All hitters</option>
+          </select>
+          <span class="cards-nav-pill cards-form-pill" aria-hidden="true">Sort</span>
+          <select id="hrTargetsSortInput" name="sort" aria-label="HR targets sort selector">
+            {% for option in sort_options %}
+            <option value="{{ option.value }}" {% if option.value == sort %}selected{% endif %}>{{ option.label }}</option>
+            {% endfor %}
+          </select>
+          <button type="submit">Load</button>
+          <a class="cards-nav-pill" id="hrTargetsNextDateLink" href="/hr-targets?date={{ date }}&game={{ game }}&team={{ team }}&hitter={{ hitter }}&sort={{ sort }}" rel="next">Next</a>
+        </form>
+        <div class="hr-targets-source-meta" id="hrTargetsSourceMeta">Loading sources…</div>
+      </section>
+
+      <section class="hr-targets-summary" id="hrTargetsSummary" aria-live="polite">
+        <div class="cards-loading-state">Loading HR target summary...</div>
+      </section>
+
+      <main class="hr-targets-grid" id="hrTargetsGrid" aria-live="polite">
+        <div class="cards-loading-state">Loading HR target board...</div>
+      </main>
+    </div>
+
+    <script id="hrTargetsBootstrap" type="application/json">{{ {'date': date, 'game': game, 'team': team, 'hitter': hitter, 'sort': sort}|tojson }}</script>
+    <script src="{{ url_for('static', filename='hr_targets.js', v='20260416-hr-targets-v1') }}"></script>
+  </body>
+</html>

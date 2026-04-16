@@ -944,10 +944,15 @@ def _simulate_pitch(
 
     pitch_type = _weighted_choice(rng, pitcher.arsenal, PitchType.FF)
     raw_pt_mult = float((batter.vs_pitch_type or {}).get(pitch_type, 1.0))
+    raw_pt_hr_mult = float((getattr(batter, "vs_pitch_type_hr", {}) or {}).get(pitch_type, 1.0))
     try:
         raw_pt_mult = float(max(0.4, min(1.6, raw_pt_mult)))
     except Exception:
         raw_pt_mult = 1.0
+    try:
+        raw_pt_hr_mult = float(max(0.75, min(1.25, raw_pt_hr_mult)))
+    except Exception:
+        raw_pt_hr_mult = 1.0
 
     try:
         _scale_raw = getattr(pitch_cfg, "batter_pt_scale", 1.0)
@@ -957,6 +962,8 @@ def _simulate_pitch(
     pt_scale = float(max(0.0, min(2.0, pt_scale)))
     raw_pt_mult = float(1.0 + pt_scale * (raw_pt_mult - 1.0))
     raw_pt_mult = float(max(0.4, min(1.6, raw_pt_mult)))
+    raw_pt_hr_mult = float(1.0 + pt_scale * (raw_pt_hr_mult - 1.0))
+    raw_pt_hr_mult = float(max(0.75, min(1.25, raw_pt_hr_mult)))
 
     try:
         _alpha_raw = getattr(pitch_cfg, "batter_pt_alpha", 0.5)
@@ -965,8 +972,10 @@ def _simulate_pitch(
         alpha = 0.5
     alpha = float(max(0.0, min(1.0, alpha)))
     pt_mult = float(1.0 + alpha * (raw_pt_mult - 1.0))
+    pt_hr_mult = float(1.0 + alpha * (raw_pt_hr_mult - 1.0))
     p_whiff_mult = float((pitcher.pitch_type_whiff_mult or {}).get(pitch_type, 1.0))
     p_inplay_mult = float((pitcher.pitch_type_inplay_mult or {}).get(pitch_type, 1.0))
+    p_hr_mult = float((getattr(pitcher, "pitch_type_hr_mult", {}) or {}).get(pitch_type, 1.0))
     return simulate_pitch(
         rng=rng,
         cfg=pitch_cfg,
@@ -987,18 +996,20 @@ def _simulate_pitch(
         batter_hr_rate=batter_hr,
         batter_inplay_hit_rate=batter_inplay,
         batter_xb_hit_share=batter.xb_hit_share,
-        batter_triple_share_of_xb=float(getattr(batter, "triple_share_of_xb", 0.12) or 0.12),
         batter_bb_gb_rate=float(getattr(batter, "bb_gb_rate", 0.44)),
         batter_bb_fb_rate=float(getattr(batter, "bb_fb_rate", 0.25)),
         batter_bb_ld_rate=float(getattr(batter, "bb_ld_rate", 0.20)),
         batter_bb_pu_rate=float(getattr(batter, "bb_pu_rate", 0.11)),
         batter_bb_inplay_n=int(getattr(batter, "bb_inplay_n", 0) or 0),
         batter_pt_mult=pt_mult,
+        batter_pt_hr_mult=pt_hr_mult,
+        batter_triple_share_of_xb=float(getattr(batter, "triple_share_of_xb", 0.12) or 0.12),
         pitcher_k_rate=pitcher_k,
         pitcher_bb_rate=pitcher_bb,
         pitcher_hbp_rate=float(pr.get("hbp_rate", pitcher.hbp_rate)),
         pitcher_hr_rate=pitcher_hr,
         pitcher_inplay_hit_rate=pitcher_inplay,
+        pitcher_pt_hr_mult=p_hr_mult,
         pitcher_bb_gb_rate=float(getattr(pitcher, "bb_gb_rate", 0.44)),
         pitcher_bb_fb_rate=float(getattr(pitcher, "bb_fb_rate", 0.25)),
         pitcher_bb_ld_rate=float(getattr(pitcher, "bb_ld_rate", 0.20)),
@@ -2071,6 +2082,7 @@ def simulate_game(
         pitcher_bb_n = int(getattr(pitcher_prof, "bb_inplay_n", 0) or 0)
 
         vs_pt = getattr(batter_prof, "vs_pitch_type", None) or {}
+        vs_pt_hr = getattr(batter_prof, "vs_pitch_type_hr", None) or {}
         try:
             _alpha_raw = getattr(pitch_cfg, "batter_pt_alpha", 0.5)
             alpha = 0.5 if _alpha_raw is None else float(_alpha_raw)
@@ -2086,6 +2098,7 @@ def simulate_game(
         pt_scale = float(max(0.0, min(2.0, pt_scale)))
         p_whiff_map = getattr(pitcher_prof, "pitch_type_whiff_mult", None) or {}
         p_inplay_map = getattr(pitcher_prof, "pitch_type_inplay_mult", None) or {}
+        p_hr_map = getattr(pitcher_prof, "pitch_type_hr_mult", None) or {}
 
         for _ in range(cfg.max_pitches_per_pa):
             pitch_num = int(state.pa.pitch_count) + 1
@@ -2094,15 +2107,23 @@ def simulate_game(
             bases_before_pitch = str(half.bases.value)
             pitch_type = _sample_weight_cdf(rng, pitch_types, pitch_cdf, pitch_total, PitchType.FF)
             raw_pt_mult = float(vs_pt.get(pitch_type, 1.0))
+            raw_pt_hr_mult = float(vs_pt_hr.get(pitch_type, 1.0))
             try:
                 raw_pt_mult = float(max(0.4, min(1.6, raw_pt_mult)))
             except Exception:
                 raw_pt_mult = 1.0
+            try:
+                raw_pt_hr_mult = float(max(0.75, min(1.25, raw_pt_hr_mult)))
+            except Exception:
+                raw_pt_hr_mult = 1.0
 
             # Optional: scale raw pitch-type multipliers around 1.0 before applying alpha shrink.
             raw_pt_mult = float(1.0 + pt_scale * (raw_pt_mult - 1.0))
             raw_pt_mult = float(max(0.4, min(1.6, raw_pt_mult)))
+            raw_pt_hr_mult = float(1.0 + pt_scale * (raw_pt_hr_mult - 1.0))
+            raw_pt_hr_mult = float(max(0.75, min(1.25, raw_pt_hr_mult)))
             batter_pt_mult = float(1.0 + alpha * (raw_pt_mult - 1.0))
+            batter_pt_hr_mult = float(1.0 + alpha * (raw_pt_hr_mult - 1.0))
             pitch_weather_hr_mult = float(weather_hr_mult) * _hr_context_mult(
                 pitch_cfg,
                 int(state.inning),
@@ -2133,12 +2154,14 @@ def simulate_game(
                 batter_bb_rate=batter_bb,
                 batter_hbp_rate=batter_hbp,
                 batter_hr_rate=batter_hr,
+                batter_pt_hr_mult=batter_pt_hr_mult,
                 batter_inplay_hit_rate=batter_inplay,
                 batter_xb_hit_share=batter_xb_share,
                 batter_pt_mult=batter_pt_mult,
                 batter_triple_share_of_xb=batter_triple_share,
                 pitcher_k_rate=pitcher_k,
                 pitcher_bb_rate=pitcher_bb,
+                pitcher_pt_hr_mult=float(p_hr_map.get(pitch_type, 1.0)),
                 pitcher_hbp_rate=pitcher_hbp,
                 pitcher_hr_rate=pitcher_hr,
                 pitcher_inplay_hit_rate=pitcher_inplay,

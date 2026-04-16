@@ -25,6 +25,7 @@ from sim_engine.market_pitcher_props import (
 )
 from sim_engine.prob_calibration import apply_prob_calibration
 from sim_engine.data.statcast_bvp import (
+    _available_statcast_seasons,
     default_bvp_cache,
     hr_multiplier_from_bvp,
     pitcher_vs_batters_counts,
@@ -48,6 +49,11 @@ DEFAULT_HITTER_EDGE_MIN_BY_MARKET: Dict[str, float] = {
 DEFAULT_HITTER_MODEL_PROB_MIN_BY_MARKET: Dict[str, float] = {
     "hitter_home_runs": 0.25,
 }
+
+_HR_TARGET_MIN_PROB = 0.14
+_HR_TARGET_MIN_SUPPORT_SCORE = 50.0
+_HR_TARGET_MAX_PER_GAME = 3
+_HR_TARGET_MAX_PER_TEAM = 2
 
 PITCHER_MARKET_SPECS: Dict[str, Dict[str, str]] = {
     "outs": {
@@ -571,6 +577,15 @@ def _safe_int(value: Any) -> Optional[int]:
         return None
 
 
+def _safe_float(value: Any) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
 def _season_from_date_str(value: Any) -> Optional[int]:
     token = str(value or "").strip()
     if len(token) < 4:
@@ -663,7 +678,14 @@ def _derived_hitter_bvp_history(
         "inplay_pa": 0,
         "inplay_hits": 0,
     }
-    for season_part in range(max(2015, int(season_i) - 1), int(season_i) + 1):
+    available_seasons = [
+        int(year)
+        for year in (_available_statcast_seasons() or ())
+        if int(year) <= int(season_i)
+    ]
+    if not available_seasons:
+        available_seasons = list(range(max(2015, int(season_i) - 1), int(season_i) + 1))
+    for season_part in available_seasons:
         counts = (_pitcher_bvp_counts_cached(int(pitcher_id), int(season_part)) or {}).get(int(batter_id)) or {}
         for key in list(merged.keys()):
             merged[key] += int(counts.get(key) or 0)
@@ -2148,9 +2170,251 @@ def _lookup_hitter_matchup_context(
     return {
         "batter_profile": batter_profile,
         "pitcher_profile": pitcher_profile,
+        "side_doc": side_doc,
+        "opp_doc": opp_doc,
         "opponent": str((sim_obj.get(opp_side) or {}).get("abbreviation") or "").strip(),
         "opponent_team_id": _safe_int((((opp_doc.get("team") or {}) if isinstance(opp_doc, dict) else {}).get("team_id"))),
     }
+
+
+def _profile_rate(value: Any) -> Optional[float]:
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _profile_mult(source: Any, key: str) -> Optional[float]:
+    if not isinstance(source, dict):
+        return None
+    return _profile_rate(source.get(key))
+
+
+def _primary_pitch_type(arsenal: Any) -> Optional[str]:
+    if not isinstance(arsenal, dict):
+        return None
+    best_key = None
+    best_value = float("-inf")
+    for pitch_type, share in arsenal.items():
+        try:
+            share_value = float(share)
+        except Exception:
+            continue
+        if share_value > best_value:
+            best_key = str(pitch_type or "").strip().upper()
+            best_value = share_value
+    return best_key or None
+
+
+def _hitter_recommendation_context_fields(
+    rec: Dict[str, Any],
+    matchup_ctx: Dict[str, Any],
+    roster_snapshot: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    batter_profile = matchup_ctx.get("batter_profile") if isinstance(matchup_ctx.get("batter_profile"), dict) else None
+    pitcher_profile = matchup_ctx.get("pitcher_profile") if isinstance(matchup_ctx.get("pitcher_profile"), dict) else None
+    side_doc = matchup_ctx.get("side_doc") if isinstance(matchup_ctx.get("side_doc"), dict) else None
+
+    batter_id = _safe_int((batter_profile or {}).get("id"))
+    pitcher_id = _safe_int((pitcher_profile or {}).get("id"))
+    batter_hand = str((batter_profile or {}).get("bat") or "").strip().upper() or None
+    pitcher_hand = str((pitcher_profile or {}).get("throw") or "").strip().upper() or None
+
+    if batter_id:
+        out["batter_id"] = int(batter_id)
+    if batter_hand:
+        out["batter_hand"] = batter_hand
+    if pitcher_id:
+        out["opponent_pitcher_id"] = int(pitcher_id)
+    if pitcher_hand:
+        out["opponent_pitcher_hand"] = pitcher_hand
+    if (pitcher_profile or {}).get("name"):
+        out["opponent_pitcher_name"] = str((pitcher_profile or {}).get("name") or "")
+
+    if matchup_ctx.get("opponent"):
+        out["opponent"] = str(matchup_ctx.get("opponent") or "")
+    if matchup_ctx.get("opponent_team_id"):
+        out["opponent_team_id"] = int(matchup_ctx.get("opponent_team_id"))
+
+    if isinstance(side_doc, dict):
+        lineup_source = str(side_doc.get("lineup_source") or "").strip()
+        lineup_confidence = _profile_rate(side_doc.get("lineup_confidence"))
+        if lineup_source:
+            out["lineup_source"] = lineup_source
+        if lineup_confidence is not None:
+            out["lineup_confidence"] = lineup_confidence
+        confirmed_ids = {int(v) for v in (side_doc.get("confirmed_lineup_ids") or []) if _safe_int(v)}
+        projected_ids = {int(v) for v in (side_doc.get("projected_lineup_ids") or []) if _safe_int(v)}
+        if batter_id and int(batter_id) in confirmed_ids:
+            out["lineup_status"] = "confirmed"
+        elif batter_id and int(batter_id) in projected_ids:
+            out["lineup_status"] = "projected"
+
+    if isinstance(batter_profile, dict):
+        for src_key, out_key in (
+            ("k_rate", "batter_k_rate"),
+            ("bb_rate", "batter_bb_rate"),
+            ("hr_rate", "batter_hr_rate"),
+            ("inplay_hit_rate", "batter_inplay_hit_rate"),
+            ("xb_hit_share", "batter_xb_hit_share"),
+        ):
+            value = _profile_rate(batter_profile.get(src_key))
+            if value is not None:
+                out[out_key] = value
+        for src_key, out_key in (
+            ("k", "batter_statcast_k_mult"),
+            ("bb", "batter_statcast_bb_mult"),
+            ("hr", "batter_statcast_hr_mult"),
+            ("inplay", "batter_statcast_inplay_mult"),
+        ):
+            value = _profile_mult(batter_profile.get("statcast_quality_mult"), src_key)
+            if value is not None:
+                out[out_key] = value
+
+    if isinstance(pitcher_profile, dict):
+        for src_key, out_key in (
+            ("k_rate", "pitcher_k_rate"),
+            ("bb_rate", "pitcher_bb_rate"),
+            ("hr_rate", "pitcher_hr_rate"),
+            ("inplay_hit_rate", "pitcher_inplay_hit_rate"),
+            ("availability_mult", "pitcher_availability_mult"),
+            ("stamina_pitches", "pitcher_stamina_pitches"),
+        ):
+            value = _profile_rate(pitcher_profile.get(src_key))
+            if value is not None:
+                out[out_key] = value
+        for src_key, out_key in (
+            ("k", "pitcher_statcast_k_mult"),
+            ("bb", "pitcher_statcast_bb_mult"),
+            ("hr", "pitcher_statcast_hr_mult"),
+            ("inplay", "pitcher_statcast_inplay_mult"),
+        ):
+            value = _profile_mult(pitcher_profile.get("statcast_quality_mult"), src_key)
+            if value is not None:
+                out[out_key] = value
+
+    if batter_hand and isinstance(pitcher_profile, dict):
+        pitcher_platoon = pitcher_profile.get("platoon_mult_vs_lhb") if batter_hand == "L" else pitcher_profile.get("platoon_mult_vs_rhb")
+        for src_key, out_key in (
+            ("k", "pitcher_platoon_k_mult"),
+            ("bb", "pitcher_platoon_bb_mult"),
+            ("hr", "pitcher_platoon_hr_mult"),
+            ("inplay", "pitcher_platoon_inplay_mult"),
+        ):
+            value = _profile_mult(pitcher_platoon, src_key)
+            if value is not None:
+                out[out_key] = value
+
+    if pitcher_hand and isinstance(batter_profile, dict):
+        batter_platoon = batter_profile.get("platoon_mult_vs_lhp") if pitcher_hand == "L" else batter_profile.get("platoon_mult_vs_rhp")
+        for src_key, out_key in (
+            ("k", "batter_platoon_k_mult"),
+            ("bb", "batter_platoon_bb_mult"),
+            ("hr", "batter_platoon_hr_mult"),
+            ("inplay", "batter_platoon_inplay_mult"),
+        ):
+            value = _profile_mult(batter_platoon, src_key)
+            if value is not None:
+                out[out_key] = value
+
+    primary_pitch_type = _primary_pitch_type((pitcher_profile or {}).get("arsenal"))
+    if primary_pitch_type:
+        out["opponent_primary_pitch_type"] = primary_pitch_type
+        value = _profile_mult((batter_profile or {}).get("vs_pitch_type"), primary_pitch_type)
+        if value is not None:
+            out["batter_vs_primary_pitch_type_mult"] = value
+        value = _profile_mult((batter_profile or {}).get("vs_pitch_type_hr"), primary_pitch_type)
+        if value is not None:
+            out["batter_vs_primary_pitch_type_hr_mult"] = value
+        value = _profile_mult((pitcher_profile or {}).get("pitch_type_hr_mult"), primary_pitch_type)
+        if value is not None:
+            out["pitcher_primary_pitch_type_hr_mult"] = value
+
+    history_map = (batter_profile or {}).get("vs_pitcher_history") if isinstance(batter_profile, dict) else None
+    history = None
+    if pitcher_id and isinstance(history_map, dict):
+        history = history_map.get(str(int(pitcher_id))) if str(int(pitcher_id)) in history_map else history_map.get(int(pitcher_id))
+    if isinstance(history, dict):
+        for src_key, out_key in (
+            ("pa", "bvp_pa"),
+            ("hits", "bvp_hits"),
+            ("hr", "bvp_hr"),
+            ("so", "bvp_so"),
+            ("bb", "bvp_bb"),
+            ("hr_mult", "bvp_hr_mult"),
+            ("k_mult", "bvp_k_mult"),
+            ("bb_mult", "bvp_bb_mult"),
+            ("inplay_mult", "bvp_inplay_mult"),
+            ("window_pa", "bvp_window_pa"),
+            ("window_hr", "bvp_window_hr"),
+            ("window_so", "bvp_window_so"),
+            ("window_bb", "bvp_window_bb"),
+            ("window_hr_mult", "bvp_window_hr_mult"),
+            ("window_k_mult", "bvp_window_k_mult"),
+            ("window_bb_mult", "bvp_window_bb_mult"),
+            ("window_inplay_mult", "bvp_window_inplay_mult"),
+            ("career_pa", "bvp_career_pa"),
+            ("career_hr", "bvp_career_hr"),
+            ("career_so", "bvp_career_so"),
+            ("career_bb", "bvp_career_bb"),
+            ("career_hr_mult", "bvp_career_hr_mult"),
+            ("career_k_mult", "bvp_career_k_mult"),
+            ("career_bb_mult", "bvp_career_bb_mult"),
+            ("career_inplay_mult", "bvp_career_inplay_mult"),
+        ):
+            value = _profile_rate(history.get(src_key))
+            if value is not None:
+                out[out_key] = value
+
+    if isinstance(roster_snapshot, dict):
+        weather = roster_snapshot.get("weather") if isinstance(roster_snapshot.get("weather"), dict) else None
+        park = roster_snapshot.get("park") if isinstance(roster_snapshot.get("park"), dict) else None
+        if isinstance(weather, dict):
+            if weather.get("source"):
+                out["weather_source"] = str(weather.get("source") or "")
+            if weather.get("condition"):
+                out["weather_condition"] = str(weather.get("condition") or "")
+            for src_key, out_key in (
+                ("temperature_f", "weather_temp_f"),
+                ("wind_speed_mph", "weather_wind_speed_mph"),
+            ):
+                value = _profile_rate(weather.get(src_key))
+                if value is not None:
+                    out[out_key] = value
+            if weather.get("wind_direction"):
+                out["weather_wind_direction"] = str(weather.get("wind_direction") or "")
+            if weather.get("wind_raw"):
+                out["weather_wind_raw"] = str(weather.get("wind_raw") or "")
+            for src_key, out_key in (
+                ("hr_mult", "weather_hr_mult"),
+                ("inplay_hit_mult", "weather_inplay_hit_mult"),
+                ("xb_share_mult", "weather_xb_share_mult"),
+            ):
+                value = _profile_mult(weather.get("multipliers"), src_key)
+                if value is not None:
+                    out[out_key] = value
+        if isinstance(park, dict):
+            if park.get("source"):
+                out["park_source"] = str(park.get("source") or "")
+            if park.get("venue_id") is not None:
+                out["venue_id"] = _safe_int(park.get("venue_id"))
+            if park.get("venue_name"):
+                out["venue_name"] = str(park.get("venue_name") or "")
+            if park.get("roof_type"):
+                out["roof_type"] = str(park.get("roof_type") or "")
+            if park.get("roof_status"):
+                out["roof_status"] = str(park.get("roof_status") or "")
+            for src_key, out_key in (
+                ("hr_mult", "park_hr_mult"),
+                ("inplay_hit_mult", "park_inplay_hit_mult"),
+                ("xb_share_mult", "park_xb_share_mult"),
+            ):
+                value = _profile_mult(park.get("multipliers"), src_key)
+                if value is not None:
+                    out[out_key] = value
+
+    return out
 
 
 def _reason_paragraph(reasons: Sequence[str], *, max_sentences: int = _RECOMMENDATION_REASON_SENTENCE_LIMIT) -> str:
@@ -2159,6 +2423,396 @@ def _reason_paragraph(reasons: Sequence[str], *, max_sentences: int = _RECOMMEND
         return ""
     limited = cleaned[: max(1, int(max_sentences))]
     return " ".join(limited)
+
+
+def _hr_target_support_label(score: float) -> str:
+    if float(score) >= 72.0:
+        return "strong"
+    if float(score) >= 62.0:
+        return "solid"
+    if float(score) >= 50.0:
+        return "watch"
+    return "thin"
+
+
+def _hitter_hr_target_support(
+    rec: Dict[str, Any],
+    context_fields: Dict[str, Any],
+) -> Dict[str, Any]:
+    score = 50.0
+    reasons: List[str] = []
+    metrics: Dict[str, Any] = {}
+
+    pa_mean = _safe_float(rec.get("pa_mean"))
+    ab_mean = _safe_float(rec.get("ab_mean"))
+    lineup_order = _safe_int(rec.get("lineup_order"))
+    lineup_status = str(context_fields.get("lineup_status") or "").strip().lower()
+    lineup_confidence = _safe_float(context_fields.get("lineup_confidence"))
+
+    if pa_mean is not None:
+        metrics["paMean"] = round(float(pa_mean), 2)
+        if float(pa_mean) >= 4.3:
+            score += 9.0
+            reasons.append(f"Expected opportunity is strong at about {float(pa_mean):.1f} PA.")
+        elif float(pa_mean) >= 4.0:
+            score += 6.0
+        elif float(pa_mean) < 3.4:
+            score -= 8.0
+    if ab_mean is not None:
+        metrics["abMean"] = round(float(ab_mean), 2)
+        if float(ab_mean) >= 3.6:
+            score += 3.0
+        elif float(ab_mean) < 3.0:
+            score -= 4.0
+    if lineup_order is not None:
+        metrics["lineupOrder"] = int(lineup_order)
+        if int(lineup_order) <= 3:
+            score += 6.0
+            reasons.append(f"He is tracking toward a premium lineup slot ({int(lineup_order)}).")
+        elif int(lineup_order) <= 5:
+            score += 3.0
+        elif int(lineup_order) >= 7:
+            score -= 4.0
+    if lineup_status:
+        metrics["lineupStatus"] = lineup_status
+        if lineup_status == "confirmed":
+            score += 4.0
+        elif lineup_status == "projected":
+            score += 2.0
+    if lineup_confidence is not None:
+        metrics["lineupConfidence"] = round(float(lineup_confidence), 3)
+        if float(lineup_confidence) >= 0.8:
+            score += 2.0
+        elif float(lineup_confidence) <= 0.45:
+            score -= 2.0
+
+    batter_hr_quality = _safe_float(context_fields.get("batter_statcast_hr_mult"))
+    if batter_hr_quality is not None:
+        metrics["batterHrQuality"] = round(float(batter_hr_quality), 3)
+        if float(batter_hr_quality) >= 1.05:
+            score += 7.0
+            reasons.append("His underlying HR-quality profile is running above baseline.")
+        elif float(batter_hr_quality) <= 0.95:
+            score -= 7.0
+
+    pitcher_hr_quality = _safe_float(context_fields.get("pitcher_statcast_hr_mult"))
+    if pitcher_hr_quality is not None:
+        metrics["pitcherHrQuality"] = round(float(pitcher_hr_quality), 3)
+        if float(pitcher_hr_quality) >= 1.05:
+            score += 6.0
+            reasons.append("The opposing starter's damage profile is allowing a bit more HR carry than neutral.")
+        elif float(pitcher_hr_quality) <= 0.95:
+            score -= 6.0
+
+    batter_platoon_hr = _safe_float(context_fields.get("batter_platoon_hr_mult"))
+    pitcher_platoon_hr = _safe_float(context_fields.get("pitcher_platoon_hr_mult"))
+    platoon_signal = False
+    if batter_platoon_hr is not None:
+        metrics["batterPlatoonHr"] = round(float(batter_platoon_hr), 3)
+        if float(batter_platoon_hr) >= 1.05:
+            score += 5.0
+            platoon_signal = True
+        elif float(batter_platoon_hr) <= 0.95:
+            score -= 5.0
+    if pitcher_platoon_hr is not None:
+        metrics["pitcherPlatoonHr"] = round(float(pitcher_platoon_hr), 3)
+        if float(pitcher_platoon_hr) >= 1.05:
+            score += 4.0
+            platoon_signal = True
+        elif float(pitcher_platoon_hr) <= 0.95:
+            score -= 4.0
+    if platoon_signal:
+        reasons.append("The handedness split is leaning toward extra damage in this matchup.")
+
+    batter_pitch_type_hr = _safe_float(context_fields.get("batter_vs_primary_pitch_type_hr_mult"))
+    pitcher_pitch_type_hr = _safe_float(context_fields.get("pitcher_primary_pitch_type_hr_mult"))
+    primary_pitch_type = str(context_fields.get("opponent_primary_pitch_type") or "").strip().upper()
+    pitch_type_signal = 1.0
+    if batter_pitch_type_hr is not None:
+        metrics["batterPrimaryPitchHr"] = round(float(batter_pitch_type_hr), 3)
+        pitch_type_signal *= float(batter_pitch_type_hr)
+    if pitcher_pitch_type_hr is not None:
+        metrics["pitcherPrimaryPitchHr"] = round(float(pitcher_pitch_type_hr), 3)
+        pitch_type_signal *= float(pitcher_pitch_type_hr)
+    if primary_pitch_type:
+        metrics["primaryPitchType"] = primary_pitch_type
+    if pitch_type_signal >= 1.06 and primary_pitch_type:
+        score += 8.0
+        reasons.append(f"The {primary_pitch_type} HR matchup is grading above neutral, which is the cleanest new power signal in this build.")
+    elif pitch_type_signal <= 0.94 and primary_pitch_type:
+        score -= 8.0
+
+    park_hr_mult = _safe_float(context_fields.get("park_hr_mult"))
+    if park_hr_mult is not None:
+        metrics["parkHr"] = round(float(park_hr_mult), 3)
+        if float(park_hr_mult) >= 1.03:
+            score += 4.0
+            reasons.append("The park is a little better than neutral for home-run carry.")
+        elif float(park_hr_mult) <= 0.97:
+            score -= 4.0
+
+    weather_hr_mult = _safe_float(context_fields.get("weather_hr_mult"))
+    if weather_hr_mult is not None:
+        metrics["weatherHr"] = round(float(weather_hr_mult), 3)
+        if float(weather_hr_mult) >= 1.03:
+            score += 3.0
+        elif float(weather_hr_mult) <= 0.97:
+            score -= 3.0
+
+    clipped_score = max(0.0, min(100.0, float(score)))
+    return {
+        "score": round(clipped_score, 1),
+        "label": _hr_target_support_label(clipped_score),
+        "reasons": _trim_reason_list(reasons),
+        "metrics": metrics,
+    }
+
+
+def _hitter_hr_target_rank_score(prob: float, support_score: float, pa_mean: Optional[float], lineup_order: Optional[int]) -> float:
+    opportunity = float(pa_mean) if pa_mean is not None else 0.0
+    lineup_bonus = 0.0
+    if lineup_order is not None:
+        lineup_bonus = max(0.0, 10.0 - float(lineup_order)) * 0.15
+    return round((100.0 * float(prob)) + (0.18 * float(support_score)) + (0.6 * opportunity) + lineup_bonus, 3)
+
+
+def _is_hitter_hr_target_candidate(
+    rec: Dict[str, Any],
+    context_fields: Dict[str, Any],
+    hr_prob: float,
+    support_score: float,
+) -> bool:
+    if float(hr_prob) < float(_HR_TARGET_MIN_PROB):
+        return False
+    if float(support_score) < float(_HR_TARGET_MIN_SUPPORT_SCORE):
+        return False
+    lineup_status = str(context_fields.get("lineup_status") or "").strip().lower()
+    lineup_order = _safe_int(rec.get("lineup_order"))
+    pa_mean = _safe_float(rec.get("pa_mean"))
+    ab_mean = _safe_float(rec.get("ab_mean"))
+    if lineup_status not in {"confirmed", "projected"} and lineup_order is None:
+        return False
+    if pa_mean is not None and float(pa_mean) < 3.2:
+        return False
+    if ab_mean is not None and float(ab_mean) < 2.7:
+        return False
+    if lineup_order is not None and int(lineup_order) >= 8 and (pa_mean is None or float(pa_mean) < 3.6):
+        return False
+    return True
+
+
+def _collect_daily_hr_targets(
+    sim_dir: Path,
+    snapshots_dir: Optional[Path],
+    *,
+    date: str,
+    season: int,
+) -> Dict[str, Any]:
+    if not sim_dir.exists() or not sim_dir.is_dir():
+        return {
+            "date": str(date),
+            "season": int(season),
+            "generated_at": datetime.now().isoformat(),
+            "games": [],
+            "rows": [],
+            "counts": {"games": 0, "rows": 0},
+        }
+
+    roster_cache: Dict[Tuple[int, int], Optional[Dict[str, Any]]] = {}
+
+    def _roster_for(sim_obj: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if snapshots_dir is None or not snapshots_dir.exists():
+            return None
+        game_pk = _safe_int(sim_obj.get("game_pk"))
+        if game_pk is None or int(game_pk) <= 0:
+            return None
+        game_number = _safe_int(((sim_obj.get("schedule") or {}).get("game_number") or 1)) or 1
+        cache_key = (int(game_pk), int(game_number))
+        if cache_key in roster_cache:
+            return roster_cache[cache_key]
+        doc = None
+        matches = sorted(snapshots_dir.glob(f"roster_*_pk{int(game_pk)}_g{int(game_number)}.json"))
+        if not matches:
+            matches = sorted(snapshots_dir.glob(f"roster_*_pk{int(game_pk)}_g*.json"))
+        if matches:
+            try:
+                raw = _read_json(matches[0])
+                doc = raw if isinstance(raw, dict) else None
+            except Exception:
+                doc = None
+        roster_cache[cache_key] = doc
+        return doc
+
+    game_docs: List[Dict[str, Any]] = []
+    all_rows: List[Dict[str, Any]] = []
+
+    for sim_obj in _iter_sim_records(sim_dir):
+        base = _base_game_row(sim_obj)
+        roster_snapshot = _roster_for(sim_obj)
+        raw_rows = (((sim_obj.get("sim") or {}).get("hitter_hr_likelihood_topn") or {}).get("overall") or [])
+        if not isinstance(raw_rows, list) or not raw_rows:
+            exact_hitter_props = ((sim_obj.get("sim") or {}).get("hitter_props") or {})
+            fallback_rows: List[Dict[str, Any]] = []
+            if isinstance(exact_hitter_props, dict):
+                for _, exact_row in exact_hitter_props.items():
+                    if not isinstance(exact_row, dict):
+                        continue
+                    hr_dist = exact_row.get("home_runs_dist") or {}
+                    if not isinstance(hr_dist, dict) or not hr_dist:
+                        continue
+                    hr_prob = _prob_over_line_from_dist(hr_dist, 0.5)
+                    if hr_prob is None:
+                        continue
+                    fallback_rows.append(
+                        {
+                            "batter_id": exact_row.get("batter_id"),
+                            "name": exact_row.get("name"),
+                            "team": exact_row.get("team"),
+                            "p_hr_1plus": float(hr_prob),
+                            "p_hr_1plus_cal": float(hr_prob),
+                            "hr_mean": _mean_from_dist(hr_dist),
+                            "pa_mean": _safe_float(exact_row.get("pa_mean")),
+                            "ab_mean": _safe_float(exact_row.get("ab_mean")),
+                            "lineup_order": _safe_int(exact_row.get("lineup_order")),
+                            "is_lineup_batter": bool(exact_row.get("is_lineup_batter")),
+                        }
+                    )
+            raw_rows = fallback_rows
+        if not isinstance(raw_rows, list):
+            continue
+
+        candidates: List[Dict[str, Any]] = []
+        for raw_row in raw_rows:
+            if not isinstance(raw_row, dict):
+                continue
+            rec = {
+                "name": str(raw_row.get("name") or ""),
+                "team": str(raw_row.get("team") or ""),
+                "is_lineup_batter": raw_row.get("is_lineup_batter"),
+                "lineup_order": _safe_int(raw_row.get("lineup_order")),
+                "pa_mean": _safe_float(raw_row.get("pa_mean")),
+                "ab_mean": _safe_float(raw_row.get("ab_mean")),
+            }
+            if not _is_hitter_prediction_eligible(rec):
+                continue
+            hr_prob = _safe_float(raw_row.get("p_hr_1plus_cal"))
+            if hr_prob is None:
+                hr_prob = _safe_float(raw_row.get("p_hr_1plus"))
+            if hr_prob is None:
+                continue
+
+            matchup_ctx = _lookup_hitter_matchup_context(sim_obj, rec, roster_snapshot)
+            context_fields = _hitter_recommendation_context_fields(rec, matchup_ctx, roster_snapshot)
+            support = _hitter_hr_target_support(rec, context_fields)
+            support_score = float(support.get("score") or 0.0)
+            if not _is_hitter_hr_target_candidate(rec, context_fields, float(hr_prob), support_score):
+                continue
+
+            rank_score = _hitter_hr_target_rank_score(
+                float(hr_prob),
+                support_score,
+                _safe_float(rec.get("pa_mean")),
+                _safe_int(rec.get("lineup_order")),
+            )
+            opponent = str(context_fields.get("opponent") or "").strip()
+            team = str(rec.get("team") or "").strip()
+            side = "away" if team and team == str(base.get("away_abbr") or "") else ("home" if team and team == str(base.get("home_abbr") or "") else "")
+            matchup = f"{team} @ {opponent}" if side == "away" else (f"{opponent} @ {team}" if side == "home" else team)
+
+            candidate = {
+                **base,
+                **context_fields,
+                "player_name": rec.get("name"),
+                "team": team,
+                "team_side": side,
+                "matchup": matchup,
+                "p_hr_1plus": round(float(hr_prob), 4),
+                "hr_support_score": support_score,
+                "hr_support_label": str(support.get("label") or ""),
+                "hr_target_score": rank_score,
+                "hr_target_reasons": list(support.get("reasons") or []),
+                "hr_target_summary": _reason_paragraph(support.get("reasons") or [], max_sentences=2),
+                "hr_target_metrics": dict(support.get("metrics") or {}),
+                "pa_mean": _safe_float(rec.get("pa_mean")),
+                "ab_mean": _safe_float(rec.get("ab_mean")),
+                "lineup_order": _safe_int(rec.get("lineup_order")),
+                "lineup_status": context_fields.get("lineup_status"),
+                "source": "hitter_hr_likelihood_topn",
+            }
+            batter_id = _safe_int(raw_row.get("batter_id")) or _safe_int(context_fields.get("batter_id"))
+            if batter_id is not None:
+                candidate["batter_id"] = int(batter_id)
+            candidates.append(candidate)
+
+        candidates.sort(
+            key=lambda row: (
+                float(row.get("hr_target_score") or 0.0),
+                float(row.get("p_hr_1plus") or 0.0),
+                float(row.get("hr_support_score") or 0.0),
+                float(row.get("pa_mean") or 0.0),
+            ),
+            reverse=True,
+        )
+
+        selected: List[Dict[str, Any]] = []
+        team_counts: Counter[str] = Counter()
+        for row in candidates:
+            team_key = str(row.get("team") or "")
+            if len(selected) >= int(_HR_TARGET_MAX_PER_GAME):
+                break
+            if team_key and team_counts[team_key] >= int(_HR_TARGET_MAX_PER_TEAM):
+                continue
+            team_counts[team_key] += 1
+            selected.append(row)
+
+        for idx, row in enumerate(selected, start=1):
+            row["game_rank"] = int(idx)
+            all_rows.append(row)
+
+        game_docs.append(
+            {
+                "date": str(base.get("date") or date),
+                "game_pk": base.get("game_pk"),
+                "away": base.get("away"),
+                "home": base.get("home"),
+                "away_abbr": base.get("away_abbr"),
+                "home_abbr": base.get("home_abbr"),
+                "game_number": base.get("game_number"),
+                "targets": selected,
+            }
+        )
+
+    all_rows.sort(
+        key=lambda row: (
+            float(row.get("hr_target_score") or 0.0),
+            float(row.get("p_hr_1plus") or 0.0),
+            float(row.get("hr_support_score") or 0.0),
+        ),
+        reverse=True,
+    )
+    for idx, row in enumerate(all_rows, start=1):
+        row["slate_rank"] = int(idx)
+
+    return {
+        "date": str(date),
+        "season": int(season),
+        "generated_at": datetime.now().isoformat(),
+        "tool": "tools/daily_update_multi_profile.py",
+        "source_sim_dir": _rel(sim_dir),
+        "source_snapshot_dir": (_rel(snapshots_dir) if snapshots_dir is not None and snapshots_dir.exists() else None),
+        "policy": {
+            "min_prob": float(_HR_TARGET_MIN_PROB),
+            "min_support_score": float(_HR_TARGET_MIN_SUPPORT_SCORE),
+            "max_per_game": int(_HR_TARGET_MAX_PER_GAME),
+            "max_per_team": int(_HR_TARGET_MAX_PER_TEAM),
+        },
+        "counts": {
+            "games": int(len([game for game in game_docs if isinstance(game.get("targets"), list) and game.get("targets")])),
+            "rows": int(len(all_rows)),
+        },
+        "games": game_docs,
+        "rows": all_rows,
+    }
 
 
 def _build_recommendation_reasons(row: Dict[str, Any]) -> List[str]:
@@ -2935,6 +3589,7 @@ def _collect_hitter_recommendations(
             baseball_reasons: List[str] = []
             batter_profile = matchup_ctx.get("batter_profile") if isinstance(matchup_ctx.get("batter_profile"), dict) else None
             pitcher_profile = matchup_ctx.get("pitcher_profile") if isinstance(matchup_ctx.get("pitcher_profile"), dict) else None
+            context_fields = _hitter_recommendation_context_fields(rec, matchup_ctx, roster_snapshot)
             opponent_label = str(matchup_ctx.get("opponent") or "").strip()
             opponent_side = "home" if str(rec.get("team") or "").strip().upper() == str((sim_obj.get("away") or {}).get("abbreviation") or "").strip().upper() else "away"
             opponent_team = sim_obj.get(opponent_side) if isinstance(sim_obj.get(opponent_side), dict) else {}
@@ -3037,6 +3692,7 @@ def _collect_hitter_recommendations(
                     _annotate_recommendation(
                         {
                             **base,
+                            **context_fields,
                             "market": str(market_spec["market"]),
                             "market_label": str(market_spec["label"]),
                             "market_group": "hitter_props",
@@ -4129,6 +4785,7 @@ def main() -> int:
     hitter_market_entries = _market_entries_n(hitter_lines_path, root_key="hitter_props")
 
     game_extra: List[str] = []
+    game_extra.extend(["--write-derived-artifacts", "off"])
     if not _is_off(str(args.game_pitch_model_overrides)):
         game_extra.extend(["--pitch-model-overrides", str(args.game_pitch_model_overrides)])
 
@@ -4282,6 +4939,9 @@ def main() -> int:
     locked_policy_card: Optional[Dict[str, Any]] = None
     current_run_sims = _safe_int(_argv_flag_value(list(passthrough), "--sims"))
     locked_policy_started_at = perf_counter()
+    hr_targets_path = out_game / f"daily_summary_{token}_hr_targets.json"
+    hr_targets_doc: Optional[Dict[str, Any]] = None
+    hr_targets_error: Optional[str] = None
     try:
         if current_run_sims is not None and int(current_run_sims) < int(args.locked_policy_min_sims):
             locked_policy_error = (
@@ -4316,6 +4976,38 @@ def main() -> int:
     except Exception as e:
         locked_policy_error = f"{type(e).__name__}: {e}"
         print(f"[multi-profile] Locked-policy card failed: {locked_policy_error}")
+
+    try:
+        hitter_profile = profile_info.get("hitter_props_recos") if isinstance(profile_info.get("hitter_props_recos"), dict) else {}
+        game_profile = profile_info.get("game_recos") if isinstance(profile_info.get("game_recos"), dict) else {}
+        hitter_sim_dir = _path_from_maybe_relative(hitter_profile.get("sim_dir"))
+        hitter_snapshot_dir = _path_from_maybe_relative(hitter_profile.get("snapshot_dir"))
+        game_sim_dir = _path_from_maybe_relative(game_profile.get("sim_dir"))
+        game_snapshot_dir = _path_from_maybe_relative(game_profile.get("snapshot_dir"))
+
+        source_sim_dir = hitter_sim_dir if hitter_sim_dir and hitter_sim_dir.exists() and hitter_sim_dir.is_dir() else game_sim_dir
+        source_snapshot_dir = (
+            hitter_snapshot_dir if source_sim_dir == hitter_sim_dir and hitter_snapshot_dir is not None else game_snapshot_dir
+        )
+
+        if source_sim_dir and source_sim_dir.exists() and source_sim_dir.is_dir():
+            hr_targets_doc = _collect_daily_hr_targets(
+                source_sim_dir,
+                source_snapshot_dir,
+                date=str(args.date),
+                season=int(args.season),
+            )
+            hr_targets_doc["source_profile"] = (
+                "hitter_props_recos" if source_sim_dir == hitter_sim_dir else "game_recos"
+            )
+            _write_json(hr_targets_path, hr_targets_doc)
+            print(f"[multi-profile] Wrote HR targets artifact: {_rel(hr_targets_path)}")
+        else:
+            hr_targets_error = "missing hitter props and game sim_dir"
+            print(f"[multi-profile] HR targets skipped: {hr_targets_error}")
+    except Exception as e:
+        hr_targets_error = f"{type(e).__name__}: {e}"
+        print(f"[multi-profile] HR targets build failed: {hr_targets_error}")
 
     if str(args.manifest_out).strip():
         manifest_path = _resolve_path(str(args.manifest_out))
@@ -4357,6 +5049,12 @@ def main() -> int:
             "audit_track": ((locked_policy_card.get("audit_track") or {}) if locked_policy_card is not None else None),
             "error": locked_policy_error,
         },
+        "hr_targets": {
+            "artifact_path": (_rel(hr_targets_path) if hr_targets_doc is not None else None),
+            "games": int(((hr_targets_doc or {}).get("counts") or {}).get("games") or 0),
+            "rows": int(((hr_targets_doc or {}).get("counts") or {}).get("rows") or 0),
+            "error": hr_targets_error,
+        },
         "timings": {
             "profiles": {
                 role_name: round(float((info or {}).get("duration_s") or 0.0), 3)
@@ -4375,6 +5073,10 @@ def main() -> int:
         "[multi-profile] Wrote bundle manifest "
         f"to {_rel(manifest_path)} in {_format_elapsed(_elapsed_seconds(overall_started_at))}"
     )
+    if hr_targets_doc is not None:
+        print(f"[multi-profile] Wrote HR targets: {_rel(hr_targets_path)}")
+    elif hr_targets_error:
+        print(f"[multi-profile] HR targets error: {hr_targets_error}")
     if locked_policy_card is not None:
         print(f"[multi-profile] Wrote locked-policy card: {_rel(locked_policy_path)}")
     elif locked_policy_error:

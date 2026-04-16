@@ -11,6 +11,9 @@ from typing import Any, Dict, Iterable, Optional, Tuple
 from .disk_cache import DiskCache
 
 
+_FILE_DAILY_INDEX_MEMO: Dict[str, Dict[str, Dict[int, Dict[int, "BvPCounts"]]]] = {}
+
+
 @dataclass(frozen=True)
 class BvPCounts:
     pa: int
@@ -77,6 +80,84 @@ def _query_seasons_for_window(season: int, start_date: date, end_date: date, raw
     return tuple(sorted(seasons))
 
 
+def _available_statcast_seasons(raw_root: Optional[Path] = None) -> Tuple[int, ...]:
+    root = raw_root if raw_root is not None else (_root() / "data" / "raw" / "statcast" / "pitches")
+    if not root.exists() or not root.is_dir():
+        return ()
+    seasons = []
+    for child in root.iterdir():
+        if not child.is_dir():
+            continue
+        try:
+            seasons.append(int(child.name))
+        except Exception:
+            continue
+    return tuple(sorted(set(seasons)))
+
+
+def _career_start_date(end_date: date, raw_root: Optional[Path] = None) -> date:
+    seasons = _available_statcast_seasons(raw_root=raw_root)
+    if seasons:
+        return date(int(min(seasons)), 1, 1)
+    return date(int(end_date.year), 1, 1)
+
+
+def _metrics_from_counts(
+    *,
+    counts: BvPCounts,
+    batter: Any,
+    shrink_pa: float,
+    clamp_lo: float,
+    clamp_hi: float,
+) -> Dict[str, float]:
+    hr_mult = hr_multiplier_from_bvp(
+        batter_hr_rate=float(getattr(batter, "hr_rate", 0.03) or 0.03),
+        pa=int(counts.pa),
+        hr=int(counts.hr),
+        shrink_pa=float(shrink_pa),
+        clamp_lo=float(clamp_lo),
+        clamp_hi=float(clamp_hi),
+    )
+    k_mult = rate_multiplier_from_bvp(
+        base_rate=float(getattr(batter, "k_rate", 0.22) or 0.22),
+        opportunities=int(counts.pa),
+        successes=int(counts.so),
+        shrink_pa=float(shrink_pa),
+        clamp_lo=float(clamp_lo),
+        clamp_hi=float(clamp_hi),
+    )
+    bb_mult = rate_multiplier_from_bvp(
+        base_rate=float(getattr(batter, "bb_rate", 0.08) or 0.08),
+        opportunities=int(counts.pa),
+        successes=int(counts.bb),
+        shrink_pa=float(shrink_pa),
+        clamp_lo=float(clamp_lo),
+        clamp_hi=float(clamp_hi),
+    )
+    inplay_mult = rate_multiplier_from_bvp(
+        base_rate=float(getattr(batter, "inplay_hit_rate", 0.28) or 0.28),
+        opportunities=int(counts.inplay_pa),
+        successes=int(counts.inplay_hits),
+        shrink_pa=float(shrink_pa),
+        clamp_lo=float(clamp_lo),
+        clamp_hi=float(clamp_hi),
+    )
+    return {
+        "pa": float(counts.pa),
+        "hits": float(counts.hits),
+        "hr": float(counts.hr),
+        "so": float(counts.so),
+        "bb": float(counts.bb),
+        "hbp": float(counts.hbp),
+        "inplay_pa": float(counts.inplay_pa),
+        "inplay_hits": float(counts.inplay_hits),
+        "hr_mult": float(hr_mult),
+        "k_mult": float(k_mult),
+        "bb_mult": float(bb_mult),
+        "inplay_mult": float(inplay_mult),
+    }
+
+
 def _counts_from_cache_doc(doc: Any) -> Optional[Dict[int, BvPCounts]]:
     if not isinstance(doc, dict) or "by_batter" not in doc:
         return None
@@ -116,22 +197,26 @@ def _counts_from_cache_doc(doc: Any) -> Optional[Dict[int, BvPCounts]]:
     return out
 
 
+def _counts_to_cache_payload(result: Dict[int, BvPCounts]) -> Dict[str, Dict[str, int]]:
+    return {
+        str(bid): {
+            "pa": c.pa,
+            "hr": c.hr,
+            "hits": c.hits,
+            "so": c.so,
+            "bb": c.bb,
+            "hbp": c.hbp,
+            "inplay_pa": c.inplay_pa,
+            "inplay_hits": c.inplay_hits,
+        }
+        for bid, c in result.items()
+    }
+
+
 def _counts_to_cache_doc(result: Dict[int, BvPCounts], *, seasons: Tuple[int, ...]) -> Dict[str, Any]:
     return {
         "seasons": [int(x) for x in seasons],
-        "by_batter": {
-            str(bid): {
-                "pa": c.pa,
-                "hr": c.hr,
-                "hits": c.hits,
-                "so": c.so,
-                "bb": c.bb,
-                "hbp": c.hbp,
-                "inplay_pa": c.inplay_pa,
-                "inplay_hits": c.inplay_hits,
-            }
-            for bid, c in result.items()
-        },
+        "by_batter": _counts_to_cache_payload(result),
     }
 
 
@@ -153,6 +238,175 @@ def _merge_bvp_counts(dst: Dict[int, BvPCounts], src: Dict[int, BvPCounts]) -> D
             inplay_hits=int(current.inplay_hits) + int(counts.inplay_hits),
         )
     return out
+
+
+def _file_cache_parts(path: Path) -> Dict[str, Any]:
+    try:
+        st = path.stat()
+        return {
+            "path": str(path.resolve()),
+            "size": int(st.st_size),
+            "mtime_ns": int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000))),
+        }
+    except Exception:
+        return {"path": str(path.resolve())}
+
+
+def _counts_map_from_payload(payload: Any) -> Dict[int, BvPCounts]:
+    return _counts_from_cache_doc({"by_batter": payload}) or {}
+
+
+def _daily_file_index_from_cache_doc(doc: Any) -> Optional[Dict[str, Dict[int, Dict[int, BvPCounts]]]]:
+    if not isinstance(doc, dict):
+        return None
+    by_date = doc.get("by_date") or {}
+    if not isinstance(by_date, dict):
+        return None
+    out: Dict[str, Dict[int, Dict[int, BvPCounts]]] = {}
+    for day_key, day_payload in by_date.items():
+        if not isinstance(day_payload, dict):
+            continue
+        pitcher_map: Dict[int, Dict[int, BvPCounts]] = {}
+        for pid_key, batter_payload in day_payload.items():
+            try:
+                pid = int(pid_key)
+            except Exception:
+                continue
+            counts = _counts_map_from_payload(batter_payload)
+            if counts:
+                pitcher_map[int(pid)] = counts
+        if pitcher_map:
+            out[str(day_key)] = pitcher_map
+    return out
+
+
+def _daily_file_index_to_cache_doc(index: Dict[str, Dict[int, Dict[int, BvPCounts]]]) -> Dict[str, Any]:
+    return {
+        "by_date": {
+            str(day_key): {
+                str(pid): _counts_to_cache_payload(counts)
+                for pid, counts in pitcher_map.items()
+                if counts
+            }
+            for day_key, pitcher_map in index.items()
+            if pitcher_map
+        }
+    }
+
+
+def _scan_statcast_file_daily_index(path: Path) -> Dict[str, Dict[int, Dict[int, BvPCounts]]]:
+    daily: Dict[str, Dict[int, Dict[int, Dict[str, int]]]] = {}
+
+    hit_events = {"single", "double", "triple", "home_run"}
+    walk_events = {"walk", "intent_walk"}
+    hbp_events = {"hit_by_pitch"}
+    inplay_hit_events = {"single", "double", "triple"}
+
+    with gzip.open(path, "rt", encoding="utf-8", newline="") as f:
+        r = csv.DictReader(f)
+        for row in r:
+            gd = row.get("game_date")
+            if not gd:
+                continue
+            try:
+                day_key = _parse_date(gd).isoformat()
+            except Exception:
+                continue
+
+            ev = (row.get("events") or "").strip().lower()
+            if not ev:
+                continue
+
+            try:
+                pid = int(row.get("pitcher") or 0)
+                bid = int(row.get("batter") or 0)
+            except Exception:
+                continue
+            if pid <= 0 or bid <= 0:
+                continue
+
+            pitcher_map = daily.setdefault(day_key, {})
+            batter_map = pitcher_map.setdefault(int(pid), {})
+            counts = batter_map.get(int(bid))
+            if counts is None:
+                counts = {
+                    "pa": 0,
+                    "hr": 0,
+                    "hits": 0,
+                    "so": 0,
+                    "bb": 0,
+                    "hbp": 0,
+                    "inplay_pa": 0,
+                    "inplay_hits": 0,
+                }
+                batter_map[int(bid)] = counts
+
+            counts["pa"] += 1
+            if ev in hit_events:
+                counts["hits"] += 1
+            if ev == "home_run":
+                counts["hr"] += 1
+            elif ev in walk_events:
+                counts["bb"] += 1
+            elif ev in hbp_events:
+                counts["hbp"] += 1
+            elif ev.startswith("strikeout"):
+                counts["so"] += 1
+            else:
+                counts["inplay_pa"] += 1
+                if ev in inplay_hit_events:
+                    counts["inplay_hits"] += 1
+
+    out: Dict[str, Dict[int, Dict[int, BvPCounts]]] = {}
+    for day_key, pitcher_map in daily.items():
+        out_pitchers: Dict[int, Dict[int, BvPCounts]] = {}
+        for pid, batter_map in pitcher_map.items():
+            out_batters: Dict[int, BvPCounts] = {}
+            for bid, counts in batter_map.items():
+                pa = int(counts.get("pa") or 0)
+                if pa <= 0:
+                    continue
+                out_batters[int(bid)] = BvPCounts(
+                    pa=pa,
+                    hr=int(counts.get("hr") or 0),
+                    hits=int(counts.get("hits") or 0),
+                    so=int(counts.get("so") or 0),
+                    bb=int(counts.get("bb") or 0),
+                    hbp=int(counts.get("hbp") or 0),
+                    inplay_pa=int(counts.get("inplay_pa") or 0),
+                    inplay_hits=int(counts.get("inplay_hits") or 0),
+                )
+            if out_batters:
+                out_pitchers[int(pid)] = out_batters
+        if out_pitchers:
+            out[str(day_key)] = out_pitchers
+    return out
+
+
+def _statcast_file_daily_index(
+    path: Path,
+    *,
+    cache: Optional[DiskCache] = None,
+    ttl_seconds: int = 30 * 24 * 3600,
+) -> Dict[str, Dict[int, Dict[int, BvPCounts]]]:
+    parts = _file_cache_parts(path)
+    memo_key = str(parts)
+    cached_memo = _FILE_DAILY_INDEX_MEMO.get(memo_key)
+    if cached_memo is not None:
+        return cached_memo
+
+    if cache is not None:
+        hit = cache.get("statcast_bvp_file_daily", parts, ttl_seconds=ttl_seconds)
+        cached_doc = _daily_file_index_from_cache_doc(hit)
+        if cached_doc is not None:
+            _FILE_DAILY_INDEX_MEMO[memo_key] = cached_doc
+            return cached_doc
+
+    fresh = _scan_statcast_file_daily_index(path)
+    _FILE_DAILY_INDEX_MEMO[memo_key] = fresh
+    if cache is not None:
+        cache.set("statcast_bvp_file_daily", parts, _daily_file_index_to_cache_doc(fresh))
+    return fresh
 
 
 def pitcher_vs_batters_counts(
@@ -191,19 +445,7 @@ def pitcher_vs_batters_counts(
         if cached is not None:
             return cached
 
-    out_pa: Dict[int, int] = {}
-    out_hr: Dict[int, int] = {}
-    out_hits: Dict[int, int] = {}
-    out_so: Dict[int, int] = {}
-    out_bb: Dict[int, int] = {}
-    out_hbp: Dict[int, int] = {}
-    out_inplay_pa: Dict[int, int] = {}
-    out_inplay_hits: Dict[int, int] = {}
-
-    hit_events = {"single", "double", "triple", "home_run"}
-    walk_events = {"walk", "intent_walk"}
-    hbp_events = {"hit_by_pitch"}
-    inplay_hit_events = {"single", "double", "triple"}
+    result: Dict[int, BvPCounts] = {}
 
     for query_season in seasons:
         for path in _iter_statcast_pitch_files(int(query_season), raw_root=raw_root):
@@ -214,65 +456,17 @@ def pitcher_vs_batters_counts(
             if not _overlaps(f0, f1, start_date, end_date):
                 continue
 
-            with gzip.open(path, "rt", encoding="utf-8", newline="") as f:
-                r = csv.DictReader(f)
-                for row in r:
-                    try:
-                        if int(row.get("pitcher") or 0) != pid:
-                            continue
-                    except Exception:
-                        continue
-
-                    gd = row.get("game_date")
-                    if gd:
-                        try:
-                            d = _parse_date(gd)
-                            if d < start_date or d > end_date:
-                                continue
-                        except Exception:
-                            pass
-
-                    ev = (row.get("events") or "").strip().lower()
-                    if not ev:
-                        continue
-
-                    try:
-                        bid = int(row.get("batter") or 0)
-                    except Exception:
-                        continue
-                    if bid <= 0:
-                        continue
-
-                    out_pa[bid] = out_pa.get(bid, 0) + 1
-                    if ev in hit_events:
-                        out_hits[bid] = out_hits.get(bid, 0) + 1
-                    if ev == "home_run":
-                        out_hr[bid] = out_hr.get(bid, 0) + 1
-                    elif ev in walk_events:
-                        out_bb[bid] = out_bb.get(bid, 0) + 1
-                    elif ev in hbp_events:
-                        out_hbp[bid] = out_hbp.get(bid, 0) + 1
-                    elif ev.startswith("strikeout"):
-                        out_so[bid] = out_so.get(bid, 0) + 1
-                    else:
-                        out_inplay_pa[bid] = out_inplay_pa.get(bid, 0) + 1
-                        if ev in inplay_hit_events:
-                            out_inplay_hits[bid] = out_inplay_hits.get(bid, 0) + 1
-
-    result: Dict[int, BvPCounts] = {
-        bid: BvPCounts(
-            pa=pa,
-            hr=int(out_hr.get(bid, 0)),
-            hits=int(out_hits.get(bid, 0)),
-            so=int(out_so.get(bid, 0)),
-            bb=int(out_bb.get(bid, 0)),
-            hbp=int(out_hbp.get(bid, 0)),
-            inplay_pa=int(out_inplay_pa.get(bid, 0)),
-            inplay_hits=int(out_inplay_hits.get(bid, 0)),
-        )
-        for bid, pa in out_pa.items()
-        if pa > 0
-    }
+            day_index = _statcast_file_daily_index(path, cache=cache, ttl_seconds=ttl_seconds)
+            for day_key, pitcher_map in day_index.items():
+                try:
+                    d = _parse_date(day_key)
+                except Exception:
+                    continue
+                if d < start_date or d > end_date:
+                    continue
+                pitcher_counts = pitcher_map.get(pid)
+                if pitcher_counts:
+                    result = _merge_bvp_counts(result, pitcher_counts)
 
     if cache is not None:
         cache.set("statcast_bvp_pitcher", parts, _counts_to_cache_doc(result, seasons=seasons))
@@ -348,14 +542,27 @@ def apply_starter_bvp_hr_multipliers(
     if not lineup:
         return 0
 
-    by_batter = pitcher_vs_batters_counts(
+    window_by_batter = pitcher_vs_batters_counts(
         season=int(season),
         pitcher_id=pid,
         start_date=start_date,
         end_date=end_date,
         cache=cache,
     )
-    if not by_batter:
+    career_start = _career_start_date(end_date)
+    career_by_batter: Dict[int, BvPCounts] = {}
+    if career_start < start_date:
+        career_by_batter = pitcher_vs_batters_counts(
+            season=int(season),
+            pitcher_id=pid,
+            start_date=career_start,
+            end_date=end_date,
+            cache=cache,
+        )
+    else:
+        career_by_batter = dict(window_by_batter)
+
+    if not window_by_batter and not career_by_batter:
         return 0
 
     applied = 0
@@ -368,62 +575,52 @@ def apply_starter_bvp_hr_multipliers(
         if bid <= 0:
             continue
 
-        counts = by_batter.get(bid)
-        if counts is None:
+        window_counts = window_by_batter.get(bid)
+        career_counts = career_by_batter.get(bid)
+        if window_counts is None and career_counts is None:
             continue
-
-        hr_mult = hr_multiplier_from_bvp(
-            batter_hr_rate=float(getattr(batter, "hr_rate", 0.03) or 0.03),
-            pa=int(counts.pa),
-            hr=int(counts.hr),
-            shrink_pa=float(shrink_pa),
-            clamp_lo=float(clamp_lo),
-            clamp_hi=float(clamp_hi),
+        window_metrics = (
+            _metrics_from_counts(
+                counts=window_counts,
+                batter=batter,
+                shrink_pa=float(shrink_pa),
+                clamp_lo=float(clamp_lo),
+                clamp_hi=float(clamp_hi),
+            )
+            if window_counts is not None and int(window_counts.pa) > 0
+            else None
         )
-        k_mult = rate_multiplier_from_bvp(
-            base_rate=float(getattr(batter, "k_rate", 0.22) or 0.22),
-            opportunities=int(counts.pa),
-            successes=int(counts.so),
-            shrink_pa=float(shrink_pa),
-            clamp_lo=float(clamp_lo),
-            clamp_hi=float(clamp_hi),
+        career_metrics = (
+            _metrics_from_counts(
+                counts=career_counts,
+                batter=batter,
+                shrink_pa=float(shrink_pa),
+                clamp_lo=float(clamp_lo),
+                clamp_hi=float(clamp_hi),
+            )
+            if career_counts is not None and int(career_counts.pa) > 0
+            else None
         )
-        bb_mult = rate_multiplier_from_bvp(
-            base_rate=float(getattr(batter, "bb_rate", 0.08) or 0.08),
-            opportunities=int(counts.pa),
-            successes=int(counts.bb),
-            shrink_pa=float(shrink_pa),
-            clamp_lo=float(clamp_lo),
-            clamp_hi=float(clamp_hi),
-        )
-        inplay_mult = rate_multiplier_from_bvp(
-            base_rate=float(getattr(batter, "inplay_hit_rate", 0.28) or 0.28),
-            opportunities=int(counts.inplay_pa),
-            successes=int(counts.inplay_hits),
-            shrink_pa=float(shrink_pa),
-            clamp_lo=float(clamp_lo),
-            clamp_hi=float(clamp_hi),
-        )
+        effective_metrics = None
+        if window_counts is not None and int(window_counts.pa) >= min_pa_i:
+            effective_metrics = window_metrics
+        elif career_counts is not None and int(career_counts.pa) >= min_pa_i:
+            effective_metrics = career_metrics
         try:
-            batter.vs_pitcher_history[int(pid)] = {
-                "pa": float(counts.pa),
-                "hits": float(counts.hits),
-                "hr": float(counts.hr),
-                "so": float(counts.so),
-                "bb": float(counts.bb),
-                "hbp": float(counts.hbp),
-                "inplay_pa": float(counts.inplay_pa),
-                "inplay_hits": float(counts.inplay_hits),
-                "hr_mult": float(hr_mult),
-                "k_mult": float(k_mult),
-                "bb_mult": float(bb_mult),
-                "inplay_mult": float(inplay_mult),
-            }
-            if int(counts.pa) >= min_pa_i:
-                batter.vs_pitcher_hr_mult[int(pid)] = float(hr_mult)
-                batter.vs_pitcher_k_mult[int(pid)] = float(k_mult)
-                batter.vs_pitcher_bb_mult[int(pid)] = float(bb_mult)
-                batter.vs_pitcher_inplay_mult[int(pid)] = float(inplay_mult)
+            history = dict(effective_metrics or window_metrics or career_metrics or {})
+            if window_metrics is not None:
+                for key, value in window_metrics.items():
+                    history[f"window_{key}"] = float(value)
+            if career_metrics is not None:
+                for key, value in career_metrics.items():
+                    history[f"career_{key}"] = float(value)
+            if history:
+                batter.vs_pitcher_history[int(pid)] = history
+            if effective_metrics is not None:
+                batter.vs_pitcher_hr_mult[int(pid)] = float(effective_metrics.get("hr_mult") or 1.0)
+                batter.vs_pitcher_k_mult[int(pid)] = float(effective_metrics.get("k_mult") or 1.0)
+                batter.vs_pitcher_bb_mult[int(pid)] = float(effective_metrics.get("bb_mult") or 1.0)
+                batter.vs_pitcher_inplay_mult[int(pid)] = float(effective_metrics.get("inplay_mult") or 1.0)
                 applied += 1
         except Exception:
             pass
