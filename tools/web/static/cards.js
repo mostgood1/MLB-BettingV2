@@ -466,9 +466,18 @@
   }
 
   function cardStatusTexts(card, snapshot) {
+    const snapshotAbstract = String(snapshot?.status?.abstractGameState || "").trim();
+    const snapshotDetailed = String(snapshot?.status?.detailedState || "").trim();
+    const cardAbstract = String(card?.status?.abstract || "").trim();
+    const cardDetailed = String(card?.status?.detailed || "").trim();
+    const snapshotIsAuthoritative =
+      isLiveStatus(snapshotAbstract)
+      || isLiveStatus(snapshotDetailed)
+      || isFinalStatus(snapshotAbstract)
+      || isFinalStatus(snapshotDetailed);
     return {
-      abstract: String(snapshot?.status?.abstractGameState || card?.status?.abstract || "").trim(),
-      detailed: String(snapshot?.status?.detailedState || card?.status?.detailed || "").trim(),
+      abstract: snapshotIsAuthoritative ? (snapshotAbstract || cardAbstract) : (cardAbstract || snapshotAbstract),
+      detailed: snapshotIsAuthoritative ? (snapshotDetailed || cardDetailed) : (cardDetailed || snapshotDetailed),
     };
   }
 
@@ -2619,6 +2628,36 @@
     return parts.map((part) => part[0]).join("").toUpperCase();
   }
 
+  function hrTargetDriverToneClass(driver) {
+    const delta = toNumber(driver?.delta);
+    if (delta == null) return "";
+    if (delta >= 0.08) return "is-up-strong";
+    if (delta > 0) return "is-up";
+    return "is-down";
+  }
+
+  function hrTargetDriverMarkup(row) {
+    const drivers = Array.isArray(row?.drivers) ? row.drivers : [];
+    if (!drivers.length) return "";
+    return `
+      <div class="cards-hr-target-driver-grid">
+        ${drivers.map((driver) => `
+          <div class="cards-hr-target-driver ${hrTargetDriverToneClass(driver)}">
+            <span class="cards-hr-target-driver-label">${escapeHtml(String(driver.label || "Driver"))}</span>
+            <strong>${escapeHtml(String(driver.display || "-"))}</strong>
+          </div>`).join("")}
+      </div>`;
+  }
+
+  function hrTargetHighlightsMarkup(row) {
+    const highlights = Array.isArray(row?.highlights) ? row.highlights.filter(Boolean).slice(0, 2) : [];
+    if (!highlights.length) return "";
+    return `
+      <div class="cards-hr-target-highlights">
+        ${highlights.map((highlight) => `<div class="cards-hr-target-highlight">${escapeHtml(String(highlight))}</div>`).join("")}
+      </div>`;
+  }
+
   function renderHrTargets() {
     if (!root.hrTargets) return;
     const hrTargets = state.payload?.hrTargets || {};
@@ -2689,11 +2728,17 @@
                   <span>support</span>
                 </div>
                 <div class="cards-hr-target-pill">
+                  <strong>${escapeHtml(formatNumber(row.paMean, 1))}</strong>
+                  <span>PA</span>
+                </div>
+                <div class="cards-hr-target-pill">
                   <strong>${escapeHtml(row.lineupOrder == null ? "-" : String(row.lineupOrder))}</strong>
                   <span>lineup spot</span>
                 </div>
               </div>
+              ${hrTargetDriverMarkup(row)}
               <div class="cards-hr-target-summary">${escapeHtml(String(row.summary || row.matchup || ""))}</div>
+              ${hrTargetHighlightsMarkup(row)}
             </a>`).join("")}
         </div>
       </div>`;
@@ -2848,6 +2893,12 @@
     syncStrip(card, detail);
   }
 
+  function syncExistingCards() {
+    state.cards.forEach((card) => {
+      syncCard(card);
+    });
+  }
+
   function shouldHydrateCard(card, options = {}) {
     if (!options.liveOnly) return true;
     const detail = state.details.get(Number(card?.gamePk));
@@ -2961,6 +3012,7 @@
         renderCards();
       } else {
         applyFilter();
+        syncExistingCards();
       }
 
       if (!state.cards.length && root.grid) {

@@ -14147,10 +14147,13 @@ def _cards_hr_targets_summary_payload(d: str, artifacts: Dict[str, Any]) -> Dict
                 "teamLogoUrl": (_mlb_logo_url(int(row.get("team_id"))) if _safe_int(row.get("team_id")) is not None else None),
                 "opponentLogoUrl": (_mlb_logo_url(int(row.get("opponent_team_id"))) if _safe_int(row.get("opponent_team_id")) is not None else None),
                 "lineupOrder": _safe_int(row.get("lineup_order")),
+                "paMean": _safe_float(row.get("pa_mean")),
                 "pHr1Plus": _safe_float(row.get("p_hr_1plus")),
                 "supportScore": _safe_float(row.get("hr_support_score")),
                 "supportLabel": _first_text(row.get("hr_support_label")),
                 "summary": _first_text(row.get("hr_target_summary")),
+                "drivers": _cards_hr_target_driver_payload(row),
+                "highlights": _cards_hr_target_highlights(row),
                 "detailHref": f"/hr-targets?date={d}" + (f"&game={int(game_pk)}" if game_pk is not None else ""),
             }
         )
@@ -14164,6 +14167,56 @@ def _cards_hr_targets_summary_payload(d: str, artifacts: Dict[str, Any]) -> Dict
         "topRows": top_rows,
         "pageHref": f"/hr-targets?date={d}",
     }
+
+
+def _cards_hr_target_driver_payload(row: Dict[str, Any]) -> List[Dict[str, Any]]:
+    metrics = row.get("hr_target_metrics") if isinstance(row.get("hr_target_metrics"), dict) else {}
+    candidates: List[Dict[str, Any]] = []
+
+    def _append(label: str, value: Any) -> None:
+        numeric = _safe_float(value)
+        if numeric is None:
+            return
+        delta = float(numeric) - 1.0
+        if abs(delta) < 0.015:
+            return
+        candidates.append(
+            {
+                "label": label,
+                "value": round(float(numeric), 3),
+                "delta": round(delta, 3),
+                "display": f"{float(numeric):.2f}x",
+            }
+        )
+
+    _append("HR quality", metrics.get("batterHrQuality"))
+    _append("Batter platoon", metrics.get("batterPlatoonHr"))
+    _append("Pitcher HR carry", metrics.get("pitcherHrQuality"))
+    _append("Pitcher platoon", metrics.get("pitcherPlatoonHr"))
+    _append("Park carry", metrics.get("parkHr"))
+    _append("Weather carry", metrics.get("weatherHr"))
+
+    positives = [item for item in candidates if float(item.get("delta") or 0.0) > 0]
+    negatives = [item for item in candidates if float(item.get("delta") or 0.0) < 0]
+    positives.sort(key=lambda item: abs(float(item.get("delta") or 0.0)), reverse=True)
+    negatives.sort(key=lambda item: abs(float(item.get("delta") or 0.0)), reverse=True)
+
+    selected = positives[:3]
+    if len(selected) < 3:
+        selected.extend(negatives[: 3 - len(selected)])
+    if not selected:
+        selected = sorted(candidates, key=lambda item: abs(float(item.get("delta") or 0.0)), reverse=True)[:3]
+    return selected[:3]
+
+
+def _cards_hr_target_highlights(row: Dict[str, Any]) -> List[str]:
+    reasons = [str(reason).strip() for reason in (row.get("hr_target_reasons") or []) if str(reason).strip()]
+    filtered = [
+        reason
+        for reason in reasons
+        if "Expected opportunity" not in reason and "lineup slot" not in reason
+    ]
+    return filtered[:2]
 
 
 def _cards_payload_context(d: str) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
