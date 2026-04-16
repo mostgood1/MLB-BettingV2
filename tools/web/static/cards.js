@@ -2609,6 +2609,16 @@
     return "";
   }
 
+  function hrTargetInitials(name) {
+    const parts = String(name || "")
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2);
+    if (!parts.length) return "?";
+    return parts.map((part) => part[0]).join("").toUpperCase();
+  }
+
   function renderHrTargets() {
     if (!root.hrTargets) return;
     const hrTargets = state.payload?.hrTargets || {};
@@ -2619,7 +2629,8 @@
       root.hrTargets.innerHTML = `
         <div class="cards-hr-targets-card">
           <div class="cards-hr-targets-head">
-            <div>
+            <div class="cards-hr-targets-copy">
+              <div class="cards-hr-targets-kicker">Best 1+ HR looks</div>
               <div class="cards-table-title">HR Targets</div>
               <div class="cards-mini-copy">No HR targets are available for this slate yet.</div>
             </div>
@@ -2632,7 +2643,8 @@
     root.hrTargets.innerHTML = `
       <div class="cards-hr-targets-card">
         <div class="cards-hr-targets-head">
-          <div>
+          <div class="cards-hr-targets-copy">
+            <div class="cards-hr-targets-kicker">Best 1+ HR looks</div>
             <div class="cards-table-title">HR Targets</div>
             <div class="cards-mini-copy">${escapeHtml(String(hrTargets.rows || 0))} targets across ${escapeHtml(String(hrTargets.games || 0))} games.</div>
           </div>
@@ -2645,17 +2657,43 @@
           ${rows.map((row, index) => `
             <a class="cards-hr-target-chip" href="${escapeHtml(String(row.detailHref || href))}">
               <div class="cards-hr-target-chip-top">
-                <span class="cards-overview-badge">#${index + 1}</span>
+                <span class="cards-hr-target-rank">#${index + 1}</span>
                 <span class="cards-source-meta-pill ${hrSupportToneClass(row.supportLabel)}">${escapeHtml(String(row.supportLabel || "watch"))}</span>
               </div>
-              <div class="cards-hr-target-name">${escapeHtml(String(row.playerName || "Unknown"))}</div>
-              <div class="cards-hr-target-meta">${escapeHtml(String(row.team || ""))}${row.opponent ? ` vs ${escapeHtml(String(row.opponent))}` : ""}${row.opponentPitcherName ? ` · ${escapeHtml(String(row.opponentPitcherName))}` : ""}</div>
-              <div class="cards-hr-target-metrics">
-                <span><strong>${escapeHtml(formatPercent(row.pHr1Plus, 1))}</strong> 1+ HR</span>
-                <span><strong>${escapeHtml(formatNumber(row.supportScore, 1))}</strong> support</span>
-                <span><strong>${escapeHtml(row.lineupOrder == null ? "-" : String(row.lineupOrder))}</strong> lineup</span>
+              <div class="cards-hr-target-identity">
+                <div class="cards-hr-target-identity-main">
+                  ${row.headshotUrl
+                    ? `<img class="cards-hr-target-headshot" src="${escapeHtml(String(row.headshotUrl))}" alt="${escapeHtml(String(row.playerName || "Player"))}" loading="lazy" />`
+                    : `<div class="cards-hr-target-headshot cards-hr-target-headshot-fallback">${escapeHtml(hrTargetInitials(row.playerName))}</div>`}
+                  <div class="cards-hr-target-name-block">
+                    <div class="cards-hr-target-name">${escapeHtml(String(row.playerName || "Unknown"))}</div>
+                    <div class="cards-hr-target-meta">
+                      ${row.teamLogoUrl ? `<img class="cards-hr-target-team-logo" src="${escapeHtml(String(row.teamLogoUrl))}" alt="${escapeHtml(String(row.team || "Team"))}" loading="lazy" />` : ""}
+                      <span>${escapeHtml(String(row.team || ""))}</span>
+                      ${row.opponent ? `<span>vs ${escapeHtml(String(row.opponent))}</span>` : ""}
+                    </div>
+                  </div>
+                </div>
+                <div class="cards-hr-target-prob">
+                  ${escapeHtml(formatPercent(row.pHr1Plus, 1))}
+                  <span class="cards-hr-target-prob-label">1+ HR</span>
+                </div>
               </div>
-              <div class="cards-mini-copy">${escapeHtml(String(row.summary || row.matchup || ""))}</div>
+              <div class="cards-hr-target-context-row">
+                <div class="cards-hr-target-context">${escapeHtml(row.opponentPitcherName ? `vs ${String(row.opponentPitcherName)}` : String(row.matchup || ""))}</div>
+                ${row.opponentLogoUrl ? `<img class="cards-hr-target-opponent-logo" src="${escapeHtml(String(row.opponentLogoUrl))}" alt="${escapeHtml(String(row.opponent || "Opponent"))}" loading="lazy" />` : ""}
+              </div>
+              <div class="cards-hr-target-metrics">
+                <div class="cards-hr-target-pill">
+                  <strong>${escapeHtml(formatNumber(row.supportScore, 1))}</strong>
+                  <span>support</span>
+                </div>
+                <div class="cards-hr-target-pill">
+                  <strong>${escapeHtml(row.lineupOrder == null ? "-" : String(row.lineupOrder))}</strong>
+                  <span>lineup spot</span>
+                </div>
+              </div>
+              <div class="cards-hr-target-summary">${escapeHtml(String(row.summary || row.matchup || ""))}</div>
             </a>`).join("")}
         </div>
       </div>`;
