@@ -225,6 +225,13 @@ def _resolve_path(s: str) -> Path:
     return p
 
 
+def _path_from_maybe_relative(value: Any) -> Optional[Path]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    return _resolve_path(raw)
+
+
 def _is_off(s: str) -> bool:
     v = str(s or "").strip().lower()
     return v in ("", "off", "none", "null", "0", "false")
