@@ -4909,6 +4909,34 @@ def _daily_hr_targets_signature(d: str) -> Tuple[Any, ...]:
     )
 
 
+def _hr_target_page_row_payload(d: str, row: Dict[str, Any]) -> Dict[str, Any]:
+    game_pk = _safe_int(row.get("game_pk"))
+    batter_id = _safe_int(row.get("batter_id"))
+    team_id = _safe_int(row.get("team_id")) or _safe_int(row.get("teamId"))
+    opponent_team_id = _safe_int(row.get("opponent_team_id")) or _safe_int(row.get("opponentTeamId"))
+    return {
+        "gamePk": int(game_pk) if game_pk is not None else None,
+        "batterId": int(batter_id) if batter_id is not None else None,
+        "playerName": _first_text(row.get("player_name"), row.get("hitterName")),
+        "team": _first_text(row.get("team")),
+        "opponent": _first_text(row.get("opponent")),
+        "matchup": _first_text(row.get("matchup")),
+        "opponentPitcherName": _first_text(row.get("opponent_pitcher_name")),
+        "headshotUrl": (_mlb_headshot_url(int(batter_id)) if batter_id is not None else None),
+        "teamLogoUrl": (_mlb_logo_url(int(team_id)) if team_id is not None else None),
+        "opponentLogoUrl": (_mlb_logo_url(int(opponent_team_id)) if opponent_team_id is not None else None),
+        "lineupOrder": _safe_int(row.get("lineup_order")),
+        "paMean": _safe_float(row.get("pa_mean")),
+        "pHr1Plus": _safe_float(row.get("p_hr_1plus")),
+        "supportScore": _safe_float(row.get("hr_support_score")),
+        "supportLabel": _first_text(row.get("hr_support_label")),
+        "summary": _first_text(row.get("hr_target_summary")),
+        "drivers": _cards_hr_target_driver_payload(row),
+        "writeup": _cards_hr_target_writeup(row),
+        "detailHref": f"/hr-targets?date={d}" + (f"&game={int(game_pk)}" if game_pk is not None else ""),
+    }
+
+
 def _daily_hr_targets_payload(
     d: str,
     *,
@@ -4944,17 +4972,11 @@ def _daily_hr_targets_payload(
     rows = _sort_hr_target_rows(filtered_rows, sort_key)
     for idx, row in enumerate(rows, start=1):
         row["rank"] = int(idx)
-        batter_id = _safe_int(row.get("batter_id"))
-        team_id = _safe_int(row.get("team_id")) or _safe_int(row.get("teamId"))
-        opponent_team_id = _safe_int(row.get("opponent_team_id")) or _safe_int(row.get("opponentTeamId"))
-        row["gamePk"] = _safe_int(row.get("game_pk"))
-        row["hitterId"] = batter_id
-        row["hitterName"] = _first_text(row.get("player_name"), row.get("hitterName"))
-        row["headshotUrl"] = _mlb_headshot_url(int(batter_id)) if batter_id is not None else None
-        row["teamId"] = team_id
-        row["teamLogoUrl"] = _mlb_logo_url(int(team_id)) if team_id is not None else None
-        row["opponentTeamId"] = opponent_team_id
-        row["opponentLogoUrl"] = _mlb_logo_url(int(opponent_team_id)) if opponent_team_id is not None else None
+        row.update(_hr_target_page_row_payload(d, row))
+        row["hitterId"] = row.get("batterId")
+        row["hitterName"] = row.get("playerName")
+        row["teamId"] = _safe_int(row.get("team_id")) or _safe_int(row.get("teamId"))
+        row["opponentTeamId"] = _safe_int(row.get("opponent_team_id")) or _safe_int(row.get("opponentTeamId"))
 
     payload: Dict[str, Any] = {
         "date": str(d),
@@ -14132,31 +14154,7 @@ def _cards_hr_targets_summary_payload(d: str, artifacts: Dict[str, Any]) -> Dict
     top_rows: List[Dict[str, Any]] = []
 
     for row in rows[:5]:
-        game_pk = _safe_int(row.get("game_pk"))
-        batter_id = _safe_int(row.get("batter_id"))
-        top_rows.append(
-            {
-                "gamePk": int(game_pk) if game_pk is not None else None,
-                "batterId": int(batter_id) if batter_id is not None else None,
-                "playerName": _first_text(row.get("player_name"), row.get("hitterName")),
-                "team": _first_text(row.get("team")),
-                "opponent": _first_text(row.get("opponent")),
-                "matchup": _first_text(row.get("matchup")),
-                "opponentPitcherName": _first_text(row.get("opponent_pitcher_name")),
-                "headshotUrl": (_mlb_headshot_url(int(batter_id)) if batter_id is not None else None),
-                "teamLogoUrl": (_mlb_logo_url(int(row.get("team_id"))) if _safe_int(row.get("team_id")) is not None else None),
-                "opponentLogoUrl": (_mlb_logo_url(int(row.get("opponent_team_id"))) if _safe_int(row.get("opponent_team_id")) is not None else None),
-                "lineupOrder": _safe_int(row.get("lineup_order")),
-                "paMean": _safe_float(row.get("pa_mean")),
-                "pHr1Plus": _safe_float(row.get("p_hr_1plus")),
-                "supportScore": _safe_float(row.get("hr_support_score")),
-                "supportLabel": _first_text(row.get("hr_support_label")),
-                "summary": _first_text(row.get("hr_target_summary")),
-                "drivers": _cards_hr_target_driver_payload(row),
-                "writeup": _cards_hr_target_writeup(row),
-                "detailHref": f"/hr-targets?date={d}" + (f"&game={int(game_pk)}" if game_pk is not None else ""),
-            }
-        )
+        top_rows.append(_hr_target_page_row_payload(d, row))
 
     counts = (doc or {}).get("counts") if isinstance((doc or {}).get("counts"), dict) else {}
     return {
