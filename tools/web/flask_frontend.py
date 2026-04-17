@@ -14496,26 +14496,33 @@ def _cards_hr_target_bvp_support_phrase(row: Dict[str, Any]) -> str:
     career_hr = _safe_int(row.get("bvp_career_hr"))
     career_hr_mult = _safe_float(row.get("bvp_career_hr_mult"))
 
-    if career_pa is None or career_pa < 5:
+    if career_pa is None or career_pa < 3:
         return ""
 
-    supportive = False
     detail_bits: List[str] = []
     if career_hr is not None and career_hr > 0:
-        supportive = True
         homer_label = "HR" if int(career_hr) == 1 else "HRs"
         detail_bits.append(f"{int(career_hr)} {homer_label} in {int(career_pa)} career PA off {pitcher_name}")
     elif career_pa >= 8 and career_hr_mult is not None and float(career_hr_mult) >= 1.08:
-        supportive = True
         detail_bits.append(f"{int(career_pa)} career PA off {pitcher_name}")
 
     if career_hr_mult is not None and float(career_hr_mult) >= 1.08:
-        supportive = True
         detail_bits.append(f"damage in that sample grading {float(career_hr_mult):.2f}x his baseline")
 
-    if not supportive or not detail_bits:
-        return ""
-    return f"the career BvP sample is supportive too, with {_cards_hr_target_join_phrases(detail_bits)}"
+    if detail_bits:
+        return f"the career BvP sample is supportive too, with {_cards_hr_target_join_phrases(detail_bits)}"
+
+    if career_hr is not None:
+        if int(career_hr) == 0:
+            if career_pa >= 8:
+                return f"there is direct BvP history too, with no HR yet in {int(career_pa)} career PA off {pitcher_name}, even if that sample reads more neutral than decisive"
+            return f"there is at least some direct BvP history too, with {int(career_pa)} career PA off {pitcher_name}"
+        homer_label = "HR" if int(career_hr) == 1 else "HRs"
+        return f"there is direct BvP history too, with {int(career_hr)} {homer_label} in {int(career_pa)} career PA off {pitcher_name}"
+
+    if career_pa >= 8:
+        return f"there is direct BvP history too, with {int(career_pa)} career PA off {pitcher_name}, even if that sample reads more neutral than decisive"
+    return f"there is at least some direct BvP history too, with {int(career_pa)} career PA off {pitcher_name}"
 
 
 def _cards_hr_target_support_sentence(row: Dict[str, Any]) -> str:

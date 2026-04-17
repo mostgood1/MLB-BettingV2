@@ -2124,8 +2124,6 @@ def _hitter_bvp_reason(
             return f"Against this starter, he has {homers} homers in {pa} prior plate appearances, and {caution_bits[0]}."
         return f"Against this starter, he has {homers} homers in {pa} prior plate appearances."
     elif prop_key in {"hits", "total_bases", "runs", "rbis", "rbi"}:
-        if side == "over" and not preferred_bits:
-            return None
         hit_label = "hit" if int(hits) == 1 else "hits"
         lead = f"Against this starter, he has {hits} {hit_label}"
         if homers > 0:
@@ -2133,6 +2131,11 @@ def _hitter_bvp_reason(
         lead += f" in {pa} prior plate appearances"
         if preferred_bits:
             return f"{lead}, and {preferred_bits[0]}."
+        if side == "over":
+            if fallback_bits and pa >= 5:
+                return f"{lead}, though {fallback_bits[0]}."
+            if pa >= 8:
+                return f"{lead}, even if the prior meetings have been fairly neutral overall."
         return lead + "."
 
     if preferred_bits:
@@ -2737,7 +2740,7 @@ def _collect_daily_hr_targets(
                 continue
 
             matchup_ctx = _lookup_hitter_matchup_context(sim_obj, rec, roster_snapshot)
-            context_fields = _hitter_recommendation_context_fields(rec, matchup_ctx, roster_snapshot, season=season_value)
+            context_fields = _hitter_recommendation_context_fields(rec, matchup_ctx, roster_snapshot, season=season)
             support = _hitter_hr_target_support(rec, context_fields)
             support_score = float(support.get("score") or 0.0)
             if not _is_hitter_hr_target_candidate(rec, context_fields, float(hr_prob), support_score):
