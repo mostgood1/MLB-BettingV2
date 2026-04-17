@@ -196,6 +196,7 @@
             <h2>${escapeHtml(game.matchup || "Game")}</h2>
           </div>
           <div class="hr-target-game-meta">
+            ${game.startTime ? `<span class="cards-nav-pill">${escapeHtml(String(game.startTime))}</span>` : ""}
             <span class="cards-nav-pill">${escapeHtml(rows.length)} targets</span>
           </div>
         </div>

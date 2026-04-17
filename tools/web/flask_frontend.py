@@ -4444,6 +4444,65 @@ def _hitter_ladder_game_options(rows: List[Dict[str, Any]]) -> List[Dict[str, An
     ]
 
 
+def _hr_target_schedule_game_index(d: str) -> Dict[int, Dict[str, Any]]:
+    schedule_games = _schedule_games_for_date(d)
+    indexed: Dict[int, Dict[str, Any]] = {}
+    for order_idx, game in enumerate(schedule_games):
+        if not isinstance(game, dict):
+            continue
+        game_pk = _safe_int(game.get("gamePk"))
+        if game_pk is None:
+            continue
+        away = dict(game.get("teams", {}).get("away") or {})
+        home = dict(game.get("teams", {}).get("home") or {})
+        away_abbr = _first_text(away.get("team", {}).get("abbreviation"), away.get("team", {}).get("name"), away.get("team", {}).get("clubName"))
+        home_abbr = _first_text(home.get("team", {}).get("abbreviation"), home.get("team", {}).get("name"), home.get("team", {}).get("clubName"))
+        game_date = str(game.get("gameDate") or "")
+        start_time = _format_start_time_local(game_date)
+        matchup = " @ ".join(part for part in (away_abbr, home_abbr) if part)
+        indexed[int(game_pk)] = {
+            "gamePk": int(game_pk),
+            "orderIndex": int(order_idx),
+            "gameDate": game_date,
+            "startTime": start_time,
+            "matchup": matchup,
+            "label": f"{start_time} - {matchup}" if start_time and matchup else (matchup or f"Game {int(game_pk)}"),
+        }
+    return indexed
+
+
+def _hr_target_game_options(rows: List[Dict[str, Any]], d: str) -> List[Dict[str, Any]]:
+    schedule_index = _hr_target_schedule_game_index(d)
+    game_map: Dict[int, Dict[str, Any]] = {}
+    for row in rows:
+        game_pk = _safe_int(row.get("gamePk"))
+        if game_pk is None:
+            game_pk = _safe_int(row.get("game_pk"))
+        if game_pk is None:
+            continue
+        game_pk = int(game_pk)
+        schedule_row = dict(schedule_index.get(game_pk) or {})
+        matchup = _first_text(row.get("matchup"), schedule_row.get("matchup"))
+        start_time = _first_text(schedule_row.get("startTime"))
+        game_map[game_pk] = {
+            "value": str(game_pk),
+            "label": f"{start_time} - {matchup}" if start_time and matchup else (matchup or f"Game {game_pk}"),
+            "gamePk": game_pk,
+            "matchup": matchup,
+            "startTime": start_time,
+            "orderIndex": int(schedule_row.get("orderIndex")) if _safe_int(schedule_row.get("orderIndex")) is not None else 9999,
+        }
+    return sorted(
+        game_map.values(),
+        key=lambda item: (
+            int(item.get("orderIndex") or 9999),
+            str(item.get("startTime") or ""),
+            str(item.get("matchup") or ""),
+            int(item.get("gamePk") or 0),
+        ),
+    )
+
+
 def _hitter_ladder_team_options(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return [
         {
@@ -4949,6 +5008,7 @@ def _daily_hr_targets_payload(
     selected_team = _normalize_hitter_team_selector(selected_team_value)
     selected_hitter = _normalize_hitter_selector(selected_hitter_value)
     sort_key = _normalize_hr_target_sort(sort_value)
+    schedule_index = _hr_target_schedule_game_index(d)
     artifacts = _load_cards_artifacts(d)
     nav = _cards_nav_from_schedule(d) or {"season": _season_from_date_str(d)}
     doc = artifacts.get("hr_targets") if isinstance(artifacts.get("hr_targets"), dict) else None
@@ -4985,7 +5045,7 @@ def _daily_hr_targets_payload(
         "selectedHitter": selected_hitter,
         "selectedSort": sort_key,
         "sortOptions": _hr_target_sort_options(),
-        "gameOptions": _hitter_ladder_game_options(rows_all),
+        "gameOptions": _hr_target_game_options(rows_all, d),
         "teamOptions": _hitter_ladder_team_options(rows_all),
         "hitterOptions": _hitter_ladder_hitter_options([
             {
@@ -5013,22 +5073,31 @@ def _daily_hr_targets_payload(
     }
 
     grouped: List[Dict[str, Any]] = []
-    seen_games: List[int] = []
-    for row in rows:
-        game_pk = _safe_int(row.get("gamePk"))
-        if game_pk is None:
-            continue
-        if int(game_pk) not in seen_games:
-            seen_games.append(int(game_pk))
-    for game_pk in seen_games:
+    seen_games = {
+        int(game_pk)
+        for game_pk in (_safe_int(row.get("gamePk")) for row in rows)
+        if game_pk is not None
+    }
+    ordered_game_pks = sorted(
+        seen_games,
+        key=lambda game_pk: (
+            int((schedule_index.get(int(game_pk)) or {}).get("orderIndex") or 9999),
+            str((schedule_index.get(int(game_pk)) or {}).get("startTime") or ""),
+            str((schedule_index.get(int(game_pk)) or {}).get("matchup") or ""),
+            int(game_pk),
+        ),
+    )
+    for game_pk in ordered_game_pks:
         game_rows = [row for row in rows if _safe_int(row.get("gamePk")) == int(game_pk)]
         if not game_rows:
             continue
         first_row = game_rows[0]
+        schedule_row = dict(schedule_index.get(int(game_pk)) or {})
         grouped.append(
             {
                 "gamePk": int(game_pk),
-                "matchup": str(first_row.get("matchup") or ""),
+                "matchup": _first_text(schedule_row.get("matchup"), first_row.get("matchup")),
+                "startTime": _first_text(schedule_row.get("startTime")),
                 "away": first_row.get("away"),
                 "home": first_row.get("home"),
                 "awayAbbr": first_row.get("away_abbr"),
