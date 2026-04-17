@@ -5954,6 +5954,11 @@ def _cards_list_from_sources(
     cards = sorted(cards_by_game.values(), key=_card_sort_key)
     for card in cards:
         card.pop("sortOrder", None)
+        first1_signal = _cards_first1_bet_signal(card)
+        if isinstance(first1_signal, dict):
+            card["first1BetSignal"] = first1_signal
+        else:
+            card.pop("first1BetSignal", None)
         card["flags"] = {
             "hasAnyRecommendations": bool(
                 card["markets"].get("totals")
@@ -5965,6 +5970,93 @@ def _cards_list_from_sources(
             "hasHitterProps": bool(card["markets"].get("hitterProps")),
         }
     return cards
+
+
+def _cards_first1_zero_run_prob(row: Optional[Dict[str, Any]]) -> Optional[float]:
+    if not isinstance(row, dict):
+        return None
+    direct = _safe_float(row.get("nrfi_prob"))
+    if direct is not None:
+        return max(0.0, min(1.0, float(direct)))
+    dist = row.get("total_runs_dist") or {}
+    if not isinstance(dist, dict) or not dist:
+        return None
+    total_weight = 0.0
+    zero_weight = 0.0
+    for raw_key, raw_value in dist.items():
+        weight = _safe_float(raw_value)
+        if weight is None or weight < 0:
+            continue
+        total_weight += float(weight)
+        key_int = _safe_int(raw_key)
+        if key_int is not None and int(key_int) == 0:
+            zero_weight += float(weight)
+    if total_weight <= 0.0:
+        return None
+    return max(0.0, min(1.0, zero_weight / total_weight))
+
+
+def _cards_first1_bet_signal(card: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not isinstance(card, dict):
+        return None
+    predictions = card.get("predictions") or {}
+    first1 = predictions.get("first1") if isinstance(predictions.get("first1"), dict) else {}
+    if not isinstance(first1, dict) or not first1:
+        return None
+
+    nrfi_prob = _cards_first1_zero_run_prob(first1)
+    if nrfi_prob is None:
+        return None
+    yrfi_prob = max(0.0, min(1.0, 1.0 - float(nrfi_prob)))
+    away_runs_mean = _safe_float(first1.get("away_runs_mean"))
+    home_runs_mean = _safe_float(first1.get("home_runs_mean"))
+    mean_total_runs = None
+    if away_runs_mean is not None or home_runs_mean is not None:
+        mean_total_runs = float(away_runs_mean or 0.0) + float(home_runs_mean or 0.0)
+    away_win_prob = _safe_float(first1.get("away_win_prob"))
+    home_win_prob = _safe_float(first1.get("home_win_prob"))
+    max_side_prob = max(float(away_win_prob or 0.0), float(home_win_prob or 0.0))
+
+    if mean_total_runs is None:
+        return None
+
+    label = None
+    tone = None
+    summary = None
+    detail = None
+
+    if float(nrfi_prob) >= 0.56 and float(mean_total_runs) <= 0.75:
+        label = "F1 NRFI"
+        tone = "nrfi"
+        summary = f"0-run sim {float(nrfi_prob) * 100.0:.1f}% | F1 mean {float(mean_total_runs):.2f}"
+        detail = (
+            f"Season filter qualified: simulated scoreless first inning {float(nrfi_prob) * 100.0:.1f}% "
+            f"with only {float(mean_total_runs):.2f} expected runs in the opening frame."
+        )
+    elif float(nrfi_prob) <= 0.55 and float(mean_total_runs) >= 1.0 and float(max_side_prob) >= 0.29:
+        label = "F1 YRFI"
+        tone = "yrfi"
+        summary = (
+            f"F1 mean {float(mean_total_runs):.2f} | side lead {float(max_side_prob) * 100.0:.1f}%"
+        )
+        detail = (
+            f"Season filter qualified: only {float(nrfi_prob) * 100.0:.1f}% simulated NRFI, "
+            f"{float(mean_total_runs):.2f} expected first-inning runs, and one side reaches a "
+            f"{float(max_side_prob) * 100.0:.1f}% chance to be ahead after one."
+        )
+    else:
+        return None
+
+    return {
+        "label": label,
+        "tone": tone,
+        "summary": summary,
+        "detail": detail,
+        "nrfiProb": round(float(nrfi_prob), 4),
+        "yrfiProb": round(float(yrfi_prob), 4),
+        "meanTotalRuns": round(float(mean_total_runs), 3),
+        "maxSideLeadProb": round(float(max_side_prob), 4),
+    }
 
 
 def _season_report_game(day_report: Optional[Dict[str, Any]], game_pk: int) -> Optional[Dict[str, Any]]:

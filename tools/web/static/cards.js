@@ -92,6 +92,25 @@
     return text || "-";
   }
 
+  function first1SignalMarkup(card, options = {}) {
+    const signal = card?.first1BetSignal;
+    if (!signal) return "";
+    const compact = Boolean(options.compact);
+    const tone = String(signal?.tone || "neutral").trim().toLowerCase() || "neutral";
+    const label = String(signal?.label || "F1 signal").trim() || "F1 signal";
+    const summary = String(signal?.summary || "").trim();
+    const detail = String(signal?.detail || summary).trim();
+    const titleAttr = detail ? ` title="${escapeHtml(detail)}"` : "";
+    if (compact) {
+      return `<span class="cards-chip cards-f1-signal-badge is-${escapeHtml(tone)}"${titleAttr}>${escapeHtml(label)}</span>`;
+    }
+    return `
+      <div class="cards-f1-signal" data-role="f1-signal-shell">
+        <span class="cards-chip cards-f1-signal-badge is-${escapeHtml(tone)}"${titleAttr}>${escapeHtml(label)}</span>
+        ${summary ? `<div class="cards-f1-signal-copy">${escapeHtml(summary)}</div>` : ""}
+      </div>`;
+  }
+
   function normalizedAmericanOdds(value) {
     const num = Number(value);
     return Number.isFinite(num) ? Math.round(num) : null;
@@ -1290,6 +1309,7 @@
             <span class="cards-game-time-value">${escapeHtml(card.startTime || "-")}</span>
           </div>
           <span class="cards-status-badge ${escapeHtml(statusBadge.className)}" data-role="status-badge">${escapeHtml(statusBadge.text)}</span>
+          ${first1SignalMarkup(card)}
           <div class="cards-start-time" data-role="status-detail">${escapeHtml(statusDetailText(null, card) || card.startTime || "")}</div>
           <a class="cards-game-link" href="/game/${encodeURIComponent(card.gamePk)}?date=${encodeURIComponent(state.date)}">Open game view</a>
         </div>
@@ -2448,6 +2468,7 @@
     anchor.innerHTML = `
       <div class="cards-strip-head">
         <span data-role="strip-badge" class="${escapeHtml(statusBadge.className || "")}">${escapeHtml(statusBadge.text || "Game")}</span>
+        <span data-role="strip-f1-signal">${first1SignalMarkup(card, { compact: true })}</span>
         <span data-role="strip-detail">${escapeHtml(statusDetailText(null, card) || card.startTime || "")}</span>
       </div>
       <div class="cards-linescore is-compact">
@@ -2826,12 +2847,14 @@
     const homeErrors = stripNode.querySelector('[data-role="strip-home-e"]');
     const detailNode = stripNode.querySelector('[data-role="strip-detail"]');
     const liveNode = stripNode.querySelector('[data-role="strip-live"]');
+    const signalNode = stripNode.querySelector('[data-role="strip-f1-signal"]');
     const snapshot = detail.snapshot;
     if (badgeNode) {
       const status = statusBadgePresentation(card, snapshot);
       badgeNode.textContent = status.text || "Game";
       badgeNode.className = status.className || "";
     }
+    if (signalNode) signalNode.innerHTML = first1SignalMarkup(card, { compact: true });
     if (awayRuns) awayRuns.textContent = linescoreValue(snapshot?.teams?.away?.totals?.R);
     if (awayHits) awayHits.textContent = linescoreValue(snapshot?.teams?.away?.totals?.H);
     if (awayErrors) awayErrors.textContent = linescoreValue(snapshot?.teams?.away?.totals?.E);
@@ -2870,6 +2893,18 @@
       const status = statusBadgePresentation(card, snapshot);
       statusBadge.textContent = status.text;
       statusBadge.className = `cards-status-badge ${status.className}`.trim();
+    }
+    const statusCluster = node.querySelector('.cards-status-cluster');
+    if (statusCluster) {
+      const existingSignal = statusCluster.querySelector('[data-role="f1-signal-shell"]');
+      const signalMarkup = first1SignalMarkup(card);
+      if (existingSignal && !signalMarkup) {
+        existingSignal.remove();
+      } else if (existingSignal) {
+        existingSignal.outerHTML = signalMarkup.trim();
+      } else if (signalMarkup && statusDetail) {
+        statusDetail.insertAdjacentHTML('beforebegin', signalMarkup);
+      }
     }
     if (statusDetail) statusDetail.textContent = statusDetailText(snapshot, card) || card.startTime || "";
     if (awayScore) awayScore.textContent = snapshot?.teams?.away?.totals?.R ?? "-";
