@@ -2860,6 +2860,9 @@
     const gameLens = node.querySelector('[data-role="game-lens"]');
     const overviewBars = node.querySelector('[data-role="overview-bars"]');
     const propOverviewLens = node.querySelector('[data-role="prop-overview-lens"]');
+    const probableCopy = node.querySelector('.cards-score-meta .cards-mini-copy');
+    const starterRail = node.querySelector('.cards-mini-metrics--rail');
+    const stripNode = state.stripNodes.get(Number(card.gamePk));
     const snapshot = detail.snapshot;
     const sim = detail.sim;
 
@@ -2873,6 +2876,26 @@
     if (homeScore) homeScore.textContent = snapshot?.teams?.home?.totals?.R ?? "-";
     if (liveLine) liveLine.textContent = liveSummary(snapshot, card);
     if (simLine) simLine.textContent = simSummary(sim, card);
+    if (probableCopy) probableCopy.textContent = `Probables: ${starterText(card)}`;
+    if (starterRail) {
+      starterRail.innerHTML = `
+          ${starterMetricMarkup("Away starter", card?.probable?.away)}
+          ${starterMetricMarkup("Home starter", card?.probable?.home)}`;
+    }
+    if (stripNode) {
+      const metaNode = stripNode.querySelector('.cards-strip-meta');
+      const startersNode = stripNode.querySelector('.cards-strip-starters');
+      const startersMarkup = starterLadderStripMarkup(card);
+      if (startersNode) {
+        if (startersMarkup) {
+          startersNode.outerHTML = startersMarkup;
+        } else {
+          startersNode.remove();
+        }
+      } else if (startersMarkup && metaNode) {
+        metaNode.insertAdjacentHTML('afterend', startersMarkup);
+      }
+    }
     if (gameLens) gameLens.innerHTML = renderGameLens(card, detail);
     if (overviewBars) overviewBars.innerHTML = overviewBarGroups(card, detail);
     if (propOverviewLens) propOverviewLens.innerHTML = renderPropOverviewLens(card, detail);

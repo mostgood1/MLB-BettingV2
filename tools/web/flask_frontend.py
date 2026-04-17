@@ -13738,14 +13738,10 @@ def api_live_lens() -> Response:
     serve_report_max_age_seconds = float(_LIVE_ROUTE_CACHE_TTL_SECONDS)
     if not _is_historical_date(d) and _is_live_lens_loop_enabled():
         serve_report_max_age_seconds = float(_live_lens_report_max_age_seconds())
-    background_report_enabled = _is_live_lens_background_report_enabled()
     if (
         not persist
         and report_age_seconds is not None
-        and (
-            report_age_seconds <= float(serve_report_max_age_seconds)
-            or (not _is_historical_date(d) and not background_report_enabled)
-        )
+        and report_age_seconds <= float(serve_report_max_age_seconds)
     ):
         report_payload = _load_json_file(report_path)
         if isinstance(report_payload, dict) and report_payload:
@@ -13754,7 +13750,7 @@ def api_live_lens() -> Response:
         "live_lens_api",
         str(d),
         max_age_seconds=_LIVE_ROUTE_CACHE_TTL_SECONDS,
-        builder=lambda: _live_lens_payload(d, persist=persist, refresh_markets=False),
+        builder=lambda: _live_lens_payload(d, persist=persist, refresh_markets=not _is_historical_date(d)),
     )
     return jsonify(_with_app_build(payload))
 
@@ -14572,6 +14568,9 @@ def _build_cards_api_payload(
     archive: Optional[Dict[str, Any]] = None,
     game_line_index: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    if not _is_historical_date(d):
+        _maybe_refresh_live_oddsapi_markets(d)
+
     artifacts = artifacts if isinstance(artifacts, dict) else _load_cards_artifacts(d)
     archive = archive if isinstance(archive, dict) else (_load_cards_archive_context(d) if _should_load_cards_archive_context(d, artifacts) else {})
     game_line_index = game_line_index if isinstance(game_line_index, dict) else _load_game_line_market_index(d)
@@ -16005,7 +16004,13 @@ def _build_game_sim_payload(
                     "abstract": str((((snapshot or {}).get("status") or {}).get("abstractGameState") or "")),
                 },
             }
-        out["livePropRows"] = _current_live_prop_rows(live_card, snapshot, out, d, ensure_market_fresh=False)
+        out["livePropRows"] = _current_live_prop_rows(
+            live_card,
+            snapshot,
+            out,
+            d,
+            ensure_market_fresh=not _is_historical_date(d),
+        )
         out["gameLens"] = _build_game_lens(
             live_card,
             snapshot,
