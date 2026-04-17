@@ -1200,10 +1200,27 @@ def _weighted_pitch_metric(profile: Dict[str, Any], metric_key: str) -> Optional
     return float(weighted / denom)
 
 
+def _is_bvp_reason_text(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return False
+    return text.startswith("against this starter,") or text.startswith("there is some real lineup-level history here")
+
+
 def _trim_reason_list(reasons: Sequence[str]) -> List[str]:
     limit = max(1, int(_RECOMMENDATION_BASEBALL_REASON_LIMIT))
     cleaned = [str(reason or "").strip() for reason in reasons if str(reason or "").strip()]
-    return cleaned[:limit]
+    if len(cleaned) <= limit:
+        return cleaned
+    limited = list(cleaned[:limit])
+    if any(_is_bvp_reason_text(reason) for reason in limited):
+        return limited
+    bvp_reason = next((reason for reason in cleaned[limit:] if _is_bvp_reason_text(reason)), None)
+    if not bvp_reason:
+        return limited
+    replacement_index = next((idx for idx in range(len(limited) - 1, -1, -1) if not _is_bvp_reason_text(limited[idx])), len(limited) - 1)
+    limited[replacement_index] = bvp_reason
+    return limited
 
 
 def _recommendation_subject_label(row: Dict[str, Any]) -> str:
@@ -2720,7 +2737,7 @@ def _collect_daily_hr_targets(
                 continue
 
             matchup_ctx = _lookup_hitter_matchup_context(sim_obj, rec, roster_snapshot)
-            context_fields = _hitter_recommendation_context_fields(rec, matchup_ctx, roster_snapshot, season=season)
+            context_fields = _hitter_recommendation_context_fields(rec, matchup_ctx, roster_snapshot, season=season_value)
             support = _hitter_hr_target_support(rec, context_fields)
             support_score = float(support.get("score") or 0.0)
             if not _is_hitter_hr_target_candidate(rec, context_fields, float(hr_prob), support_score):
@@ -3607,7 +3624,7 @@ def _collect_hitter_recommendations(
             baseball_reasons: List[str] = []
             batter_profile = matchup_ctx.get("batter_profile") if isinstance(matchup_ctx.get("batter_profile"), dict) else None
             pitcher_profile = matchup_ctx.get("pitcher_profile") if isinstance(matchup_ctx.get("pitcher_profile"), dict) else None
-            context_fields = _hitter_recommendation_context_fields(rec, matchup_ctx, roster_snapshot, season=season)
+            context_fields = _hitter_recommendation_context_fields(rec, matchup_ctx, roster_snapshot, season=season_value)
             opponent_label = str(matchup_ctx.get("opponent") or "").strip()
             opponent_side = "home" if str(rec.get("team") or "").strip().upper() == str((sim_obj.get("away") or {}).get("abbreviation") or "").strip().upper() else "away"
             opponent_team = sim_obj.get(opponent_side) if isinstance(sim_obj.get(opponent_side), dict) else {}

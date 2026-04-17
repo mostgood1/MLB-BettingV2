@@ -49,6 +49,7 @@ from sim_engine.live_mc import LiveSituation, estimate_live, _forward_live_cfg_k
 from sim_engine.live_prop_ranking import predict_live_prop_win_probability
 from sim_engine.market_pitcher_props import market_side_probabilities, normalize_pitcher_name
 from tools.daily_update_multi_profile import (
+    _hitter_bvp_reason,
     _hitter_pitch_mix_reason,
     _hitter_platoon_reason,
     _hitter_statcast_quality_reason,
@@ -10886,6 +10887,14 @@ def _live_hitter_matchup_reasons(
         reasons.extend(
             reason
             for reason in (
+                _hitter_bvp_reason(
+                    batter_profile,
+                    matchup_profile,
+                    season=_safe_int(row.get("season")),
+                    prop=prop,
+                    selection=choice,
+                    line_value=_safe_float(row.get("market_line")),
+                ),
                 _hitter_pitch_mix_reason(batter_profile, matchup_profile, prop=prop, selection=choice),
                 _hitter_platoon_reason(batter_profile, matchup_profile, prop=prop, selection=choice),
                 _hitter_statcast_quality_reason(batter_profile, prop=prop, selection=choice),
