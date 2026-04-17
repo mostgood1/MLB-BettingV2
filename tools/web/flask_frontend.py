@@ -14373,6 +14373,56 @@ def _cards_hr_target_bvp_support_phrase(row: Dict[str, Any]) -> str:
     return f"the career BvP sample is supportive too, with {_cards_hr_target_join_phrases(detail_bits)}"
 
 
+def _cards_hr_target_support_sentence(row: Dict[str, Any]) -> str:
+    metrics = row.get("hr_target_metrics") if isinstance(row.get("hr_target_metrics"), dict) else {}
+    support_score = _safe_float(row.get("hr_support_score"))
+    support_label = _first_text(row.get("hr_support_label")).lower()
+    pa_mean = _safe_float(row.get("pa_mean"))
+    lineup_order = _safe_int(row.get("lineup_order"))
+    lineup_status = _first_text(row.get("lineup_status"), metrics.get("lineupStatus")).lower()
+    batter_hand = _first_text(row.get("batter_hand")).upper()
+    pitcher_hand = _first_text(row.get("opponent_pitcher_hand")).upper()
+    primary_pitch_type = _first_text(metrics.get("primaryPitchType")).upper()
+
+    summary_bits: List[str] = []
+    if pa_mean is not None and lineup_order is not None:
+        status_prefix = f"{lineup_status} " if lineup_status else ""
+        summary_bits.append(f"about {pa_mean:.1f} PA from the {status_prefix}{_cards_hr_target_ordinal(lineup_order)} spot")
+    elif pa_mean is not None:
+        summary_bits.append(f"about {pa_mean:.1f} PA")
+
+    batter_platoon = _safe_float(metrics.get("batterPlatoonHr"))
+    pitcher_platoon = _safe_float(metrics.get("pitcherPlatoonHr"))
+    if batter_hand and pitcher_hand:
+        if batter_platoon is not None and float(batter_platoon) >= 1.05:
+            summary_bits.append(f"a favorable {batter_hand}-on-{pitcher_hand} split for his power")
+        elif pitcher_platoon is not None and float(pitcher_platoon) >= 1.05:
+            summary_bits.append(f"a pitcher-side {batter_hand}-on-{pitcher_hand} split that is allowing extra damage")
+
+    pitcher_hr_quality = _safe_float(metrics.get("pitcherHrQuality"))
+    if pitcher_hr_quality is not None and float(pitcher_hr_quality) >= 1.05:
+        summary_bits.append("an opposing starter who is allowing more HR carry than neutral")
+
+    batter_primary_pitch_hr = _safe_float(metrics.get("batterPrimaryPitchHr"))
+    pitcher_primary_pitch_hr = _safe_float(metrics.get("pitcherPrimaryPitchHr"))
+    if primary_pitch_type and (
+        (batter_primary_pitch_hr is not None and float(batter_primary_pitch_hr) >= 1.05)
+        or (pitcher_primary_pitch_hr is not None and float(pitcher_primary_pitch_hr) >= 1.05)
+    ):
+        summary_bits.append(f"a {primary_pitch_type} matchup that grades well for HR damage")
+
+    park_hr = _safe_float(metrics.get("parkHr"))
+    if park_hr is not None and float(park_hr) >= 1.03:
+        summary_bits.append("a park that is a little better than neutral for HR carry")
+
+    score_text = f"{support_score:.0f}" if support_score is not None else "high"
+    if summary_bits:
+        return f"He profiles as a {score_text}-grade HR target because the setup is stacking in his favor: {_cards_hr_target_join_phrases(summary_bits)}."
+    if support_label in {"strong", "solid"}:
+        return f"He profiles as a high-end HR target because the volume, matchup, and environment are all lining up in his favor."
+    return f"He stays live as an HR target because the volume, matchup, and environment still give him a real one-swing path."
+
+
 def _cards_hr_target_writeup(row: Dict[str, Any]) -> str:
     metrics = row.get("hr_target_metrics") if isinstance(row.get("hr_target_metrics"), dict) else {}
     drivers = _cards_hr_target_driver_payload(row)
@@ -14410,21 +14460,19 @@ def _cards_hr_target_writeup(row: Dict[str, Any]) -> str:
             setup_parts.append("a tougher handedness matchup than neutral")
 
     setup_text = _cards_hr_target_join_phrases(setup_parts)
-    opener = "He is in a strong power spot here" if support_label in {"strong", "solid"} else "He stays in play here"
-    if setup_text:
-        sentence_one = f"{opener} because the volume setup is clean and the model is seeing {setup_text}."
-    else:
-        sentence_one = f"{opener} because the underlying power setup is still giving him a live home-run path."
+    sentence_one = _cards_hr_target_support_sentence(row)
 
     driver_phrases = [_cards_hr_target_driver_phrase(driver) for driver in drivers[:3]]
     if driver_phrases:
-        sentence_two = f"The biggest modeled lifts are {_cards_hr_target_join_phrases(driver_phrases)}, which helps keep the one-swing ceiling intact."
+        sentence_two = f"The biggest modeled lifts are {_cards_hr_target_join_phrases(driver_phrases)}, which is why the one-swing upside is showing up so clearly in the model."
     else:
         sentence_two = "The biggest modeled lifts still come from a mix of contact quality, matchup context, and environment."
 
     context_parts: List[str] = []
+    if setup_text and support_label not in {"strong", "solid"}:
+        context_parts.append(setup_text)
     if pa_mean is not None and pa_mean >= 4.4:
-        context_parts.append("the plate-appearance floor is high enough that he should have multiple chances to cash the power upside")
+        context_parts.append("the plate-appearance floor is high enough that he should still get multiple chances to cash the power upside")
     if lineup_slot and lineup_order is not None and lineup_order <= 4:
         context_parts.append("the lineup slot keeps the volume ceiling elevated")
     if batter_hand and pitcher_hand and handedness_mult is not None and abs(float(handedness_mult) - 1.0) >= 0.03:
