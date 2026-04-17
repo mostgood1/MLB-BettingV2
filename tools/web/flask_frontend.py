@@ -4456,6 +4456,8 @@ def _hr_target_schedule_game_index(d: str) -> Dict[int, Dict[str, Any]]:
             continue
         away = dict(game.get("teams", {}).get("away") or {})
         home = dict(game.get("teams", {}).get("home") or {})
+        away_team_id = _safe_int(away.get("team", {}).get("id"))
+        home_team_id = _safe_int(home.get("team", {}).get("id"))
         away_abbr = _first_text(away.get("team", {}).get("abbreviation"), away.get("team", {}).get("name"), away.get("team", {}).get("clubName"))
         home_abbr = _first_text(home.get("team", {}).get("abbreviation"), home.get("team", {}).get("name"), home.get("team", {}).get("clubName"))
         game_date = str(game.get("gameDate") or "")
@@ -4467,9 +4469,52 @@ def _hr_target_schedule_game_index(d: str) -> Dict[int, Dict[str, Any]]:
             "gameDate": game_date,
             "startTime": start_time,
             "matchup": matchup,
+            "awayTeamId": int(away_team_id) if away_team_id is not None else None,
+            "homeTeamId": int(home_team_id) if home_team_id is not None else None,
+            "awayAbbr": away_abbr,
+            "homeAbbr": home_abbr,
             "label": f"{start_time} - {matchup}" if start_time and matchup else (matchup or f"Game {int(game_pk)}"),
         }
     return indexed
+
+
+def _hr_target_resolved_team_ids(
+    row: Dict[str, Any],
+    schedule_row: Optional[Dict[str, Any]] = None,
+) -> Tuple[Optional[int], Optional[int]]:
+    team_id = _safe_int(row.get("team_id")) or _safe_int(row.get("teamId"))
+    opponent_team_id = _safe_int(row.get("opponent_team_id")) or _safe_int(row.get("opponentTeamId"))
+    if not isinstance(schedule_row, dict) or not schedule_row:
+        return team_id, opponent_team_id
+
+    away_team_id = _safe_int(schedule_row.get("awayTeamId"))
+    home_team_id = _safe_int(schedule_row.get("homeTeamId"))
+    away_abbr = str(schedule_row.get("awayAbbr") or "").strip().upper()
+    home_abbr = str(schedule_row.get("homeAbbr") or "").strip().upper()
+    team_abbr = str(row.get("team") or "").strip().upper()
+    opponent_abbr = str(row.get("opponent") or "").strip().upper()
+
+    if team_abbr and away_abbr and team_abbr == away_abbr:
+        return away_team_id, home_team_id
+    if team_abbr and home_abbr and team_abbr == home_abbr:
+        return home_team_id, away_team_id
+    if opponent_abbr and away_abbr and opponent_abbr == away_abbr:
+        return home_team_id, away_team_id
+    if opponent_abbr and home_abbr and opponent_abbr == home_abbr:
+        return away_team_id, home_team_id
+
+    if team_id is None and opponent_team_id is not None:
+        if away_team_id is not None and opponent_team_id == away_team_id:
+            return home_team_id, opponent_team_id
+        if home_team_id is not None and opponent_team_id == home_team_id:
+            return away_team_id, opponent_team_id
+    if opponent_team_id is None and team_id is not None:
+        if away_team_id is not None and team_id == away_team_id:
+            return team_id, home_team_id
+        if home_team_id is not None and team_id == home_team_id:
+            return team_id, away_team_id
+
+    return team_id, opponent_team_id
 
 
 def _hr_target_game_options(rows: List[Dict[str, Any]], d: str) -> List[Dict[str, Any]]:
@@ -4969,17 +5014,18 @@ def _daily_hr_targets_signature(d: str) -> Tuple[Any, ...]:
     )
 
 
-def _hr_target_page_row_payload(d: str, row: Dict[str, Any]) -> Dict[str, Any]:
+def _hr_target_page_row_payload(d: str, row: Dict[str, Any], *, schedule_row: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     game_pk = _safe_int(row.get("game_pk"))
     batter_id = _safe_int(row.get("batter_id"))
-    team_id = _safe_int(row.get("team_id")) or _safe_int(row.get("teamId"))
-    opponent_team_id = _safe_int(row.get("opponent_team_id")) or _safe_int(row.get("opponentTeamId"))
+    team_id, opponent_team_id = _hr_target_resolved_team_ids(row, schedule_row)
     return {
         "gamePk": int(game_pk) if game_pk is not None else None,
         "batterId": int(batter_id) if batter_id is not None else None,
         "playerName": _first_text(row.get("player_name"), row.get("hitterName")),
         "team": _first_text(row.get("team")),
+        "teamId": int(team_id) if team_id is not None else None,
         "opponent": _first_text(row.get("opponent")),
+        "opponentTeamId": int(opponent_team_id) if opponent_team_id is not None else None,
         "matchup": _first_text(row.get("matchup")),
         "opponentPitcherName": _first_text(row.get("opponent_pitcher_name")),
         "headshotUrl": (_mlb_headshot_url(int(batter_id)) if batter_id is not None else None),
@@ -5032,12 +5078,35 @@ def _daily_hr_targets_payload(
 
     rows = _sort_hr_target_rows(filtered_rows, sort_key)
     for idx, row in enumerate(rows, start=1):
+        schedule_row = dict(schedule_index.get(int(row.get("game_pk") or 0)) or {}) if _safe_int(row.get("game_pk")) is not None else {}
         row["rank"] = int(idx)
-        row.update(_hr_target_page_row_payload(d, row))
+        row.update(_hr_target_page_row_payload(d, row, schedule_row=schedule_row))
         row["hitterId"] = row.get("batterId")
         row["hitterName"] = row.get("playerName")
-        row["teamId"] = _safe_int(row.get("team_id")) or _safe_int(row.get("teamId"))
-        row["opponentTeamId"] = _safe_int(row.get("opponent_team_id")) or _safe_int(row.get("opponentTeamId"))
+        row["teamId"] = _safe_int(row.get("teamId"))
+        row["opponentTeamId"] = _safe_int(row.get("opponentTeamId"))
+
+    hitter_options: List[Dict[str, Any]] = []
+    for row in rows_all:
+        batter_id = _safe_int(row.get("batter_id"))
+        player_name = str(row.get("player_name") or "").strip()
+        if batter_id is None or not player_name:
+            continue
+        schedule_row = schedule_index.get(int(row.get("game_pk") or 0)) if _safe_int(row.get("game_pk")) is not None else None
+        team_id, opponent_team_id = _hr_target_resolved_team_ids(row, schedule_row)
+        hitter_options.append(
+            {
+                "hitterId": row.get("batter_id"),
+                "hitterName": row.get("player_name"),
+                "team": row.get("team"),
+                "opponent": row.get("opponent"),
+                "headshotUrl": _mlb_headshot_url(int(batter_id)),
+                "teamId": team_id,
+                "opponentTeamId": opponent_team_id,
+                "teamLogoUrl": (_mlb_logo_url(int(team_id)) if team_id is not None else None),
+                "opponentLogoUrl": (_mlb_logo_url(int(opponent_team_id)) if opponent_team_id is not None else None),
+            }
+        )
 
     payload: Dict[str, Any] = {
         "date": str(d),
@@ -5048,19 +5117,7 @@ def _daily_hr_targets_payload(
         "sortOptions": _hr_target_sort_options(),
         "gameOptions": _hr_target_game_options(rows_all, d),
         "teamOptions": _hitter_ladder_team_options(rows_all),
-        "hitterOptions": _hitter_ladder_hitter_options([
-            {
-                "hitterId": row.get("batter_id"),
-                "hitterName": row.get("player_name"),
-                "team": row.get("team"),
-                "opponent": row.get("opponent"),
-                "headshotUrl": _mlb_headshot_url(int(row.get("batter_id"))) if _safe_int(row.get("batter_id")) is not None else None,
-                "teamLogoUrl": (_mlb_logo_url(int(row.get("team_id"))) if _safe_int(row.get("team_id")) is not None else None),
-                "opponentLogoUrl": (_mlb_logo_url(int(row.get("opponent_team_id"))) if _safe_int(row.get("opponent_team_id")) is not None else None),
-            }
-            for row in rows_all
-            if _safe_int(row.get("batter_id")) is not None and str(row.get("player_name") or "").strip()
-        ]),
+        "hitterOptions": _hitter_ladder_hitter_options(hitter_options),
         "rows": rows,
         "sourcePath": _relative_path_str(artifact_path),
         "policy": dict((doc or {}).get("policy") or {}) if isinstance(doc, dict) else {},
