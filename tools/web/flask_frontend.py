@@ -14336,6 +14336,34 @@ def _cards_hr_target_highlights(row: Dict[str, Any]) -> List[str]:
     return filtered[:2]
 
 
+def _cards_hr_target_bvp_support_phrase(row: Dict[str, Any]) -> str:
+    pitcher_name = _first_text(row.get("opponent_pitcher_name"), "this pitcher")
+    career_pa = _safe_int(row.get("bvp_career_pa"))
+    career_hr = _safe_int(row.get("bvp_career_hr"))
+    career_hr_mult = _safe_float(row.get("bvp_career_hr_mult"))
+
+    if career_pa is None or career_pa < 5:
+        return ""
+
+    supportive = False
+    detail_bits: List[str] = []
+    if career_hr is not None and career_hr > 0:
+        supportive = True
+        homer_label = "HR" if int(career_hr) == 1 else "HRs"
+        detail_bits.append(f"{int(career_hr)} {homer_label} in {int(career_pa)} career PA off {pitcher_name}")
+    elif career_pa >= 8 and career_hr_mult is not None and float(career_hr_mult) >= 1.08:
+        supportive = True
+        detail_bits.append(f"{int(career_pa)} career PA off {pitcher_name}")
+
+    if career_hr_mult is not None and float(career_hr_mult) >= 1.08:
+        supportive = True
+        detail_bits.append(f"damage in that sample grading {float(career_hr_mult):.2f}x his baseline")
+
+    if not supportive or not detail_bits:
+        return ""
+    return f"the career BvP sample is supportive too, with {_cards_hr_target_join_phrases(detail_bits)}"
+
+
 def _cards_hr_target_writeup(row: Dict[str, Any]) -> str:
     metrics = row.get("hr_target_metrics") if isinstance(row.get("hr_target_metrics"), dict) else {}
     drivers = _cards_hr_target_driver_payload(row)
@@ -14393,6 +14421,9 @@ def _cards_hr_target_writeup(row: Dict[str, Any]) -> str:
     if batter_hand and pitcher_hand and handedness_mult is not None and abs(float(handedness_mult) - 1.0) >= 0.03:
         matchup_tone = "leans his way" if float(handedness_mult) > 1.0 else "is a little less friendly than neutral"
         context_parts.append(f"the {batter_hand}-on-{pitcher_hand} matchup {matchup_tone}")
+    bvp_support = _cards_hr_target_bvp_support_phrase(row)
+    if bvp_support:
+        context_parts.append(bvp_support)
     if highlights:
         highlight_text = _cards_hr_target_join_phrases([reason.rstrip(".") for reason in highlights[:2]]).lower()
         if highlight_text:
