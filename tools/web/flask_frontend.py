@@ -14375,9 +14375,11 @@ def _cards_hr_targets_summary_payload(d: str, artifacts: Dict[str, Any]) -> Dict
     artifact_path = artifacts.get("hr_targets_path") if isinstance(artifacts.get("hr_targets_path"), Path) else None
     rows = [row for row in ((doc or {}).get("rows") or []) if isinstance(row, dict)]
     top_rows: List[Dict[str, Any]] = []
+    schedule_index = _hr_target_schedule_game_index(d)
 
     for row in rows[:5]:
-        top_rows.append(_hr_target_page_row_payload(d, row))
+        schedule_row = dict(schedule_index.get(int(row.get("game_pk") or 0)) or {}) if _safe_int(row.get("game_pk")) is not None else {}
+        top_rows.append(_hr_target_page_row_payload(d, row, schedule_row=schedule_row))
 
     counts = (doc or {}).get("counts") if isinstance((doc or {}).get("counts"), dict) else {}
     return {

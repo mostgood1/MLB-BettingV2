@@ -2156,50 +2156,80 @@ def _lookup_hitter_matchup_context(
 ) -> Dict[str, Any]:
     if not isinstance(roster_snapshot, dict):
         return {}
-    team = str(rec.get("team") or "").strip().upper()
-    if not team:
-        return {}
-
     away_abbr = str(((sim_obj.get("away") or {}).get("abbreviation") or "")).strip().upper()
     home_abbr = str(((sim_obj.get("home") or {}).get("abbreviation") or "")).strip().upper()
+    team = str(rec.get("team") or "").strip().upper()
+    target_batter_id = _safe_int(rec.get("batter_id"))
+    target_name = normalize_pitcher_name(str(rec.get("name") or ""))
+    target_order = rec.get("lineup_order")
+
+    def _lineup_for(side_key: str) -> List[Dict[str, Any]]:
+        side_doc_local = roster_snapshot.get(side_key)
+        if not isinstance(side_doc_local, dict):
+            return []
+        lineup_local = side_doc_local.get("lineup")
+        return lineup_local if isinstance(lineup_local, list) else []
+
+    def _match_batter(lineup: List[Dict[str, Any]], *, allow_order_fallback: bool) -> Optional[Dict[str, Any]]:
+        fallback = None
+        for row in lineup:
+            if not isinstance(row, dict):
+                continue
+            row_id = _safe_int(row.get("id"))
+            if target_batter_id is not None and row_id is not None and int(row_id) == int(target_batter_id):
+                return row
+            if target_name and normalize_pitcher_name(str(row.get("name") or "")) == target_name:
+                return row
+            if allow_order_fallback and fallback is None and target_order is not None:
+                try:
+                    if int(row.get("lineup_order") or 0) == int(target_order):
+                        fallback = row
+                except Exception:
+                    pass
+        return fallback
+
+    side = ""
+    opp_side = ""
+    batter_profile = None
+
     if team == away_abbr:
         side = "away"
         opp_side = "home"
+        batter_profile = _match_batter(_lineup_for(side), allow_order_fallback=True)
     elif team == home_abbr:
         side = "home"
         opp_side = "away"
-    else:
+        batter_profile = _match_batter(_lineup_for(side), allow_order_fallback=True)
+
+    if not isinstance(batter_profile, dict):
+        away_match = _match_batter(_lineup_for("away"), allow_order_fallback=False)
+        home_match = _match_batter(_lineup_for("home"), allow_order_fallback=False)
+        if isinstance(away_match, dict) and not isinstance(home_match, dict):
+            side = "away"
+            opp_side = "home"
+            batter_profile = away_match
+        elif isinstance(home_match, dict) and not isinstance(away_match, dict):
+            side = "home"
+            opp_side = "away"
+            batter_profile = home_match
+
+    side_doc = roster_snapshot.get(side) if side in {"away", "home"} else None
+    opp_doc = roster_snapshot.get(opp_side) if opp_side in {"away", "home"} else None
+    pitcher_profile = opp_doc.get("starter_profile") if isinstance(opp_doc, dict) and isinstance(opp_doc.get("starter_profile"), dict) else None
+    if not isinstance(side_doc, dict) or not isinstance(opp_doc, dict) or not isinstance(batter_profile, dict) or not isinstance(pitcher_profile, dict):
         return {}
 
-    side_doc = roster_snapshot.get(side)
-    opp_doc = roster_snapshot.get(opp_side)
-    if not isinstance(side_doc, dict) or not isinstance(opp_doc, dict):
-        return {}
-
-    lineup = side_doc.get("lineup") if isinstance(side_doc.get("lineup"), list) else []
-    target_name = normalize_pitcher_name(str(rec.get("name") or ""))
-    target_order = rec.get("lineup_order")
-    batter_profile = None
-    for row in lineup:
-        if not isinstance(row, dict):
-            continue
-        if target_name and normalize_pitcher_name(str(row.get("name") or "")) == target_name:
-            batter_profile = row
-            break
-        try:
-            if batter_profile is None and target_order is not None and int(row.get("lineup_order") or 0) == int(target_order):
-                batter_profile = row
-        except Exception:
-            pass
-    pitcher_profile = opp_doc.get("starter_profile") if isinstance(opp_doc.get("starter_profile"), dict) else None
-    if not isinstance(batter_profile, dict) or not isinstance(pitcher_profile, dict):
-        return {}
+    resolved_team = away_abbr if side == "away" else home_abbr if side == "home" else team
+    resolved_opponent = home_abbr if side == "away" else away_abbr if side == "home" else ""
     return {
         "batter_profile": batter_profile,
         "pitcher_profile": pitcher_profile,
         "side_doc": side_doc,
         "opp_doc": opp_doc,
-        "opponent": str((sim_obj.get(opp_side) or {}).get("abbreviation") or "").strip(),
+        "team": resolved_team,
+        "team_id": _safe_int((((side_doc.get("team") or {}) if isinstance(side_doc, dict) else {}).get("team_id"))),
+        "team_side": side,
+        "opponent": resolved_opponent,
         "opponent_team_id": _safe_int((((opp_doc.get("team") or {}) if isinstance(opp_doc, dict) else {}).get("team_id"))),
     }
 
@@ -2724,6 +2754,7 @@ def _collect_daily_hr_targets(
             if not isinstance(raw_row, dict):
                 continue
             rec = {
+                "batter_id": _safe_int(raw_row.get("batter_id")),
                 "name": str(raw_row.get("name") or ""),
                 "team": str(raw_row.get("team") or ""),
                 "is_lineup_batter": raw_row.get("is_lineup_batter"),
@@ -2752,9 +2783,11 @@ def _collect_daily_hr_targets(
                 _safe_float(rec.get("pa_mean")),
                 _safe_int(rec.get("lineup_order")),
             )
-            opponent = str(context_fields.get("opponent") or "").strip()
-            team = str(rec.get("team") or "").strip()
-            side = "away" if team and team == str(base.get("away_abbr") or "") else ("home" if team and team == str(base.get("home_abbr") or "") else "")
+            opponent = str(context_fields.get("opponent") or matchup_ctx.get("opponent") or "").strip()
+            team = str(matchup_ctx.get("team") or rec.get("team") or "").strip()
+            side = str(matchup_ctx.get("team_side") or "").strip().lower()
+            if side not in {"away", "home"}:
+                side = "away" if team and team == str(base.get("away_abbr") or "") else ("home" if team and team == str(base.get("home_abbr") or "") else "")
             matchup = f"{team} @ {opponent}" if side == "away" else (f"{opponent} @ {team}" if side == "home" else team)
 
             candidate = {
@@ -2762,6 +2795,7 @@ def _collect_daily_hr_targets(
                 **context_fields,
                 "player_name": rec.get("name"),
                 "team": team,
+                "team_id": _safe_int(matchup_ctx.get("team_id")) or _safe_int(context_fields.get("team_id")),
                 "team_side": side,
                 "matchup": matchup,
                 "p_hr_1plus": round(float(hr_prob), 4),
