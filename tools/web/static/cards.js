@@ -2448,6 +2448,25 @@
     return `${statusText || "Scheduled"} | ${scoreLine}`;
   }
 
+  function stripLiveTotalLensSummary(card, detail) {
+    const liveRow = buildGameLensRows(card, detail).find((row) => row?.key === "live") || null;
+    if (!liveRow || liveRow.closed) return "";
+    const total = liveRow.markets?.total || {};
+    if (!total.pick || total.edge == null) return "";
+    const currentAwayRuns = toNumber(detail?.snapshot?.teams?.away?.totals?.R) || 0;
+    const currentHomeRuns = toNumber(detail?.snapshot?.teams?.home?.totals?.R) || 0;
+    const currentTotal = Number((currentAwayRuns + currentHomeRuns).toFixed(2));
+    const projectedTotal = liveRow.projection?.total;
+    const pickText = `${String(total.pick || "").replace(/^./, (m) => m.toUpperCase())} ${formatLine(total.line)}`;
+    const parts = [
+      `Live total ${pickText}`,
+      `Edge ${formatSigned(total.edge, 2)}`,
+      `Now ${formatLine(currentTotal)}`,
+    ];
+    if (projectedTotal != null) parts.push(`Proj ${formatLine(projectedTotal)}`);
+    return parts.join(" | ");
+  }
+
   function simSummary(sim, card) {
     if (!sim || sim.found === false) return "Sim unavailable";
     const away = sim?.predicted?.away;
@@ -2498,6 +2517,7 @@
         </div>
       </div>
       <div class="cards-strip-live" data-role="strip-live" hidden></div>
+      <div class="cards-strip-lens" data-role="strip-lens" hidden></div>
       <div class="cards-strip-meta">${escapeHtml(marketCountSummary(card))}</div>
       ${starterLadderStripMarkup(card)}`;
     return anchor;
@@ -2847,6 +2867,7 @@
     const homeErrors = stripNode.querySelector('[data-role="strip-home-e"]');
     const detailNode = stripNode.querySelector('[data-role="strip-detail"]');
     const liveNode = stripNode.querySelector('[data-role="strip-live"]');
+    const lensNode = stripNode.querySelector('[data-role="strip-lens"]');
     const signalNode = stripNode.querySelector('[data-role="strip-f1-signal"]');
     const snapshot = detail.snapshot;
     if (badgeNode) {
@@ -2866,6 +2887,11 @@
       const liveText = stripLiveSummary(snapshot, card);
       liveNode.textContent = liveText;
       liveNode.hidden = !liveText;
+    }
+    if (lensNode) {
+      const lensText = stripLiveTotalLensSummary(card, detail);
+      lensNode.textContent = lensText;
+      lensNode.hidden = !lensText;
     }
   }
 
