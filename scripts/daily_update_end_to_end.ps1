@@ -171,6 +171,42 @@ function Test-HeadCommitTouchesPaths {
     return [bool]($files | Select-Object -First 1)
 }
 
+function Get-GitMergeBase {
+    param(
+        [string]$RepoRoot,
+        [string]$LeftRef,
+        [string]$RightRef
+    )
+
+    $mergeBase = (& git -C $RepoRoot merge-base $LeftRef $RightRef 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to determine merge-base between $LeftRef and $RightRef."
+    }
+
+    return ($mergeBase | Select-Object -First 1).Trim()
+}
+
+function Test-CommitRangeTouchesPaths {
+    param(
+        [string]$RepoRoot,
+        [string]$FromRef,
+        [string]$ToRef,
+        [string[]]$Paths
+    )
+
+    if (-not $Paths -or $Paths.Count -eq 0) {
+        return $false
+    }
+
+    $pathArgs = @('diff', '--name-only', "$FromRef..$ToRef", '--') + $Paths
+    $files = (& git -C $RepoRoot @pathArgs 2>$null) | Where-Object { $_ -and $_.Trim() }
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to inspect path overlap between $FromRef and $ToRef."
+    }
+
+    return [bool]($files | Select-Object -First 1)
+}
+
 function Assert-SafeArtifactPush {
     param(
         [string]$RepoRoot,
@@ -196,6 +232,13 @@ function Assert-SafeArtifactPush {
     }
 
     if ($hasArtifactChanges -and -not $AllowArtifactRebase.IsPresent) {
+        $mergeBase = Get-GitMergeBase -RepoRoot $RepoRoot -LeftRef 'HEAD' -RightRef $remoteRef
+        $remoteTouchesArtifactPaths = Test-CommitRangeTouchesPaths -RepoRoot $RepoRoot -FromRef $mergeBase -ToRef $remoteRef -Paths $ArtifactPaths
+        if (-not $remoteTouchesArtifactPaths) {
+            Write-Host "Remote branch '$remoteRef' moved by $($divergence.Behind) commit(s), but none of those commits touched the generated artifact paths. Proceeding with rebase."
+            return
+        }
+
         throw @(
             "Remote branch '$remoteRef' moved by $($divergence.Behind) commit(s) while this run changed generated artifact paths.",
             'Abort publish and rerun the workflow on the updated branch, or pass -AllowArtifactRebase to force the old rebase behavior.'
