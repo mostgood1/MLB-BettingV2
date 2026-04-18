@@ -6053,6 +6053,13 @@ def _cards_first1_zero_run_prob(row: Optional[Dict[str, Any]]) -> Optional[float
     return max(0.0, min(1.0, zero_weight / total_weight))
 
 
+_CARDS_F1_NRFI_MIN_PROB = 0.55
+_CARDS_F1_NRFI_MAX_MEAN_RUNS = 0.80
+_CARDS_F1_YRFI_MAX_NRFI_PROB = 0.56
+_CARDS_F1_YRFI_MIN_MEAN_RUNS = 0.95
+_CARDS_F1_YRFI_MIN_SIDE_LEAD_PROB = 0.268
+
+
 def _cards_first1_bet_signal(card: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if not isinstance(card, dict):
         return None
@@ -6082,7 +6089,7 @@ def _cards_first1_bet_signal(card: Optional[Dict[str, Any]]) -> Optional[Dict[st
     summary = None
     detail = None
 
-    if float(nrfi_prob) >= 0.56 and float(mean_total_runs) <= 0.75:
+    if float(nrfi_prob) >= _CARDS_F1_NRFI_MIN_PROB and float(mean_total_runs) <= _CARDS_F1_NRFI_MAX_MEAN_RUNS:
         label = "F1 NRFI"
         tone = "nrfi"
         summary = f"0-run sim {float(nrfi_prob) * 100.0:.1f}% | F1 mean {float(mean_total_runs):.2f}"
@@ -6090,7 +6097,11 @@ def _cards_first1_bet_signal(card: Optional[Dict[str, Any]]) -> Optional[Dict[st
             f"Season filter qualified: simulated scoreless first inning {float(nrfi_prob) * 100.0:.1f}% "
             f"with only {float(mean_total_runs):.2f} expected runs in the opening frame."
         )
-    elif float(nrfi_prob) <= 0.55 and float(mean_total_runs) >= 1.0 and float(max_side_prob) >= 0.29:
+    elif (
+        float(nrfi_prob) <= _CARDS_F1_YRFI_MAX_NRFI_PROB
+        and float(mean_total_runs) >= _CARDS_F1_YRFI_MIN_MEAN_RUNS
+        and float(max_side_prob) >= _CARDS_F1_YRFI_MIN_SIDE_LEAD_PROB
+    ):
         label = "F1 YRFI"
         tone = "yrfi"
         summary = (
