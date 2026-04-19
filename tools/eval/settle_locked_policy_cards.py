@@ -12,6 +12,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_ROOT_ENV = str(os.environ.get("MLB_BETTING_DATA_ROOT") or "").strip()
 DATA_ROOT = Path(DATA_ROOT_ENV).resolve() if DATA_ROOT_ENV else None
+TRACKED_DATA_ROOT = (REPO_ROOT / "data").resolve()
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -126,7 +127,7 @@ def _read_feed_file(path: Path) -> Optional[Dict[str, Any]]:
 def _load_feed(date: str, game_pk: int) -> Dict[str, Any]:
     primary_path = _feed_live_path(date, game_pk)
     candidate_paths = [primary_path]
-    fallback_path = (REPO_ROOT / "data" / "raw" / "statsapi" / "feed_live" / str(date).split("-", 1)[0] / str(date) / f"{int(game_pk)}.json.gz").resolve()
+    fallback_path = (TRACKED_DATA_ROOT / "raw" / "statsapi" / "feed_live" / str(date).split("-", 1)[0] / str(date) / f"{int(game_pk)}.json.gz").resolve()
     if fallback_path not in candidate_paths:
         candidate_paths.append(fallback_path)
     stale_feed: Optional[Dict[str, Any]] = None

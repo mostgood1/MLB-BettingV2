@@ -133,42 +133,144 @@ function Get-GitAheadBehind {
     }
 }
 
-function Test-GitPathHasChanges {
+function Normalize-GitPaths {
     param(
-        [string]$RepoRoot,
         [string[]]$Paths
     )
 
-    foreach ($path in $Paths) {
-        $status = (& git -C $RepoRoot status --porcelain -- $path) -join "`n"
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to inspect git changes for path '$path'."
+    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $normalized = [System.Collections.Generic.List[string]]::new()
+    foreach ($path in @($Paths)) {
+        $raw = [string]$path
+        if (-not $raw) {
+            continue
         }
-        if ($status) {
-            return $true
+        $value = $raw.Trim().Replace('\', '/')
+        if (-not $value) {
+            continue
+        }
+        if ($seen.Add($value)) {
+            $normalized.Add($value) | Out-Null
+            }
+        }
+
+        return $normalized.ToArray()
+    }
+
+    function Get-WorkingTreeChangedPaths {
+        param(
+            [string]$RepoRoot,
+        [string[]]$Paths = @()
+        )
+
+    $collected = [System.Collections.Generic.List[string]]::new()
+    $pathArgs = if ($Paths -and $Paths.Count -gt 0) { @('--') + $Paths } else { @() }
+
+    $diffArgs = @('diff', '--name-only') + $pathArgs
+    $tracked = (& git -C $RepoRoot @diffArgs 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Failed to inspect working tree changes.'
+    }
+    foreach ($path in @($tracked)) {
+        $collected.Add([string]$path) | Out-Null
+    }
+
+    $cachedArgs = @('diff', '--cached', '--name-only') + $pathArgs
+    $cached = (& git -C $RepoRoot @cachedArgs 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Failed to inspect staged changes.'
+    }
+    foreach ($path in @($cached)) {
+        $collected.Add([string]$path) | Out-Null
+    }
+
+    $untrackedArgs = @('ls-files', '--others', '--exclude-standard') + $pathArgs
+    $untracked = (& git -C $RepoRoot @untrackedArgs 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Failed to inspect untracked changes.'
+    }
+    foreach ($path in @($untracked)) {
+        $collected.Add([string]$path) | Out-Null
+    }
+
+    return Normalize-GitPaths -Paths $collected.ToArray()
+}
+
+function Test-PathsWithinRoots {
+    param(
+        [string[]]$Paths,
+        [string[]]$Roots
+    )
+
+    if (-not $Paths -or $Paths.Count -eq 0) {
+        return $true
+    }
+
+    $normalizedRoots = Normalize-GitPaths -Paths $Roots
+    foreach ($path in $Paths) {
+        $normalizedPath = ([string]$path).Trim().Replace('\\', '/')
+        if (-not $normalizedPath) {
+            continue
+        }
+
+        $matchesRoot = $false
+        foreach ($root in $normalizedRoots) {
+            if ($normalizedPath.Equals($root, [System.StringComparison]::OrdinalIgnoreCase) -or $normalizedPath.StartsWith("$root/", [System.StringComparison]::OrdinalIgnoreCase)) {
+                $matchesRoot = $true
+                break
+            }
+        }
+
+        if (-not $matchesRoot) {
+            return $false
         }
     }
 
-    return $false
+    return $true
 }
 
-function Test-HeadCommitTouchesPaths {
+function Clear-ManagedArtifactPaths {
+    param(
+        [string]$RepoRoot,
+        [string[]]$ArtifactPaths
+    )
+
+    if (-not $ArtifactPaths -or $ArtifactPaths.Count -eq 0) {
+        return
+    }
+
+    Write-Host 'Clearing previously generated artifact changes before syncing with remote.'
+
+    $restoreArgs = @('restore', '--source=HEAD', '--staged', '--worktree', '--') + $ArtifactPaths
+    & git -C $RepoRoot @restoreArgs 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Failed to reset tracked generated artifact files before sync.'
+    }
+
+    $cleanArgs = @('clean', '-fd', '--') + $ArtifactPaths
+    & git -C $RepoRoot @cleanArgs 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Failed to remove untracked generated artifact files before sync.'
+    }
+}
+
+function Get-HeadCommitChangedPaths {
     param(
         [string]$RepoRoot,
         [string[]]$Paths
     )
 
     if (-not $Paths -or $Paths.Count -eq 0) {
-        return $false
+        return @()
     }
 
     $pathArgs = @('show', '--pretty=format:', '--name-only', 'HEAD', '--') + $Paths
-    $files = (& git -C $RepoRoot @pathArgs 2>$null) | Where-Object { $_ -and $_.Trim() }
+    $files = (& git -C $RepoRoot @pathArgs 2>$null)
     if ($LASTEXITCODE -ne 0) {
         throw 'Failed to inspect HEAD commit paths.'
     }
 
-    return [bool]($files | Select-Object -First 1)
+    return Normalize-GitPaths -Paths $files
 }
 
 function Get-GitMergeBase {
@@ -186,7 +288,7 @@ function Get-GitMergeBase {
     return ($mergeBase | Select-Object -First 1).Trim()
 }
 
-function Test-CommitRangeTouchesPaths {
+function Get-CommitRangeChangedPaths {
     param(
         [string]$RepoRoot,
         [string]$FromRef,
@@ -195,16 +297,40 @@ function Test-CommitRangeTouchesPaths {
     )
 
     if (-not $Paths -or $Paths.Count -eq 0) {
-        return $false
+        return @()
     }
 
     $pathArgs = @('diff', '--name-only', "$FromRef..$ToRef", '--') + $Paths
-    $files = (& git -C $RepoRoot @pathArgs 2>$null) | Where-Object { $_ -and $_.Trim() }
+    $files = (& git -C $RepoRoot @pathArgs 2>$null)
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to inspect path overlap between $FromRef and $ToRef."
     }
 
-    return [bool]($files | Select-Object -First 1)
+    return Normalize-GitPaths -Paths $files
+}
+
+function Test-PathSetOverlap {
+    param(
+        [string[]]$LeftPaths,
+        [string[]]$RightPaths
+    )
+
+    if (-not $LeftPaths -or $LeftPaths.Count -eq 0 -or -not $RightPaths -or $RightPaths.Count -eq 0) {
+        return $false
+    }
+
+    $rightLookup = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($path in $RightPaths) {
+        [void]$rightLookup.Add([string]$path)
+    }
+
+    foreach ($path in $LeftPaths) {
+        if ($rightLookup.Contains([string]$path)) {
+            return $true
+        }
+    }
+
+    return $false
 }
 
 function Assert-SafeArtifactPush {
@@ -224,17 +350,18 @@ function Assert-SafeArtifactPush {
         return
     }
 
-    $hasArtifactChanges = if ($UseHeadCommit.IsPresent) {
-        Test-HeadCommitTouchesPaths -RepoRoot $RepoRoot -Paths $ArtifactPaths
+    $localArtifactPaths = if ($UseHeadCommit.IsPresent) {
+        Get-HeadCommitChangedPaths -RepoRoot $RepoRoot -Paths $ArtifactPaths
     }
     else {
-        Test-GitPathHasChanges -RepoRoot $RepoRoot -Paths $ArtifactPaths
+        Get-WorkingTreeChangedPaths -RepoRoot $RepoRoot -Paths $ArtifactPaths
     }
 
-    if ($hasArtifactChanges -and -not $AllowArtifactRebase.IsPresent) {
+    if ($localArtifactPaths.Count -gt 0 -and -not $AllowArtifactRebase.IsPresent) {
         $mergeBase = Get-GitMergeBase -RepoRoot $RepoRoot -LeftRef 'HEAD' -RightRef $remoteRef
-        $remoteTouchesArtifactPaths = Test-CommitRangeTouchesPaths -RepoRoot $RepoRoot -FromRef $mergeBase -ToRef $remoteRef -Paths $ArtifactPaths
-        if (-not $remoteTouchesArtifactPaths) {
+        $remoteArtifactPaths = Get-CommitRangeChangedPaths -RepoRoot $RepoRoot -FromRef $mergeBase -ToRef $remoteRef -Paths $ArtifactPaths
+        $hasExactOverlap = Test-PathSetOverlap -LeftPaths $localArtifactPaths -RightPaths $remoteArtifactPaths
+        if (-not $hasExactOverlap) {
             Write-Host "Remote branch '$remoteRef' moved by $($divergence.Behind) commit(s), but none of those commits touched the generated artifact paths. Proceeding with rebase."
             return
         }
@@ -311,8 +438,16 @@ $initialGitStatus = ''
 $pushBranch = ''
 if ($GitPush -eq 'on') {
     $initialGitStatus = (& git -C $repoRoot status --porcelain) -join "`n"
+    if ($initialGitStatus) {
+        $allChangedPaths = Get-WorkingTreeChangedPaths -RepoRoot $repoRoot
+        if (Test-PathsWithinRoots -Paths $allChangedPaths -Roots $artifactPaths) {
+            Clear-ManagedArtifactPaths -RepoRoot $repoRoot -ArtifactPaths $artifactPaths
+            $initialGitStatus = (& git -C $repoRoot status --porcelain) -join "`n"
+        }
+    }
+
     if ($initialGitStatus -and -not $AllowDirtyGit.IsPresent) {
-        throw 'Git working tree is already dirty. Re-run with -AllowDirtyGit to permit a final auto-push.'
+        throw 'Git working tree is already dirty after generated-artifact cleanup. Re-run with -AllowDirtyGit only for intentional non-artifact changes.'
     }
 
     $pushBranch = if ($GitPushBranch) { $GitPushBranch } else { Get-GitCurrentBranch -RepoRoot $repoRoot }

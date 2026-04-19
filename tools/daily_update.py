@@ -633,7 +633,7 @@ def _relative_path_str(path: Optional[Path]) -> Optional[str]:
 
 def _sync_oddsapi_market_snapshots(date_str: str, snapshot_dir: Path) -> Dict[str, str]:
     token = str(date_str or "").strip().replace("-", "_")
-    market_dir = (_ROOT / "data" / "market" / "oddsapi").resolve()
+    market_dir = (_DATA_DIR / "market" / "oddsapi").resolve()
     names = (
         f"oddsapi_game_lines_{token}.json",
         f"oddsapi_pitcher_props_{token}.json",

@@ -32,12 +32,11 @@ data/daily/**
 !data/daily/settlements/*.json
 !data/daily/ops/
 !data/daily/ops/**
-!data/daily/sims/
-!data/daily/sims/**
-!data/daily/snapshots/
-!data/daily/snapshots/*/
-!data/daily/snapshots/*/lineups.json
-!data/daily/snapshots/*/roster_*.json
+
+# Keep volatile sims and plain web snapshots local-only. They are reproducible,
+# create daily overlap churn, and are not required for published card artifacts.
+data/daily/sims/**
+data/daily/snapshots/**
 
 # Ignore optional archive/enrichment datasets to keep repo tracking lean.
 data/market/**
@@ -45,8 +44,6 @@ data/market/**
 data/eval/**
 !data/eval/seasons/
 !data/eval/seasons/*/
-!data/eval/seasons/*/betting_day_payloads_*/
-!data/eval/seasons/*/betting_day_payloads_*/*.json
 !data/eval/seasons/*/season_betting_cards*_manifest.json
 !data/eval/seasons/*/season_betting_cards*_recap.md
 !data/tuning/

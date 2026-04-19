@@ -18,6 +18,13 @@ from .disk_cache import DiskCache
 from ..models import PitchType, ParkFactors, UmpireFactors, WeatherFactors
 
 
+def _default_statsapi_cache_root() -> Path:
+    data_root_env = str(os.environ.get("MLB_BETTING_DATA_ROOT") or "").strip()
+    if data_root_env:
+        return (Path(data_root_env).resolve() / "cache" / "statsapi").resolve()
+    return (Path(__file__).resolve().parents[2] / "data" / "cache" / "statsapi").resolve()
+
+
 @dataclass
 class StatsApiClient:
     base_url: str = "https://statsapi.mlb.com/api/v1"
@@ -32,9 +39,7 @@ class StatsApiClient:
 
     @staticmethod
     def with_default_cache(cache_dir: str | None = None, ttl_seconds: int = 6 * 3600) -> "StatsApiClient":
-        # statsapi.py lives at MLB-BettingV2/sim_engine/data/statsapi.py
-        # parents[2] => MLB-BettingV2/
-        root = Path(cache_dir) if cache_dir else (Path(__file__).resolve().parents[2] / "data" / "cache" / "statsapi")
+        root = Path(cache_dir).resolve() if cache_dir else _default_statsapi_cache_root()
         return StatsApiClient(cache=DiskCache(root_dir=root, default_ttl_seconds=ttl_seconds), cache_ttl_seconds=ttl_seconds)
 
     def _effective_trust_env(self) -> bool:
