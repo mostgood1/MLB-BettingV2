@@ -7609,6 +7609,33 @@ def _rebuild_season_betting_manifest_payload(
     return payload
 
 
+def _season_betting_manifest_payload_signature(
+    season: int,
+    profile_name: str,
+    manifest_path: Optional[Path],
+) -> Tuple[Any, ...]:
+    normalized_profile = "retuned" if str(profile_name or "").strip().lower() == "retuned" else "baseline"
+    parts: List[Any] = [
+        int(season),
+        normalized_profile,
+        _path_signature(manifest_path),
+    ]
+    for data_root in _data_roots():
+        daily_dir = data_root / "daily"
+        season_dir = data_root / "eval" / "seasons" / str(int(season))
+        day_payload_dir = season_dir / (
+            "betting_day_payloads_retuned" if normalized_profile == "retuned" else "betting_day_payloads"
+        )
+        parts.extend(
+            [
+                _dir_signature(daily_dir, f"daily_summary_{int(season)}_*_locked_policy.json"),
+                _dir_signature(daily_dir / "settlements", f"daily_summary_{int(season)}_*_locked_policy_settlement.json"),
+                _dir_signature(day_payload_dir, "season_betting_day_*.json"),
+            ]
+        )
+    return tuple(parts)
+
+
 def _season_betting_manifest_needs_refresh(season: int, manifest: Dict[str, Any]) -> bool:
     if not isinstance(manifest, dict):
         return False
@@ -7642,20 +7669,28 @@ def _season_betting_manifest_response_payload(
     manifest: Dict[str, Any],
     available_profiles: Sequence[str],
 ) -> Dict[str, Any]:
-    if _season_betting_manifest_needs_refresh(int(season), manifest):
-        return _rebuild_season_betting_manifest_payload(
-            int(season),
-            profile_name,
-            manifest_path,
-            manifest,
-            available_profiles,
-        )
-    return _season_betting_manifest_static_payload(
-        int(season),
-        profile_name,
-        manifest_path,
-        manifest,
-        available_profiles,
+    return _payload_cache_get_or_build(
+        "season_betting_manifest_api",
+        f"{int(season)}:{str(profile_name or '')}",
+        signature_factory=lambda: _season_betting_manifest_payload_signature(int(season), profile_name, manifest_path),
+        max_age_seconds=float(_CARDS_CACHE_TTL_SECONDS),
+        builder=lambda: (
+            _rebuild_season_betting_manifest_payload(
+                int(season),
+                profile_name,
+                manifest_path,
+                manifest,
+                available_profiles,
+            )
+            if _season_betting_manifest_needs_refresh(int(season), manifest)
+            else _season_betting_manifest_static_payload(
+                int(season),
+                profile_name,
+                manifest_path,
+                manifest,
+                available_profiles,
+            )
+        ),
     )
 
 
@@ -7666,20 +7701,28 @@ def _official_betting_card_manifest_response_payload(
     manifest: Dict[str, Any],
     available_profiles: Sequence[str],
 ) -> Dict[str, Any]:
-    if _season_betting_manifest_needs_refresh(int(season), manifest):
-        return _official_betting_card_manifest_payload(
-            int(season),
-            profile_name,
-            manifest_path,
-            manifest,
-            available_profiles,
-        )
-    return _official_betting_card_manifest_static_payload(
-        int(season),
-        profile_name,
-        manifest_path,
-        manifest,
-        available_profiles,
+    return _payload_cache_get_or_build(
+        "season_official_betting_manifest_api",
+        f"{int(season)}:{str(profile_name or '')}",
+        signature_factory=lambda: _season_betting_manifest_payload_signature(int(season), profile_name, manifest_path),
+        max_age_seconds=float(_CARDS_CACHE_TTL_SECONDS),
+        builder=lambda: (
+            _official_betting_card_manifest_payload(
+                int(season),
+                profile_name,
+                manifest_path,
+                manifest,
+                available_profiles,
+            )
+            if _season_betting_manifest_needs_refresh(int(season), manifest)
+            else _official_betting_card_manifest_static_payload(
+                int(season),
+                profile_name,
+                manifest_path,
+                manifest,
+                available_profiles,
+            )
+        ),
     )
 
 
