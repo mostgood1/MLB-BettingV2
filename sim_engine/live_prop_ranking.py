@@ -9,6 +9,8 @@ DEFAULT_LIVE_PROP_FEATURES: tuple[str, ...] = (
     "selected_implied_prob",
     "market_line",
     "pregame_gap_selected",
+    "selected_current_gap",
+    "selected_pace_gap",
     "progress_fraction",
     "score_diff_team",
     "inning",
@@ -88,6 +90,42 @@ def selected_pregame_gap(row: Mapping[str, Any]) -> float:
     return float(model_mean - market_line)
 
 
+def selected_current_gap(row: Mapping[str, Any]) -> float:
+    selection = str(row.get("selection") or "").strip().lower()
+    current_actual = _safe_float(
+        row.get("actual_so_far")
+        if row.get("actual_so_far") is not None
+        else row.get("actual_value")
+        if row.get("actual_value") is not None
+        else row.get("actual")
+    )
+    market_line = _safe_float(row.get("market_line") if row.get("market_line") is not None else row.get("marketLine"))
+    if current_actual is None or market_line is None:
+        return 0.0
+    if selection == "under":
+        return float(market_line - current_actual)
+    return float(current_actual - market_line)
+
+
+def selected_pace_gap(row: Mapping[str, Any]) -> float:
+    selection = str(row.get("selection") or "").strip().lower()
+    model_mean = _safe_float(row.get("model_mean") if row.get("model_mean") is not None else row.get("modelMean"))
+    current_actual = _safe_float(
+        row.get("actual_so_far")
+        if row.get("actual_so_far") is not None
+        else row.get("actual_value")
+        if row.get("actual_value") is not None
+        else row.get("actual")
+    )
+    progress_fraction = _safe_float(row.get("progress_fraction"))
+    if model_mean is None or current_actual is None or progress_fraction is None:
+        return 0.0
+    expected_to_date = float(model_mean) * min(1.0, max(0.0, float(progress_fraction)))
+    if selection == "under":
+        return float(expected_to_date - current_actual)
+    return float(current_actual - expected_to_date)
+
+
 def build_live_prop_feature_map(row: Mapping[str, Any]) -> Dict[str, float]:
     selection = str(row.get("selection") or "").strip().lower()
     market_line = _safe_float(row.get("market_line") if row.get("market_line") is not None else row.get("marketLine")) or 0.0
@@ -127,6 +165,8 @@ def build_live_prop_feature_map(row: Mapping[str, Any]) -> Dict[str, float]:
         "selected_implied_prob": float(implied_prob),
         "market_line": float(market_line),
         "pregame_gap_selected": float(selected_pregame_gap(row)),
+        "selected_current_gap": float(selected_current_gap(row)),
+        "selected_pace_gap": float(selected_pace_gap(row)),
         "progress_fraction": float(progress_fraction),
         "score_diff_team": float(score_diff_team),
         "inning": float(inning),

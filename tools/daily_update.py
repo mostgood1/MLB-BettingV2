@@ -1008,6 +1008,30 @@ def _fetch_live_lens_reports_payload(
     return payload
 
 
+def _infer_render_base_url() -> str:
+    explicit = _env_first(
+        "MLB_BETTING_BASE_URL",
+        "BASE_URL",
+        "RENDER_URL",
+        "RENDER_EXTERNAL_URL",
+    )
+    if explicit:
+        return str(explicit)
+    render_yaml_path = (_ROOT_DIR / "render.yaml").resolve()
+    try:
+        text = render_yaml_path.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+    for raw_line in text.splitlines():
+        line = str(raw_line or "").strip()
+        if not line.startswith("name:"):
+            continue
+        service_name = str(line.split(":", 1)[1] or "").strip()
+        if service_name:
+            return f"https://{service_name}.onrender.com"
+    return ""
+
+
 def _prior_day_live_lens_stage(args: argparse.Namespace, date_str: str) -> Dict[str, Any]:
     slug = str(date_str).strip().replace("-", "_")
     default_sync_path = (_DATA_DIR / "live_lens" / "render_sync" / f"live_lens_reports_{slug}.json").resolve()
@@ -1027,14 +1051,10 @@ def _prior_day_live_lens_stage(args: argparse.Namespace, date_str: str) -> Dict[
 
     payload: Dict[str, Any] = {}
     if stage["sync_requested"]:
-        base_url = str(getattr(args, "live_lens_base_url", "") or "").strip() or _env_first(
-            "MLB_BETTING_BASE_URL",
-            "BASE_URL",
-            "RENDER_URL",
-            "RENDER_EXTERNAL_URL",
-        )
+        base_url = str(getattr(args, "live_lens_base_url", "") or "").strip() or _infer_render_base_url()
         token = str(getattr(args, "live_lens_cron_token", "") or "").strip() or _env_first(
             "MLB_BETTING_CRON_TOKEN",
+            "MLB_CRON_TOKEN",
             "CRON_TOKEN",
         )
         stage["render_base_url"] = str(base_url or "")

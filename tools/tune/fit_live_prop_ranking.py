@@ -13,6 +13,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from sim_engine.live_prop_ranking import DEFAULT_LIVE_PROP_FEATURES, build_live_prop_feature_map
+from tools.web.flask_frontend import _live_stat_value, _load_live_lens_snapshot, _lookup_boxscore_row
 
 
 def _read_json(path: Path) -> Any:
@@ -44,6 +45,13 @@ def _safe_float(value: Any) -> Optional[float]:
     if not math.isfinite(number):
         return None
     return float(number)
+
+
+def _safe_int(value: Any) -> Optional[int]:
+    try:
+        return int(value)
+    except Exception:
+        return None
 
 
 def _clip_prob(p: float, eps: float = 1e-12) -> float:
@@ -142,6 +150,107 @@ def _load_first_observations(observation_path: Path) -> Dict[str, Dict[str, Any]
         if key and key not in out:
             out[key] = row
     return out
+
+
+def _final_actual_value(snapshot: Dict[str, Any], owner: str, market: str, prop: str) -> Optional[float]:
+    row_type = "pitching" if str(market or "").strip().lower() == "pitcher_props" else "batting"
+    teams = (snapshot or {}).get("teams") if isinstance(snapshot, dict) else {}
+    actual_row = None
+    for side in ("away", "home"):
+        candidate = _lookup_boxscore_row((((teams.get(side) or {}).get("boxscore") or {}).get(row_type) or []), owner)
+        if candidate:
+            actual_row = candidate
+            break
+    return _safe_float(_live_stat_value(actual_row, {"market": market, "prop": prop}))
+
+
+def _iter_first_observation_rows(live_lens_dir: Path) -> Iterable[Dict[str, Any]]:
+    registry_dir = live_lens_dir / "prop_registry"
+    if not registry_dir.exists():
+        return
+    for registry_path in sorted(registry_dir.glob("live_prop_registry_*.json")):
+        try:
+            doc = _read_json(registry_path)
+        except Exception:
+            continue
+        if not isinstance(doc, dict):
+            continue
+        entries = doc.get("entries") if isinstance(doc.get("entries"), dict) else {}
+        if not isinstance(entries, dict) or not entries:
+            continue
+        suffix = registry_path.stem.replace("live_prop_registry_", "")
+        observations = _load_first_observations(registry_dir / f"live_prop_observations_{suffix}.jsonl")
+        if not observations:
+            continue
+        date_str = str(doc.get("date") or suffix.replace("_", "-")).strip()
+        final_snapshots: Dict[int, Dict[str, Any]] = {}
+        for game_pk in sorted({_safe_int(entry.get("gamePk")) for entry in entries.values() if isinstance(entry, dict)}):
+            if game_pk is None:
+                continue
+            snapshot = _load_live_lens_snapshot(int(game_pk), date_str)
+            status = str((((snapshot or {}).get("status") or {}).get("abstractGameState") or "")).strip().lower()
+            if isinstance(snapshot, dict) and status == "final":
+                final_snapshots[int(game_pk)] = snapshot
+        for key, entry in entries.items():
+            if not isinstance(entry, dict):
+                continue
+            observation = observations.get(str(key)) if isinstance(observations.get(str(key)), dict) else {}
+            if not observation:
+                continue
+            game_pk = _safe_int(entry.get("gamePk"))
+            if game_pk is None:
+                continue
+            final_snapshot = final_snapshots.get(int(game_pk))
+            if not isinstance(final_snapshot, dict):
+                continue
+            owner = str(entry.get("owner") or "").strip()
+            market = str(entry.get("market") or "").strip().lower()
+            prop = str(entry.get("prop") or "").strip().lower()
+            selection = str(entry.get("selection") or "").strip().lower()
+            market_line = _safe_float(entry.get("marketLine"))
+            if not owner or not market or not prop or selection not in {"over", "under"} or market_line is None:
+                continue
+            final_actual = _final_actual_value(final_snapshot, owner, market, prop)
+            result = _result_label(selection, market_line, final_actual)
+            if result not in {"win", "loss"}:
+                continue
+            first_snapshot = entry.get("firstSeenSnapshot") if isinstance(entry.get("firstSeenSnapshot"), dict) else {}
+            observation_snapshot = observation.get("snapshot") if isinstance(observation.get("snapshot"), dict) else {}
+            game_state = observation.get("gameState") if isinstance(observation.get("gameState"), dict) else {}
+            score = game_state.get("score") if isinstance(game_state.get("score"), dict) else {}
+            row: Dict[str, Any] = {
+                "date": date_str,
+                "key": key,
+                "game_pk": game_pk,
+                "gamePk": game_pk,
+                "market": market,
+                "prop": prop,
+                "selection": selection,
+                "market_line": market_line,
+                "odds": observation_snapshot.get("odds") if observation_snapshot.get("odds") is not None else first_snapshot.get("odds"),
+                "live_edge": observation_snapshot.get("liveEdge") if observation_snapshot.get("liveEdge") is not None else first_snapshot.get("liveEdge"),
+                "live_projection": observation_snapshot.get("liveProjection") if observation_snapshot.get("liveProjection") is not None else first_snapshot.get("liveProjection"),
+                "model_mean": observation_snapshot.get("modelMean") if observation_snapshot.get("modelMean") is not None else first_snapshot.get("modelMean"),
+                "actual": final_actual,
+                "actual_so_far": observation_snapshot.get("actual") if observation_snapshot.get("actual") is not None else first_snapshot.get("actual"),
+                "owner": owner,
+                "first_seen_at": entry.get("firstSeenAt"),
+                "last_seen_at": entry.get("lastSeenAt"),
+                "seen_count": entry.get("seenCount"),
+                "team_side": observation.get("teamSide"),
+                "progress_fraction": game_state.get("progressFraction"),
+                "inning": game_state.get("inning"),
+                "outs": game_state.get("outs"),
+                "score_away": score.get("away"),
+                "score_home": score.get("home"),
+                "rank": observation.get("rank"),
+                "reason_summary": observation_snapshot.get("reasonSummary"),
+                "reasons": list(observation_snapshot.get("reasons") or []),
+                "live_text": game_state.get("liveText"),
+                "label": 1 if result == "win" else 0,
+            }
+            row.update(build_live_prop_feature_map(row))
+            yield row
 
 
 def _iter_registry_rows(live_lens_dir: Path) -> Iterable[Dict[str, Any]]:
@@ -419,7 +528,7 @@ def _build_cfg_block(rows: Sequence[Dict[str, Any]], feature_names: Sequence[str
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Fit live prop ranking/calibration models from historical live-lens registry data")
+    parser = argparse.ArgumentParser(description="Fit live prop ranking/calibration models from final-settled first-observation live-lens data")
     parser.add_argument("--live-lens-dir", default="data/live_lens", help="Path to the live_lens directory")
     parser.add_argument("--out-config", default="data/tuning/live_prop_ranking/default.json", help="Output JSON config path")
     parser.add_argument("--out-dataset", default="", help="Optional JSONL path for extracted training rows")
@@ -437,9 +546,9 @@ def main() -> int:
     if not live_lens_dir.exists():
         raise SystemExit(f"Live lens dir not found: {live_lens_dir}")
 
-    rows = list(_iter_registry_rows(live_lens_dir))
+    rows = list(_iter_first_observation_rows(live_lens_dir))
     if not rows:
-        raise SystemExit("No settled live-lens registry rows found")
+        raise SystemExit("No final-settled first-observation live-lens rows found")
     rows.sort(key=lambda row: (str(row.get("date") or ""), str(row.get("first_seen_at") or ""), str(row.get("key") or "")))
 
     feature_names = list(DEFAULT_LIVE_PROP_FEATURES)

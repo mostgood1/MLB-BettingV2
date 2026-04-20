@@ -1271,6 +1271,18 @@ def _live_prop_capture_snapshot(row: Dict[str, Any]) -> Dict[str, Any]:
         "liveEdge": _safe_float(row.get("live_edge")),
         "modelMean": _safe_float(row.get("model_mean")),
         "actual": _safe_float(row.get("actual")),
+        "actualSoFar": _safe_float(row.get("actual_so_far") if row.get("actual_so_far") is not None else row.get("actual")),
+        "pitchCount": _safe_int(row.get("pitch_count")),
+        "battersFaced": _safe_int(row.get("batters_faced")),
+        "strikes": _safe_int(row.get("strikes")),
+        "outsRecorded": _safe_int(row.get("outs_recorded")),
+        "strikeRate": _safe_float(row.get("strike_rate")),
+        "strikeoutRate": _safe_float(row.get("strikeout_rate")),
+        "pitchesPerBatter": _safe_float(row.get("pitches_per_batter")),
+        "expectedPitchesPerBatter": _safe_float(row.get("expected_pitches_per_batter")),
+        "staminaPitches": _safe_int(row.get("stamina_pitches")),
+        "pitchCountBuffer": _safe_int(row.get("pitch_count_buffer")),
+        "timesThroughOrder": _safe_float(row.get("times_through_order")),
         "reasonSummary": str(row.get("reason_summary") or "").strip(),
         "reasons": [
             str(reason).strip()
@@ -1449,6 +1461,24 @@ def _live_prop_registry_summary(d: str) -> Dict[str, Any]:
         "topStable": top_stable,
         "topEdges": top_edges,
     }
+
+
+def _live_prop_registry_summary_is_empty(summary: Any) -> bool:
+    if not isinstance(summary, dict):
+        return True
+    if int(_safe_int(summary.get("totalEntries")) or 0) > 0:
+        return False
+    if int(_safe_int(summary.get("settledEntries")) or 0) > 0:
+        return False
+    if str(summary.get("updatedAt") or "").strip():
+        return False
+    if summary.get("topStable") or summary.get("topEdges"):
+        return False
+    if int(_safe_int(summary.get("uniqueGames")) or 0) > 0:
+        return False
+    if int(_safe_int(summary.get("uniqueOwners")) or 0) > 0:
+        return False
+    return True
 
 
 def _enrich_live_prop_rows_with_registry(
@@ -10493,6 +10523,10 @@ def _prop_price_allowed(odds: Any, *, max_favorite_odds: int = -200) -> bool:
     return odds_value >= int(max_favorite_odds)
 
 
+def _market_price_allowed(odds: Any, *, max_favorite_odds: int = -200) -> bool:
+    return _prop_price_allowed(odds, max_favorite_odds=max_favorite_odds)
+
+
 def _prob_over_line_from_dist(dist: Dict[str, Any], line: float) -> Optional[float]:
     total = 0
     over = 0
@@ -11519,6 +11553,7 @@ def _final_live_prop_rows_from_registry(
             "projection_gap": abs(float(live_edge)) if live_edge is not None else None,
             "model_mean": _safe_float(first_snapshot.get("modelMean")),
             "actual": actual_value if actual_value is not None else _safe_float(last_snapshot.get("actual")),
+            "actual_so_far": _safe_float(first_snapshot.get("actual")),
             "actual_value": actual_value if actual_value is not None else _safe_float(last_snapshot.get("actual")),
             "live_projection": _safe_float(first_snapshot.get("liveProjection")),
             "first_seen_at": entry.get("firstSeenAt"),
@@ -11528,6 +11563,17 @@ def _final_live_prop_rows_from_registry(
             "first_seen_live_projection": _safe_float(first_snapshot.get("liveProjection")),
             "first_seen_live_edge": live_edge,
             "first_seen_actual": _safe_float(first_snapshot.get("actual")),
+            "pitch_count": _safe_int(first_snapshot.get("pitchCount")),
+            "batters_faced": _safe_int(first_snapshot.get("battersFaced")),
+            "strikes": _safe_int(first_snapshot.get("strikes")),
+            "outs_recorded": _safe_int(first_snapshot.get("outsRecorded")),
+            "strike_rate": _safe_float(first_snapshot.get("strikeRate")),
+            "strikeout_rate": _safe_float(first_snapshot.get("strikeoutRate")),
+            "pitches_per_batter": _safe_float(first_snapshot.get("pitchesPerBatter")),
+            "expected_pitches_per_batter": _safe_float(first_snapshot.get("expectedPitchesPerBatter")),
+            "stamina_pitches": _safe_int(first_snapshot.get("staminaPitches")),
+            "pitch_count_buffer": _safe_int(first_snapshot.get("pitchCountBuffer")),
+            "times_through_order": _safe_float(first_snapshot.get("timesThroughOrder")),
             "seen_count": _safe_int(entry.get("seenCount")),
             "game_pk": int(game_pk),
             "archived_for_reconciliation": True,
@@ -11628,6 +11674,26 @@ def _current_live_prop_rows(
                 actual_value = _live_stat_value(actual_row, {"market": "pitcher_props", "prop": prop_key})
                 if _live_prop_market_resolved(actual_value, line_value):
                     continue
+                pitch_count = _safe_int(actual_row.get("P")) if isinstance(actual_row, dict) else None
+                batters_faced = _safe_int(actual_row.get("BF")) if isinstance(actual_row, dict) else None
+                strikes = _safe_int(actual_row.get("S")) if isinstance(actual_row, dict) else None
+                strikeouts = _safe_int(actual_row.get("SO")) if isinstance(actual_row, dict) else None
+                outs_recorded = _safe_int(actual_row.get("OUTS")) if isinstance(actual_row, dict) else None
+                if outs_recorded is None and isinstance(actual_row, dict):
+                    outs_recorded = _parse_ip_to_outs(actual_row.get("IP"))
+                strike_rate = (float(strikes) / float(pitch_count)) if strikes is not None and pitch_count is not None and int(pitch_count) > 0 else None
+                pitches_per_batter = (float(pitch_count) / float(batters_faced)) if pitch_count is not None and batters_faced is not None and int(batters_faced) > 0 else None
+                strikeout_rate = (float(strikeouts) / float(batters_faced)) if strikeouts is not None and batters_faced is not None and int(batters_faced) > 0 else None
+                stamina_pitches = _safe_int((pitcher_profile or {}).get("stamina_pitches")) if isinstance(pitcher_profile, dict) else None
+                pitch_count_buffer = (int(stamina_pitches) - int(pitch_count)) if stamina_pitches is not None and pitch_count is not None else None
+                times_through_order = (float(batters_faced) / 9.0) if batters_faced is not None and int(batters_faced) > 0 else None
+                expected_pitches = _safe_float(model_row.get("pitches_mean"))
+                expected_batters_faced = _safe_float(model_row.get("batters_faced_mean"))
+                expected_pitches_per_batter = (
+                    float(expected_pitches) / float(expected_batters_faced)
+                    if expected_pitches is not None and expected_batters_faced is not None and float(expected_batters_faced) > 0.0
+                    else None
+                )
                 live_projection = _project_live_pitcher_value(
                     prop=prop_key,
                     team_side=side,
@@ -11677,8 +11743,20 @@ def _current_live_prop_rows(
                         "outs_mean": model_mean if prop_key == "outs" else None,
                         "model_mean": model_mean,
                         "actual": actual_value,
+                        "actual_so_far": actual_value,
                         "actual_value": actual_value,
                         "live_projection": live_projection,
+                        "pitch_count": pitch_count,
+                        "batters_faced": batters_faced,
+                        "strikes": strikes,
+                        "outs_recorded": outs_recorded,
+                        "strike_rate": strike_rate,
+                        "strikeout_rate": strikeout_rate,
+                        "pitches_per_batter": pitches_per_batter,
+                        "expected_pitches_per_batter": expected_pitches_per_batter,
+                        "stamina_pitches": stamina_pitches,
+                        "pitch_count_buffer": pitch_count_buffer,
+                        "times_through_order": times_through_order,
                     }
                 )
 
@@ -11755,6 +11833,7 @@ def _current_live_prop_rows(
                 "projection_gap": side_pick.get("projectionGap"),
                 "model_mean": model_mean,
                 "actual": actual_value,
+                "actual_so_far": actual_value,
                 "actual_value": actual_value,
                 "live_projection": live_projection,
                 "lineup_order": _safe_int(model_row.get("lineup_order")),
@@ -11901,9 +11980,13 @@ def _game_lens_moneyline_market(
     selected_side = "home" if float(home_prob) >= 0.5 else "away"
     selected_prob = float(home_prob) if selected_side == "home" else (1.0 - float(home_prob))
     selected_market_prob = float(home_prob_market) if selected_side == "home" else float(away_prob_market)
+    selected_odds = home_odds if selected_side == "home" else away_odds
     selected_projection_margin = float(home_margin) if selected_side == "home" else -float(home_margin)
     current_side_margin = current_home_margin if selected_side == "home" else -current_home_margin
     remaining_outs = _game_lens_remaining_outs(progress)
+    if not _market_price_allowed(selected_odds, max_favorite_odds=-200):
+        out["reason"] = " ".join(piece for piece in [segment_text, f"The model leaned {selected_side}, but the live moneyline price was already too steep to surface as a realistic bet."] if piece).strip() or None
+        return out
     if current_side_margin < 0 and abs(current_side_margin) > float(_game_lens_trailing_cap(progress)):
         out["reason"] = " ".join(piece for piece in [segment_text, f"The model leaned {selected_side} at {selected_prob:.1%} against a market price near {selected_market_prob:.1%}, but they were already chasing too much of the segment for the moneyline lane to stay live."] if piece).strip() or None
         return out
@@ -11974,7 +12057,11 @@ def _game_lens_spread_market(
         return out
 
     selected_side = "home" if spread_edge > 0 else "away"
+    selected_odds = spread_home_odds if selected_side == "home" else spread_away_odds
     cover_cushion = abs(float(spread_edge))
+    if not _market_price_allowed(selected_odds, max_favorite_odds=-200):
+        out["reason"] = " ".join(piece for piece in [segment_text, "The projected side was there, but the attached spread price was already too expensive to keep it realistic."] if piece).strip() or None
+        return out
     if cover_cushion < _game_lens_min_spread_cushion(progress):
         out["reason"] = " ".join(piece for piece in [segment_text, f"The projected cover cushion was only {cover_cushion:.2f} runs, so the spread lane stayed below threshold."] if piece).strip() or None
         return out
@@ -12041,8 +12128,12 @@ def _game_lens_total_market(
         return out
 
     selected_side = "over" if total_edge > 0 else "under"
+    selected_odds = total_over_odds if selected_side == "over" else total_under_odds
     current_total = float(_safe_float(actual_home) or 0.0) + float(_safe_float(actual_away) or 0.0)
     remaining_outs = _game_lens_remaining_outs(progress)
+    if not _market_price_allowed(selected_odds, max_favorite_odds=-200):
+        out["reason"] = " ".join(piece for piece in [segment_text, "The total still leaned that direction, but the current price was already beyond a sensible live-bet threshold."] if piece).strip() or None
+        return out
     if selected_side == "under" and current_total > float(live_total_line) and remaining_outs <= 9:
         out["reason"] = " ".join(piece for piece in [segment_text, "The game had already run past the posted total too late for the under path to remain actionable."] if piece).strip() or None
         return out
@@ -13538,7 +13629,7 @@ def _live_lens_reports_payload(d: str) -> Dict[str, Any]:
                         continue
         except Exception:
             pass
-    if not latest_report and not registry_summary and recap_path.exists():
+    if not latest_report and _live_prop_registry_summary_is_empty(registry_summary) and recap_path.exists():
         recap_payload = _load_json_file(recap_path) or {}
         if isinstance(recap_payload, dict) and recap_payload:
             return {
@@ -13555,8 +13646,20 @@ def _live_lens_reports_payload(d: str) -> Dict[str, Any]:
                 "latestEntry": recap_payload.get("latestEntry") if isinstance(recap_payload.get("latestEntry"), dict) else None,
                 "latestReport": recap_payload.get("latestReport") if isinstance(recap_payload.get("latestReport"), dict) else {},
                 "registrySummary": recap_payload.get("registrySummary") if isinstance(recap_payload.get("registrySummary"), dict) else {},
+                "summary": recap_payload.get("summary") if isinstance(recap_payload.get("summary"), dict) else {},
+                "rawArtifacts": recap_payload.get("rawArtifacts") if isinstance(recap_payload.get("rawArtifacts"), dict) else {},
                 "source": "daily_recap",
             }
+    summary_counts = (latest_report.get("counts") or {}) if isinstance(latest_report.get("counts"), dict) else {}
+    summary_performance = (latest_report.get("performance") or {}) if isinstance(latest_report.get("performance"), dict) else {}
+    files = {
+        "log": _file_stat_summary(log_path),
+        "observation_log": _file_stat_summary(observation_log_path),
+        "registry": _file_stat_summary(registry_path),
+        "registry_log": _file_stat_summary(registry_log_path),
+        "report": _file_stat_summary(_live_lens_report_path(d)),
+    }
+    total_bytes = sum(int((item or {}).get("bytes") or 0) for item in files.values())
     return {
         "ok": True,
         "date": str(d),
@@ -13571,6 +13674,17 @@ def _live_lens_reports_payload(d: str) -> Dict[str, Any]:
         "latestEntry": latest_entry,
         "latestReport": latest_report,
         "registrySummary": registry_summary,
+        "summary": {
+            "counts": summary_counts,
+            "performance": summary_performance,
+            "topStable": list((registry_summary.get("topStable") or []))[:10] if isinstance(registry_summary, dict) else [],
+            "topEdges": list((registry_summary.get("topEdges") or []))[:10] if isinstance(registry_summary, dict) else [],
+        },
+        "rawArtifacts": {
+            "total_bytes": int(total_bytes),
+            "total_bytes_text": _format_bytes(total_bytes),
+            "files": files,
+        },
     }
 
 
