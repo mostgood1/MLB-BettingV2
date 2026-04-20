@@ -42,6 +42,9 @@ HITTER_MARKET_ORDER: Tuple[str, ...] = (
     "hitter_rbis",
 )
 
+_DEFAULT_SHADOW_PITCHER_CANDIDATE_CAP = 8
+_DEFAULT_SHADOW_HITTER_CANDIDATE_CAP = 8
+
 DEFAULT_HITTER_EDGE_MIN_BY_MARKET: Dict[str, float] = {
     "hitter_runs": 0.10,
 }
@@ -66,6 +69,24 @@ PITCHER_MARKET_SPECS: Dict[str, Dict[str, str]] = {
         "dist_key": "so_dist",
         "mean_key": "so_mean",
     },
+}
+
+SHADOW_PITCHER_MARKET_SPECS: Dict[str, Dict[str, str]] = {
+    "hits_allowed": {
+        "market_key": "hits_allowed",
+        "dist_key": "hits_dist",
+        "mean_key": "hits_mean",
+    },
+    "walks_allowed": {
+        "market_key": "walks_allowed",
+        "dist_key": "walks_dist",
+        "mean_key": "walks_mean",
+    },
+}
+
+ALL_PITCHER_MARKET_SPECS: Dict[str, Dict[str, str]] = {
+    **PITCHER_MARKET_SPECS,
+    **SHADOW_PITCHER_MARKET_SPECS,
 }
 
 PITCHER_MARKET_ALIASES: Dict[str, str] = {
@@ -95,25 +116,40 @@ DEFAULT_LOCK_POLICY: Dict[str, Any] = {
 }
 
 DEFAULT_STANDARD_STAKE_U = 1.0
-DEFAULT_HITTER_STAKE_U = 0.25
+DEFAULT_HITTER_STAKE_U = 0.5
 
 DEFAULT_OFFICIAL_HITTER_SUBCAPS: Dict[str, int] = {
-    "hitter_home_runs": 2,
+    "hitter_home_runs": 0,
     "hitter_hits": 4,
-    "hitter_total_bases": 4,
+    "hitter_total_bases": 6,
     "hitter_runs": 1,
     "hitter_rbis": 0,
 }
 
-DEFAULT_OFFICIAL_CAP_PROFILE = "totals2_p3_tbheavy11_r1"
+DEFAULT_OFFICIAL_CAP_PROFILE = "nototals_p1_tbheavy11_r1_nohr"
 DEFAULT_OFFICIAL_CAPS: Dict[str, int] = {
-    "totals": 2,
+    "totals": 0,
     "ml": 1,
-    "pitcher_props": 3,
+    "pitcher_props": 1,
     "hitter_props": sum(DEFAULT_OFFICIAL_HITTER_SUBCAPS.values()),
 }
 
 KNOWN_OFFICIAL_CAP_PROFILES: Dict[str, Dict[str, Dict[str, int]]] = {
+    "nototals_p1_tbheavy11_r1_nohr": {
+        "caps": {
+            "totals": 0,
+            "ml": 1,
+            "pitcher_props": 1,
+            "hitter_props": 11,
+        },
+        "hitter_subcaps": {
+            "hitter_home_runs": 0,
+            "hitter_hits": 4,
+            "hitter_total_bases": 6,
+            "hitter_runs": 1,
+            "hitter_rbis": 0,
+        },
+    },
     "totals2_p3_tbheavy11_r1": {
         "caps": {
             "totals": 2,
@@ -166,6 +202,7 @@ HITTER_MARKET_SPECS: Dict[str, Dict[str, Any]] = {
         "market": "hitter_home_runs",
         "label": "Hitter HRs",
         "prob_base": "hr",
+        "dist_key": "home_runs_dist",
         "mean_key": "hr_mean",
         "primary_lines": (0.5,),
     },
@@ -173,6 +210,7 @@ HITTER_MARKET_SPECS: Dict[str, Dict[str, Any]] = {
         "market": "hitter_hits",
         "label": "Hitter Hits",
         "prob_base": "hits",
+        "dist_key": "hits_dist",
         "mean_key": "h_mean",
         "primary_lines": (0.5,),
     },
@@ -180,6 +218,7 @@ HITTER_MARKET_SPECS: Dict[str, Dict[str, Any]] = {
         "market": "hitter_total_bases",
         "label": "Hitter Total Bases",
         "prob_base": "total_bases",
+        "dist_key": "total_bases_dist",
         "mean_key": "tb_mean",
         "primary_lines": (1.5,),
     },
@@ -187,6 +226,7 @@ HITTER_MARKET_SPECS: Dict[str, Dict[str, Any]] = {
         "market": "hitter_runs",
         "label": "Hitter Runs",
         "prob_base": "runs",
+        "dist_key": "runs_dist",
         "mean_key": "r_mean",
         "primary_lines": (0.5,),
     },
@@ -194,9 +234,26 @@ HITTER_MARKET_SPECS: Dict[str, Dict[str, Any]] = {
         "market": "hitter_rbis",
         "label": "Hitter RBIs",
         "prob_base": "rbi",
+        "dist_key": "rbi_dist",
         "mean_key": "rbi_mean",
         "primary_lines": (0.5,),
     },
+}
+
+SHADOW_HITTER_MARKET_SPECS: Dict[str, Dict[str, Any]] = {
+    "batter_strikeouts": {
+        "market": "hitter_strikeouts",
+        "label": "Hitter Strikeouts",
+        "prob_base": "strikeouts",
+        "dist_key": "so_dist",
+        "mean_key": "so_mean",
+        "primary_lines": (0.5, 1.5),
+    },
+}
+
+ALL_HITTER_MARKET_SPECS: Dict[str, Dict[str, Any]] = {
+    **HITTER_MARKET_SPECS,
+    **SHADOW_HITTER_MARKET_SPECS,
 }
 
 HITTER_PREDICTION_FIELDS: Dict[str, Tuple[str, str]] = {
@@ -235,6 +292,11 @@ def _path_from_maybe_relative(value: Any) -> Optional[Path]:
 def _is_off(s: str) -> bool:
     v = str(s or "").strip().lower()
     return v in ("", "off", "none", "null", "0", "false")
+
+
+def _is_on(s: Any) -> bool:
+    v = str(s or "").strip().lower()
+    return v in ("on", "true", "1", "yes", "y")
 
 
 def _rel(path: Path) -> str:
@@ -608,6 +670,8 @@ def _normalized_hitter_history_prop(prop: Any) -> str:
         "batter_total_bases": "total_bases",
         "batter_runs_scored": "runs",
         "batter_rbis": "rbis",
+        "batter_strikeouts": "strikeouts",
+        "hitter_strikeouts": "strikeouts",
     }
     return str(mapping.get(raw, raw))
 
@@ -772,7 +836,9 @@ def _history_metric_value(group: str, prop: str, stat: Dict[str, Any]) -> Option
             "strikeouts": "strikeOuts",
             "earned_runs": "earnedRuns",
             "walks": "baseOnBalls",
+            "walks_allowed": "baseOnBalls",
             "hits": "hits",
+            "hits_allowed": "hits",
             "batters_faced": "battersFaced",
             "pitches": "numberOfPitches",
         }
@@ -784,6 +850,7 @@ def _history_metric_value(group: str, prop: str, stat: Dict[str, Any]) -> Option
             "runs": "runs",
             "rbis": "rbi",
             "rbi": "rbi",
+            "strikeouts": "strikeOuts",
             "total_bases": "totalBases",
         }
     stat_key = mapping.get(prop_key)
@@ -840,6 +907,8 @@ def _prop_unit_label(prop: str) -> str:
         "strikeouts": "strikeouts",
         "outs": "outs",
         "earned_runs": "earned runs",
+        "hits_allowed": "hits allowed",
+        "walks_allowed": "walks allowed",
         "hits": "hits",
         "home_runs": "home runs",
         "runs": "runs",
@@ -3011,7 +3080,7 @@ def _build_recommendation_reasons(row: Dict[str, Any]) -> List[str]:
             reasons.append(f"{team_label} wins this matchup in about {_format_reason_percent(row.get('selected_side_model_prob'))} of model runs.")
     elif market == "pitcher_props":
         prop_label = str(row.get("prop") or "prop").replace("_", " ")
-        mean_key = str(PITCHER_MARKET_SPECS.get(str(row.get("prop") or ""), {}).get("mean_key") or "")
+        mean_key = str(ALL_PITCHER_MARKET_SPECS.get(str(row.get("prop") or ""), {}).get("mean_key") or "")
         if mean_key and row.get(mean_key) is not None and row.get("market_line") is not None:
             reasons.append(
                 f"The model baseline sits around {_format_reason_number(row.get(mean_key))} {prop_label} against a line of {_format_reason_number(row.get('market_line'))}."
@@ -3021,7 +3090,7 @@ def _build_recommendation_reasons(row: Dict[str, Any]) -> List[str]:
             reasons.append(f"If he stays on his normal starter path, the matchup against {opponent} gives him a fair shot to reach full workload volume.")
     else:
         prop_label = str(row.get("prop") or "prop").replace("_", " ")
-        mean_key = str(HITTER_MARKET_SPECS.get(str(row.get("prop_market_key") or ""), {}).get("mean_key") or "")
+        mean_key = str(ALL_HITTER_MARKET_SPECS.get(str(row.get("prop_market_key") or ""), {}).get("mean_key") or "")
         if mean_key and row.get(mean_key) is not None and row.get("market_line") is not None:
             reasons.append(
                 f"The model baseline comes in around {_format_reason_number(row.get(mean_key))} {prop_label} against a line of {_format_reason_number(row.get('market_line'))}."
@@ -3482,6 +3551,41 @@ def _extract_hitter_predictions(sim_obj: Dict[str, Any]) -> Dict[str, Dict[str, 
         if isinstance(value, (int, float)):
             rec["hr_1plus"] = float(value)
 
+    hitter_props_raw = ((sim_obj.get("sim") or {}).get("hitter_props") or {})
+    if isinstance(hitter_props_raw, dict):
+        for raw_rec in hitter_props_raw.values():
+            if not isinstance(raw_rec, dict):
+                continue
+            rec = _rec_for(raw_rec)
+            if rec is None:
+                continue
+            for key in (
+                "h_mean",
+                "hr_mean",
+                "tb_mean",
+                "r_mean",
+                "rbi_mean",
+                "so_mean",
+                "pa_mean",
+                "ab_mean",
+            ):
+                value = raw_rec.get(key)
+                if isinstance(value, (int, float)):
+                    prev = rec.get(key)
+                    if not isinstance(prev, (int, float)) or float(value) > float(prev):
+                        rec[key] = float(value)
+            for key in (
+                "hits_dist",
+                "home_runs_dist",
+                "total_bases_dist",
+                "runs_dist",
+                "rbi_dist",
+                "so_dist",
+            ):
+                value = raw_rec.get(key)
+                if isinstance(value, dict) and value:
+                    rec[key] = dict(value)
+
     return pred
 
 
@@ -3508,8 +3612,13 @@ def _is_hitter_prediction_eligible(rec: Dict[str, Any]) -> bool:
     return True
 
 
-def _get_hitter_prob(market_key: str, line: float, rec: Dict[str, Any]) -> Optional[float]:
-    spec = HITTER_MARKET_SPECS.get(str(market_key))
+def _get_hitter_prob(
+    market_key: str,
+    line: float,
+    rec: Dict[str, Any],
+    market_specs: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Optional[float]:
+    spec = (market_specs or HITTER_MARKET_SPECS).get(str(market_key))
     if not isinstance(spec, dict):
         return None
     threshold = _half_line_to_threshold(line)
@@ -3520,7 +3629,16 @@ def _get_hitter_prob(market_key: str, line: float, rec: Dict[str, Any]) -> Optio
         return None
     if prop_base == "hr" and int(threshold) != 1:
         return None
-    return rec.get(_hitter_prob_key(prop_base, int(threshold)))
+    prob = rec.get(_hitter_prob_key(prop_base, int(threshold)))
+    if isinstance(prob, (int, float)):
+        return float(prob)
+    dist_key = str(spec.get("dist_key") or "")
+    if not dist_key:
+        return None
+    dist = rec.get(dist_key)
+    if not isinstance(dist, dict):
+        return None
+    return _prob_over_line_from_dist(dist, float(line))
 
 
 def _line_matches(value: Any, target: float, tol: float = 1e-9) -> bool:
@@ -3530,11 +3648,15 @@ def _line_matches(value: Any, target: float, tol: float = 1e-9) -> bool:
         return False
 
 
-def _select_hitter_props_market(market_key: str, props_market: Dict[str, Any]) -> Dict[str, Any]:
+def _select_hitter_props_market(
+    market_key: str,
+    props_market: Dict[str, Any],
+    market_specs: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
     if not isinstance(props_market, dict):
         return {}
 
-    spec = HITTER_MARKET_SPECS.get(str(market_key)) or {}
+    spec = (market_specs or HITTER_MARKET_SPECS).get(str(market_key)) or {}
     preferred_lines = tuple(spec.get("primary_lines") or ())
     if not preferred_lines:
         return props_market
@@ -3703,12 +3825,17 @@ def _collect_hitter_recommendations(
     hitter_lines_path: Path,
     policy: Dict[str, Any],
     snapshots_dir: Optional[Path] = None,
+    *,
+    market_specs: Optional[Dict[str, Dict[str, Any]]] = None,
+    stake_u: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     if not hitter_lines_path.exists():
         return []
 
     hitter_odds_raw = (_read_json(hitter_lines_path).get("hitter_props") or {})
     hitter_odds = {normalize_pitcher_name(str(name)): markets for name, markets in hitter_odds_raw.items()}
+    active_market_specs = dict(market_specs or HITTER_MARKET_SPECS)
+    hitter_stake_u = float(DEFAULT_HITTER_STAKE_U if stake_u is None else stake_u)
     rows: List[Dict[str, Any]] = []
     roster_cache: Dict[Tuple[int, int], Optional[Dict[str, Any]]] = {}
 
@@ -3763,13 +3890,13 @@ def _collect_hitter_recommendations(
             opponent_side = "home" if str(rec.get("team") or "").strip().upper() == str((sim_obj.get("away") or {}).get("abbreviation") or "").strip().upper() else "away"
             opponent_team = sim_obj.get(opponent_side) if isinstance(sim_obj.get(opponent_side), dict) else {}
             opponent_team_id = _safe_int(matchup_ctx.get("opponent_team_id")) or _safe_int(opponent_team.get("id"))
-            for market_key, market_spec in HITTER_MARKET_SPECS.items():
-                props_market = _select_hitter_props_market(market_key, markets.get(market_key) or {})
+            for market_key, market_spec in active_market_specs.items():
+                props_market = _select_hitter_props_market(market_key, markets.get(market_key) or {}, active_market_specs)
                 line = props_market.get("line")
                 if line is None:
                     continue
                 line_value = float(line)
-                p_over = _get_hitter_prob(market_key, line_value, rec)
+                p_over = _get_hitter_prob(market_key, line_value, rec, active_market_specs)
                 if p_over is None:
                     continue
                 side_pick = _select_market_side(
@@ -3890,7 +4017,7 @@ def _collect_hitter_recommendations(
                             "lineup_order": rec.get("lineup_order"),
                             "market_alternates": list(props_market.get("alternates") or []),
                             "odds": side_pick["odds"],
-                            "stake_u": float(DEFAULT_HITTER_STAKE_U),
+                            "stake_u": float(hitter_stake_u),
                             "sim_sample_size": _sim_sample_size_from_sim_obj(sim_obj),
                             "baseball_reasons": _trim_reason_list(reason_items),
                         }
@@ -3907,12 +4034,17 @@ def _collect_pitcher_recommendations(
     so_prob_calibration: Optional[Dict[str, Any]],
     outs_prob_calibration: Optional[Dict[str, Any]],
     snapshots_dir: Optional[Path] = None,
+    *,
+    market_specs: Optional[Dict[str, Dict[str, str]]] = None,
+    stake_u: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     if not pitcher_lines_path.exists():
         return []
 
     pitcher_odds_raw = (_read_json(pitcher_lines_path).get("pitcher_props") or {})
     pitcher_odds = {normalize_pitcher_name(str(name)): markets for name, markets in pitcher_odds_raw.items()}
+    active_market_specs = dict(market_specs or PITCHER_MARKET_SPECS)
+    pitcher_stake_u = float(DEFAULT_STANDARD_STAKE_U if stake_u is None else stake_u)
     rows: List[Dict[str, Any]] = []
 
     roster_cache: Dict[Tuple[int, int], Optional[Dict[str, Any]]] = {}
@@ -3966,8 +4098,9 @@ def _collect_pitcher_recommendations(
             markets = pitcher_odds.get(normalize_pitcher_name(starter_name))
             if not isinstance(markets, dict):
                 continue
-            for market_name in _iter_pitcher_market_names(policy):
-                market_spec = PITCHER_MARKET_SPECS.get(market_name) or {}
+            market_names = list(active_market_specs.keys()) if market_specs is not None else _iter_pitcher_market_names(policy)
+            for market_name in market_names:
+                market_spec = active_market_specs.get(market_name) or {}
                 market_key = str(market_spec.get("market_key") or "")
                 props_market = markets.get(market_key) or {}
                 line = props_market.get("line")
@@ -4096,7 +4229,7 @@ def _collect_pitcher_recommendations(
                             mean_key: pred.get(mean_key),
                             "market_alternates": list(props_market.get("alternates") or []),
                             "odds": side_pick.get("odds"),
-                            "stake_u": float(DEFAULT_STANDARD_STAKE_U),
+                            "stake_u": float(pitcher_stake_u),
                             "sim_sample_size": _sim_sample_size_from_sim_obj(sim_obj),
                             "baseball_reasons": _trim_reason_list(baseball_reasons),
                         }
@@ -4362,6 +4495,34 @@ def _build_locked_policy_card(
     )
 
     stage_started_at = perf_counter()
+    shadow_pitcher_raw = _collect_pitcher_recommendations(
+        pitcher_sim_dir,
+        pitcher_lines_path,
+        policy,
+        so_prob_calibration,
+        outs_prob_calibration,
+        _ROOT / "data" / "daily" / "snapshots" / str(date),
+        market_specs=SHADOW_PITCHER_MARKET_SPECS,
+        stake_u=0.0,
+    )
+    shadow_pitcher_supported, shadow_pitcher_audit = _filter_playable_candidates_by_support(
+        shadow_pitcher_raw,
+        market_name="shadow_pitcher_props",
+    )
+    shadow_pitcher_rows = [
+        {**row, "shadow_only": True}
+        for row in _rank_and_cap_unique_players(
+            shadow_pitcher_supported,
+            _DEFAULT_SHADOW_PITCHER_CANDIDATE_CAP,
+        )
+    ]
+    timings["collect_shadow_pitcher_candidates_s"] = _elapsed_seconds(stage_started_at)
+    print(
+        "[multi-profile] Locked-policy stage: shadow pitcher candidates "
+        f"({_format_elapsed(timings['collect_shadow_pitcher_candidates_s'])}, rows={len(shadow_pitcher_rows)})"
+    )
+
+    stage_started_at = perf_counter()
     hitter_rows = _collect_hitter_recommendations(
         hitter_sim_dir,
         hitter_lines_path,
@@ -4372,6 +4533,32 @@ def _build_locked_policy_card(
     print(
         "[multi-profile] Locked-policy stage: hitter candidates "
         f"({_format_elapsed(timings['collect_hitter_candidates_s'])}, rows={len(hitter_rows)})"
+    )
+
+    stage_started_at = perf_counter()
+    shadow_hitter_raw = _collect_hitter_recommendations(
+        hitter_sim_dir,
+        hitter_lines_path,
+        policy,
+        _ROOT / "data" / "daily" / "snapshots" / str(date),
+        market_specs=SHADOW_HITTER_MARKET_SPECS,
+        stake_u=0.0,
+    )
+    shadow_hitter_supported, shadow_hitter_audit = _filter_playable_candidates_by_support(
+        shadow_hitter_raw,
+        market_name="shadow_hitter_props",
+    )
+    shadow_hitter_rows = [
+        {**row, "shadow_only": True}
+        for row in _rank_and_cap_unique_players(
+            shadow_hitter_supported,
+            _DEFAULT_SHADOW_HITTER_CANDIDATE_CAP,
+        )
+    ]
+    timings["collect_shadow_hitter_candidates_s"] = _elapsed_seconds(stage_started_at)
+    print(
+        "[multi-profile] Locked-policy stage: shadow hitter candidates "
+        f"({_format_elapsed(timings['collect_shadow_hitter_candidates_s'])}, rows={len(shadow_hitter_rows)})"
     )
 
     raw_rows: Dict[str, List[Dict[str, Any]]] = {
@@ -4517,6 +4704,10 @@ def _build_locked_policy_card(
         warnings.append(
             f"Removed {int(playable_support_policy.get('removed_sparse_support_n') or 0)} sparse-support playable candidate(s) from the official card output"
         )
+    if not shadow_hitter_rows:
+        warnings.append(
+            "No support-qualified hitter strikeout shadow candidates were published; current hitter sim artifacts may not include strikeout distributions yet."
+        )
 
     selected_support_summary_markets = ("totals", "ml", "pitcher_props", "hitter_props")
     selected_support_policy = {
@@ -4564,6 +4755,29 @@ def _build_locked_policy_card(
         }
     }
 
+    shadow_markets = {
+        "pitcher_props": {
+            "raw_candidates_n": int(len(shadow_pitcher_raw)),
+            "selected_n": int(len(shadow_pitcher_rows)),
+            "cap": int(_DEFAULT_SHADOW_PITCHER_CANDIDATE_CAP),
+            "stake_u": 0.0,
+            "shadow_only": True,
+            "submarkets": list(SHADOW_PITCHER_MARKET_SPECS.keys()),
+            "playable_support_removed_n": int(shadow_pitcher_audit.get("removed_sparse_support_n") or 0),
+            "recommendations": shadow_pitcher_rows,
+        },
+        "hitter_props": {
+            "raw_candidates_n": int(len(shadow_hitter_raw)),
+            "selected_n": int(len(shadow_hitter_rows)),
+            "cap": int(_DEFAULT_SHADOW_HITTER_CANDIDATE_CAP),
+            "stake_u": 0.0,
+            "shadow_only": True,
+            "submarkets": list(SHADOW_HITTER_MARKET_SPECS.keys()),
+            "playable_support_removed_n": int(shadow_hitter_audit.get("removed_sparse_support_n") or 0),
+            "recommendations": shadow_hitter_rows,
+        },
+    }
+
     hitter_policy: Dict[str, Any] = {
         "side": "best_edge_side",
         "no_vig_edge_min": float(policy["hitter_edge_min"]),
@@ -4587,7 +4801,7 @@ def _build_locked_policy_card(
         }
 
     cap_note = (
-        "Current live defaults run totals at 2/day, keep ml at 1 and pitcher props at 3, and add one runs slot to the HR/Hits/TB hitter mix while ranking sides from the sim first."
+        "Current live defaults disable totals and hitter HR, keep ml at 1 and pitcher props at 1, and concentrate the hitter card into hits, total bases, and one runs slot while ranking sides from the sim first."
         if cap_profile == DEFAULT_OFFICIAL_CAP_PROFILE
         else "This card uses a custom cap overlay."
     )
@@ -4659,9 +4873,10 @@ def _build_locked_policy_card(
             "Official player props are limited to one selected lane per player; additional qualified lanes remain available as playable candidates.",
             "Official sides are now picked from the sim distribution first, with market edge used as a secondary ranking input.",
             "Totals and player props must keep their projected mean on the same side of the betting line before they can be promoted.",
-            "Pitcher props rank the best qualified outs/strikeouts lanes into the shared pitcher bucket.",
+            "Pitcher props rank the best qualified lane into a single shared pitcher bucket.",
             "Prop price guardrails drop overly juiced favorites before official and other playable candidates are ranked.",
-            "Totals, moneyline, and pitcher props are graded at 1.0u; hitter props are graded at 0.25u.",
+            "Moneyline and pitcher props are graded at 1.0u; hitter props are graded at 0.5u.",
+            "Shadow markets publish zero-stake watchlist candidates for pitcher hits allowed, pitcher walks allowed, and hitter strikeouts without affecting official card caps.",
         ],
         "profiles": profile_info,
         "inputs": {
@@ -4678,9 +4893,14 @@ def _build_locked_policy_card(
             "official_card_explanation_support": explanation_diagnostics,
             "selected_support_policy": selected_support_policy,
             "playable_support_policy": playable_support_policy,
+            "shadow_support_policy": {
+                "pitcher_props": shadow_pitcher_audit,
+                "hitter_props": shadow_hitter_audit,
+            },
         },
         "market_groups": market_groups,
         "markets": markets,
+        "shadow_markets": shadow_markets,
         "combined": {
             "raw_candidates_n": int(sum(v["raw_candidates_n"] for v in markets.values())),
             "selected_n": int(sum(v["selected_n"] for v in markets.values())),
@@ -4929,16 +5149,19 @@ def main() -> int:
         default=int(_DEFAULT_LOCKED_POLICY_MIN_SIMS),
         help="Minimum simulation count required before writing the official locked-policy card; lower-sim runs skip final card publish.",
     )
+    ap.add_argument(
+        "--reuse-existing-profiles",
+        nargs="?",
+        const="on",
+        default="off",
+        help=(
+            "Reuse profile metadata from an existing bundle manifest instead of rerunning tools/daily_update.py. "
+            "Reads --manifest-out when supplied, otherwise <out-game>/daily_summary_<date>_profile_bundle.json."
+        ),
+    )
 
     # Parse known args and pass all unknown args through to each daily_update run.
     args, passthrough = ap.parse_known_args()
-
-    py_exe = _resolve_path(str(args.python_exe))
-    daily_update_py = _ROOT / "tools" / "daily_update.py"
-    if not py_exe.exists():
-        raise SystemExit(f"Python executable not found: {py_exe}")
-    if not daily_update_py.exists():
-        raise SystemExit(f"Missing daily_update tool: {daily_update_py}")
 
     out_game = _resolve_path(str(args.out_game))
     out_pitcher = _resolve_path(str(args.out_pitcher))
@@ -4947,7 +5170,19 @@ def main() -> int:
     out_pitcher.mkdir(parents=True, exist_ok=True)
     out_hitter.mkdir(parents=True, exist_ok=True)
 
+    py_exe = _resolve_path(str(args.python_exe))
+    daily_update_py = _ROOT / "tools" / "daily_update.py"
+    reuse_existing_profiles = _is_on(args.reuse_existing_profiles)
+    if not reuse_existing_profiles and not py_exe.exists():
+        raise SystemExit(f"Python executable not found: {py_exe}")
+    if not reuse_existing_profiles and not daily_update_py.exists():
+        raise SystemExit(f"Missing daily_update tool: {daily_update_py}")
+
     token = str(args.date).replace("-", "_")
+    if str(args.manifest_out).strip():
+        manifest_path = _resolve_path(str(args.manifest_out))
+    else:
+        manifest_path = out_game / f"daily_summary_{token}_profile_bundle.json"
     pitcher_lines_path = _ROOT / "data" / "market" / "oddsapi" / f"oddsapi_pitcher_props_{token}.json"
     hitter_lines_path = _ROOT / "data" / "market" / "oddsapi" / f"oddsapi_hitter_props_{token}.json"
     pitcher_market_entries = _market_entries_n(pitcher_lines_path, root_key="pitcher_props")
@@ -4994,17 +5229,65 @@ def main() -> int:
         "[multi-profile] Starting daily multi-profile build "
         f"for {args.date} (season {int(args.season)})"
     )
-
-    for profile_name, role_name, out_dir, extra in profiles:
-        summary_path = out_dir / f"daily_summary_{token}.json"
-        sim_dir = out_dir / "sims" / str(args.date)
-        snapshot_dir = out_dir / "snapshots" / str(args.date)
-        if role_name != "game_recos":
-            source_snapshot_dir = out_game / "snapshots" / str(args.date)
-            _sync_profile_snapshot_dir(source_snapshot_dir, snapshot_dir)
-        skip_reason = profile_skip_reasons.get(profile_name)
-        if skip_reason:
-            print(f"[multi-profile] Skipping profile '{profile_name}' -> {skip_reason}")
+    if reuse_existing_profiles:
+        if not manifest_path.exists():
+            raise SystemExit(f"Cannot reuse existing profiles; manifest not found: {manifest_path}")
+        try:
+            existing_manifest = _read_json(manifest_path)
+        except Exception as exc:
+            raise SystemExit(f"Cannot read existing manifest {manifest_path}: {type(exc).__name__}: {exc}")
+        existing_profiles = existing_manifest.get("profiles") if isinstance(existing_manifest, dict) else None
+        if not isinstance(existing_profiles, dict) or not existing_profiles:
+            raise SystemExit(f"Cannot reuse existing profiles; manifest has no profiles section: {manifest_path}")
+        for _, role_name, out_dir, extra in profiles:
+            existing_info = existing_profiles.get(role_name)
+            if not isinstance(existing_info, dict):
+                raise SystemExit(f"Cannot reuse existing profiles; missing role '{role_name}' in {manifest_path}")
+            merged_info = dict(existing_info)
+            merged_info.setdefault("out_dir", _rel(out_dir))
+            merged_info.setdefault("summary_path", _rel(out_dir / f"daily_summary_{token}.json"))
+            merged_info.setdefault("sim_dir", _rel(out_dir / "sims" / str(args.date)))
+            merged_info.setdefault("snapshot_dir", _rel(out_dir / "snapshots" / str(args.date)))
+            merged_info["extra_args"] = list(extra)
+            merged_info["reused"] = True
+            profile_info[role_name] = merged_info
+        print(f"[multi-profile] Reusing profile outputs from {_rel(manifest_path)}")
+    else:
+        for profile_name, role_name, out_dir, extra in profiles:
+            summary_path = out_dir / f"daily_summary_{token}.json"
+            sim_dir = out_dir / "sims" / str(args.date)
+            snapshot_dir = out_dir / "snapshots" / str(args.date)
+            if role_name != "game_recos":
+                source_snapshot_dir = out_game / "snapshots" / str(args.date)
+                _sync_profile_snapshot_dir(source_snapshot_dir, snapshot_dir)
+            skip_reason = profile_skip_reasons.get(profile_name)
+            if skip_reason:
+                print(f"[multi-profile] Skipping profile '{profile_name}' -> {skip_reason}")
+                profile_info[role_name] = {
+                    "profile": profile_name,
+                    "out_dir": _rel(out_dir),
+                    "summary_path": _rel(summary_path),
+                    "sim_dir": _rel(sim_dir),
+                    "snapshot_dir": _rel(snapshot_dir),
+                    "extra_args": list(extra),
+                    "exit_code": 0,
+                    "skipped": True,
+                    "skip_reason": str(skip_reason),
+                }
+                continue
+            profile_started_at = perf_counter()
+            rc, cmd = _run_profile(
+                profile_name=profile_name,
+                py_exe=py_exe,
+                daily_update_py=daily_update_py,
+                date=str(args.date),
+                season=int(args.season),
+                passthrough_args=list(passthrough),
+                out_dir=out_dir,
+                extra_args=extra,
+                lineups_last_known_path=shared_lineups_last_known_path,
+            )
+            profile_duration_s = _elapsed_seconds(profile_started_at)
             profile_info[role_name] = {
                 "profile": profile_name,
                 "out_dir": _rel(out_dir),
@@ -5012,48 +5295,23 @@ def main() -> int:
                 "sim_dir": _rel(sim_dir),
                 "snapshot_dir": _rel(snapshot_dir),
                 "extra_args": list(extra),
-                "exit_code": 0,
-                "skipped": True,
-                "skip_reason": str(skip_reason),
+                "exit_code": int(rc),
+                "duration_s": round(float(profile_duration_s), 3),
+                "skipped": False,
             }
-            continue
-        profile_started_at = perf_counter()
-        rc, cmd = _run_profile(
-            profile_name=profile_name,
-            py_exe=py_exe,
-            daily_update_py=daily_update_py,
-            date=str(args.date),
-            season=int(args.season),
-            passthrough_args=list(passthrough),
-            out_dir=out_dir,
-            extra_args=extra,
-            lineups_last_known_path=shared_lineups_last_known_path,
-        )
-        profile_duration_s = _elapsed_seconds(profile_started_at)
-        profile_info[role_name] = {
-            "profile": profile_name,
-            "out_dir": _rel(out_dir),
-            "summary_path": _rel(summary_path),
-            "sim_dir": _rel(sim_dir),
-            "snapshot_dir": _rel(snapshot_dir),
-            "extra_args": list(extra),
-            "exit_code": int(rc),
-            "duration_s": round(float(profile_duration_s), 3),
-            "skipped": False,
-        }
-        print(
-            f"[multi-profile] Finished profile '{profile_name}' in {_format_elapsed(profile_duration_s)} "
-            f"(exit={int(rc)})"
-        )
-        if rc != 0:
-            failures.append(
-                {
-                    "role": role_name,
-                    "profile": profile_name,
-                    "exit_code": int(rc),
-                    "command": cmd,
-                }
+            print(
+                f"[multi-profile] Finished profile '{profile_name}' in {_format_elapsed(profile_duration_s)} "
+                f"(exit={int(rc)})"
             )
+            if rc != 0:
+                failures.append(
+                    {
+                        "role": role_name,
+                        "profile": profile_name,
+                        "exit_code": int(rc),
+                        "command": cmd,
+                    }
+                )
 
     best_selection_path = _ROOT / "_tmp_best_set_selection_holdout13.json"
     best_selection: Optional[Dict[str, Any]] = None
@@ -5178,10 +5436,6 @@ def main() -> int:
         hr_targets_error = f"{type(e).__name__}: {e}"
         print(f"[multi-profile] HR targets build failed: {hr_targets_error}")
 
-    if str(args.manifest_out).strip():
-        manifest_path = _resolve_path(str(args.manifest_out))
-    else:
-        manifest_path = out_game / f"daily_summary_{token}_profile_bundle.json"
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
 
     manifest = {
@@ -5213,6 +5467,7 @@ def main() -> int:
             ),
             "staking": ((locked_policy_card.get("staking") or {}) if locked_policy_card is not None else None),
             "selected_counts": (_locked_policy_selected_counts(locked_policy_card) if locked_policy_card is not None else None),
+            "shadow_counts": ((locked_policy_card.get("shadow_markets") or {}) if locked_policy_card is not None else None),
             "warnings": (locked_policy_card.get("warnings") if locked_policy_card is not None else []),
             "explanation_diagnostics": ((locked_policy_card.get("explanation_diagnostics") or {}) if locked_policy_card is not None else None),
             "audit_track": ((locked_policy_card.get("audit_track") or {}) if locked_policy_card is not None else None),

@@ -41,7 +41,7 @@ DEFAULT_CAP_SCENARIOS: Dict[str, Dict[str, int]] = {
 }
 
 STANDARD_STAKE_U = 1.0
-HITTER_STAKE_U = 0.25
+HITTER_STAKE_U = 0.5
 
 HITTER_SUBMARKETS: Tuple[str, ...] = (
     "hitter_home_runs",
