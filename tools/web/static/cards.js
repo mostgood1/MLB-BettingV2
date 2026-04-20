@@ -647,6 +647,42 @@
     ];
 
     return segments.map((segment) => {
+      if (segment.key === "live" && !progress.isLive) {
+        return {
+          key: segment.key,
+          label: progress.label || "Pregame",
+          closed: true,
+          projection: { away: null, home: null, total: null, homeMargin: null, closed: true },
+          baselineHomeWinProb: null,
+          modelHomeWinProb: null,
+          markets: {
+            moneyline: {
+              pick: null,
+              edge: null,
+              modelProb: null,
+              marketProb: null,
+              homeOdds: moneylineHomeOdds,
+              awayOdds: moneylineAwayOdds,
+              marketHomeProb,
+            },
+            spread: {
+              pick: null,
+              edge: null,
+              homeLine: null,
+              selectedLine: null,
+              homeOdds: spreads.home_odds || spreads.homeOdds || null,
+              awayOdds: spreads.away_odds || spreads.awayOdds || null,
+            },
+            total: {
+              pick: null,
+              edge: null,
+              line: null,
+              overOdds: totals.over_odds || totals.overOdds || null,
+              underOdds: totals.under_odds || totals.underOdds || null,
+            },
+          },
+        };
+      }
       const projection = segmentProjection({
         pregameAway: predictedAway,
         pregameHome: predictedHome,
@@ -1062,29 +1098,37 @@
     return `${totalsTile}${mlTile}${pitcherTile}${hitterTile}`;
   }
 
-  function probabilityRows(card) {
+  function probabilityRows(card, detail) {
     const entries = [
-      { label: "First 1", row: card?.predictions?.first1 || null },
-      { label: "First 3", row: card?.predictions?.first3 || null },
-      { label: "First 5", row: card?.predictions?.first5 || null },
-      { label: "Full game", row: card?.predictions?.full || null },
+      { key: "first1", label: "First 1" },
+      { key: "first3", label: "First 3" },
+      { key: "first5", label: "First 5" },
+      { key: "full", label: "Full game" },
     ];
     return entries
       .map((entry) => {
-        const away = toNumber(entry?.row?.away_win_prob) || 0;
-        const home = toNumber(entry?.row?.home_win_prob) || 0;
-        const tie = toNumber(entry?.row?.tie_prob);
+        const row = segmentPrediction(card, detail, entry.key);
+        const awayRaw = toNumber(row?.away_win_prob ?? row?.awayWinProb);
+        const homeRaw = toNumber(row?.home_win_prob ?? row?.homeWinProb);
+        const tie = toNumber(row?.tie_prob ?? row?.tieProb);
+        const normalized = (awayRaw != null && homeRaw != null)
+          ? normalizeTwoWay(awayRaw, homeRaw)
+          : { first: null, second: null };
+        const away = normalized.first != null ? normalized.first : awayRaw;
+        const home = normalized.second != null ? normalized.second : homeRaw;
         const meta = [
-          `${card?.away?.abbr || "Away"} ${formatPercent(away, 1)}`,
-          `${card?.home?.abbr || "Home"} ${formatPercent(home, 1)}`,
+          away != null ? `${card?.away?.abbr || "Away"} ${formatPercent(away, 1)}` : "",
+          home != null ? `${card?.home?.abbr || "Home"} ${formatPercent(home, 1)}` : "",
           tie != null && tie > 0 ? `Tie ${formatPercent(tie, 1)}` : "",
         ]
           .filter(Boolean)
           .join(" | ");
+        const awayPct = away != null ? Math.max(10, away * 100) : 50;
+        const homePct = home != null ? Math.max(10, home * 100) : 50;
         return `
           <div class="cards-prob-row">
             <div class="cards-prob-label">${escapeHtml(entry.label)}</div>
-            <div class="cards-prob-bar" style="--away-pct:${Math.max(10, away * 100).toFixed(1)}%; --home-pct:${Math.max(10, home * 100).toFixed(1)}%;">
+            <div class="cards-prob-bar" style="--away-pct:${awayPct.toFixed(1)}%; --home-pct:${homePct.toFixed(1)}%;">
               <div class="cards-prob-away"></div>
               <div class="cards-prob-home"></div>
             </div>
@@ -1216,7 +1260,7 @@
       <div class="cards-prob-groups">
         <section class="cards-prob-group">
           <div class="cards-table-title"><strong>Win Probability</strong></div>
-          <div class="cards-prob-grid">${probabilityRows(card)}</div>
+          <div class="cards-prob-grid">${probabilityRows(card, detail)}</div>
         </section>
         <section class="cards-prob-group">
           <div class="cards-table-title"><strong>Run Projections</strong></div>
@@ -1836,7 +1880,7 @@
       </div>`
         : `<div class="cards-empty-copy">${escapeHtml(simLoaded ? 'Loading current live prop lanes...' : 'Loading live sim context...')}</div>`;
     }
-    const overviewRows = livePayloadAvailable ? liveRows : liveLensAllPropRows(card);
+    const overviewRows = livePayloadAvailable ? liveRows : (liveStatus ? liveLensAllPropRows(card) : []);
     const rankedRows = overviewRows
       .map((reco) => ({ reco, state: propLensState(card, detail, reco) }))
       .filter((entry) => entry.state && entry.state.reco)
@@ -2453,6 +2497,8 @@
   }
 
   function stripLiveTotalLensSummary(card, detail) {
+    const progress = gameProgress(detail?.snapshot, card);
+    if (!progress.isLive) return "";
     const liveRow = buildGameLensRows(card, detail).find((row) => row?.key === "live") || null;
     if (!liveRow || liveRow.closed) return "";
     const total = liveRow.markets?.total || {};
