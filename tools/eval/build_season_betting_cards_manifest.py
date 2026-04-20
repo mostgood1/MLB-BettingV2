@@ -56,7 +56,7 @@ from tools.daily_update_multi_profile import (
     _selected_player_keys,
     _subtract_selected_rows,
 )
-from tools.eval.settle_locked_policy_cards import _combined_summary, _settle_card
+from tools.eval.settle_locked_policy_cards import _settle_card
 
 
 SETTLED_MARKET_ORDER: Tuple[str, ...] = (
@@ -282,13 +282,14 @@ def _static_day_payload(
     season: int,
     profile_name: str,
     card_path: Path,
-    report_path: Path,
+    report_path: Optional[Path],
     card: Dict[str, Any],
     settled_card: Dict[str, Any],
     summary: Dict[str, Any],
     payload_path: Path,
 ) -> Dict[str, Any]:
-    return {
+    return _normalize_embedded_paths(
+        {
         "season": int(season),
         "date": str(card.get("date") or ""),
         "profile": str(profile_name or "retuned"),
@@ -307,7 +308,51 @@ def _static_day_payload(
         "playable_results": dict(settled_card.get("playable_results") or {}),
         "all_results": dict(settled_card.get("all_results") or {}),
         "games": _season_betting_games_payload(card, settled_card),
+        }
+    )
+
+
+def _manifest_day_entry_from_payload(day_payload: Dict[str, Any]) -> Dict[str, Any]:
+    summary = dict(day_payload.get("summary") or {})
+    date_str = str(day_payload.get("date") or summary.get("date") or "").strip()
+    results = _merge_result_blocks([day_payload.get("results") or summary.get("results") or {}])
+    combined = results.get("combined") or _blank_summary()
+    return {
+        "date": date_str,
+        "month": str(summary.get("month") or date_str[:7]),
+        "card_path": day_payload.get("card_source") or summary.get("card_path"),
+        "report_path": day_payload.get("report_source") or summary.get("report_path"),
+        "payload_path": day_payload.get("payload_source") or summary.get("payload_path"),
+        "cap_profile": str(day_payload.get("cap_profile") or summary.get("cap_profile") or DEFAULT_OFFICIAL_CAP_PROFILE),
+        "selected_counts": dict(day_payload.get("selected_counts") or summary.get("selected_counts") or {}),
+        "results": results,
+        "settled_n": int(combined.get("n") or summary.get("settled_n") or 0),
+        "unresolved_n": int(summary.get("unresolved_n") or 0),
+        "warnings": list(summary.get("warnings") or []),
+        "profit_u": round(float(combined.get("profit_u") or summary.get("profit_u") or 0.0), 4),
+        "roi": combined.get("roi") if combined.get("roi") is not None else summary.get("roi"),
     }
+
+
+def _iter_existing_day_payloads(payload_dir: Path) -> List[Dict[str, Any]]:
+    payloads: List[Dict[str, Any]] = []
+    for payload_path in sorted(payload_dir.glob("season_betting_day_*.json")):
+        payload = _read_json_dict(payload_path)
+        if not payload:
+            continue
+        date_str = str(payload.get("date") or "").strip()
+        if not date_str:
+            continue
+        payloads.append(payload)
+    return payloads
+
+
+def _source_mode_from_day_payload(day_payload: Dict[str, Any]) -> str:
+    source_kind = str(day_payload.get("source_kind") or "").strip().lower()
+    card_source = str(day_payload.get("card_source") or "").strip().lower()
+    if source_kind == "canonical_daily_locked_policy" or card_source.startswith("data/daily/"):
+        return "canonical_daily_locked_policy"
+    return "season_eval_batch_reconstruction"
 
 
 def _read_json(path: Path) -> Any:
@@ -363,6 +408,25 @@ def _relative_path_str(path: Optional[Path]) -> Optional[str]:
         return str(path.resolve()).replace("\\", "/")
 
 
+def _normalize_embedded_paths(value: Any, *, key: str = "") -> Any:
+    if isinstance(value, dict):
+        return {
+            str(child_key): _normalize_embedded_paths(child_value, key=str(child_key))
+            for child_key, child_value in value.items()
+        }
+    if isinstance(value, list):
+        return [_normalize_embedded_paths(item, key=key) for item in value]
+    if isinstance(value, str) and key in {"path", "card_path", "report_path", "payload_path", "settlement_path"}:
+        raw = str(value or "").strip()
+        if not raw:
+            return raw
+        try:
+            return _relative_path_str(Path(raw)) or raw
+        except Exception:
+            return raw
+    return value
+
+
 def _blank_summary() -> Dict[str, Any]:
     return {
         "n": 0,
@@ -407,6 +471,36 @@ def _results_from_rows(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     hitter_rows = [row for row in rows if str(row.get("market") or "") in HITTER_MARKET_ORDER]
     results["hitter_props"] = _summary_from_rows(hitter_rows)
     results["combined"] = _summary_from_rows(rows)
+    return results
+
+
+def _merge_result_blocks(blocks: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    results: Dict[str, Any] = {}
+    for market_name in (*SETTLED_MARKET_ORDER, "hitter_props", "combined"):
+        total_n = 0
+        total_wins = 0
+        total_losses = 0
+        total_stake = 0.0
+        total_profit = 0.0
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            summary = block.get(market_name) if isinstance(block.get(market_name), dict) else {}
+            total_n += int(summary.get("n") or 0)
+            total_wins += int(summary.get("wins") or 0)
+            total_losses += int(summary.get("losses") or 0)
+            total_stake += float(summary.get("stake_u") or 0.0)
+            total_profit += float(summary.get("profit_u") or 0.0)
+        if total_losses <= 0 and total_n > total_wins:
+            total_losses = int(total_n - total_wins)
+        results[market_name] = {
+            "n": int(total_n),
+            "wins": int(total_wins),
+            "losses": int(total_losses),
+            "stake_u": round(float(total_stake), 4),
+            "profit_u": round(float(total_profit), 4),
+            "roi": round(float(total_profit) / float(total_stake), 4) if float(total_stake) > 0.0 else None,
+        }
     return results
 
 
@@ -506,6 +600,21 @@ def _canonical_daily_card_path(date_str: str) -> Optional[Path]:
     if candidate.exists() and candidate.is_file():
         return candidate
     return None
+
+
+def _iter_canonical_daily_card_dates(season: int) -> List[str]:
+    out: List[str] = []
+    for path in sorted((_ROOT / "data" / "daily").glob(f"daily_summary_{int(season)}_*_locked_policy.json")):
+        token = str(path.stem).replace("daily_summary_", "").replace("_locked_policy", "")
+        parts = token.split("_")
+        if len(parts) != 3:
+            continue
+        out.append(f"{parts[0]}-{parts[1]}-{parts[2]}")
+    return out
+
+
+def _today_iso() -> str:
+    return datetime.now().date().isoformat()
 
 
 def _authoritative_source_mode(preferred_canonical: bool, source_modes: Sequence[str]) -> str:
@@ -1169,7 +1278,7 @@ def _selected_counts_with_defaults(card: Dict[str, Any]) -> Dict[str, int]:
 def _manifest_day_entry(
     *,
     card_path: Path,
-    report_path: Path,
+    report_path: Optional[Path],
     card: Dict[str, Any],
     settled_card: Dict[str, Any],
     payload_path: Optional[Path] = None,
@@ -1205,8 +1314,7 @@ def _aggregate_selected_counts(days: Sequence[Dict[str, Any]]) -> Dict[str, int]
     return totals
 
 
-def _monthly_entries(days: Sequence[Dict[str, Any]], settled_cards: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    card_lookup = {str(card.get("date") or ""): card for card in settled_cards}
+def _monthly_entries(days: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
     buckets: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for day in days:
         buckets[str(day.get("month") or "")].append(day)
@@ -1214,12 +1322,7 @@ def _monthly_entries(days: Sequence[Dict[str, Any]], settled_cards: Sequence[Dic
     out: List[Dict[str, Any]] = []
     for month_key in sorted(buckets):
         month_days = list(buckets[month_key])
-        month_cards = [card_lookup.get(str(day.get("date") or "")) for day in month_days]
-        month_cards = [card for card in month_cards if isinstance(card, dict)]
-        month_rows: List[Dict[str, Any]] = []
-        for card in month_cards:
-            month_rows.extend(card.get("_settled_rows") or [])
-        month_results = _results_from_rows(month_rows)
+        month_results = _merge_result_blocks([day.get("results") or {} for day in month_days])
         out.append(
             {
                 "month": str(month_key),
@@ -1389,6 +1492,7 @@ def main() -> int:
         str(args.day_payload_dir),
         default=(season_dir / ("betting_day_payloads_retuned" if normalized_profile == "retuned" else "betting_day_payloads")),
     )
+    full_publish = not list(args.date or []) and int(args.max_days or 0) <= 0
 
     report_paths = _iter_report_paths(batch_dir, list(args.date or []), int(args.max_days or 0))
     if not report_paths:
@@ -1433,9 +1537,8 @@ def main() -> int:
     )
     prefer_canonical_daily = str(args.prefer_canonical_daily or "off").strip().lower() == "on"
 
-    settled_cards: List[Dict[str, Any]] = []
-    day_entries: List[Dict[str, Any]] = []
-    source_modes: List[str] = []
+    day_entries_by_date: Dict[str, Dict[str, Any]] = {}
+    source_modes_by_date: Dict[str, str] = {}
 
     for report_path in report_paths:
         date_str = str(report_path.stem.replace("sim_vs_actual_", "")).strip()
@@ -1466,9 +1569,8 @@ def main() -> int:
                             payload_path=payload_path,
                         ),
                     )
-                    settled_cards.append(settled_card)
-                    day_entries.append(summary_row)
-                    source_modes.append("canonical_daily_locked_policy")
+                    day_entries_by_date[date_str] = summary_row
+                    source_modes_by_date[date_str] = "canonical_daily_locked_policy"
                     continue
         report_obj = _read_json_dict(report_path)
         if not report_obj:
@@ -1505,32 +1607,103 @@ def main() -> int:
                 payload_path=payload_path,
             ),
         )
-        settled_cards.append(settled_card)
-        day_entries.append(summary_row)
-        source_modes.append("season_eval_batch_reconstruction")
+        day_entries_by_date[date_str] = summary_row
+        source_modes_by_date[date_str] = "season_eval_batch_reconstruction"
 
-    all_rows: List[Dict[str, Any]] = []
-    for card in settled_cards:
-        all_rows.extend(card.get("_settled_rows") or [])
+    if full_publish:
+        season_floor = min(day_entries_by_date) if day_entries_by_date else ""
+        today_str = _today_iso()
+        for day_payload in _iter_existing_day_payloads(day_payload_dir):
+            date_str = str(day_payload.get("date") or "").strip()
+            if not date_str or date_str in day_entries_by_date:
+                continue
+            if season_floor and date_str < season_floor:
+                continue
+            if date_str > today_str:
+                continue
+            day_entries_by_date[date_str] = _manifest_day_entry_from_payload(day_payload)
+            source_modes_by_date[date_str] = _source_mode_from_day_payload(day_payload)
+        if prefer_canonical_daily:
+            season_floor = min(day_entries_by_date) if day_entries_by_date else season_floor
+            for date_str in _iter_canonical_daily_card_dates(season):
+                if date_str in day_entries_by_date:
+                    continue
+                if season_floor and date_str < season_floor:
+                    continue
+                if date_str > today_str:
+                    continue
+                canonical_card_path = _canonical_daily_card_path(date_str)
+                if canonical_card_path is None:
+                    continue
+                canonical_card = _read_json_dict(canonical_card_path)
+                if not canonical_card:
+                    continue
+                settled_card = _settle_card(canonical_card_path)
+                payload_path = _day_payload_output_path(day_payload_dir, date_str)
+                summary_row = _manifest_day_entry(
+                    card_path=canonical_card_path,
+                    report_path=None,
+                    card=canonical_card,
+                    settled_card=settled_card,
+                    payload_path=payload_path,
+                )
+                _write_json(
+                    payload_path,
+                    _static_day_payload(
+                        season=season,
+                        profile_name=normalized_profile,
+                        card_path=canonical_card_path,
+                        report_path=None,
+                        card=canonical_card,
+                        settled_card=settled_card,
+                        summary=summary_row,
+                        payload_path=payload_path,
+                    ),
+                )
+                day_entries_by_date[date_str] = summary_row
+                source_modes_by_date[date_str] = "canonical_daily_locked_policy"
 
-    combined = _combined_summary(settled_cards)
-    summary_results = _results_from_rows(all_rows)
-    for settled_card in settled_cards:
-        settled_card["results"] = _results_from_rows(settled_card.get("_settled_rows") or [])
+    if full_publish and day_entries_by_date:
+        report_floor = min((path.stem.replace("sim_vs_actual_", "") for path in report_paths), default="")
+        publish_ceiling = _today_iso()
+        if report_floor:
+            allowed_dates = {
+                date_str
+                for date_str in day_entries_by_date
+                if report_floor <= date_str <= publish_ceiling
+            }
+            day_entries_by_date = {
+                date_str: day_entries_by_date[date_str]
+                for date_str in sorted(allowed_dates)
+            }
+            source_modes_by_date = {
+                date_str: source_modes_by_date.get(date_str, "")
+                for date_str in sorted(allowed_dates)
+            }
+
+    day_entries = sorted(day_entries_by_date.values(), key=lambda row: str(row.get("date") or ""))
+    summary_results = _merge_result_blocks([row.get("results") or {} for row in day_entries])
 
     summary = {
         "cards": int(len(day_entries)),
         "cards_processed": int(len(day_entries)),
         "selected_counts": _aggregate_selected_counts(day_entries),
-        "settled_recommendations": int(len(all_rows)),
-        "unresolved_recommendations": int((combined.get("combined") or {}).get("unresolved_recommendations") or combined.get("unresolved_recommendations") or 0),
+        "settled_recommendations": int((summary_results.get("combined") or {}).get("n") or 0),
+        "unresolved_recommendations": int(sum(int(row.get("unresolved_n") or 0) for row in day_entries)),
         "results": summary_results,
         "daily": _daily_stats(day_entries),
-        "combined": combined.get("combined") or summary_results.get("combined") or _blank_summary(),
-        "market_results": combined.get("markets") or {},
+        "combined": summary_results.get("combined") or _blank_summary(),
+        "market_results": {
+            key: value
+            for key, value in summary_results.items()
+            if key not in {"combined", "hitter_props"}
+        },
     }
 
-    months = _monthly_entries(day_entries, settled_cards)
+    months = _monthly_entries(day_entries)
+    processed_reports = int(len(day_entries)) if full_publish else int(len(report_paths))
+    available_reports = max(int(len(day_entries)), int(len(all_reports))) if full_publish else int(len(all_reports))
+    is_partial = bool((not full_publish and len(report_paths) != len(all_reports)) or not day_entries)
 
     manifest = {
         "meta": {
@@ -1540,17 +1713,17 @@ def main() -> int:
             "batch_dir": _relative_path_str(batch_dir),
             "cards_dir": _relative_path_str(cards_dir),
             "day_payload_dir": _relative_path_str(day_payload_dir),
-            "source_mode": _authoritative_source_mode(prefer_canonical_daily, source_modes),
+            "source_mode": _authoritative_source_mode(prefer_canonical_daily, list(source_modes_by_date.values())),
             "prefer_canonical_daily": bool(prefer_canonical_daily),
             "cap_profile": _official_cap_profile_name(caps, hitter_subcaps),
             "policy": dict(policy),
             "caps": dict(caps),
             "hitter_subcaps": dict(hitter_subcaps),
-            "partial": bool(len(report_paths) != len(all_reports)),
-            "processed_reports": int(len(report_paths)),
-            "available_reports": int(len(all_reports)),
+            "partial": bool(is_partial),
+            "processed_reports": int(processed_reports),
+            "available_reports": int(available_reports),
         },
-        "status": ("partial" if len(report_paths) != len(all_reports) else "complete"),
+        "status": ("partial" if is_partial else "complete"),
         "summary": summary,
         "months": months,
         "days": day_entries,

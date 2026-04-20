@@ -7533,7 +7533,7 @@ def _rebuild_season_betting_manifest_payload(
     manifest_floor = min(manifest_dates) if manifest_dates else None
     supplemental_dates = [
         d for d in _available_daily_locked_card_dates(int(season))
-        if d not in manifest_dates and (not manifest_floor or d >= manifest_floor)
+        if d not in manifest_dates and (not manifest_floor or d >= manifest_floor) and d <= today_str
     ]
     for date_str in supplemental_dates:
         day_payload = _season_betting_day_payload(int(season), date_str, profile_name)
@@ -7641,6 +7641,7 @@ def _season_betting_manifest_needs_refresh(season: int, manifest: Dict[str, Any]
         return False
 
     manifest_dates: List[str] = []
+    today_str = _today_iso()
     for raw_row in manifest.get("days") or []:
         if not isinstance(raw_row, dict):
             continue
@@ -7648,14 +7649,17 @@ def _season_betting_manifest_needs_refresh(season: int, manifest: Dict[str, Any]
         if date_str:
             manifest_dates.append(date_str)
         selected_counts = _betting_selected_counts_with_defaults(raw_row.get("selected_counts") or {})
-        if int(selected_counts.get("combined") or 0) <= 0:
+        if date_str == today_str and int(selected_counts.get("combined") or 0) <= 0:
             return True
 
-    available_daily_dates = _available_daily_locked_card_dates(int(season))
+    available_daily_dates = tuple(d for d in _available_daily_locked_card_dates(int(season)) if d <= today_str)
     if not available_daily_dates:
         return False
 
-    latest_manifest_date = max(manifest_dates) if manifest_dates else ""
+    if _season_from_date_str(today_str) == int(season) and today_str not in manifest_dates:
+        return True
+
+    latest_manifest_date = max((d for d in manifest_dates if d <= today_str), default="")
     latest_daily_date = str(available_daily_dates[-1] or "")
     if not latest_manifest_date:
         return True
