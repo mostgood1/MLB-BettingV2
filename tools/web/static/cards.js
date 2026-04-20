@@ -152,6 +152,49 @@
     return { first: first / denom, second: second / denom };
   }
 
+  function normalizeOutcomeProbabilities(awayProb, homeProb, tieProb) {
+    const awayRaw = toNumber(awayProb);
+    const homeRaw = toNumber(homeProb);
+    const tieRaw = toNumber(tieProb);
+
+    if (awayRaw == null && homeRaw == null && tieRaw == null) {
+      return { away: null, home: null, tie: null };
+    }
+
+    const away = awayRaw == null ? 0 : awayRaw;
+    const home = homeRaw == null ? 0 : homeRaw;
+    const tie = tieRaw == null ? 0 : tieRaw;
+    const threeWaySum = away + home + tie;
+
+    if (threeWaySum > 0 && Math.abs(threeWaySum - 1) <= 0.02) {
+      return { away, home, tie: tieRaw == null ? null : tie };
+    }
+
+    const twoWay = away + home;
+    if (tieRaw != null && tie >= 0 && tie < 1 && twoWay > 0 && Math.abs(twoWay - 1) <= 0.02) {
+      const livePortion = 1 - tie;
+      return {
+        away: away * livePortion,
+        home: home * livePortion,
+        tie,
+      };
+    }
+
+    if (threeWaySum > 0) {
+      return {
+        away: away / threeWaySum,
+        home: home / threeWaySum,
+        tie: tieRaw == null ? null : (tie / threeWaySum),
+      };
+    }
+
+    return {
+      away: awayRaw,
+      home: homeRaw,
+      tie: tieRaw,
+    };
+  }
+
   function logisticWinProb(homeMargin) {
     const margin = toNumber(homeMargin);
     if (margin == null) return null;
@@ -1110,12 +1153,11 @@
         const row = segmentPrediction(card, detail, entry.key);
         const awayRaw = toNumber(row?.away_win_prob ?? row?.awayWinProb);
         const homeRaw = toNumber(row?.home_win_prob ?? row?.homeWinProb);
-        const tie = toNumber(row?.tie_prob ?? row?.tieProb);
-        const normalized = (awayRaw != null && homeRaw != null)
-          ? normalizeTwoWay(awayRaw, homeRaw)
-          : { first: null, second: null };
-        const away = normalized.first != null ? normalized.first : awayRaw;
-        const home = normalized.second != null ? normalized.second : homeRaw;
+        const tieRaw = toNumber(row?.tie_prob ?? row?.tieProb);
+        const normalized = normalizeOutcomeProbabilities(awayRaw, homeRaw, tieRaw);
+        const away = normalized.away;
+        const home = normalized.home;
+        const tie = normalized.tie;
         const meta = [
           away != null ? `${card?.away?.abbr || "Away"} ${formatPercent(away, 1)}` : "",
           home != null ? `${card?.home?.abbr || "Home"} ${formatPercent(home, 1)}` : "",
