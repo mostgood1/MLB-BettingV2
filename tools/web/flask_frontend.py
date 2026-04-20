@@ -918,13 +918,74 @@ def _live_lens_log_snapshot(d: str) -> Tuple[int, Optional[Dict[str, Any]]]:
     return int(entries), latest_entry if isinstance(latest_entry, dict) else None
 
 
+def _load_live_prop_first_observation_archive(d: str) -> List[Dict[str, Any]]:
+    registry = _load_live_prop_registry(d)
+    entries = registry.get("entries") if isinstance(registry.get("entries"), dict) else {}
+    if not isinstance(entries, dict) or not entries:
+        return []
+    observation_path = _live_prop_observation_log_path(d)
+    first_observations: Dict[str, Dict[str, Any]] = {}
+    if observation_path.exists() and observation_path.is_file():
+        try:
+            with observation_path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    text = str(line or "").strip()
+                    if not text:
+                        continue
+                    try:
+                        row = json.loads(text)
+                    except Exception:
+                        continue
+                    if not isinstance(row, dict):
+                        continue
+                    key = str(row.get("key") or "").strip()
+                    if key and key not in first_observations:
+                        first_observations[key] = row
+        except Exception:
+            return []
+    out: List[Dict[str, Any]] = []
+    for key, entry in entries.items():
+        if not isinstance(entry, dict):
+            continue
+        observation = first_observations.get(str(key)) if isinstance(first_observations.get(str(key)), dict) else {}
+        out.append(
+            {
+                "key": str(key),
+                "date": str(entry.get("date") or d),
+                "gamePk": _safe_int(entry.get("gamePk")),
+                "owner": str(entry.get("owner") or "").strip(),
+                "market": str(entry.get("market") or "").strip().lower(),
+                "prop": str(entry.get("prop") or "").strip().lower(),
+                "selection": str(entry.get("selection") or "").strip().lower(),
+                "marketLine": _safe_float(entry.get("marketLine")),
+                "firstSeenAt": entry.get("firstSeenAt"),
+                "lastSeenAt": entry.get("lastSeenAt"),
+                "seenCount": _safe_int(entry.get("seenCount")),
+                "firstSeenSnapshot": entry.get("firstSeenSnapshot") if isinstance(entry.get("firstSeenSnapshot"), dict) else {},
+                "lastSeenSnapshot": entry.get("lastSeenSnapshot") if isinstance(entry.get("lastSeenSnapshot"), dict) else {},
+                "teamSide": observation.get("teamSide"),
+                "rank": _safe_int(observation.get("rank")),
+                "snapshotChanged": bool(observation.get("snapshotChanged")),
+                "changedFields": list(observation.get("changedFields") or []),
+                "snapshot": observation.get("snapshot") if isinstance(observation.get("snapshot"), dict) else {},
+                "gameState": observation.get("gameState") if isinstance(observation.get("gameState"), dict) else {},
+                "source": observation.get("source"),
+                "recommendationTier": observation.get("recommendationTier"),
+                "status": observation.get("status") if isinstance(observation.get("status"), dict) else {},
+            }
+        )
+    return out
+
+
 def _live_lens_daily_recap_payload(d: str) -> Dict[str, Any]:
     artifact_paths = _live_lens_artifact_paths(d)
     latest_report = _load_json_file(artifact_paths.get("report")) or {}
     registry_summary: Dict[str, Any] = {}
     registry_path = artifact_paths.get("registry")
+    first_observation_archive: List[Dict[str, Any]] = []
     if isinstance(registry_path, Path) and registry_path.exists():
         registry_summary = _live_prop_registry_summary(d)
+        first_observation_archive = _load_live_prop_first_observation_archive(d)
     entries, latest_entry = _live_lens_log_snapshot(d)
     files = {name: _file_stat_summary(path) for name, path in artifact_paths.items() if name != "daily_recap"}
     total_bytes = sum(int((item or {}).get("bytes") or 0) for item in files.values())
@@ -956,6 +1017,7 @@ def _live_lens_daily_recap_payload(d: str) -> Dict[str, Any]:
             "topEdges": list((registry_summary.get("topEdges") or []))[:10] if isinstance(registry_summary, dict) else [],
             "latestGames": latest_entry_games,
         },
+        "firstObservationArchive": first_observation_archive,
         "rawArtifacts": {
             "total_bytes": int(total_bytes),
             "total_bytes_text": _format_bytes(total_bytes),
@@ -13605,7 +13667,7 @@ def _refresh_oddsapi_markets(d: str, *, overwrite: bool = True) -> Dict[str, Any
     }
 
 
-def _live_lens_reports_payload(d: str) -> Dict[str, Any]:
+def _live_lens_reports_payload(d: str, *, include_archive: bool = False) -> Dict[str, Any]:
     log_path = _live_lens_log_path(d)
     observation_log_path = _live_prop_observation_log_path(d)
     registry_path = _live_prop_registry_path(d)
@@ -13613,6 +13675,7 @@ def _live_lens_reports_payload(d: str) -> Dict[str, Any]:
     recap_path = _live_lens_daily_recap_path(d)
     latest_report = _load_json_file(_live_lens_report_path(d)) or {}
     registry_summary = _live_prop_registry_summary(d)
+    first_observation_archive: List[Dict[str, Any]] = _load_live_prop_first_observation_archive(d) if include_archive else []
     entries = 0
     latest_entry: Optional[Dict[str, Any]] = None
     if log_path.exists() and log_path.is_file():
@@ -13647,6 +13710,7 @@ def _live_lens_reports_payload(d: str) -> Dict[str, Any]:
                 "latestReport": recap_payload.get("latestReport") if isinstance(recap_payload.get("latestReport"), dict) else {},
                 "registrySummary": recap_payload.get("registrySummary") if isinstance(recap_payload.get("registrySummary"), dict) else {},
                 "summary": recap_payload.get("summary") if isinstance(recap_payload.get("summary"), dict) else {},
+                "firstObservationArchive": list(recap_payload.get("firstObservationArchive") or []) if include_archive else [],
                 "rawArtifacts": recap_payload.get("rawArtifacts") if isinstance(recap_payload.get("rawArtifacts"), dict) else {},
                 "source": "daily_recap",
             }
@@ -13680,6 +13744,7 @@ def _live_lens_reports_payload(d: str) -> Dict[str, Any]:
             "topStable": list((registry_summary.get("topStable") or []))[:10] if isinstance(registry_summary, dict) else [],
             "topEdges": list((registry_summary.get("topEdges") or []))[:10] if isinstance(registry_summary, dict) else [],
         },
+        "firstObservationArchive": first_observation_archive,
         "rawArtifacts": {
             "total_bytes": int(total_bytes),
             "total_bytes_text": _format_bytes(total_bytes),
@@ -14225,7 +14290,8 @@ def api_cron_live_lens_reports() -> Response:
         return auth_error
     _ensure_live_lens_background_loop_running()
     d = str(request.args.get("date") or "").strip() or _today_iso()
-    return jsonify(_live_lens_reports_payload(d))
+    include_archive = str(request.args.get("includeArchive") or "off").strip().lower() == "on"
+    return jsonify(_live_lens_reports_payload(d, include_archive=include_archive))
 
 
 @app.get("/api/cron/live-lens-loop-status")

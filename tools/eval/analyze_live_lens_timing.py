@@ -215,73 +215,109 @@ def _load_rich_registry_rows(live_lens_dir: Path) -> Dict[str, Dict[str, Any]]:
     registry_dir = live_lens_dir / "prop_registry"
     report_index = _load_report_index(live_lens_dir)
     out: Dict[str, Dict[str, Any]] = {}
-    if not registry_dir.exists():
-        return out
-    for registry_path in sorted(registry_dir.glob("live_prop_registry_*.json")):
-        token = registry_path.stem.replace("live_prop_registry_", "")
-        date_str = _slug_to_date(token)
-        try:
-            doc = _read_json(registry_path)
-        except Exception:
-            continue
-        if not isinstance(doc, dict):
-            continue
-        observations = _load_first_observations(registry_dir / f"live_prop_observations_{token}.jsonl")
-        entries = doc.get("entries") if isinstance(doc.get("entries"), dict) else {}
-        if not isinstance(entries, dict):
-            continue
+    def _merge_row(date_str: str, key: str, entry: Dict[str, Any], observation: Dict[str, Any]) -> None:
+        first_snapshot = entry.get("firstSeenSnapshot") if isinstance(entry.get("firstSeenSnapshot"), dict) else {}
+        last_snapshot = entry.get("lastSeenSnapshot") if isinstance(entry.get("lastSeenSnapshot"), dict) else {}
+        observed_snapshot = observation.get("snapshot") if isinstance(observation.get("snapshot"), dict) else {}
+        game_state = observation.get("gameState") if isinstance(observation.get("gameState"), dict) else {}
         day_report = report_index.get(date_str) or {}
-        for key, entry in entries.items():
-            if not isinstance(entry, dict):
+        first_odds = _safe_int(first_snapshot.get("odds"))
+        last_odds = _safe_int(last_snapshot.get("odds"))
+        first_live_edge = _safe_float(first_snapshot.get("liveEdge"))
+        last_live_edge = _safe_float(last_snapshot.get("liveEdge"))
+        first_reasons = [str(reason).strip() for reason in (first_snapshot.get("reasons") or []) if str(reason).strip()]
+        last_reasons = [str(reason).strip() for reason in (last_snapshot.get("reasons") or []) if str(reason).strip()]
+        first_summary = str(first_snapshot.get("reasonSummary") or "").strip()
+        last_summary = str(last_snapshot.get("reasonSummary") or "").strip()
+        row = {
+            "key": str(key),
+            "date": date_str,
+            "seen_count": _safe_int(entry.get("seenCount")),
+            "first_seen_at": entry.get("firstSeenAt"),
+            "last_seen_at": entry.get("lastSeenAt"),
+            "first_odds": first_odds,
+            "last_odds": last_odds,
+            "first_implied_prob": _american_implied_prob(first_odds),
+            "last_implied_prob": _american_implied_prob(last_odds),
+            "first_live_edge": first_live_edge,
+            "last_live_edge": last_live_edge,
+            "live_edge_delta": (None if first_live_edge is None or last_live_edge is None else round(float(last_live_edge) - float(first_live_edge), 4)),
+            "first_live_projection": _safe_float(first_snapshot.get("liveProjection")),
+            "last_live_projection": _safe_float(last_snapshot.get("liveProjection")),
+            "first_actual_so_far": _safe_float(first_snapshot.get("actualSoFar") if first_snapshot.get("actualSoFar") is not None else first_snapshot.get("actual")),
+            "last_actual_so_far": _safe_float(last_snapshot.get("actualSoFar") if last_snapshot.get("actualSoFar") is not None else last_snapshot.get("actual")),
+            "first_summary": first_summary,
+            "last_summary": last_summary,
+            "first_reasons": first_reasons,
+            "last_reasons": last_reasons,
+            "first_reason_flags": _reason_flags([first_summary, *first_reasons]),
+            "last_reason_flags": _reason_flags([last_summary, *last_reasons]),
+            "game_state_live_text": game_state.get("liveText"),
+            "report_source": day_report.get("source"),
+            "report_path": day_report.get("path"),
+            "report_counts": dict(day_report.get("counts") or {}),
+            "report_performance": dict(day_report.get("performance") or {}),
+            "report_raw_artifacts": dict(day_report.get("rawArtifacts") or {}),
+            "registry_summary": dict(day_report.get("registrySummary") or {}),
+            "observation_changed_fields": list(observation.get("changedFields") or []),
+            "observation_snapshot_changed": bool(observation.get("snapshotChanged")),
+            "observed_snapshot": observed_snapshot,
+        }
+        out[str(key)] = row
+
+    if registry_dir.exists():
+        for registry_path in sorted(registry_dir.glob("live_prop_registry_*.json")):
+            token = registry_path.stem.replace("live_prop_registry_", "")
+            date_str = _slug_to_date(token)
+            try:
+                doc = _read_json(registry_path)
+            except Exception:
                 continue
-            first_snapshot = entry.get("firstSeenSnapshot") if isinstance(entry.get("firstSeenSnapshot"), dict) else {}
-            last_snapshot = entry.get("lastSeenSnapshot") if isinstance(entry.get("lastSeenSnapshot"), dict) else {}
-            observation = observations.get(str(key)) if isinstance(observations.get(str(key)), dict) else {}
-            observed_snapshot = observation.get("snapshot") if isinstance(observation.get("snapshot"), dict) else {}
-            game_state = observation.get("gameState") if isinstance(observation.get("gameState"), dict) else {}
-            first_odds = _safe_int(first_snapshot.get("odds"))
-            last_odds = _safe_int(last_snapshot.get("odds"))
-            first_live_edge = _safe_float(first_snapshot.get("liveEdge"))
-            last_live_edge = _safe_float(last_snapshot.get("liveEdge"))
-            first_reasons = [str(reason).strip() for reason in (first_snapshot.get("reasons") or []) if str(reason).strip()]
-            last_reasons = [str(reason).strip() for reason in (last_snapshot.get("reasons") or []) if str(reason).strip()]
-            first_summary = str(first_snapshot.get("reasonSummary") or "").strip()
-            last_summary = str(last_snapshot.get("reasonSummary") or "").strip()
-            row = {
-                "key": str(key),
-                "date": date_str,
-                "seen_count": _safe_int(entry.get("seenCount")),
-                "first_seen_at": entry.get("firstSeenAt"),
-                "last_seen_at": entry.get("lastSeenAt"),
-                "first_odds": first_odds,
-                "last_odds": last_odds,
-                "first_implied_prob": _american_implied_prob(first_odds),
-                "last_implied_prob": _american_implied_prob(last_odds),
-                "first_live_edge": first_live_edge,
-                "last_live_edge": last_live_edge,
-                "live_edge_delta": (None if first_live_edge is None or last_live_edge is None else round(float(last_live_edge) - float(first_live_edge), 4)),
-                "first_live_projection": _safe_float(first_snapshot.get("liveProjection")),
-                "last_live_projection": _safe_float(last_snapshot.get("liveProjection")),
-                "first_actual_so_far": _safe_float(first_snapshot.get("actualSoFar") if first_snapshot.get("actualSoFar") is not None else first_snapshot.get("actual")),
-                "last_actual_so_far": _safe_float(last_snapshot.get("actualSoFar") if last_snapshot.get("actualSoFar") is not None else last_snapshot.get("actual")),
-                "first_summary": first_summary,
-                "last_summary": last_summary,
-                "first_reasons": first_reasons,
-                "last_reasons": last_reasons,
-                "first_reason_flags": _reason_flags([first_summary, *first_reasons]),
-                "last_reason_flags": _reason_flags([last_summary, *last_reasons]),
-                "game_state_live_text": game_state.get("liveText"),
-                "report_source": day_report.get("source"),
-                "report_path": day_report.get("path"),
-                "report_counts": dict(day_report.get("counts") or {}),
-                "report_performance": dict(day_report.get("performance") or {}),
-                "report_raw_artifacts": dict(day_report.get("rawArtifacts") or {}),
-                "registry_summary": dict(day_report.get("registrySummary") or {}),
-                "observation_changed_fields": list(observation.get("changedFields") or []),
-                "observation_snapshot_changed": bool(observation.get("snapshotChanged")),
-                "observed_snapshot": observed_snapshot,
-            }
-            out[str(key)] = row
+            if not isinstance(doc, dict):
+                continue
+            observations = _load_first_observations(registry_dir / f"live_prop_observations_{token}.jsonl")
+            entries = doc.get("entries") if isinstance(doc.get("entries"), dict) else {}
+            if not isinstance(entries, dict):
+                continue
+            for key, entry in entries.items():
+                if not isinstance(entry, dict):
+                    continue
+                observation = observations.get(str(key)) if isinstance(observations.get(str(key)), dict) else {}
+                _merge_row(date_str, str(key), entry, observation)
+
+    render_sync_dir = live_lens_dir / "render_sync"
+    if render_sync_dir.exists():
+        for sync_path in sorted(render_sync_dir.glob("live_lens_reports_*.json")):
+            try:
+                payload = _read_json(sync_path)
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            archive_rows = payload.get("firstObservationArchive") if isinstance(payload.get("firstObservationArchive"), list) else []
+            if not archive_rows:
+                continue
+            date_str = str(payload.get("date") or _slug_to_date(sync_path.stem.replace("live_lens_reports_", ""))).strip()
+            for archive_row in archive_rows:
+                if not isinstance(archive_row, dict):
+                    continue
+                key = str(archive_row.get("key") or "").strip()
+                if not key or key in out:
+                    continue
+                entry = {
+                    "seenCount": archive_row.get("seenCount"),
+                    "firstSeenAt": archive_row.get("firstSeenAt"),
+                    "lastSeenAt": archive_row.get("lastSeenAt"),
+                    "firstSeenSnapshot": archive_row.get("firstSeenSnapshot"),
+                    "lastSeenSnapshot": archive_row.get("lastSeenSnapshot"),
+                }
+                observation = {
+                    "snapshot": archive_row.get("snapshot"),
+                    "gameState": archive_row.get("gameState"),
+                    "changedFields": archive_row.get("changedFields"),
+                    "snapshotChanged": archive_row.get("snapshotChanged"),
+                }
+                _merge_row(date_str, key, entry, observation)
     return out
 
 

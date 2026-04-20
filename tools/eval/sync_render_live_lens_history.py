@@ -63,7 +63,7 @@ def _daterange(start: dt.date, end: dt.date) -> List[dt.date]:
 
 
 def _fetch_payload(*, base_url: str, token: str, date_str: str, timeout_seconds: int) -> Dict[str, Any]:
-    query = urllib.parse.urlencode({"date": str(date_str)})
+    query = urllib.parse.urlencode({"date": str(date_str), "includeArchive": "on"})
     url = f"{str(base_url).rstrip('/')}/api/cron/live-lens-reports?{query}"
     request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
     with urllib.request.urlopen(request, timeout=max(1, int(timeout_seconds))) as response:
@@ -124,6 +124,7 @@ def main() -> int:
                 "source": str(payload.get("source") or ""),
                 "reportPath": payload.get("reportPath"),
                 "entries": payload.get("entries"),
+                "archiveRows": len(list(payload.get("firstObservationArchive") or [])),
             })
         except urllib.error.HTTPError as exc:
             results.append({"date": date_str, "status": "http_error", "code": int(exc.code), "reason": str(exc.reason)})

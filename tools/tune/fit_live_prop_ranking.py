@@ -164,7 +164,68 @@ def _final_actual_value(snapshot: Dict[str, Any], owner: str, market: str, prop:
     return _safe_float(_live_stat_value(actual_row, {"market": market, "prop": prop}))
 
 
-def _iter_first_observation_rows(live_lens_dir: Path) -> Iterable[Dict[str, Any]]:
+def _build_first_observation_row(
+    *,
+    date_str: str,
+    key: str,
+    entry: Dict[str, Any],
+    observation: Dict[str, Any],
+    final_snapshot: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    game_pk = _safe_int(entry.get("gamePk"))
+    if game_pk is None:
+        return None
+    owner = str(entry.get("owner") or "").strip()
+    market = str(entry.get("market") or "").strip().lower()
+    prop = str(entry.get("prop") or "").strip().lower()
+    selection = str(entry.get("selection") or "").strip().lower()
+    market_line = _safe_float(entry.get("marketLine"))
+    if not owner or not market or not prop or selection not in {"over", "under"} or market_line is None:
+        return None
+    final_actual = _final_actual_value(final_snapshot, owner, market, prop)
+    result = _result_label(selection, market_line, final_actual)
+    if result not in {"win", "loss"}:
+        return None
+    first_snapshot = entry.get("firstSeenSnapshot") if isinstance(entry.get("firstSeenSnapshot"), dict) else {}
+    observation_snapshot = observation.get("snapshot") if isinstance(observation.get("snapshot"), dict) else {}
+    game_state = observation.get("gameState") if isinstance(observation.get("gameState"), dict) else {}
+    score = game_state.get("score") if isinstance(game_state.get("score"), dict) else {}
+    row: Dict[str, Any] = {
+        "date": date_str,
+        "key": key,
+        "game_pk": game_pk,
+        "gamePk": game_pk,
+        "market": market,
+        "prop": prop,
+        "selection": selection,
+        "market_line": market_line,
+        "odds": observation_snapshot.get("odds") if observation_snapshot.get("odds") is not None else first_snapshot.get("odds"),
+        "live_edge": observation_snapshot.get("liveEdge") if observation_snapshot.get("liveEdge") is not None else first_snapshot.get("liveEdge"),
+        "live_projection": observation_snapshot.get("liveProjection") if observation_snapshot.get("liveProjection") is not None else first_snapshot.get("liveProjection"),
+        "model_mean": observation_snapshot.get("modelMean") if observation_snapshot.get("modelMean") is not None else first_snapshot.get("modelMean"),
+        "actual": final_actual,
+        "actual_so_far": observation_snapshot.get("actual") if observation_snapshot.get("actual") is not None else first_snapshot.get("actual"),
+        "owner": owner,
+        "first_seen_at": entry.get("firstSeenAt"),
+        "last_seen_at": entry.get("lastSeenAt"),
+        "seen_count": entry.get("seenCount"),
+        "team_side": observation.get("teamSide"),
+        "progress_fraction": game_state.get("progressFraction"),
+        "inning": game_state.get("inning"),
+        "outs": game_state.get("outs"),
+        "score_away": score.get("away"),
+        "score_home": score.get("home"),
+        "rank": observation.get("rank"),
+        "reason_summary": observation_snapshot.get("reasonSummary"),
+        "reasons": list(observation_snapshot.get("reasons") or []),
+        "live_text": game_state.get("liveText"),
+        "label": 1 if result == "win" else 0,
+    }
+    row.update(build_live_prop_feature_map(row))
+    return row
+
+
+def _iter_local_first_observation_rows(live_lens_dir: Path) -> Iterable[Dict[str, Any]]:
     registry_dir = live_lens_dir / "prop_registry"
     if not registry_dir.exists():
         return
@@ -203,54 +264,95 @@ def _iter_first_observation_rows(live_lens_dir: Path) -> Iterable[Dict[str, Any]
             final_snapshot = final_snapshots.get(int(game_pk))
             if not isinstance(final_snapshot, dict):
                 continue
-            owner = str(entry.get("owner") or "").strip()
-            market = str(entry.get("market") or "").strip().lower()
-            prop = str(entry.get("prop") or "").strip().lower()
-            selection = str(entry.get("selection") or "").strip().lower()
-            market_line = _safe_float(entry.get("marketLine"))
-            if not owner or not market or not prop or selection not in {"over", "under"} or market_line is None:
+            row = _build_first_observation_row(
+                date_str=date_str,
+                key=str(key),
+                entry=entry,
+                observation=observation,
+                final_snapshot=final_snapshot,
+            )
+            if row:
+                yield row
+
+
+def _iter_render_sync_first_observation_rows(live_lens_dir: Path, *, seen_keys: Optional[set[str]] = None) -> Iterable[Dict[str, Any]]:
+    render_sync_dir = live_lens_dir / "render_sync"
+    if not render_sync_dir.exists():
+        return
+    seen = seen_keys if isinstance(seen_keys, set) else set()
+    for sync_path in sorted(render_sync_dir.glob("live_lens_reports_*.json")):
+        try:
+            payload = _read_json(sync_path)
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        archive_rows = payload.get("firstObservationArchive") if isinstance(payload.get("firstObservationArchive"), list) else []
+        if not archive_rows:
+            continue
+        date_str = str(payload.get("date") or sync_path.stem.replace("live_lens_reports_", "").replace("_", "-")).strip()
+        final_snapshots: Dict[int, Dict[str, Any]] = {}
+        game_pks = sorted({_safe_int(row.get("gamePk")) for row in archive_rows if isinstance(row, dict)})
+        for game_pk in game_pks:
+            if game_pk is None:
                 continue
-            final_actual = _final_actual_value(final_snapshot, owner, market, prop)
-            result = _result_label(selection, market_line, final_actual)
-            if result not in {"win", "loss"}:
+            snapshot = _load_live_lens_snapshot(int(game_pk), date_str)
+            status = str((((snapshot or {}).get("status") or {}).get("abstractGameState") or "")).strip().lower()
+            if isinstance(snapshot, dict) and status == "final":
+                final_snapshots[int(game_pk)] = snapshot
+        for archive_row in archive_rows:
+            if not isinstance(archive_row, dict):
                 continue
-            first_snapshot = entry.get("firstSeenSnapshot") if isinstance(entry.get("firstSeenSnapshot"), dict) else {}
-            observation_snapshot = observation.get("snapshot") if isinstance(observation.get("snapshot"), dict) else {}
-            game_state = observation.get("gameState") if isinstance(observation.get("gameState"), dict) else {}
-            score = game_state.get("score") if isinstance(game_state.get("score"), dict) else {}
-            row: Dict[str, Any] = {
-                "date": date_str,
-                "key": key,
-                "game_pk": game_pk,
-                "gamePk": game_pk,
-                "market": market,
-                "prop": prop,
-                "selection": selection,
-                "market_line": market_line,
-                "odds": observation_snapshot.get("odds") if observation_snapshot.get("odds") is not None else first_snapshot.get("odds"),
-                "live_edge": observation_snapshot.get("liveEdge") if observation_snapshot.get("liveEdge") is not None else first_snapshot.get("liveEdge"),
-                "live_projection": observation_snapshot.get("liveProjection") if observation_snapshot.get("liveProjection") is not None else first_snapshot.get("liveProjection"),
-                "model_mean": observation_snapshot.get("modelMean") if observation_snapshot.get("modelMean") is not None else first_snapshot.get("modelMean"),
-                "actual": final_actual,
-                "actual_so_far": observation_snapshot.get("actual") if observation_snapshot.get("actual") is not None else first_snapshot.get("actual"),
-                "owner": owner,
-                "first_seen_at": entry.get("firstSeenAt"),
-                "last_seen_at": entry.get("lastSeenAt"),
-                "seen_count": entry.get("seenCount"),
-                "team_side": observation.get("teamSide"),
-                "progress_fraction": game_state.get("progressFraction"),
-                "inning": game_state.get("inning"),
-                "outs": game_state.get("outs"),
-                "score_away": score.get("away"),
-                "score_home": score.get("home"),
-                "rank": observation.get("rank"),
-                "reason_summary": observation_snapshot.get("reasonSummary"),
-                "reasons": list(observation_snapshot.get("reasons") or []),
-                "live_text": game_state.get("liveText"),
-                "label": 1 if result == "win" else 0,
+            key = str(archive_row.get("key") or "").strip()
+            dedupe_key = f"{date_str}|{key}"
+            if not key or dedupe_key in seen:
+                continue
+            game_pk = _safe_int(archive_row.get("gamePk"))
+            if game_pk is None:
+                continue
+            final_snapshot = final_snapshots.get(int(game_pk))
+            if not isinstance(final_snapshot, dict):
+                continue
+            entry = {
+                "gamePk": archive_row.get("gamePk"),
+                "owner": archive_row.get("owner"),
+                "market": archive_row.get("market"),
+                "prop": archive_row.get("prop"),
+                "selection": archive_row.get("selection"),
+                "marketLine": archive_row.get("marketLine"),
+                "firstSeenAt": archive_row.get("firstSeenAt"),
+                "lastSeenAt": archive_row.get("lastSeenAt"),
+                "seenCount": archive_row.get("seenCount"),
+                "firstSeenSnapshot": archive_row.get("firstSeenSnapshot"),
+                "lastSeenSnapshot": archive_row.get("lastSeenSnapshot"),
             }
-            row.update(build_live_prop_feature_map(row))
-            yield row
+            observation = {
+                "teamSide": archive_row.get("teamSide"),
+                "rank": archive_row.get("rank"),
+                "snapshotChanged": archive_row.get("snapshotChanged"),
+                "changedFields": archive_row.get("changedFields"),
+                "snapshot": archive_row.get("snapshot"),
+                "gameState": archive_row.get("gameState"),
+            }
+            row = _build_first_observation_row(
+                date_str=date_str,
+                key=key,
+                entry=entry,
+                observation=observation,
+                final_snapshot=final_snapshot,
+            )
+            if row:
+                seen.add(dedupe_key)
+                yield row
+
+
+def _iter_first_observation_rows(live_lens_dir: Path) -> Iterable[Dict[str, Any]]:
+    seen_keys: set[str] = set()
+    for row in _iter_local_first_observation_rows(live_lens_dir):
+        seen_keys.add(f"{str(row.get('date') or '')}|{str(row.get('key') or '')}")
+        yield row
+    for row in _iter_render_sync_first_observation_rows(live_lens_dir, seen_keys=seen_keys):
+        yield row
 
 
 def _iter_registry_rows(live_lens_dir: Path) -> Iterable[Dict[str, Any]]:
