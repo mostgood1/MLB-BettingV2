@@ -14,6 +14,7 @@ if str(_ROOT) not in sys.path:
 
 from tools.tune.fit_live_prop_ranking import (  # noqa: E402
     _iter_first_observation_rows,
+    _iter_render_sync_report_fallback_rows,
     _load_first_observations,
     _read_json,
 )
@@ -325,6 +326,84 @@ def _bucket_summary(rows: List[Dict[str, Any]], values: Iterable[str], key_fn) -
     return {value: _summarize([row for row in rows if key_fn(row) == value]) for value in values}
 
 
+def _build_summary_payload(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    if not rows:
+        return {
+            "overall": {"n": 0, "win_rate": None, "roi": None},
+            "dates": [],
+            "counts": {"rows": 0, "markets": {}, "props": {}, "reportDates": 0},
+            "by_progress": {},
+            "by_rank": {},
+            "by_selection": {},
+            "by_market": {},
+            "by_prop": {},
+            "by_stability": {},
+            "by_odds_move": {},
+            "by_first_reason_flag": {},
+            "by_last_reason_flag": {},
+            "rich_archive": {"coverage": {}, "day_reports": {}},
+            "examples": {"most_stable": [], "largest_first_edges": [], "largest_edge_growth": []},
+        }
+
+    markets = sorted({str(row.get("market") or "") for row in rows})
+    props = sorted({str(row.get("prop") or "") for row in rows})
+    selections = sorted({str(row.get("selection") or "") for row in rows})
+    dates = sorted({str(row.get("date") or "") for row in rows})
+    first_reason_flags = sorted({flag for row in rows for flag in (row.get("first_reason_flags") or [])})
+    last_reason_flags = sorted({flag for row in rows for flag in (row.get("last_reason_flags") or [])})
+
+    report_day_rows = [row for row in rows if isinstance(row.get("report_performance"), dict) and row.get("report_performance")]
+    report_dates = sorted({str(row.get("date") or "") for row in report_day_rows})
+    day_reports: Dict[str, Any] = {}
+    for date_str in report_dates:
+        sample = next((row for row in report_day_rows if str(row.get("date") or "") == date_str), None)
+        if not sample:
+            continue
+        raw_artifacts = dict(sample.get("report_raw_artifacts") or {})
+        day_reports[date_str] = {
+            "source": sample.get("report_source"),
+            "path": sample.get("report_path"),
+            "counts": dict(sample.get("report_counts") or {}),
+            "performance": dict(sample.get("report_performance") or {}),
+            "raw_total_bytes": _safe_int(raw_artifacts.get("total_bytes")),
+            "raw_total_bytes_text": raw_artifacts.get("total_bytes_text"),
+        }
+
+    return {
+        "overall": _summarize(rows),
+        "dates": dates,
+        "counts": {
+            "rows": len(rows),
+            "markets": {market: sum(1 for row in rows if str(row.get("market") or "") == market) for market in markets},
+            "props": {prop: sum(1 for row in rows if str(row.get("prop") or "") == prop) for prop in props},
+            "reportDates": len(day_reports),
+        },
+        "by_progress": _bucket_summary(rows, ("early_third", "mid_game", "later", "unknown"), _progress_bucket),
+        "by_rank": _bucket_summary(rows, ("top5", "top10", "after10"), _rank_bucket),
+        "by_selection": {selection: _summarize([row for row in rows if str(row.get("selection") or "") == selection]) for selection in selections},
+        "by_market": {market: _summarize([row for row in rows if str(row.get("market") or "") == market]) for market in markets},
+        "by_prop": {prop: _summarize([row for row in rows if str(row.get("prop") or "") == prop]) for prop in props},
+        "by_stability": _bucket_summary(rows, ("one_tick", "two_to_three_ticks", "four_to_six_ticks", "seven_plus_ticks"), _stability_bucket),
+        "by_odds_move": _bucket_summary(rows, ("price_better", "price_worse", "unchanged", "unknown"), _odds_move_bucket),
+        "by_first_reason_flag": {flag: _summarize([row for row in rows if flag in (row.get("first_reason_flags") or [])]) for flag in first_reason_flags},
+        "by_last_reason_flag": {flag: _summarize([row for row in rows if flag in (row.get("last_reason_flags") or [])]) for flag in last_reason_flags},
+        "rich_archive": {
+            "coverage": {
+                "rows_with_seen_count": sum(1 for row in rows if row.get("seen_count") is not None),
+                "rows_with_reason_flags": sum(1 for row in rows if row.get("first_reason_flags") or row.get("last_reason_flags")),
+                "rows_with_report_metadata": sum(1 for row in rows if row.get("report_source")),
+                "rows_with_odds_drift": sum(1 for row in rows if row.get("first_odds") is not None and row.get("last_odds") is not None),
+            },
+            "day_reports": day_reports,
+        },
+        "examples": {
+            "most_stable": sorted(rows, key=lambda row: (-int(_safe_int(row.get("seen_count")) or 0), -abs(float(_safe_float(row.get("last_live_edge")) or 0.0))))[:10],
+            "largest_first_edges": sorted(rows, key=lambda row: -abs(float(_safe_float(row.get("first_live_edge")) or 0.0)))[:10],
+            "largest_edge_growth": sorted(rows, key=lambda row: -abs(float(_safe_float(row.get("live_edge_delta")) or 0.0)))[:10],
+        },
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Analyze first-surface live-lens timing, reason, and stability splits from the rich archive")
     parser.add_argument("--live-lens-dir", default="data/live_lens", help="Path to the live_lens directory")
@@ -346,62 +425,20 @@ def main() -> int:
         item.update(rich_by_key.get(str(row.get("key") or ""), {}))
         enriched_rows.append(item)
 
-    markets = sorted({str(row.get("market") or "") for row in enriched_rows})
-    props = sorted({str(row.get("prop") or "") for row in enriched_rows})
-    selections = sorted({str(row.get("selection") or "") for row in enriched_rows})
-    dates = sorted({str(row.get("date") or "") for row in enriched_rows})
-    first_reason_flags = sorted({flag for row in enriched_rows for flag in (row.get("first_reason_flags") or [])})
-    last_reason_flags = sorted({flag for row in enriched_rows for flag in (row.get("last_reason_flags") or [])})
+    supplemental_rows = list(_iter_render_sync_report_fallback_rows(live_lens_dir))
+    supplemental_enriched: List[Dict[str, Any]] = []
+    for row in supplemental_rows:
+        item = dict(row)
+        item.update(rich_by_key.get(str(row.get("key") or ""), {}))
+        supplemental_enriched.append(item)
 
-    report_day_rows = [row for row in enriched_rows if isinstance(row.get("report_performance"), dict) and row.get("report_performance")]
-    report_dates = sorted({str(row.get("date") or "") for row in report_day_rows})
-    day_reports: Dict[str, Any] = {}
-    for date_str in report_dates:
-        sample = next((row for row in report_day_rows if str(row.get("date") or "") == date_str), None)
-        if not sample:
-            continue
-        raw_artifacts = dict(sample.get("report_raw_artifacts") or {})
-        day_reports[date_str] = {
-            "source": sample.get("report_source"),
-            "path": sample.get("report_path"),
-            "counts": dict(sample.get("report_counts") or {}),
-            "performance": dict(sample.get("report_performance") or {}),
-            "raw_total_bytes": _safe_int(raw_artifacts.get("total_bytes")),
-            "raw_total_bytes_text": raw_artifacts.get("total_bytes_text"),
-        }
-
-    out: Dict[str, Any] = {
-        "overall": _summarize(enriched_rows),
-        "dates": dates,
+    out: Dict[str, Any] = _build_summary_payload(enriched_rows)
+    out["supplemental_report_fallback"] = {
         "counts": {
-            "rows": len(enriched_rows),
-            "markets": {market: sum(1 for row in enriched_rows if str(row.get("market") or "") == market) for market in markets},
-            "props": {prop: sum(1 for row in enriched_rows if str(row.get("prop") or "") == prop) for prop in props},
-            "reportDates": len(day_reports),
+            "rows": len(supplemental_enriched),
+            "dates": sorted({str(row.get("date") or "") for row in supplemental_enriched}),
         },
-        "by_progress": _bucket_summary(enriched_rows, ("early_third", "mid_game", "later", "unknown"), _progress_bucket),
-        "by_rank": _bucket_summary(enriched_rows, ("top5", "top10", "after10"), _rank_bucket),
-        "by_selection": {selection: _summarize([row for row in enriched_rows if str(row.get("selection") or "") == selection]) for selection in selections},
-        "by_market": {market: _summarize([row for row in enriched_rows if str(row.get("market") or "") == market]) for market in markets},
-        "by_prop": {prop: _summarize([row for row in enriched_rows if str(row.get("prop") or "") == prop]) for prop in props},
-        "by_stability": _bucket_summary(enriched_rows, ("one_tick", "two_to_three_ticks", "four_to_six_ticks", "seven_plus_ticks"), _stability_bucket),
-        "by_odds_move": _bucket_summary(enriched_rows, ("price_better", "price_worse", "unchanged", "unknown"), _odds_move_bucket),
-        "by_first_reason_flag": {flag: _summarize([row for row in enriched_rows if flag in (row.get("first_reason_flags") or [])]) for flag in first_reason_flags},
-        "by_last_reason_flag": {flag: _summarize([row for row in enriched_rows if flag in (row.get("last_reason_flags") or [])]) for flag in last_reason_flags},
-        "rich_archive": {
-            "coverage": {
-                "rows_with_seen_count": sum(1 for row in enriched_rows if row.get("seen_count") is not None),
-                "rows_with_reason_flags": sum(1 for row in enriched_rows if row.get("first_reason_flags") or row.get("last_reason_flags")),
-                "rows_with_report_metadata": sum(1 for row in enriched_rows if row.get("report_source")),
-                "rows_with_odds_drift": sum(1 for row in enriched_rows if row.get("first_odds") is not None and row.get("last_odds") is not None),
-            },
-            "day_reports": day_reports,
-        },
-        "examples": {
-            "most_stable": sorted(enriched_rows, key=lambda row: (-int(_safe_int(row.get("seen_count")) or 0), -abs(float(_safe_float(row.get("last_live_edge")) or 0.0))))[:10],
-            "largest_first_edges": sorted(enriched_rows, key=lambda row: -abs(float(_safe_float(row.get("first_live_edge")) or 0.0)))[:10],
-            "largest_edge_growth": sorted(enriched_rows, key=lambda row: -abs(float(_safe_float(row.get("live_edge_delta")) or 0.0)))[:10],
-        },
+        "summary": _build_summary_payload(supplemental_enriched),
     }
 
     text = json.dumps(out, indent=2)

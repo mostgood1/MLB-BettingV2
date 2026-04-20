@@ -225,6 +225,69 @@ def _build_first_observation_row(
     return row
 
 
+def _build_report_fallback_row(
+    *,
+    date_str: str,
+    game_pk: int,
+    prop_row: Dict[str, Any],
+    progress_fraction: Optional[float],
+    inning: Optional[int],
+    outs: Optional[int],
+    score_away: Optional[int],
+    score_home: Optional[int],
+    rank: int,
+) -> Optional[Dict[str, Any]]:
+    owner = str(prop_row.get("playerName") or prop_row.get("owner") or "").strip()
+    market = str(prop_row.get("market") or "").strip().lower()
+    prop = str(prop_row.get("prop") or "").strip().lower()
+    selection = str(prop_row.get("selection") or "").strip().lower()
+    market_line = _safe_float(prop_row.get("line") if prop_row.get("line") is not None else prop_row.get("marketLine"))
+    actual = _safe_float(prop_row.get("actual"))
+    status = str(prop_row.get("status") or "").strip().lower()
+    if not owner or not market or not prop or selection not in {"over", "under"} or market_line is None:
+        return None
+    if status not in {"win", "loss"}:
+        derived = _result_label(selection, market_line, actual)
+        if derived not in {"win", "loss"}:
+            return None
+        status = derived
+    row: Dict[str, Any] = {
+        "date": date_str,
+        "key": f"report_fallback|{date_str}|{game_pk}|{owner.lower()}|{market}|{prop}|{selection}|{float(market_line):.3f}",
+        "game_pk": int(game_pk),
+        "gamePk": int(game_pk),
+        "market": market,
+        "prop": prop,
+        "selection": selection,
+        "market_line": market_line,
+        "odds": prop_row.get("odds"),
+        "live_edge": prop_row.get("liveEdge") if prop_row.get("liveEdge") is not None else prop_row.get("edge"),
+        "live_projection": prop_row.get("liveProjection"),
+        "model_mean": prop_row.get("modelMean") if prop_row.get("modelMean") is not None else prop_row.get("outsMean"),
+        "actual": actual,
+        "actual_so_far": actual,
+        "owner": owner,
+        "first_seen_at": None,
+        "last_seen_at": None,
+        "seen_count": 1,
+        "team_side": prop_row.get("teamSide"),
+        "progress_fraction": progress_fraction,
+        "inning": inning,
+        "outs": outs,
+        "score_away": score_away,
+        "score_home": score_home,
+        "rank": int(rank),
+        "reason_summary": None,
+        "reasons": [],
+        "live_text": None,
+        "label": 1 if status == "win" else 0,
+        "row_source": "report_fallback",
+        "timing_quality": "final_report",
+    }
+    row.update(build_live_prop_feature_map(row))
+    return row
+
+
 def _iter_local_first_observation_rows(live_lens_dir: Path) -> Iterable[Dict[str, Any]]:
     registry_dir = live_lens_dir / "prop_registry"
     if not registry_dir.exists():
@@ -353,6 +416,76 @@ def _iter_first_observation_rows(live_lens_dir: Path) -> Iterable[Dict[str, Any]
         yield row
     for row in _iter_render_sync_first_observation_rows(live_lens_dir, seen_keys=seen_keys):
         yield row
+
+
+def _iter_render_sync_report_fallback_rows(live_lens_dir: Path, *, seen_keys: Optional[set[str]] = None) -> Iterable[Dict[str, Any]]:
+    render_sync_dir = live_lens_dir / "render_sync"
+    if not render_sync_dir.exists():
+        return
+    seen = seen_keys if isinstance(seen_keys, set) else set()
+    for sync_path in sorted(render_sync_dir.glob("live_lens_reports_*.json")):
+        try:
+            payload = _read_json(sync_path)
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if isinstance(payload.get("firstObservationArchive"), list) and payload.get("firstObservationArchive"):
+            continue
+        latest_report = payload.get("latestReport") if isinstance(payload.get("latestReport"), dict) else {}
+        games = latest_report.get("games") if isinstance(latest_report.get("games"), list) else []
+        if not games:
+            continue
+        date_str = str(payload.get("date") or sync_path.stem.replace("live_lens_reports_", "").replace("_", "-")).strip()
+        for game in games:
+            if not isinstance(game, dict):
+                continue
+            game_pk = _safe_int(game.get("gamePk"))
+            if game_pk is None:
+                continue
+            progress = None
+            inning = None
+            outs = None
+            score_away = None
+            score_home = None
+            game_lens_rows = game.get("gameLens") if isinstance(game.get("gameLens"), list) else []
+            if game_lens_rows:
+                sample_lens = next((row for row in game_lens_rows if isinstance(row, dict) and isinstance(row.get("progress"), dict)), None)
+                if isinstance(sample_lens, dict):
+                    progress_block = sample_lens.get("progress") if isinstance(sample_lens.get("progress"), dict) else {}
+                    progress = _safe_float(progress_block.get("fraction"))
+                    inning = _safe_int(progress_block.get("inning"))
+                    outs = _safe_int(progress_block.get("outs"))
+            matchup = game.get("matchup") if isinstance(game.get("matchup"), dict) else {}
+            score = matchup.get("score") if isinstance(matchup.get("score"), dict) else {}
+            score_away = _safe_int(score.get("away"))
+            score_home = _safe_int(score.get("home"))
+            props = game.get("props") if isinstance(game.get("props"), list) else []
+            for index, prop_row in enumerate(props, start=1):
+                if not isinstance(prop_row, dict):
+                    continue
+                owner = str(prop_row.get("playerName") or prop_row.get("owner") or "").strip().lower()
+                market = str(prop_row.get("market") or "").strip().lower()
+                prop = str(prop_row.get("prop") or "").strip().lower()
+                selection = str(prop_row.get("selection") or "").strip().lower()
+                line_value = _safe_float(prop_row.get("line") if prop_row.get("line") is not None else prop_row.get("marketLine"))
+                dedupe_key = f"report_fallback|{date_str}|{int(game_pk)}|{owner}|{market}|{prop}|{selection}|{'' if line_value is None else f'{float(line_value):.3f}'}"
+                if dedupe_key in seen:
+                    continue
+                row = _build_report_fallback_row(
+                    date_str=date_str,
+                    game_pk=int(game_pk),
+                    prop_row=prop_row,
+                    progress_fraction=progress,
+                    inning=inning,
+                    outs=outs,
+                    score_away=score_away,
+                    score_home=score_home,
+                    rank=index,
+                )
+                if row:
+                    seen.add(dedupe_key)
+                    yield row
 
 
 def _iter_registry_rows(live_lens_dir: Path) -> Iterable[Dict[str, Any]]:
@@ -636,6 +769,7 @@ def main() -> int:
     parser.add_argument("--out-dataset", default="", help="Optional JSONL path for extracted training rows")
     parser.add_argument("--min-n", type=int, default=50, help="Minimum settled rows required for a per-prop model")
     parser.add_argument("--val-last-dates", type=int, default=2, help="Hold out the last N settled dates for diagnostics")
+    parser.add_argument("--include-report-fallback", choices=("on", "off"), default="off", help="Include compacted render_sync latestReport prop rows as supplemental final-report fallback training data")
     parser.add_argument("--l2", type=float, default=0.1, help="Default L2 regularization strength")
     parser.add_argument("--l2-grid", default="0.01,0.03,0.1,0.3,1.0,3.0", help="Comma-separated L2 values to try")
     parser.add_argument("--max-iters", type=int, default=60)
@@ -652,6 +786,10 @@ def main() -> int:
     if not rows:
         raise SystemExit("No final-settled first-observation live-lens rows found")
     rows.sort(key=lambda row: (str(row.get("date") or ""), str(row.get("first_seen_at") or ""), str(row.get("key") or "")))
+    if str(args.include_report_fallback) == "on":
+        seen_keys = {f"{str(row.get('date') or '')}|{str(row.get('key') or '')}" for row in rows}
+        fallback_rows = list(_iter_render_sync_report_fallback_rows(live_lens_dir, seen_keys=seen_keys))
+        rows.extend(fallback_rows)
 
     feature_names = list(DEFAULT_LIVE_PROP_FEATURES)
     train_rows, val_rows = _split_rows_by_dates(rows, int(args.val_last_dates))
