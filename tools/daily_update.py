@@ -33,7 +33,11 @@ if sys.platform.startswith("win"):
 # Ensure the project root (MLB-BettingV2/) is importable when running this file directly.
 _ROOT_DIR = Path(__file__).resolve().parents[1]
 _TRACKED_DATA_DIR = (_ROOT_DIR / "data").resolve()
-_DATA_ROOT_DIR_ENV = str(os.environ.get("MLB_BETTING_DATA_ROOT_DIR") or "").strip()
+_DATA_ROOT_DIR_ENV = str(
+    os.environ.get("MLB_BETTING_DATA_ROOT")
+    or os.environ.get("MLB_BETTING_DATA_ROOT_DIR")
+    or ""
+).strip()
 _DATA_DIR = (Path(_DATA_ROOT_DIR_ENV).resolve() if _DATA_ROOT_DIR_ENV else _TRACKED_DATA_DIR)
 _OFFICIAL_CARD_MIN_PUBLISH_SIMS = 250
 if str(_ROOT_DIR) not in sys.path:
