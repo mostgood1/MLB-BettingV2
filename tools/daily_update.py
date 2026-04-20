@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import gzip
 import json
 import math
@@ -629,6 +630,87 @@ def _relative_path_str(path: Optional[Path]) -> Optional[str]:
         return str(path.resolve().relative_to(_ROOT.resolve())).replace("\\", "/")
     except Exception:
         return str(path.resolve()).replace("\\", "/")
+
+
+def _process_exists(pid: Any) -> bool:
+    try:
+        pid_i = int(pid or 0)
+    except Exception:
+        return False
+    if pid_i <= 0:
+        return False
+    try:
+        os.kill(pid_i, 0)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _daily_update_run_lock_path(*, workflow: str, season: int, date_str: str, out_root: Path) -> Path:
+    normalized_out = str(out_root.resolve()).replace("\\", "/").lower()
+    out_digest = hashlib.sha1(normalized_out.encode("utf-8")).hexdigest()[:12]
+    safe_workflow = re.sub(r"[^a-z0-9_-]+", "_", str(workflow or "core").strip().lower()) or "core"
+    safe_date = re.sub(r"[^0-9-]+", "_", str(date_str or "").strip()) or "unknown-date"
+    return (_DATA_DIR / "runtime" / "locks" / f"daily_update_{safe_workflow}_{int(season)}_{safe_date}_{out_digest}.lock").resolve()
+
+
+def _read_run_lock_metadata(lock_path: Path) -> Dict[str, Any]:
+    try:
+        payload = json.loads(lock_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
+def _acquire_daily_update_run_lock(*, workflow: str, season: int, date_str: str, out_root: Path) -> Tuple[Optional[Path], Dict[str, Any]]:
+    lock_path = _daily_update_run_lock_path(
+        workflow=str(workflow or "core"),
+        season=int(season),
+        date_str=str(date_str or ""),
+        out_root=out_root,
+    )
+    _ensure_dir(lock_path.parent)
+    payload = {
+        "workflow": str(workflow or "core"),
+        "season": int(season),
+        "date": str(date_str or ""),
+        "out_root": _relative_path_str(out_root) or str(out_root.resolve()).replace("\\", "/"),
+        "pid": int(os.getpid()),
+        "created_at": datetime.now().isoformat(),
+        "command": [str(part) for part in sys.argv],
+    }
+    for _ in range(2):
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            existing = _read_run_lock_metadata(lock_path)
+            if _process_exists(existing.get("pid")):
+                return None, existing
+            try:
+                lock_path.unlink()
+            except Exception:
+                return None, existing
+            continue
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+        return lock_path, payload
+    return None, _read_run_lock_metadata(lock_path)
+
+
+def _release_daily_update_run_lock(lock_path: Optional[Path]) -> None:
+    if lock_path is None:
+        return
+    current = _read_run_lock_metadata(lock_path)
+    if current and int(current.get("pid") or 0) not in (0, int(os.getpid())):
+        return
+    try:
+        lock_path.unlink()
+    except FileNotFoundError:
+        return
+    except Exception:
+        return
 
 
 def _sync_oddsapi_market_snapshots(date_str: str, snapshot_dir: Path) -> Dict[str, str]:
@@ -1542,6 +1624,26 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
         default=default_hitter_out,
     )
     _ensure_dir(game_out)
+    run_lock_path, run_lock_metadata = _acquire_daily_update_run_lock(
+        workflow="ui-daily",
+        season=int(args.season),
+        date_str=str(args.date),
+        out_root=game_out,
+    )
+    if run_lock_path is None:
+        holder_pid = int(run_lock_metadata.get("pid") or 0) if isinstance(run_lock_metadata, dict) else 0
+        holder_created_at = str(run_lock_metadata.get("created_at") or "").strip() if isinstance(run_lock_metadata, dict) else ""
+        holder_out_root = str(run_lock_metadata.get("out_root") or "").strip() if isinstance(run_lock_metadata, dict) else ""
+        message = (
+            f"Another ui-daily run already holds the artifact publish lock for {args.date} "
+            f"(season {int(args.season)}, pid {holder_pid or 'unknown'})"
+        )
+        if holder_created_at:
+            message += f" started at {holder_created_at}"
+        if holder_out_root:
+            message += f" using {holder_out_root}"
+        print(message)
+        return 3
 
     token = str(args.date).replace("-", "_")
     prior_date = str(getattr(args, "reconcile_date", "") or "").strip() or _date_plus_days(str(args.date), -1)
@@ -1576,6 +1678,12 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
         "generated_at": datetime.now().isoformat(),
         "date": str(args.date),
         "season": int(args.season),
+        "run_lock": {
+            "status": "acquired",
+            "path": _relative_path_str(run_lock_path) or str(run_lock_path.resolve()).replace("\\", "/"),
+            "pid": int(run_lock_metadata.get("pid") or os.getpid()),
+            "created_at": str(run_lock_metadata.get("created_at") or ""),
+        },
         "seed": {
             "value": int(getattr(args, "seed", 1337) or 1337),
             "source": str(getattr(args, "seed_source", "default_fixed") or "default_fixed"),
@@ -2369,10 +2477,13 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
             report["errors"].append(f"git push failed: {type(exc).__name__}: {exc}")
             report["status"] = "error"
             _write_json(ops_report_path, report)
+            _release_daily_update_run_lock(run_lock_path)
             return 1
 
     if str(report.get("status") or "") == "error":
+        _release_daily_update_run_lock(run_lock_path)
         return int((report.get("stages") or {}).get("current_day_multi_profile", {}).get("exit_code") or 1)
+    _release_daily_update_run_lock(run_lock_path)
     return 0
 
 
