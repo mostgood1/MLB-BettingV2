@@ -639,7 +639,7 @@ def _process_exists(pid: Any) -> bool:
         return False
     if pid_i <= 0:
         return False
-    if sys.platform.startswith("win"):
+    if sys.platform.startswith("win") or os.name == "nt":
         try:
             import ctypes
 
@@ -670,7 +670,7 @@ def _process_exists(pid: Any) -> bool:
         os.kill(pid_i, 0)
     except PermissionError:
         return True
-    except OSError:
+    except (OSError, SystemError, ValueError):
         return False
     return True
 
@@ -5227,6 +5227,8 @@ def main() -> int:
 
     lineup_games: List[Dict[str, Any]] = []
     probable_games: List[Dict[str, Any]] = []
+    preserved_started_games: List[Dict[str, Any]] = []
+    started_game_repairs: List[Dict[str, Any]] = []
     official_starting_lineups_by_game: Dict[int, Dict[str, Any]] = {}
     try:
         official_starting_lineups_by_game = fetch_official_starting_lineups_for_date(client, str(args.date))
@@ -5250,27 +5252,76 @@ def main() -> int:
         home_team = home.get("team") or {}
         abstract_state = str(status.get("abstractGameState") or "").strip().lower()
         detailed_state = str(status.get("detailedState") or "").strip()
+        away_abbr = _abbr(away_team)
+        home_abbr = _abbr(home_team)
+        gn = f"_g{int(game_number)}" if isinstance(game_number, (int, float)) else ""
+        sim_path = sim_dir / f"sim_{idx}_{away_abbr}_at_{home_abbr}_pk{game_pk}{gn}.json"
+        roster_path = snapshot_dir / f"roster_{idx}_{away_abbr}_at_{home_abbr}_pk{game_pk}{gn}.json"
 
         if str(getattr(args, "skip_started_games", "off") or "off") == "on" and abstract_state not in {"preview", "pregame"}:
-            away_abbr = _abbr(away_team)
-            home_abbr = _abbr(home_team)
             status_label = detailed_state or str(status.get("abstractGameState") or "") or "started"
             pk_label = f" gamePk={game_pk}" if game_pk else ""
-            print(
-                f"[{idx+1}/{len(games)}] Preserving existing artifacts for started game:{pk_label} {away_abbr} @ {home_abbr} ({status_label})"
+            existing_sims = None
+            existing_game_pk = None
+            if sim_path.exists():
+                try:
+                    existing_record = _read_json(sim_path)
+                    if isinstance(existing_record, dict):
+                        existing_game_pk = int(existing_record.get("game_pk") or 0)
+                        existing_sims = _safe_int(((existing_record.get("sim") or {}).get("sims")))
+                except Exception:
+                    existing_sims = None
+                    existing_game_pk = None
+            preserve_existing = (
+                sim_path.exists()
+                and roster_path.exists()
+                and game_pk
+                and int(existing_game_pk or 0) == int(game_pk)
+                and existing_sims is not None
+                and int(existing_sims) >= int(args.sims)
             )
-            failures.append(
+            if preserve_existing:
+                print(
+                    f"[{idx+1}/{len(games)}] Preserving existing artifacts for started game:{pk_label} {away_abbr} @ {home_abbr} ({status_label}, sims={int(existing_sims)})"
+                )
+                preserved_started_games.append(
+                    {
+                        "idx": int(idx),
+                        "game_pk": int(game_pk) if game_pk else None,
+                        "status": status_obj,
+                        "away": {"abbr": away_abbr, "team_id": int(away_team.get("id") or 0)},
+                        "home": {"abbr": home_abbr, "team_id": int(home_team.get("id") or 0)},
+                        "sim_path": _relative_path_str(sim_path),
+                        "roster_path": _relative_path_str(roster_path),
+                        "existing_sims": int(existing_sims),
+                    }
+                )
+                continue
+
+            repair_reason = "missing_artifact"
+            if existing_sims is not None and int(existing_sims) < int(args.sims):
+                repair_reason = f"stale_sims<{int(args.sims)}"
+            elif sim_path.exists() and not roster_path.exists():
+                repair_reason = "missing_roster_snapshot"
+            elif sim_path.exists() and game_pk and int(existing_game_pk or 0) != int(game_pk):
+                repair_reason = "game_pk_mismatch"
+            print(
+                f"[{idx+1}/{len(games)}] Repairing started-game artifacts:{pk_label} {away_abbr} @ {home_abbr} ({status_label}, reason={repair_reason}, existing_sims={existing_sims if existing_sims is not None else 'none'})"
+            )
+            started_game_repairs.append(
                 {
                     "idx": int(idx),
                     "game_pk": int(game_pk) if game_pk else None,
-                    "stage": "skip_started_game",
-                    "reason": "skip_started_games=on",
                     "status": status_obj,
                     "away": {"abbr": away_abbr, "team_id": int(away_team.get("id") or 0)},
                     "home": {"abbr": home_abbr, "team_id": int(home_team.get("id") or 0)},
+                    "reason": str(repair_reason),
+                    "existing_sims": (int(existing_sims) if existing_sims is not None else None),
+                    "target_sims": int(args.sims),
+                    "sim_path": _relative_path_str(sim_path),
+                    "roster_path": _relative_path_str(roster_path),
                 }
             )
-            continue
 
         # Spring training schedules can include college/minor/non-MLB opponents.
         # Skip those games to avoid unsupported roster building.
@@ -5582,7 +5633,6 @@ def main() -> int:
         pk_label = f" gamePk={game_pk}" if game_pk else ""
         print(f"[{idx+1}/{len(games)}] Preparing rosters:{pk_label}{dh_label} {t_away.abbreviation} @ {t_home.abbreviation}")
 
-        gn = f"_g{int(game_number)}" if isinstance(game_number, (int, float)) else ""
         roster_obj_path = None
         if game_pk:
             roster_obj_path = roster_obj_dir / f"roster_obj_{idx}_{t_away.abbreviation}_at_{t_home.abbreviation}_pk{game_pk}{gn}.json"
@@ -5951,7 +6001,6 @@ def main() -> int:
 
         # Apply the same umpire shrink used in eval tuning so daily sims stay consistent.
         _apply_umpire_shrink(umpire, float(getattr(args, "umpire_shrink", 1.0)))
-        gn = f"_g{int(game_number)}" if isinstance(game_number, (int, float)) else ""
         roster_path = snapshot_dir / f"roster_{idx}_{t_away.abbreviation}_at_{t_home.abbreviation}_pk{game_pk}{gn}.json"
 
         weather_obj = None
@@ -6133,7 +6182,6 @@ def main() -> int:
         }
         outputs.append(record)
 
-        sim_path = sim_dir / f"sim_{idx}_{t_away.abbreviation}_at_{t_home.abbreviation}_pk{game_pk}{gn}.json"
         _write_json(sim_path, record)
 
     # Summary index
@@ -6153,6 +6201,10 @@ def main() -> int:
         "date": args.date,
         "season": args.season,
         "games": len(outputs),
+        "preserved_started_games": preserved_started_games,
+        "preserved_started_games_n": int(len(preserved_started_games)),
+        "started_game_repairs": started_game_repairs,
+        "started_game_repairs_n": int(len(started_game_repairs)),
         "failures": failures,
         "failures_n": int(len(failures)),
         "generated_at": datetime.now().isoformat(),

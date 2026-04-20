@@ -13,6 +13,8 @@ param(
     [string]$GitPushRemote = 'origin',
     [string]$GitPushBranch = '',
     [string]$GitCommitMessage = 'Daily end-to-end {date} + {next_date}',
+    [ValidateSet('auto', 'on', 'off')]
+    [string]$SkipStartedGames = 'auto',
     [switch]$AllowArtifactRebase,
     [switch]$SpringMode,
     [switch]$SkipPriorReconcile,
@@ -194,6 +196,22 @@ function Normalize-GitPaths {
     }
 
     return Normalize-GitPaths -Paths $collected.ToArray()
+}
+
+function Get-StagedChangedPaths {
+    param(
+        [string]$RepoRoot,
+        [string[]]$Paths = @()
+    )
+
+    $pathArgs = if ($Paths -and $Paths.Count -gt 0) { @('--') + $Paths } else { @() }
+    $cachedArgs = @('diff', '--cached', '--name-only') + $pathArgs
+    $cached = (& git -C $RepoRoot @cachedArgs 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Failed to inspect staged changes.'
+    }
+
+    return Normalize-GitPaths -Paths $cached
 }
 
 function Test-PathsWithinRoots {
@@ -437,6 +455,11 @@ if ($ExtraArgs) {
 $initialGitStatus = ''
 $pushBranch = ''
 if ($GitPush -eq 'on') {
+    $initialStagedPaths = Get-StagedChangedPaths -RepoRoot $repoRoot
+    if ($initialStagedPaths.Count -gt 0 -and -not (Test-PathsWithinRoots -Paths $initialStagedPaths -Roots $artifactPaths)) {
+        throw 'Git index already contains staged non-artifact changes. Unstage or commit them before workflow auto-push.'
+    }
+
     $initialGitStatus = (& git -C $repoRoot status --porcelain) -join "`n"
     if ($initialGitStatus) {
         $allChangedPaths = Get-WorkingTreeChangedPaths -RepoRoot $repoRoot
@@ -463,6 +486,18 @@ $currentArgs = @(
     '--workflow', 'ui-daily',
     '--git-push', 'off'
 ) + $sharedArgs
+
+$enableSkipStartedGames = $false
+switch ($SkipStartedGames) {
+    'on' { $enableSkipStartedGames = $true }
+    'off' { $enableSkipStartedGames = $false }
+    default {
+        $enableSkipStartedGames = ($Date -eq (Get-Date).ToString('yyyy-MM-dd'))
+    }
+}
+if ($enableSkipStartedGames) {
+    $currentArgs += @('--skip-started-games', 'on')
+}
 
 if (-not $SkipPriorReconcile.IsPresent) {
     $currentArgs += @('--reconcile-date', $reconcileDate)
@@ -493,13 +528,18 @@ Invoke-ExternalCommand -FilePath $python -Arguments $nextArgs -StepName "Next-da
 if ($GitPush -eq 'on') {
     $commitMessage = $GitCommitMessage.Replace('{date}', $Date).Replace('{next_date}', $resolvedNextDate).Replace('{workflow}', 'end-to-end')
     Assert-SafeArtifactPush -RepoRoot $repoRoot -Remote $GitPushRemote -Branch $pushBranch -ArtifactPaths $artifactPaths -AllowArtifactRebase:$AllowArtifactRebase
-    Invoke-GitCommand -RepoRoot $repoRoot -Arguments @('add', '-A') -StepName 'Stage workflow outputs'
+    Invoke-GitCommand -RepoRoot $repoRoot -Arguments (@('add', '-A', '--') + $artifactPaths) -StepName 'Stage workflow outputs'
 
-    $postAddStatus = (& git -C $repoRoot status --porcelain) -join "`n"
-    if (-not $postAddStatus) {
-        Write-Host 'No git changes detected after the workflow run.'
+    $stagedArtifactPaths = Get-StagedChangedPaths -RepoRoot $repoRoot -Paths $artifactPaths
+    if ($stagedArtifactPaths.Count -eq 0) {
+        Write-Host 'No managed artifact changes detected after the workflow run.'
     }
     else {
+        $stagedPaths = Get-StagedChangedPaths -RepoRoot $repoRoot
+        if (-not (Test-PathsWithinRoots -Paths $stagedPaths -Roots $artifactPaths)) {
+            throw 'Git index contains staged non-artifact changes. Aborting auto-commit to avoid mixing manual edits with workflow outputs.'
+        }
+
         Invoke-GitCommand -RepoRoot $repoRoot -Arguments @('commit', '-m', $commitMessage) -StepName 'Commit workflow outputs'
         Sync-GitBranchBeforePush -RepoRoot $repoRoot -Remote $GitPushRemote -Branch $pushBranch -ArtifactPaths $artifactPaths -AllowArtifactRebase:$AllowArtifactRebase
         $pushArgs = @('push', $GitPushRemote, $pushBranch)
