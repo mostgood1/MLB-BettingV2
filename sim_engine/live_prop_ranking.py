@@ -176,16 +176,35 @@ def build_live_prop_feature_map(row: Mapping[str, Any]) -> Dict[str, float]:
     }
 
 
-def resolve_live_prop_ranking_cfg(cfg: Optional[Dict[str, Any]], prop_key: str) -> Optional[Dict[str, Any]]:
+def resolve_live_prop_ranking_cfg(
+    cfg: Optional[Dict[str, Any]],
+    prop_key: str,
+    *,
+    market_key: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
     if not isinstance(cfg, dict) or not cfg:
         return None
     if str(cfg.get("enabled", "true")).lower() in {"0", "false", "off", "no"}:
         return None
     props = cfg.get("props")
     if isinstance(props, dict):
-        sub = props.get(str(prop_key))
-        if isinstance(sub, dict) and str(sub.get("enabled", "true")).lower() not in {"0", "false", "off", "no"}:
-            return sub
+        candidate_keys = []
+        market_token = str(market_key or "").strip().lower()
+        prop_token = str(prop_key or "").strip().lower()
+        if market_token and prop_token:
+            candidate_keys.extend(
+                (
+                    f"{market_token}:{prop_token}",
+                    f"{market_token}.{prop_token}",
+                    f"{market_token}__{prop_token}",
+                )
+            )
+        if prop_token:
+            candidate_keys.append(prop_token)
+        for candidate_key in candidate_keys:
+            sub = props.get(str(candidate_key))
+            if isinstance(sub, dict) and str(sub.get("enabled", "true")).lower() not in {"0", "false", "off", "no"}:
+                return sub
         default = cfg.get("default")
         if isinstance(default, dict) and str(default.get("enabled", "true")).lower() not in {"0", "false", "off", "no"}:
             return default
@@ -263,7 +282,8 @@ def predict_live_prop_win_probability_from_features(feature_map: Mapping[str, An
 
 def predict_live_prop_win_probability(row: Mapping[str, Any], cfg: Optional[Dict[str, Any]], *, prop_key: Optional[str] = None) -> Optional[float]:
     key = str(prop_key or row.get("prop") or "").strip().lower()
-    resolved = resolve_live_prop_ranking_cfg(cfg, key)
+    market_key = str(row.get("market") or "").strip().lower()
+    resolved = resolve_live_prop_ranking_cfg(cfg, key, market_key=market_key)
     if not isinstance(resolved, Mapping):
         return None
     return predict_live_prop_win_probability_from_features(build_live_prop_feature_map(row), resolved)

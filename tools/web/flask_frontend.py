@@ -232,11 +232,11 @@ _PITCHER_LADDER_PROPS: Dict[str, Dict[str, Any]] = {
         "market_key": None,
         "unit": "Pitches",
     },
-    "hits": {
+    "hits_allowed": {
         "label": "Hits Allowed",
         "dist_key": "hits_dist",
         "mean_key": "hits_mean",
-        "market_key": None,
+        "market_key": "hits_allowed",
         "unit": "Hits",
     },
     "earned_runs": {
@@ -246,11 +246,11 @@ _PITCHER_LADDER_PROPS: Dict[str, Dict[str, Any]] = {
         "market_key": "earned_runs",
         "unit": "ER",
     },
-    "walks": {
+    "walks_allowed": {
         "label": "Walks Allowed",
         "dist_key": "walks_dist",
         "mean_key": "walks_mean",
-        "market_key": None,
+        "market_key": "walks_allowed",
         "unit": "Walks",
     },
     "batters_faced": {
@@ -323,6 +323,14 @@ _HITTER_LADDER_PROPS: Dict[str, Dict[str, Any]] = {
             {"total": 3, "section_key": "rbi_3plus", "prob_key": "p_rbi_3plus"},
             {"total": 4, "section_key": "rbi_4plus", "prob_key": "p_rbi_4plus"},
         ),
+    },
+    "hitter_strikeouts": {
+        "label": "Strikeouts",
+        "dist_key": "strikeouts_dist",
+        "mean_key": "so_mean",
+        "market_key": "batter_strikeouts",
+        "unit": "K",
+        "thresholds": (),
     },
     "doubles": {
         "label": "Doubles",
@@ -2725,14 +2733,18 @@ def _normalize_pitcher_ladder_prop(value: Any) -> str:
         "out": "outs",
         "outs": "outs",
         "hit": "hits",
-        "hits": "hits",
+        "hits": "hits_allowed",
+        "hits_allowed": "hits_allowed",
+        "hitsallowed": "hits_allowed",
         "er": "earned_runs",
         "earned_run": "earned_runs",
         "earned_runs": "earned_runs",
         "earnedruns": "earned_runs",
         "bb": "walks",
-        "walk": "walks",
-        "walks": "walks",
+        "walk": "walks_allowed",
+        "walks": "walks_allowed",
+        "walks_allowed": "walks_allowed",
+        "walksallowed": "walks_allowed",
         "bf": "batters_faced",
         "batter_faced": "batters_faced",
         "batters_faced": "batters_faced",
@@ -2772,6 +2784,11 @@ def _normalize_hitter_ladder_prop(value: Any) -> str:
         "runs": "runs",
         "rbi": "rbi",
         "rbis": "rbi",
+        "k": "hitter_strikeouts",
+        "ks": "hitter_strikeouts",
+        "so": "hitter_strikeouts",
+        "strikeout": "hitter_strikeouts",
+        "strikeouts": "hitter_strikeouts",
         "double": "doubles",
         "doubles": "doubles",
         "triple": "triples",
@@ -2797,7 +2814,7 @@ def _extract_pitcher_prop_market_lines(doc: Any) -> Dict[str, Dict[str, Dict[str
         nk = normalize_pitcher_name(str(raw_name))
         if not nk or not isinstance(markets, dict):
             continue
-        for market_key in ("strikeouts", "outs", "earned_runs"):
+        for market_key in ("strikeouts", "outs", "hits_allowed", "walks_allowed", "earned_runs"):
             market = markets.get(market_key)
             if not isinstance(market, dict):
                 continue
@@ -3007,7 +3024,7 @@ def _first_seen_pitcher_market_lines_from_registry(d: str) -> Dict[str, Dict[str
 
         owner_key = normalize_pitcher_name(str(entry.get("owner") or ""))
         prop_key = str(entry.get("prop") or "").strip().lower()
-        if not owner_key or prop_key not in {"strikeouts", "outs", "earned_runs"}:
+        if not owner_key or prop_key not in {"strikeouts", "outs", "hits_allowed", "walks_allowed", "earned_runs"}:
             continue
 
         first_snapshot = entry.get("firstSeenSnapshot") if isinstance(entry.get("firstSeenSnapshot"), dict) else {}
@@ -7259,6 +7276,7 @@ def _season_day_cards_link(season_manifest: Dict[str, Any], date_str: str) -> Op
 _SETTLED_HITTER_MARKETS = {
     "hitter_home_runs",
     "hitter_hits",
+    "hitter_strikeouts",
     "hitter_total_bases",
     "hitter_runs",
     "hitter_rbis",
@@ -7271,6 +7289,7 @@ _BETTING_COUNT_KEYS = (
     "hitter_props",
     "hitter_home_runs",
     "hitter_hits",
+    "hitter_strikeouts",
     "hitter_total_bases",
     "hitter_runs",
     "hitter_rbis",
@@ -10518,8 +10537,12 @@ def _live_stat_value(row: Optional[Dict[str, Any]], reco: Dict[str, Any]) -> Opt
         return _safe_float(row.get("R"))
     if "hitter_hits" in market or prop.endswith("hits"):
         return _safe_float(row.get("H"))
-    if prop == "strikeouts":
+    if prop in {"strikeouts", "hitter_strikeouts"}:
         return _safe_float(row.get("SO"))
+    if prop == "hits_allowed":
+        return _safe_float(row.get("H"))
+    if prop == "walks_allowed":
+        return _safe_float(row.get("BB"))
     if "earned_runs" in market or prop == "earned_runs":
         return _safe_float(row.get("ER"))
     if prop == "outs":
@@ -10908,7 +10931,7 @@ def _live_pitcher_manager_hook_reason(
     if not isinstance(actual_row, dict):
         return None
     prop = str(row.get("prop") or "").strip().lower()
-    if prop not in {"outs", "strikeouts", "earned_runs"}:
+    if prop not in {"outs", "strikeouts", "hits_allowed", "walks_allowed", "earned_runs"}:
         return None
     choice = str(row.get("selection") or "").strip().lower()
     pitch_count = _safe_int(actual_row.get("P"))
@@ -11262,7 +11285,7 @@ def _live_pitcher_efficiency_reason(
     if not isinstance(actual_row, dict) or not isinstance(pitcher_model, dict):
         return None
     prop = str(row.get("prop") or "").strip().lower()
-    if prop not in {"outs", "strikeouts"}:
+    if prop not in {"outs", "strikeouts", "hits_allowed", "walks_allowed"}:
         return None
 
     pitch_count = _safe_float(actual_row.get("P"))
@@ -11337,9 +11360,9 @@ def _live_pitcher_game_state_reason(row: Dict[str, Any], snapshot: Optional[Dict
     remaining_outs = _game_lens_remaining_outs(_live_game_progress(snapshot))
     prop = str(row.get("prop") or "").strip().lower()
 
-    if prop in {"outs", "strikeouts"} and choice == "over" and abs(margin) <= 2 and remaining_outs >= 9:
+    if prop in {"outs", "strikeouts", "hits_allowed", "walks_allowed"} and choice == "over" and abs(margin) <= 2 and remaining_outs >= 9:
         return "The score is still tight enough that a normal starter leash is more likely to stay in place."
-    if prop in {"outs", "strikeouts"} and choice == "under" and margin <= -4:
+    if prop in {"outs", "strikeouts", "hits_allowed", "walks_allowed"} and choice == "under" and margin <= -4:
         return f"His club is trailing by {int(abs(margin))}, which raises the chance the manager shortens the outing from here."
     if prop == "earned_runs" and choice == "over" and margin <= -2:
         return "The game script is already leaning against him, so more run pressure is still in play."
@@ -12449,7 +12472,7 @@ def _project_live_pitcher_value(
 ) -> Optional[float]:
     prop_key = str(prop or "").strip().lower()
     mean = _safe_float(model_mean)
-    if mean is None or prop_key not in {"outs", "strikeouts"}:
+    if mean is None or prop_key not in {"outs", "strikeouts", "hits_allowed", "walks_allowed"}:
         return _project_live_value(actual_value, model_mean, progress_fraction)
 
     actual = float(_safe_float(actual_value) or 0.0)
@@ -12561,7 +12584,7 @@ def _project_live_pitcher_value(
     remaining_bf = max(0.0, float(remaining_bf) * max(0.0, min(1.1, float(hook_factor))))
 
     per_bf_rate = float(mean) / float(max(model_bf, 1e-6))
-    if prop_key == "strikeouts" and actual_bf is not None and float(actual_bf) >= 3.0:
+    if prop_key in {"strikeouts", "hits_allowed", "walks_allowed"} and actual_bf is not None and float(actual_bf) >= 3.0:
         actual_k_rate = float(actual) / float(max(float(actual_bf), 1e-6))
         weight = min(0.55, max(0.12, float(actual_bf) / 36.0))
         per_bf_rate = ((1.0 - weight) * float(per_bf_rate)) + (weight * float(actual_k_rate))

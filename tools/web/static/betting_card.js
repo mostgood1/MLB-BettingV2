@@ -24,12 +24,15 @@
 
   const BETTING_PROP_LABELS = {
     strikeouts: "Strikeouts",
+    hitter_strikeouts: "Hitter strikeouts",
     outs: "Outs",
     earned_runs: "Earned runs",
     walks: "Walks",
+    walks_allowed: "Walks allowed",
     batters_faced: "Batters faced",
     pitches: "Pitches",
     hits: "Hits",
+    hits_allowed: "Hits allowed",
     home_runs: "HR",
     total_bases: "TB",
     rbis: "RBI",

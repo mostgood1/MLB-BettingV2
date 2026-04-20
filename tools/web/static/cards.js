@@ -468,7 +468,9 @@
     if (market.includes("rbis") || prop.includes("rbi")) return "RBI";
     if (market.includes("hitter_runs") || prop.includes("runs_scored")) return "Runs";
     if (market.includes("hitter_hits") || prop.endsWith("hits")) return "Hits";
-    if (prop === "strikeouts") return "K";
+    if (prop === "strikeouts" || prop === "hitter_strikeouts") return "K";
+    if (prop === "hits_allowed") return "Hits Allowed";
+    if (prop === "walks_allowed") return "Walks";
     if (market.includes("earned_runs") || prop === "earned_runs") return "ER";
     if (prop === "outs") return "Outs";
     return String(reco?.market_label || reco?.market || "Prop");
@@ -1675,7 +1677,9 @@
     if (market.includes("rbis") || prop.includes("rbi")) return toNumber(row?.RBI);
     if (market.includes("hitter_runs") || prop.includes("runs_scored")) return toNumber(row?.R);
     if (market.includes("hitter_hits") || prop.endsWith("hits")) return toNumber(row?.H);
-    if (prop === "strikeouts") return toNumber(row?.SO);
+    if (prop === "strikeouts" || prop === "hitter_strikeouts") return toNumber(row?.SO);
+    if (prop === "hits_allowed") return toNumber(row?.H);
+    if (prop === "walks_allowed") return toNumber(row?.BB);
     if (market.includes("earned_runs") || prop === "earned_runs") return toNumber(row?.ER);
     if (prop === "outs") return toNumber(row?.OUTS) ?? parseIpToOuts(row?.IP);
     return null;

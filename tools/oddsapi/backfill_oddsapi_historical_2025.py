@@ -40,6 +40,8 @@ DEFAULT_HITTER_MARKETS: List[str] = [
 PITCHER_MARKET_KEY_MAP: Dict[str, str] = {
     "pitcher_strikeouts": "strikeouts",
     "pitcher_outs": "outs",
+    "pitcher_hits_allowed": "hits_allowed",
+    "pitcher_walks": "walks_allowed",
     "pitcher_earned_runs": "earned_runs",
 }
 
@@ -49,7 +51,10 @@ PLAYER_PROP_PRIMARY_LINE_PREFERENCES: Dict[str, Tuple[float, ...]] = {
     "batter_hits": (0.5,),
     "batter_rbis": (0.5,),
     "batter_runs_scored": (0.5,),
+    "batter_strikeouts": (0.5, 1.5),
     "batter_total_bases": (1.5,),
+    "hits_allowed": (5.5, 4.5, 6.5),
+    "walks_allowed": (1.5, 2.5, 0.5),
     "earned_runs": (1.5, 2.5, 0.5, 3.5),
 }
 

@@ -112,6 +112,7 @@ _HITTER_PROP_DIST_SPECS: Tuple[Tuple[str, str, str], ...] = (
     ("total_bases", "TB", "tb_mean"),
     ("runs", "R", "r_mean"),
     ("rbi", "RBI", "rbi_mean"),
+    ("strikeouts", "SO", "so_mean"),
     ("doubles", "2B", "2b_mean"),
     ("triples", "3B", "3b_mean"),
     ("stolen_bases", "SB", "sb_mean"),
