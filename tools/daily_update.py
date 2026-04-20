@@ -31,13 +31,13 @@ if sys.platform.startswith("win"):
         pass
 
 # Ensure the project root (MLB-BettingV2/) is importable when running this file directly.
-_ROOT = Path(__file__).resolve().parents[1]
-_TRACKED_DATA_DIR = (_ROOT / "data").resolve()
-_DATA_ROOT_ENV = str(os.environ.get("MLB_BETTING_DATA_ROOT") or "").strip()
-_DATA_DIR = (Path(_DATA_ROOT_ENV).resolve() if _DATA_ROOT_ENV else _TRACKED_DATA_DIR)
+_ROOT_DIR = Path(__file__).resolve().parents[1]
+_TRACKED_DATA_DIR = (_ROOT_DIR / "data").resolve()
+_DATA_ROOT_DIR_ENV = str(os.environ.get("MLB_BETTING_DATA_ROOT_DIR") or "").strip()
+_DATA_DIR = (Path(_DATA_ROOT_DIR_ENV).resolve() if _DATA_ROOT_DIR_ENV else _TRACKED_DATA_DIR)
 _OFFICIAL_CARD_MIN_PUBLISH_SIMS = 250
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+if str(_ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(_ROOT_DIR))
 
 from sim_engine.data.statsapi import (
     StatsApiClient,
@@ -619,7 +619,7 @@ def _resolve_path_arg(value: str, *, default: Path) -> Path:
     raw = str(value or "").strip()
     path = Path(raw) if raw else default
     if not path.is_absolute():
-        path = (_ROOT / path).resolve()
+        path = (_ROOT_DIR / path).resolve()
     return path
 
 
@@ -627,7 +627,7 @@ def _relative_path_str(path: Optional[Path]) -> Optional[str]:
     if path is None:
         return None
     try:
-        return str(path.resolve().relative_to(_ROOT.resolve())).replace("\\", "/")
+        return str(path.resolve().relative_to(_ROOT_DIR.resolve())).replace("\\", "/")
     except Exception:
         return str(path.resolve()).replace("\\", "/")
 
@@ -639,6 +639,33 @@ def _process_exists(pid: Any) -> bool:
         return False
     if pid_i <= 0:
         return False
+    if sys.platform.startswith("win"):
+        try:
+            import ctypes
+
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            SYNCHRONIZE = 0x00100000
+            WAIT_TIMEOUT = 0x00000102
+            WAIT_OBJECT_0 = 0x00000000
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, False, pid_i)
+            if not handle:
+                err = ctypes.get_last_error()
+                if err == 5:
+                    return True
+                return False
+            try:
+                wait_code = kernel32.WaitForSingleObject(handle, 0)
+                if wait_code == WAIT_TIMEOUT:
+                    return True
+                if wait_code == WAIT_OBJECT_0:
+                    return False
+                return True
+            finally:
+                kernel32.CloseHandle(handle)
+        except Exception:
+            return False
     try:
         os.kill(pid_i, 0)
     except PermissionError:
@@ -648,8 +675,8 @@ def _process_exists(pid: Any) -> bool:
     return True
 
 
-def _daily_update_run_lock_path(*, workflow: str, season: int, date_str: str, out_root: Path) -> Path:
-    normalized_out = str(out_root.resolve()).replace("\\", "/").lower()
+def _daily_update_run_lock_path(*, workflow: str, season: int, date_str: str, out_ROOT_DIR: Path) -> Path:
+    normalized_out = str(out_ROOT_DIR.resolve()).replace("\\", "/").lower()
     out_digest = hashlib.sha1(normalized_out.encode("utf-8")).hexdigest()[:12]
     safe_workflow = re.sub(r"[^a-z0-9_-]+", "_", str(workflow or "core").strip().lower()) or "core"
     safe_date = re.sub(r"[^0-9-]+", "_", str(date_str or "").strip()) or "unknown-date"
@@ -664,19 +691,19 @@ def _read_run_lock_metadata(lock_path: Path) -> Dict[str, Any]:
     return dict(payload) if isinstance(payload, dict) else {}
 
 
-def _acquire_daily_update_run_lock(*, workflow: str, season: int, date_str: str, out_root: Path) -> Tuple[Optional[Path], Dict[str, Any]]:
+def _acquire_daily_update_run_lock(*, workflow: str, season: int, date_str: str, out_ROOT_DIR: Path) -> Tuple[Optional[Path], Dict[str, Any]]:
     lock_path = _daily_update_run_lock_path(
         workflow=str(workflow or "core"),
         season=int(season),
         date_str=str(date_str or ""),
-        out_root=out_root,
+        out_ROOT_DIR=out_ROOT_DIR,
     )
     _ensure_dir(lock_path.parent)
     payload = {
         "workflow": str(workflow or "core"),
         "season": int(season),
         "date": str(date_str or ""),
-        "out_root": _relative_path_str(out_root) or str(out_root.resolve()).replace("\\", "/"),
+        "out_ROOT_DIR": _relative_path_str(out_ROOT_DIR) or str(out_ROOT_DIR.resolve()).replace("\\", "/"),
         "pid": int(os.getpid()),
         "created_at": datetime.now().isoformat(),
         "command": [str(part) for part in sys.argv],
@@ -1275,14 +1302,14 @@ def _build_prior_eval_command(
     prior_date: str,
     prior_season: int,
     out_path: Path,
-    daily_snapshots_root: Path,
+    daily_snapshots_ROOT_DIR: Path,
     lineups_last_known_path: Optional[Path],
 ) -> List[str]:
     reconcile_mode = str(getattr(args, "prior_reconcile_mode", "artifact") or "artifact").strip().lower()
     if reconcile_mode == "artifact":
         return [
             str(Path(sys.executable).resolve()),
-            str((_ROOT / "tools" / "eval" / "reconcile_daily_sim_artifacts.py").resolve()),
+            str((_ROOT_DIR / "tools" / "eval" / "reconcile_daily_sim_artifacts.py").resolve()),
             "--date",
             str(prior_date),
             "--season",
@@ -1298,7 +1325,7 @@ def _build_prior_eval_command(
         ]
     cmd = [
         str(Path(sys.executable).resolve()),
-        str((_ROOT / "tools" / "eval" / "eval_sim_day_vs_actual.py").resolve()),
+        str((_ROOT_DIR / "tools" / "eval" / "eval_sim_day_vs_actual.py").resolve()),
         "--date",
         str(prior_date),
         "--season",
@@ -1310,7 +1337,7 @@ def _build_prior_eval_command(
         "--use-daily-snapshots",
         "on",
         "--daily-snapshots-root",
-        str(daily_snapshots_root),
+        str(daily_snapshots_ROOT_DIR),
         "--use-roster-artifacts",
         str(getattr(args, "use_roster_artifacts", "on") or "on"),
         "--write-roster-artifacts",
@@ -1493,7 +1520,7 @@ def _publish_live_season_manifests(
     )
     cmd = [
         str(Path(sys.executable).resolve()),
-        str((_ROOT / "tools" / "eval" / "build_season_betting_cards_manifest.py").resolve()),
+        str((_ROOT_DIR / "tools" / "eval" / "build_season_betting_cards_manifest.py").resolve()),
         "--season",
         str(int(season)),
         "--batch-dir",
@@ -1531,16 +1558,16 @@ def _publish_live_season_manifests(
     }
 
 
-def _git_run(repo_root: Path, args: List[str]) -> subprocess.CompletedProcess:
+def _git_run(repo_ROOT_DIR: Path, args: List[str]) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["git", "-C", str(repo_root), *[str(part) for part in args]],
+        ["git", "-C", str(repo_ROOT_DIR), *[str(part) for part in args]],
         check=False,
         capture_output=True,
         text=True,
     )
 
 
-def _git_current_change_set(repo_root: Path) -> set[str]:
+def _git_current_change_set(repo_ROOT_DIR: Path) -> set[str]:
     paths: set[str] = set()
     commands = (
         ["diff", "--name-only", "--relative"],
@@ -1548,7 +1575,7 @@ def _git_current_change_set(repo_root: Path) -> set[str]:
         ["ls-files", "--others", "--exclude-standard"],
     )
     for cmd in commands:
-        result = _git_run(repo_root, list(cmd))
+        result = _git_run(repo_ROOT_DIR, list(cmd))
         if result.returncode != 0:
             raise RuntimeError((result.stderr or result.stdout or "git command failed").strip())
         for raw_line in str(result.stdout or "").splitlines():
@@ -1558,8 +1585,8 @@ def _git_current_change_set(repo_root: Path) -> set[str]:
     return paths
 
 
-def _git_current_branch(repo_root: Path) -> str:
-    result = _git_run(repo_root, ["rev-parse", "--abbrev-ref", "HEAD"])
+def _git_current_branch(repo_ROOT_DIR: Path) -> str:
+    result = _git_run(repo_ROOT_DIR, ["rev-parse", "--abbrev-ref", "HEAD"])
     if result.returncode != 0:
         raise RuntimeError((result.stderr or result.stdout or "git branch lookup failed").strip())
     branch = str(result.stdout or "").strip()
@@ -1570,7 +1597,7 @@ def _git_current_branch(repo_root: Path) -> str:
 
 def _maybe_git_push_daily_update(
     *,
-    repo_root: Path,
+    repo_ROOT_DIR: Path,
     date_str: str,
     workflow: str,
     preexisting_changes: Optional[set[str]],
@@ -1583,7 +1610,7 @@ def _maybe_git_push_daily_update(
         return {"status": "skipped", "reason": "git_push=off"}
 
     before = set(preexisting_changes or set())
-    after = _git_current_change_set(repo_root)
+    after = _git_current_change_set(repo_ROOT_DIR)
     candidate_paths = sorted(path for path in after if path not in before)
     if not candidate_paths:
         return {
@@ -1592,11 +1619,11 @@ def _maybe_git_push_daily_update(
             "preexisting_change_count": int(len(before)),
         }
 
-    add_result = _git_run(repo_root, ["add", "-A", "--", *candidate_paths])
+    add_result = _git_run(repo_ROOT_DIR, ["add", "-A", "--", *candidate_paths])
     if add_result.returncode != 0:
         raise RuntimeError((add_result.stderr or add_result.stdout or "git add failed").strip())
 
-    staged_result = _git_run(repo_root, ["diff", "--cached", "--name-only", "--relative"])
+    staged_result = _git_run(repo_ROOT_DIR, ["diff", "--cached", "--name-only", "--relative"])
     if staged_result.returncode != 0:
         raise RuntimeError((staged_result.stderr or staged_result.stdout or "git staged diff failed").strip())
     staged_paths = [line.strip().replace("\\", "/") for line in str(staged_result.stdout or "").splitlines() if line.strip()]
@@ -1610,16 +1637,16 @@ def _maybe_git_push_daily_update(
     normalized_message = str(commit_message or "").format(date=str(date_str), workflow=str(workflow or "core")).strip()
     if not normalized_message:
         normalized_message = f"Daily update {date_str}"
-    commit_result = _git_run(repo_root, ["commit", "-m", normalized_message])
+    commit_result = _git_run(repo_ROOT_DIR, ["commit", "-m", normalized_message])
     if commit_result.returncode != 0:
         raise RuntimeError((commit_result.stderr or commit_result.stdout or "git commit failed").strip())
 
-    push_branch = str(branch or "").strip() or _git_current_branch(repo_root)
-    push_result = _git_run(repo_root, ["push", str(remote), push_branch])
+    push_branch = str(branch or "").strip() or _git_current_branch(repo_ROOT_DIR)
+    push_result = _git_run(repo_ROOT_DIR, ["push", str(remote), push_branch])
     if push_result.returncode != 0:
         raise RuntimeError((push_result.stderr or push_result.stdout or "git push failed").strip())
 
-    head_result = _git_run(repo_root, ["rev-parse", "HEAD"])
+    head_result = _git_run(repo_ROOT_DIR, ["rev-parse", "HEAD"])
     commit_sha = str(head_result.stdout or "").strip() if head_result.returncode == 0 else ""
     return {
         "status": "ok",
@@ -1648,20 +1675,20 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
         workflow="ui-daily",
         season=int(args.season),
         date_str=str(args.date),
-        out_root=game_out,
+        out_ROOT_DIR=game_out,
     )
     if run_lock_path is None:
         holder_pid = int(run_lock_metadata.get("pid") or 0) if isinstance(run_lock_metadata, dict) else 0
         holder_created_at = str(run_lock_metadata.get("created_at") or "").strip() if isinstance(run_lock_metadata, dict) else ""
-        holder_out_root = str(run_lock_metadata.get("out_root") or "").strip() if isinstance(run_lock_metadata, dict) else ""
+        holder_out_ROOT_DIR = str(run_lock_metadata.get("out_ROOT_DIR") or "").strip() if isinstance(run_lock_metadata, dict) else ""
         message = (
             f"Another ui-daily run already holds the artifact publish lock for {args.date} "
             f"(season {int(args.season)}, pid {holder_pid or 'unknown'})"
         )
         if holder_created_at:
             message += f" started at {holder_created_at}"
-        if holder_out_root:
-            message += f" using {holder_out_root}"
+        if holder_out_ROOT_DIR:
+            message += f" using {holder_out_ROOT_DIR}"
         print(message)
         return 3
 
@@ -1744,7 +1771,7 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
     preexisting_changes: Optional[set[str]] = None
     if git_push_enabled:
         try:
-            preexisting_changes = _git_current_change_set(_ROOT)
+            preexisting_changes = _git_current_change_set(_ROOT_DIR)
             git_push_stage["preexisting_change_count"] = int(len(preexisting_changes))
         except Exception as exc:
             git_push_stage["requested"] = False
@@ -1952,7 +1979,7 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
                 prior_date=str(prior_date),
                 prior_season=int(prior_season),
                 out_path=prior_report_path,
-                daily_snapshots_root=(game_out / "snapshots"),
+                daily_snapshots_ROOT_DIR=(game_out / "snapshots"),
                 lineups_last_known_path=(lineups_last_known_path if lineups_last_known_path.exists() else None),
             )
             prior_eval_stage = {
@@ -2155,7 +2182,7 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
             "--seed-source",
             str(getattr(args, "seed_source", "default_fixed") or "default_fixed"),
         ])
-    multi_profile_py = (_ROOT / "tools" / "daily_update_multi_profile.py").resolve()
+    multi_profile_py = (_ROOT_DIR / "tools" / "daily_update_multi_profile.py").resolve()
     cmd = [
         sys.executable,
         str(multi_profile_py),
@@ -2475,7 +2502,7 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
         print(f"[ui-daily] Committing and pushing workflow outputs for {args.date}...")
         try:
             git_push_result = _maybe_git_push_daily_update(
-                repo_root=_ROOT,
+                repo_ROOT_DIR=_ROOT_DIR,
                 date_str=str(args.date),
                 workflow="ui-daily",
                 preexisting_changes=preexisting_changes,
@@ -2562,7 +2589,7 @@ def _maybe_prefetch_statcast_x64(args: argparse.Namespace, snapshot_dir: Path) -
     # Determine x64 python.
     x64_py = str(getattr(args, "statcast_x64_python", "") or "").strip()
     if not x64_py:
-        default = _ROOT / ".venv_x64" / "Scripts" / "python.exe"
+        default = _ROOT_DIR / ".venv_x64" / "Scripts" / "python.exe"
         x64_py = str(default)
 
     if not Path(x64_py).exists():
@@ -2572,7 +2599,7 @@ def _maybe_prefetch_statcast_x64(args: argparse.Namespace, snapshot_dir: Path) -
         print(msg)
         return False
 
-    tool = _ROOT / "tools" / "statcast" / "fetch_pitcher_pitch_splits_x64.py"
+    tool = _ROOT_DIR / "tools" / "statcast" / "fetch_pitcher_pitch_splits_x64.py"
     cmd = [
         x64_py,
         str(tool),
@@ -2626,7 +2653,7 @@ def _maybe_prefetch_umpire_factors_x64(args: argparse.Namespace, snapshot_dir: P
     # Determine x64 python.
     x64_py = str(getattr(args, "umpire_x64_python", "") or "").strip()
     if not x64_py:
-        default = _ROOT / ".venv_x64" / "Scripts" / "python.exe"
+        default = _ROOT_DIR / ".venv_x64" / "Scripts" / "python.exe"
         x64_py = str(default)
 
     if not Path(x64_py).exists():
@@ -2636,7 +2663,7 @@ def _maybe_prefetch_umpire_factors_x64(args: argparse.Namespace, snapshot_dir: P
         print(msg)
         return False
 
-    tool = _ROOT / "tools" / "statcast" / "fetch_umpire_factors_x64.py"
+    tool = _ROOT_DIR / "tools" / "statcast" / "fetch_umpire_factors_x64.py"
     cmd = [
         x64_py,
         str(tool),
@@ -3160,7 +3187,7 @@ def _load_json_cfg(path_str: str) -> Optional[Dict[str, Any]]:
         return None
     p = Path(s)
     if not p.is_absolute():
-        p = _ROOT / p
+        p = _ROOT_DIR / p
     if not p.exists():
         return None
     try:
@@ -3179,7 +3206,7 @@ def _load_jsonish(val: str) -> Optional[Dict[str, Any]]:
         else:
             p = Path(s)
             if not p.is_absolute():
-                p = _ROOT / p
+                p = _ROOT_DIR / p
             if not p.exists():
                 return None
             obj = json.loads(p.read_text(encoding="utf-8"))
@@ -3455,6 +3482,12 @@ def main() -> int:
         type=int,
         default=0,
         help="If >0, limit processing to the first N games on the schedule (useful for smoke runs).",
+    )
+    ap.add_argument(
+        "--skip-started-games",
+        choices=["on", "off"],
+        default="off",
+        help="If on, skip rebuilding games that are no longer in a Preview state and preserve any existing artifacts for them.",
     )
     ap.add_argument("--cache-ttl-hours", type=int, default=6)
     ap.add_argument(
@@ -4104,10 +4137,10 @@ def main() -> int:
         "pitcher_distribution_overrides": (pitcher_distribution_overrides or {}),
     }
 
-    out_root = Path(args.out)
-    _ensure_dir(out_root)
-    snapshot_dir = out_root / "snapshots" / args.date
-    sim_dir = out_root / "sims" / args.date
+    out_ROOT_DIR = Path(args.out)
+    _ensure_dir(out_ROOT_DIR)
+    snapshot_dir = out_ROOT_DIR / "snapshots" / args.date
+    sim_dir = out_ROOT_DIR / "sims" / args.date
     _ensure_dir(snapshot_dir)
     _ensure_dir(sim_dir)
     roster_obj_dir = snapshot_dir / "roster_objs"
@@ -4399,10 +4432,10 @@ def main() -> int:
     last_known_path = (
         _resolve_path_arg(
             str(args.lineups_last_known),
-            default=(out_root / "lineups_last_known_by_team.json"),
+            default=(out_ROOT_DIR / "lineups_last_known_by_team.json"),
         )
         if str(getattr(args, "lineups_last_known", "") or "").strip()
-        else (out_root / "lineups_last_known_by_team.json")
+        else (out_ROOT_DIR / "lineups_last_known_by_team.json")
     )
     last_known_by_team: Dict[str, Any] = {}
     try:
@@ -5215,6 +5248,29 @@ def main() -> int:
         home = (g.get("teams") or {}).get("home") or {}
         away_team = away.get("team") or {}
         home_team = home.get("team") or {}
+        abstract_state = str(status.get("abstractGameState") or "").strip().lower()
+        detailed_state = str(status.get("detailedState") or "").strip()
+
+        if str(getattr(args, "skip_started_games", "off") or "off") == "on" and abstract_state not in {"preview", "pregame"}:
+            away_abbr = _abbr(away_team)
+            home_abbr = _abbr(home_team)
+            status_label = detailed_state or str(status.get("abstractGameState") or "") or "started"
+            pk_label = f" gamePk={game_pk}" if game_pk else ""
+            print(
+                f"[{idx+1}/{len(games)}] Preserving existing artifacts for started game:{pk_label} {away_abbr} @ {home_abbr} ({status_label})"
+            )
+            failures.append(
+                {
+                    "idx": int(idx),
+                    "game_pk": int(game_pk) if game_pk else None,
+                    "stage": "skip_started_game",
+                    "reason": "skip_started_games=on",
+                    "status": status_obj,
+                    "away": {"abbr": away_abbr, "team_id": int(away_team.get("id") or 0)},
+                    "home": {"abbr": home_abbr, "team_id": int(home_team.get("id") or 0)},
+                }
+            )
+            continue
 
         # Spring training schedules can include college/minor/non-MLB opponents.
         # Skip those games to avoid unsupported roster building.
@@ -6120,13 +6176,13 @@ def main() -> int:
             for o in outputs
         ],
     }
-    summary_path = out_root / f"daily_summary_{args.date.replace('-', '_')}.json"
+    summary_path = out_ROOT_DIR / f"daily_summary_{args.date.replace('-', '_')}.json"
     _write_json(summary_path, summary)
     if str(getattr(args, "write_derived_artifacts", "on") or "on") == "on":
         try:
             top_props_result = write_daily_top_props_artifact(
                 str(args.date),
-                out_path=(out_root / "top_props" / f"daily_top_props_{args.date.replace('-', '_')}.json"),
+                out_path=(out_ROOT_DIR / "top_props" / f"daily_top_props_{args.date.replace('-', '_')}.json"),
             )
             print(f"Wrote top-props artifact: {top_props_result.get('path')}")
         except Exception as exc:
@@ -6134,7 +6190,7 @@ def main() -> int:
         try:
             ladders_result = write_daily_ladders_artifact(
                 str(args.date),
-                out_path=(out_root / "ladders" / f"daily_ladders_{args.date.replace('-', '_')}.json"),
+                out_path=(out_ROOT_DIR / "ladders" / f"daily_ladders_{args.date.replace('-', '_')}.json"),
             )
             print(f"Wrote ladders artifact: {ladders_result.get('path')}")
         except Exception as exc:
@@ -6142,7 +6198,7 @@ def main() -> int:
         try:
             ladder_audit_result = write_daily_ladder_audit_artifact(
                 str(args.date),
-                out_path=(out_root / "ladders" / f"daily_ladder_audit_{args.date.replace('-', '_')}.json"),
+                out_path=(out_ROOT_DIR / "ladders" / f"daily_ladder_audit_{args.date.replace('-', '_')}.json"),
             )
             print(f"Wrote ladder audit artifact: {ladder_audit_result.get('path')}")
         except Exception as exc:
@@ -6152,7 +6208,7 @@ def main() -> int:
                 int(args.season),
                 str(args.date),
                 betting_profile="retuned",
-                out_dir=(out_root / "season_frontend"),
+                out_dir=(out_ROOT_DIR / "season_frontend"),
             )
             print(f"Wrote season frontend artifacts: {season_frontend_result.get('dir')}")
         except Exception as exc:
