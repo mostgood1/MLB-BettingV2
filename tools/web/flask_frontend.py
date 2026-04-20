@@ -13185,6 +13185,13 @@ def _live_mc_projection(snapshot: Optional[Dict[str, Any]], sim_context: Optiona
 
 
 def _build_game_lens(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], sim_context: Optional[Dict[str, Any]], market_row: Optional[Dict[str, Any]], *, date_str: Optional[str] = None) -> List[Dict[str, Any]]:
+    status = {
+        "abstract": str((((snapshot or {}).get("status") or {}).get("abstractGameState") or ((card.get("status") or {}).get("abstract") or ""))),
+        "detailed": str((((snapshot or {}).get("status") or {}).get("detailedState") or ((card.get("status") or {}).get("detailed") or ""))),
+    }
+    if not _status_is_live(status):
+        return []
+
     predicted = (sim_context or {}).get("predicted") or {}
     pregame_away = _safe_float(predicted.get("away"))
     pregame_home = _safe_float(predicted.get("home"))
