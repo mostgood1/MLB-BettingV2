@@ -102,6 +102,52 @@ def _hr_target_candidates(date: str) -> List[Path]:
     return out
 
 
+def _daily_subdir_candidates(subdir: str, date: str) -> List[Path]:
+    candidates: List[Path] = []
+    data_roots = [root for root in (DATA_ROOT, TRACKED_DATA_ROOT) if isinstance(root, Path)]
+    for data_root in data_roots:
+        candidate = (data_root / "daily" / str(subdir) / str(date)).resolve()
+        if candidate.exists() and candidate.is_dir():
+            candidates.append(candidate)
+    seen = set()
+    out: List[Path] = []
+    for path in candidates:
+        if path in seen:
+            continue
+        seen.add(path)
+        out.append(path)
+    return out
+
+
+def _rebuild_hr_targets_doc_if_needed(doc: Dict[str, Any], *, artifact_path: Path, date: str, season: int) -> Dict[str, Any]:
+    diagnostics = doc.get("diagnostics") or {}
+    excluded_rows = diagnostics.get("excluded_rows") if isinstance(diagnostics, dict) else None
+    if isinstance(excluded_rows, list) and excluded_rows:
+        return doc
+
+    sim_candidates = _daily_subdir_candidates("sims", str(date))
+    snapshot_candidates = _daily_subdir_candidates("snapshots", str(date))
+    if not sim_candidates:
+        return doc
+
+    try:
+        from tools.daily_update_multi_profile import _collect_daily_hr_targets
+
+        rebuilt = _collect_daily_hr_targets(
+            sim_candidates[0],
+            snapshot_candidates[0] if snapshot_candidates else None,
+            date=str(date),
+            season=int(season),
+        )
+    except Exception:
+        return doc
+    if not isinstance(rebuilt, dict):
+        return doc
+    rebuilt["source_profile"] = doc.get("source_profile")
+    rebuilt["source_artifact"] = _relative_path_str(artifact_path)
+    return rebuilt
+
+
 def _team_side(feed: Dict[str, Any], team_abbr: str) -> Optional[str]:
     teams = (feed.get("gameData") or {}).get("teams") or {}
     away_abbr = str(((teams.get("away") or {}).get("abbreviation") or "")).upper()
@@ -211,6 +257,7 @@ def build_artifact(*, date: str, season: int, input_path: Optional[str] = None) 
     doc = _read_json(artifact_path)
     if not isinstance(doc, dict):
         raise ValueError("HR targets artifact must be a JSON object")
+    doc = _rebuild_hr_targets_doc_if_needed(doc, artifact_path=artifact_path, date=str(date), season=int(season))
 
     selected_rows: List[Dict[str, Any]] = []
     raw_rows = doc.get("rows") or []
@@ -227,7 +274,20 @@ def build_artifact(*, date: str, season: int, input_path: Optional[str] = None) 
             )
 
     excluded_example_rows: List[Dict[str, Any]] = []
+    excluded_rows: List[Dict[str, Any]] = []
     diagnostics = doc.get("diagnostics") or {}
+    excluded_values = diagnostics.get("excluded_rows") if isinstance(diagnostics, dict) else []
+    if isinstance(excluded_values, list):
+        for row in excluded_values:
+            if not isinstance(row, dict):
+                continue
+            excluded_rows.append(
+                {
+                    **dict(row),
+                    "selection_status": "excluded",
+                    "selection_source": "diagnostics.excluded_rows",
+                }
+            )
     examples = diagnostics.get("excluded_examples") if isinstance(diagnostics, dict) else []
     if isinstance(examples, list):
         for row in examples:
@@ -241,23 +301,30 @@ def build_artifact(*, date: str, season: int, input_path: Optional[str] = None) 
                 }
             )
 
-    rows = _dedupe_rows([*selected_rows, *excluded_example_rows])
+    rows = _dedupe_rows([*selected_rows, *excluded_rows, *excluded_example_rows])
     feed_cache: Dict[int, Optional[Dict[str, Any]]] = {}
     settled_rows = [_settle_row(row, date=str(date), feed_cache=feed_cache) for row in rows]
 
     selected_settled = [row for row in settled_rows if str(row.get("selection_status")) == "selected" and bool(row.get("settled"))]
-    excluded_settled = [row for row in settled_rows if str(row.get("selection_status")) != "selected" and bool(row.get("settled"))]
+    excluded_settled = [
+        row for row in settled_rows if str(row.get("selection_status")) in {"excluded", "excluded_example"} and bool(row.get("settled"))
+    ]
+    excluded_full_settled = [row for row in settled_rows if str(row.get("selection_status")) == "excluded" and bool(row.get("settled"))]
+    excluded_example_settled = [row for row in settled_rows if str(row.get("selection_status")) == "excluded_example" and bool(row.get("settled"))]
     result_counts = Counter(str(row.get("result") or "unavailable") for row in selected_settled)
     excluded_result_counts = Counter(str(row.get("result") or "unavailable") for row in excluded_settled)
+    excluded_full_result_counts = Counter(str(row.get("result") or "unavailable") for row in excluded_full_settled)
+    excluded_example_result_counts = Counter(str(row.get("result") or "unavailable") for row in excluded_example_settled)
     settlement_status_counts = Counter(str(row.get("settlement_status") or "unavailable") for row in settled_rows)
     exclusion_reason_counts = Counter(
         str(row.get("primary_reason") or "")
         for row in settled_rows
-        if str(row.get("selection_status") or "") != "selected" and str(row.get("primary_reason") or "")
+        if str(row.get("selection_status") or "") in {"excluded", "excluded_example"} and str(row.get("primary_reason") or "")
     )
     near_threshold_examples = [
-        row for row in settled_rows if str(row.get("selection_status") or "") != "selected" and bool(row.get("near_threshold"))
+        row for row in settled_rows if str(row.get("selection_status") or "") in {"excluded", "excluded_example"} and bool(row.get("near_threshold"))
     ]
+    excluded_rows_coverage = "full" if excluded_rows else "examples_only"
 
     return {
         "date": str(date),
@@ -268,7 +335,7 @@ def build_artifact(*, date: str, season: int, input_path: Optional[str] = None) 
         "source_profile": doc.get("source_profile"),
         "coverage": {
             "selected_rows": "full",
-            "excluded_rows": "examples_only",
+            "excluded_rows": excluded_rows_coverage,
         },
         "policy": dict(doc.get("policy") or {}),
         "source_counts": dict(doc.get("counts") or {}),
@@ -281,12 +348,19 @@ def build_artifact(*, date: str, season: int, input_path: Optional[str] = None) 
             "selected_hit_rate": (
                 round(float(result_counts.get("win", 0)) / float(len(selected_settled)), 4) if selected_settled else None
             ),
-            "excluded_example_rows": int(len([row for row in settled_rows if str(row.get("selection_status")) != "selected"])),
-            "excluded_example_settled_rows": int(len(excluded_settled)),
-            "excluded_example_wins": int(excluded_result_counts.get("win", 0)),
-            "excluded_example_losses": int(excluded_result_counts.get("loss", 0)),
+            "excluded_rows": int(len([row for row in settled_rows if str(row.get("selection_status")) == "excluded"])),
+            "excluded_settled_rows": int(len(excluded_full_settled)),
+            "excluded_wins": int(excluded_full_result_counts.get("win", 0)),
+            "excluded_losses": int(excluded_full_result_counts.get("loss", 0)),
+            "excluded_hit_rate": (
+                round(float(excluded_full_result_counts.get("win", 0)) / float(len(excluded_full_settled)), 4) if excluded_full_settled else None
+            ),
+            "excluded_example_rows": int(len([row for row in settled_rows if str(row.get("selection_status")) == "excluded_example"])),
+            "excluded_example_settled_rows": int(len(excluded_example_settled)),
+            "excluded_example_wins": int(excluded_example_result_counts.get("win", 0)),
+            "excluded_example_losses": int(excluded_example_result_counts.get("loss", 0)),
             "excluded_example_hit_rate": (
-                round(float(excluded_result_counts.get("win", 0)) / float(len(excluded_settled)), 4) if excluded_settled else None
+                round(float(excluded_example_result_counts.get("win", 0)) / float(len(excluded_example_settled)), 4) if excluded_example_settled else None
             ),
             "near_threshold_example_rows": int(len(near_threshold_examples)),
             "near_threshold_example_settled_rows": int(len([row for row in near_threshold_examples if bool(row.get("settled"))])),

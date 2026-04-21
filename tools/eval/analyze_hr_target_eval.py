@@ -168,8 +168,10 @@ def analyze(doc: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(rows, list):
         raise ValueError("Artifact rows must be a list")
     selected = [row for row in rows if isinstance(row, dict) and str(row.get("selection_status") or "") == "selected"]
-    excluded_examples = [row for row in rows if isinstance(row, dict) and str(row.get("selection_status") or "") != "selected"]
-    near_threshold_examples = [row for row in excluded_examples if bool(row.get("near_threshold"))]
+    excluded = [row for row in rows if isinstance(row, dict) and str(row.get("selection_status") or "") == "excluded"]
+    excluded_examples = [row for row in rows if isinstance(row, dict) and str(row.get("selection_status") or "") == "excluded_example"]
+    exclusion_pool = excluded if excluded else excluded_examples
+    near_threshold_pool = [row for row in exclusion_pool if bool(row.get("near_threshold"))]
 
     return {
         "meta": {
@@ -183,9 +185,10 @@ def analyze(doc: Dict[str, Any]) -> Dict[str, Any]:
         "selected_top10": _top_rank_summary(selected, 10),
         "selected_probability_buckets": _bucket_summary(selected, "p_hr_1plus", [0.0, 0.05, 0.10, 0.15, 0.20]),
         "selected_support_buckets": _bucket_summary(selected, "hr_support_score", [0.0, 50.0, 60.0, 70.0, 100.0], integer_output=True),
+        "excluded_overall": _summarize_rows(excluded),
         "excluded_examples_overall": _summarize_rows(excluded_examples),
-        "excluded_near_threshold_overall": _summarize_rows(near_threshold_examples),
-        "excluded_reason_breakdown": _reason_breakdown(excluded_examples),
+        "excluded_near_threshold_overall": _summarize_rows(near_threshold_pool),
+        "excluded_reason_breakdown": _reason_breakdown(exclusion_pool),
     }
 
 
@@ -210,6 +213,7 @@ def build_markdown(analysis: Dict[str, Any], *, artifact_path: Path) -> str:
         ("Selected overall", analysis.get("selected_overall") or {}),
         ("Selected top 5", analysis.get("selected_top5") or {}),
         ("Selected top 10", analysis.get("selected_top10") or {}),
+        ("Excluded overall", analysis.get("excluded_overall") or {}),
         ("Excluded examples overall", analysis.get("excluded_examples_overall") or {}),
         ("Excluded near-threshold examples", analysis.get("excluded_near_threshold_overall") or {}),
     ):

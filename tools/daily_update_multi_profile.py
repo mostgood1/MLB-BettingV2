@@ -2845,6 +2845,7 @@ def _collect_daily_hr_targets(
     all_rows: List[Dict[str, Any]] = []
     exclusion_counts: Dict[str, int] = {}
     exclusion_examples: List[Dict[str, Any]] = []
+    exclusion_rows_all: List[Dict[str, Any]] = []
 
     for sim_obj in _iter_sim_records(sim_dir):
         base = _base_game_row(sim_obj)
@@ -2984,6 +2985,7 @@ def _collect_daily_hr_targets(
             )
         )
         if excluded_rows:
+            exclusion_rows_all.extend(excluded_rows)
             exclusion_examples.extend(excluded_rows[:5])
 
         candidates.sort(
@@ -3057,6 +3059,7 @@ def _collect_daily_hr_targets(
         },
         "diagnostics": {
             "excluded_counts": {str(k): int(v) for k, v in sorted(exclusion_counts.items())},
+            "excluded_rows": exclusion_rows_all,
             "excluded_examples": exclusion_examples[:25],
         },
         "counts": {
