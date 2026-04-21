@@ -124,7 +124,7 @@ def _read_feed_file(path: Path) -> Optional[Dict[str, Any]]:
     return loaded if isinstance(loaded, dict) and loaded else None
 
 
-def _load_feed(date: str, game_pk: int) -> Dict[str, Any]:
+def _load_feed(date: str, game_pk: int, *, allow_fetch: bool = True) -> Dict[str, Any]:
     primary_path = _feed_live_path(date, game_pk)
     candidate_paths = [primary_path]
     fallback_path = (TRACKED_DATA_ROOT / "raw" / "statsapi" / "feed_live" / str(date).split("-", 1)[0] / str(date) / f"{int(game_pk)}.json.gz").resolve()
@@ -146,6 +146,10 @@ def _load_feed(date: str, game_pk: int) -> Dict[str, Any]:
             return loaded
         if stale_feed is None:
             stale_feed = loaded
+    if not bool(allow_fetch):
+        if isinstance(stale_feed, dict) and stale_feed:
+            return stale_feed
+        raise FileNotFoundError(str(primary_path))
     from sim_engine.data.statsapi import StatsApiClient, fetch_game_feed_live
 
     client = StatsApiClient.with_default_cache(ttl_seconds=15 * 60)

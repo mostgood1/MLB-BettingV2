@@ -3607,7 +3607,7 @@ def _reconcile_top_props_row(
     feed = feed_cache.get(int(game_pk))
     if int(game_pk) not in feed_cache:
         try:
-            feed = _load_settlement_feed(str(d), int(game_pk))
+            feed = _load_settlement_feed(str(d), int(game_pk), allow_fetch=False)
         except Exception:
             feed = None
         feed_cache[int(game_pk)] = dict(feed) if isinstance(feed, dict) else None
@@ -3717,7 +3717,7 @@ def _historical_player_stat_reconciliation(
     feed = feed_cache.get(int(resolved_game_pk))
     if int(resolved_game_pk) not in feed_cache:
         try:
-            feed = _load_settlement_feed(str(d), int(resolved_game_pk))
+            feed = _load_settlement_feed(str(d), int(resolved_game_pk), allow_fetch=False)
         except Exception:
             feed = None
         feed_cache[int(resolved_game_pk)] = dict(feed) if isinstance(feed, dict) else None
@@ -16027,7 +16027,7 @@ def _attach_cards_final_starter_ladder_badges(
     settlement_feed = dict(feed) if isinstance(feed, dict) and _settlement_feed_is_final(feed) else None
     if not isinstance(settlement_feed, dict):
         try:
-            loaded_feed = _load_settlement_feed(str(d), int(game_pk))
+            loaded_feed = _load_settlement_feed(str(d), int(game_pk), allow_fetch=False)
         except Exception:
             loaded_feed = None
         settlement_feed = dict(loaded_feed) if isinstance(loaded_feed, dict) and _settlement_feed_is_final(loaded_feed) else None

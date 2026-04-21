@@ -406,6 +406,21 @@ function Test-RunOwnedArtifactPaths {
             continue
         }
 
+        if ($normalizedPath.StartsWith('data/raw/statsapi/feed_live/', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $matchesOwnedDate = $false
+            foreach ($token in $dateTokens) {
+                if ($token -and $normalizedPath.IndexOf($token, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                    $matchesOwnedDate = $true
+                    break
+                }
+            }
+
+            if (-not $matchesOwnedDate) {
+                return $false
+            }
+            continue
+        }
+
         if (-not $normalizedPath.StartsWith('data/daily/', [System.StringComparison]::OrdinalIgnoreCase)) {
             return $false
         }
@@ -515,7 +530,7 @@ if (-not (Test-Path $dailyUpdatePy)) {
 $resolvedNextDate = if ($NextDate) { $NextDate } else { Get-DatePlusDays -BaseDate $Date -Days 1 }
 $reconcileDate = Get-DatePlusDays -BaseDate $Date -Days -1
 $nextSeason = Get-SeasonFromDate -Value $resolvedNextDate
-$artifactPaths = @('data/daily', 'data/eval')
+$artifactPaths = @('data/daily', 'data/eval', 'data/raw/statsapi/feed_live')
 $ownedArtifactDates = @($reconcileDate, $Date, $resolvedNextDate)
 
 $sharedArgs = @()
