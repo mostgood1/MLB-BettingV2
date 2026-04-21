@@ -49,6 +49,7 @@ from sim_engine.live_mc import LiveSituation, estimate_live, _forward_live_cfg_k
 from sim_engine.live_prop_ranking import predict_live_prop_win_probability
 from sim_engine.market_pitcher_props import market_side_probabilities, normalize_pitcher_name
 from tools.daily_update_multi_profile import (
+    _collect_daily_hr_targets,
     _hitter_bvp_reason,
     _hitter_pitch_mix_reason,
     _hitter_platoon_reason,
@@ -2068,6 +2069,85 @@ def _dir_signature(path: Optional[Path], pattern: str = "*.json") -> Tuple[Any, 
     return tuple([base, *(_path_signature(child) for child in children)])
 
 
+_DERIVED_ARTIFACT_REFRESH_LOCK = threading.Lock()
+_DERIVED_ARTIFACT_REFRESH_IN_PROGRESS: set[Tuple[str, str]] = set()
+
+
+def _begin_derived_artifact_refresh(kind: str, d: str) -> bool:
+    key = (str(kind), str(d))
+    with _DERIVED_ARTIFACT_REFRESH_LOCK:
+        if key in _DERIVED_ARTIFACT_REFRESH_IN_PROGRESS:
+            return False
+        _DERIVED_ARTIFACT_REFRESH_IN_PROGRESS.add(key)
+    return True
+
+
+def _end_derived_artifact_refresh(kind: str, d: str) -> None:
+    key = (str(kind), str(d))
+    with _DERIVED_ARTIFACT_REFRESH_LOCK:
+        _DERIVED_ARTIFACT_REFRESH_IN_PROGRESS.discard(key)
+
+
+def _derived_artifact_refresh_in_progress(kind: str, d: str) -> bool:
+    key = (str(kind), str(d))
+    with _DERIVED_ARTIFACT_REFRESH_LOCK:
+        return key in _DERIVED_ARTIFACT_REFRESH_IN_PROGRESS
+
+
+def _latest_path_mtime(path: Optional[Path], *, pattern: str = "*.json") -> Optional[float]:
+    if not isinstance(path, Path) or not path.exists():
+        return None
+    if path.is_file():
+        return _safe_file_mtime(path)
+    latest = _safe_file_mtime(path)
+    if not path.is_dir():
+        return latest
+    try:
+        for child in path.glob(pattern):
+            if not child.is_file():
+                continue
+            child_mtime = _safe_file_mtime(child)
+            if child_mtime is None:
+                continue
+            latest = child_mtime if latest is None else max(latest, child_mtime)
+    except Exception:
+        return latest
+    return latest
+
+
+def _artifact_is_stale(
+    artifact_path: Optional[Path],
+    *,
+    dependency_paths: Sequence[Optional[Path]] = (),
+    dependency_dirs: Sequence[Optional[Path]] = (),
+    dir_pattern: str = "*.json",
+) -> bool:
+    artifact_mtime = _latest_path_mtime(artifact_path)
+    if artifact_mtime is None:
+        return True
+    for dependency_path in dependency_paths:
+        dependency_mtime = _latest_path_mtime(dependency_path)
+        if dependency_mtime is not None and dependency_mtime > artifact_mtime:
+            return True
+    for dependency_dir in dependency_dirs:
+        dependency_mtime = _latest_path_mtime(dependency_dir, pattern=dir_pattern)
+        if dependency_mtime is not None and dependency_mtime > artifact_mtime:
+            return True
+    return False
+
+
+def _market_context_dependency_paths(*contexts: Any) -> List[Path]:
+    paths: List[Path] = []
+    for context in contexts:
+        if not isinstance(context, dict):
+            continue
+        for key in ("displayPath", "currentPath", "pregamePath"):
+            value = context.get(key)
+            if isinstance(value, Path) and value not in paths:
+                paths.append(value)
+    return paths
+
+
 def _payload_cache_get_or_build(
     cache_name: str,
     cache_key: str,
@@ -2634,6 +2714,52 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
     if not snapshot_dir and canonical_snapshot_dir.exists() and canonical_snapshot_dir.is_dir():
         snapshot_dir = canonical_snapshot_dir
 
+    hr_source_sim_dir = sim_dir
+    hr_source_snapshot_dir = snapshot_dir
+    hr_source_profile = "game_recos"
+    if isinstance(profile_bundle, dict):
+        profiles = profile_bundle.get("profiles") if isinstance(profile_bundle.get("profiles"), dict) else {}
+        hitter_profile = profiles.get("hitter_props_recos") if isinstance(profiles.get("hitter_props_recos"), dict) else {}
+        game_profile = profiles.get("game_recos") if isinstance(profiles.get("game_recos"), dict) else {}
+        hitter_sim_dir = _path_from_maybe_relative(hitter_profile.get("sim_dir"))
+        hitter_snapshot_dir = _path_from_maybe_relative(hitter_profile.get("snapshot_dir"))
+        game_sim_dir = _path_from_maybe_relative(game_profile.get("sim_dir"))
+        game_snapshot_dir = _path_from_maybe_relative(game_profile.get("snapshot_dir"))
+        if hitter_sim_dir and hitter_sim_dir.exists() and hitter_sim_dir.is_dir():
+            hr_source_sim_dir = hitter_sim_dir
+            hr_source_snapshot_dir = hitter_snapshot_dir if isinstance(hitter_snapshot_dir, Path) else hr_source_snapshot_dir
+            hr_source_profile = "hitter_props_recos"
+        elif game_sim_dir and game_sim_dir.exists() and game_sim_dir.is_dir():
+            hr_source_sim_dir = game_sim_dir
+            hr_source_snapshot_dir = game_snapshot_dir if isinstance(game_snapshot_dir, Path) else hr_source_snapshot_dir
+
+    if not _derived_artifact_refresh_in_progress("hr_targets", str(d)) and _artifact_is_stale(
+        hr_targets_path,
+        dependency_paths=[hr_source_snapshot_dir],
+        dependency_dirs=[hr_source_sim_dir],
+    ):
+        if _begin_derived_artifact_refresh("hr_targets", str(d)):
+            try:
+                if isinstance(hr_source_sim_dir, Path) and hr_source_sim_dir.exists() and hr_source_sim_dir.is_dir():
+                    hr_targets_destination = hr_targets_path or canonical_hr_targets_path
+                    rebuilt_hr_targets = _collect_daily_hr_targets(
+                        hr_source_sim_dir,
+                        hr_source_snapshot_dir,
+                        date=str(d),
+                        season=int(_season_from_date_str(str(d))),
+                    )
+                    rebuilt_hr_targets["source_profile"] = hr_source_profile
+                    _write_json_file(hr_targets_destination, rebuilt_hr_targets)
+                    hr_targets_path = hr_targets_destination
+                    hr_targets = rebuilt_hr_targets
+            except Exception:
+                app.logger.exception("failed to refresh stale hr targets artifact for %s", d)
+            finally:
+                _end_derived_artifact_refresh("hr_targets", str(d))
+
+    pitcher_market_ctx = _load_pitcher_ladder_market_context(d)
+    hitter_market_ctx = _load_hitter_ladder_market_context(d)
+
     preferred_ops_paths: List[Path] = []
     preferred_ops_paths.append(canonical_daily_dir / "ops" / f"daily_ops_{slug}.json")
     preferred_ops_paths.append(tracked_daily_dir / "ops" / f"daily_ops_{slug}.json")
@@ -2685,6 +2811,21 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
     lineups = _load_json_file(lineups_path)
     market_availability = _load_market_availability(d)
     daily_ladders_path, daily_ladders = _load_daily_ladders_artifact(str(d))
+    if not _derived_artifact_refresh_in_progress("daily_ladders", str(d)) and _artifact_is_stale(
+        daily_ladders_path,
+        dependency_paths=_market_context_dependency_paths(pitcher_market_ctx, hitter_market_ctx),
+        dependency_dirs=[sim_dir],
+    ):
+        if _begin_derived_artifact_refresh("daily_ladders", str(d)):
+            try:
+                ladders_destination = daily_ladders_path or daily_ladders_artifact_path(str(d))
+                write_daily_ladders_artifact(str(d), out_path=ladders_destination)
+                daily_ladders_path = ladders_destination
+                daily_ladders = _load_json_file(daily_ladders_path)
+            except Exception:
+                app.logger.exception("failed to refresh stale daily ladders artifact for %s", d)
+            finally:
+                _end_derived_artifact_refresh("daily_ladders", str(d))
 
     return {
         "profile_bundle_path": profile_bundle_path,
@@ -5371,6 +5512,25 @@ def _load_daily_top_props_artifact(d: str) -> Tuple[Optional[Path], Optional[Dic
 def _prebuilt_daily_top_props_payload(d: str, group: str) -> Optional[Dict[str, Any]]:
     normalized_group = "pitcher" if str(group or "").strip().lower() == "pitcher" else "hitter"
     artifact_path, artifact_doc = _load_daily_top_props_artifact(d)
+    artifacts = _load_cards_artifacts(d)
+    sim_dir = artifacts.get("sim_dir") if isinstance(artifacts.get("sim_dir"), Path) else None
+    market_ctx = _load_pitcher_ladder_market_context(d) if normalized_group == "pitcher" else _load_hitter_ladder_market_context(d)
+    if not _derived_artifact_refresh_in_progress("daily_top_props", f"{d}:{normalized_group}") and _artifact_is_stale(
+        artifact_path,
+        dependency_paths=_market_context_dependency_paths(market_ctx),
+        dependency_dirs=[sim_dir],
+    ):
+        refresh_key = f"{d}:{normalized_group}"
+        if _begin_derived_artifact_refresh("daily_top_props", refresh_key):
+            try:
+                top_props_destination = artifact_path or daily_top_props_artifact_path(str(d))
+                write_daily_top_props_artifact(str(d), out_path=top_props_destination)
+                artifact_path = top_props_destination
+                artifact_doc = _load_json_file(artifact_path)
+            except Exception:
+                app.logger.exception("failed to refresh stale daily top props artifact for %s", d)
+            finally:
+                _end_derived_artifact_refresh("daily_top_props", refresh_key)
     if not artifact_path or not isinstance(artifact_doc, dict):
         return None
     groups = artifact_doc.get("groups") or {}
@@ -6537,6 +6697,34 @@ def _prebuilt_season_day_payload(season: int, date_str: str, requested_profile: 
     artifact_path, artifact_doc = _load_daily_season_frontend_artifact(
         lambda root: daily_season_day_artifact_path(int(season), str(date_str), profile=requested_profile, data_root=root)
     )
+    daily_artifacts = _load_cards_artifacts(str(date_str))
+    season_dependency_paths = [
+        daily_artifacts.get("profile_bundle_path") if isinstance(daily_artifacts.get("profile_bundle_path"), Path) else None,
+        daily_artifacts.get("hr_targets_path") if isinstance(daily_artifacts.get("hr_targets_path"), Path) else None,
+        daily_artifacts.get("locked_policy_path") if isinstance(daily_artifacts.get("locked_policy_path"), Path) else None,
+        daily_artifacts.get("game_summary_path") if isinstance(daily_artifacts.get("game_summary_path"), Path) else None,
+        daily_artifacts.get("daily_ladders_path") if isinstance(daily_artifacts.get("daily_ladders_path"), Path) else None,
+    ]
+    refresh_key = f"{season}:{date_str}:{requested_profile}"
+    if not _derived_artifact_refresh_in_progress("season_frontend", refresh_key) and _artifact_is_stale(
+        artifact_path,
+        dependency_paths=season_dependency_paths,
+    ):
+        if _begin_derived_artifact_refresh("season_frontend", refresh_key):
+            try:
+                write_current_day_season_frontend_artifacts(
+                    int(season),
+                    str(date_str),
+                    betting_profile=requested_profile,
+                    out_dir=(artifact_path.parent if isinstance(artifact_path, Path) else None),
+                )
+                artifact_path, artifact_doc = _load_daily_season_frontend_artifact(
+                    lambda root: daily_season_day_artifact_path(int(season), str(date_str), profile=requested_profile, data_root=root)
+                )
+            except Exception:
+                app.logger.exception("failed to refresh stale season frontend day artifact for %s", date_str)
+            finally:
+                _end_derived_artifact_refresh("season_frontend", refresh_key)
     if not artifact_path or not isinstance(artifact_doc, dict) or not artifact_doc.get("found"):
         return None
     out = dict(artifact_doc)
@@ -6551,6 +6739,34 @@ def _prebuilt_season_betting_day_payload(season: int, date_str: str, requested_p
     artifact_path, artifact_doc = _load_daily_season_frontend_artifact(
         lambda root: daily_season_betting_day_artifact_path(int(season), str(date_str), profile=requested_profile, data_root=root)
     )
+    daily_artifacts = _load_cards_artifacts(str(date_str))
+    season_dependency_paths = [
+        daily_artifacts.get("profile_bundle_path") if isinstance(daily_artifacts.get("profile_bundle_path"), Path) else None,
+        daily_artifacts.get("hr_targets_path") if isinstance(daily_artifacts.get("hr_targets_path"), Path) else None,
+        daily_artifacts.get("locked_policy_path") if isinstance(daily_artifacts.get("locked_policy_path"), Path) else None,
+        daily_artifacts.get("game_summary_path") if isinstance(daily_artifacts.get("game_summary_path"), Path) else None,
+        daily_artifacts.get("daily_ladders_path") if isinstance(daily_artifacts.get("daily_ladders_path"), Path) else None,
+    ]
+    refresh_key = f"{season}:{date_str}:{requested_profile}"
+    if not _derived_artifact_refresh_in_progress("season_frontend", refresh_key) and _artifact_is_stale(
+        artifact_path,
+        dependency_paths=season_dependency_paths,
+    ):
+        if _begin_derived_artifact_refresh("season_frontend", refresh_key):
+            try:
+                write_current_day_season_frontend_artifacts(
+                    int(season),
+                    str(date_str),
+                    betting_profile=requested_profile,
+                    out_dir=(artifact_path.parent if isinstance(artifact_path, Path) else None),
+                )
+                artifact_path, artifact_doc = _load_daily_season_frontend_artifact(
+                    lambda root: daily_season_betting_day_artifact_path(int(season), str(date_str), profile=requested_profile, data_root=root)
+                )
+            except Exception:
+                app.logger.exception("failed to refresh stale season betting day artifact for %s", date_str)
+            finally:
+                _end_derived_artifact_refresh("season_frontend", refresh_key)
     if not artifact_path or not isinstance(artifact_doc, dict) or not artifact_doc.get("found"):
         return None
     out = dict(artifact_doc)
@@ -6565,6 +6781,34 @@ def _prebuilt_official_betting_card_day_payload(season: int, date_str: str, requ
     artifact_path, artifact_doc = _load_daily_season_frontend_artifact(
         lambda root: daily_official_betting_card_day_artifact_path(int(season), str(date_str), profile=requested_profile, data_root=root)
     )
+    daily_artifacts = _load_cards_artifacts(str(date_str))
+    season_dependency_paths = [
+        daily_artifacts.get("profile_bundle_path") if isinstance(daily_artifacts.get("profile_bundle_path"), Path) else None,
+        daily_artifacts.get("hr_targets_path") if isinstance(daily_artifacts.get("hr_targets_path"), Path) else None,
+        daily_artifacts.get("locked_policy_path") if isinstance(daily_artifacts.get("locked_policy_path"), Path) else None,
+        daily_artifacts.get("game_summary_path") if isinstance(daily_artifacts.get("game_summary_path"), Path) else None,
+        daily_artifacts.get("daily_ladders_path") if isinstance(daily_artifacts.get("daily_ladders_path"), Path) else None,
+    ]
+    refresh_key = f"{season}:{date_str}:{requested_profile}"
+    if not _derived_artifact_refresh_in_progress("season_frontend", refresh_key) and _artifact_is_stale(
+        artifact_path,
+        dependency_paths=season_dependency_paths,
+    ):
+        if _begin_derived_artifact_refresh("season_frontend", refresh_key):
+            try:
+                write_current_day_season_frontend_artifacts(
+                    int(season),
+                    str(date_str),
+                    betting_profile=requested_profile,
+                    out_dir=(artifact_path.parent if isinstance(artifact_path, Path) else None),
+                )
+                artifact_path, artifact_doc = _load_daily_season_frontend_artifact(
+                    lambda root: daily_official_betting_card_day_artifact_path(int(season), str(date_str), profile=requested_profile, data_root=root)
+                )
+            except Exception:
+                app.logger.exception("failed to refresh stale official betting card day artifact for %s", date_str)
+            finally:
+                _end_derived_artifact_refresh("season_frontend", refresh_key)
     if not artifact_path or not isinstance(artifact_doc, dict) or not artifact_doc.get("found"):
         return None
     out = dict(artifact_doc)

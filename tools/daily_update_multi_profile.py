@@ -55,6 +55,8 @@ DEFAULT_HITTER_MODEL_PROB_MIN_BY_MARKET: Dict[str, float] = {
 
 _HR_TARGET_MIN_PROB = 0.14
 _HR_TARGET_MIN_SUPPORT_SCORE = 50.0
+_HR_TARGET_HIGH_SUPPORT_SCORE = 70.0
+_HR_TARGET_HIGH_SUPPORT_MIN_PROB = 0.12
 _HR_TARGET_MAX_PER_GAME = 3
 _HR_TARGET_MAX_PER_TEAM = 2
 
@@ -2713,13 +2715,20 @@ def _hitter_hr_target_rank_score(prob: float, support_score: float, pa_mean: Opt
     return round((100.0 * float(prob)) + (0.18 * float(support_score)) + (0.6 * opportunity) + lineup_bonus, 3)
 
 
+def _hitter_hr_target_min_prob_threshold(support_score: Optional[float]) -> float:
+    score = _safe_float(support_score)
+    if score is not None and float(score) >= float(_HR_TARGET_HIGH_SUPPORT_SCORE):
+        return float(_HR_TARGET_HIGH_SUPPORT_MIN_PROB)
+    return float(_HR_TARGET_MIN_PROB)
+
+
 def _is_hitter_hr_target_candidate(
     rec: Dict[str, Any],
     context_fields: Dict[str, Any],
     hr_prob: float,
     support_score: float,
 ) -> bool:
-    if float(hr_prob) < float(_HR_TARGET_MIN_PROB):
+    if float(hr_prob) < float(_hitter_hr_target_min_prob_threshold(support_score)):
         return False
     if float(support_score) < float(_HR_TARGET_MIN_SUPPORT_SCORE):
         return False
@@ -2749,7 +2758,8 @@ def _hitter_hr_target_exclusion_reasons(
         return ["prediction_ineligible"]
     if hr_prob is None:
         return ["missing_hr_prob"]
-    if float(hr_prob) < float(_HR_TARGET_MIN_PROB):
+    min_prob_threshold = _hitter_hr_target_min_prob_threshold(support_score)
+    if float(hr_prob) < float(min_prob_threshold):
         reasons.append("below_min_prob")
     if support_score is None:
         reasons.append("missing_support_score")
@@ -2898,8 +2908,9 @@ def _collect_daily_hr_targets(
                 primary_reason = _hr_target_exclusion_priority(exclusion_reasons)
                 exclusion_counts[primary_reason] = int(exclusion_counts.get(primary_reason, 0)) + 1
                 prob_gap = None
+                min_prob_threshold = _hitter_hr_target_min_prob_threshold(support_score)
                 if hr_prob is not None:
-                    prob_gap = round(float(_HR_TARGET_MIN_PROB) - float(hr_prob), 4)
+                    prob_gap = round(float(min_prob_threshold) - float(hr_prob), 4)
                 support_gap = round(float(_HR_TARGET_MIN_SUPPORT_SCORE) - float(support_score), 1)
                 excluded_rows.append(
                     {
@@ -2912,6 +2923,7 @@ def _collect_daily_hr_targets(
                         "pa_mean": _safe_float(rec.get("pa_mean")),
                         "ab_mean": _safe_float(rec.get("ab_mean")),
                         "p_hr_1plus": (round(float(hr_prob), 4) if hr_prob is not None else None),
+                        "min_prob_threshold": round(float(min_prob_threshold), 4),
                         "hr_support_score": round(float(support_score), 1),
                         "primary_reason": primary_reason,
                         "reasons": exclusion_reasons,
@@ -2944,6 +2956,7 @@ def _collect_daily_hr_targets(
                 "team_side": side,
                 "matchup": matchup,
                 "p_hr_1plus": round(float(hr_prob), 4),
+                "min_prob_threshold": round(float(_hitter_hr_target_min_prob_threshold(support_score)), 4),
                 "hr_support_score": support_score,
                 "hr_support_label": str(support.get("label") or ""),
                 "hr_target_score": rank_score,
@@ -3037,6 +3050,8 @@ def _collect_daily_hr_targets(
         "policy": {
             "min_prob": float(_HR_TARGET_MIN_PROB),
             "min_support_score": float(_HR_TARGET_MIN_SUPPORT_SCORE),
+            "high_support_score": float(_HR_TARGET_HIGH_SUPPORT_SCORE),
+            "high_support_min_prob": float(_HR_TARGET_HIGH_SUPPORT_MIN_PROB),
             "max_per_game": int(_HR_TARGET_MAX_PER_GAME),
             "max_per_team": int(_HR_TARGET_MAX_PER_TEAM),
         },
