@@ -3536,6 +3536,23 @@ _TOP_PROPS_PITCHER_ACTUAL_KEYS: Dict[str, str] = {
     "earned_runs": "earnedRuns",
 }
 
+_HISTORICAL_PITCHER_ACTUAL_KEYS: Dict[str, str] = {
+    **_TOP_PROPS_PITCHER_ACTUAL_KEYS,
+    "hits_allowed": "hits",
+    "walks_allowed": "baseOnBalls",
+    "walks": "baseOnBalls",
+    "batters_faced": "battersFaced",
+    "pitches": "pitchesThrown",
+}
+
+_HISTORICAL_HITTER_ACTUAL_KEYS: Dict[str, str] = {
+    **_TOP_PROPS_HITTER_ACTUAL_KEYS,
+    "hitter_strikeouts": "strikeOuts",
+    "doubles": "doubles",
+    "triples": "triples",
+    "stolen_bases": "stolenBases",
+}
+
 
 def _top_props_supports_reconciliation(d: str) -> bool:
     try:
@@ -3667,6 +3684,220 @@ def _reconcile_top_props_sections(sections: List[Dict[str, Any]], *, d: str, gro
         "enabled": True,
         "resultCounts": dict(result_counts),
         "settledCount": int(result_counts.get("win", 0) + result_counts.get("loss", 0) + result_counts.get("push", 0)),
+    }
+
+
+def _historical_actual_key_for_prop(group: str, prop: str) -> Optional[str]:
+    prop_key = str(prop or "").strip().lower()
+    if str(group or "").strip().lower() == "pitcher":
+        return _HISTORICAL_PITCHER_ACTUAL_KEYS.get(prop_key)
+    return _HISTORICAL_HITTER_ACTUAL_KEYS.get(prop_key)
+
+
+def _historical_player_stat_reconciliation(
+    *,
+    d: str,
+    game_pk: Any,
+    player_name: Any,
+    group: str,
+    prop: str,
+    side_hint: Any,
+    feed_cache: Dict[int, Optional[Dict[str, Any]]],
+    stats_cache: Dict[Tuple[int, str, str, str], Optional[Dict[str, Any]]],
+) -> Dict[str, Any]:
+    resolved_game_pk = _safe_int(game_pk)
+    resolved_name = _first_text(player_name)
+    if resolved_game_pk is None or not resolved_name:
+        return {"status": "unavailable", "label": "Unavailable"}
+
+    actual_key = _historical_actual_key_for_prop(group, prop)
+    if not actual_key:
+        return {"status": "unavailable", "label": "Unavailable"}
+
+    feed = feed_cache.get(int(resolved_game_pk))
+    if int(resolved_game_pk) not in feed_cache:
+        try:
+            feed = _load_settlement_feed(str(d), int(resolved_game_pk))
+        except Exception:
+            feed = None
+        feed_cache[int(resolved_game_pk)] = dict(feed) if isinstance(feed, dict) else None
+    if not isinstance(feed, dict):
+        return {"status": "unavailable", "label": "Unavailable"}
+    if not _settlement_feed_is_final(feed):
+        return {"status": "pending", "label": "Pending"}
+
+    stat_group = "pitching" if str(group or "").strip().lower() == "pitcher" else "batting"
+    stats = _top_props_player_stats(
+        feed=feed,
+        player_name=resolved_name,
+        stat_group=stat_group,
+        side_hint=str(side_hint or ""),
+        cache=stats_cache,
+        game_pk=int(resolved_game_pk),
+    )
+    actual_value = _safe_float((stats or {}).get(actual_key))
+    if actual_value is None:
+        return {"status": "unavailable", "label": "DNP/scratched"}
+    return {
+        "status": "final",
+        "label": "Final",
+        "actual": float(actual_value),
+    }
+
+
+def _reconcile_historical_ladder_rows(
+    rows: List[Dict[str, Any]],
+    *,
+    d: str,
+    group: str,
+    prop: str,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    if not _top_props_supports_reconciliation(d):
+        return rows, {"enabled": False}
+
+    feed_cache: Dict[int, Optional[Dict[str, Any]]] = {}
+    stats_cache: Dict[Tuple[int, str, str, str], Optional[Dict[str, Any]]] = {}
+    result_counts: Dict[str, int] = {"win": 0, "loss": 0, "split": 0, "pending": 0, "unavailable": 0}
+    out_rows: List[Dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        row_out = dict(row)
+        reconciliation = _historical_player_stat_reconciliation(
+            d=str(d),
+            game_pk=row.get("gamePk"),
+            player_name=row.get("pitcherName") if str(group) == "pitcher" else row.get("hitterName"),
+            group=str(group),
+            prop=str(prop),
+            side_hint=row.get("side"),
+            feed_cache=feed_cache,
+            stats_cache=stats_cache,
+        )
+        status = str((reconciliation or {}).get("status") or "unavailable")
+        if status != "final":
+            row_out["reconciliation"] = {"enabled": True, **dict(reconciliation or {})}
+            result_counts[status] = int(result_counts.get(status, 0)) + 1
+            out_rows.append(row_out)
+            continue
+
+        actual_value = float((reconciliation or {}).get("actual") or 0.0)
+        wins = 0
+        losses = 0
+        ladder_rows: List[Dict[str, Any]] = []
+        for ladder_row in row.get("ladder") or []:
+            if not isinstance(ladder_row, dict):
+                continue
+            ladder_out = dict(ladder_row)
+            total = _safe_int(ladder_row.get("total"))
+            if total is None:
+                ladder_rows.append(ladder_out)
+                continue
+            rung_won = float(actual_value) + 1e-9 >= float(total)
+            rung_status = "win" if rung_won else "loss"
+            wins += 1 if rung_won else 0
+            losses += 0 if rung_won else 1
+            ladder_out["reconciliation"] = {
+                "status": rung_status,
+                "label": "Hit" if rung_won else "Miss",
+                "actual": float(actual_value),
+                "target": int(total),
+            }
+            ladder_rows.append(ladder_out)
+        row_out["ladder"] = ladder_rows
+        row_out["actual"] = float(actual_value)
+
+        if wins and losses:
+            row_status = "split"
+            row_label = f"{wins}/{wins + losses}"
+        elif wins:
+            row_status = "win"
+            row_label = "Hit"
+        else:
+            row_status = "loss"
+            row_label = "Miss"
+
+        market_reconciliation = None
+        market_line = _safe_float(row.get("marketLine"))
+        if market_line is not None:
+            market_won = _settlement_over_under(float(actual_value), float(market_line), "over")
+            if market_won is None:
+                market_reconciliation = {"status": "unavailable", "label": "Unavailable", "actual": float(actual_value)}
+            elif abs(float(actual_value) - float(market_line)) < 1e-9:
+                market_reconciliation = {"status": "push", "label": "Push", "actual": float(actual_value)}
+            else:
+                market_reconciliation = {
+                    "status": "win" if bool(market_won) else "loss",
+                    "label": "Right" if bool(market_won) else "Wrong",
+                    "actual": float(actual_value),
+                }
+        if isinstance(market_reconciliation, dict):
+            row_out["marketReconciliation"] = market_reconciliation
+
+        row_out["reconciliation"] = {
+            "enabled": True,
+            "status": row_status,
+            "label": row_label,
+            "actual": float(actual_value),
+            "resultCounts": {"win": int(wins), "loss": int(losses)},
+            "settledCount": int(wins + losses),
+        }
+        result_counts[row_status] = int(result_counts.get(row_status, 0)) + 1
+        out_rows.append(row_out)
+
+    return out_rows, {
+        "enabled": True,
+        "resultCounts": dict(result_counts),
+        "settledCount": int(result_counts.get("win", 0) + result_counts.get("loss", 0) + result_counts.get("split", 0)),
+    }
+
+
+def _reconcile_historical_hr_target_rows(rows: List[Dict[str, Any]], *, d: str) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    if not _top_props_supports_reconciliation(d):
+        return rows, {"enabled": False}
+
+    feed_cache: Dict[int, Optional[Dict[str, Any]]] = {}
+    stats_cache: Dict[Tuple[int, str, str, str], Optional[Dict[str, Any]]] = {}
+    result_counts: Dict[str, int] = {"win": 0, "loss": 0, "pending": 0, "unavailable": 0}
+    out_rows: List[Dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        row_out = dict(row)
+        reconciliation = _historical_player_stat_reconciliation(
+            d=str(d),
+            game_pk=row.get("gamePk"),
+            player_name=row.get("playerName"),
+            group="hitter",
+            prop="home_runs",
+            side_hint=row.get("side"),
+            feed_cache=feed_cache,
+            stats_cache=stats_cache,
+        )
+        status = str((reconciliation or {}).get("status") or "unavailable")
+        if status != "final":
+            row_out["reconciliation"] = {"enabled": True, **dict(reconciliation or {})}
+            result_counts[status] = int(result_counts.get(status, 0)) + 1
+            out_rows.append(row_out)
+            continue
+
+        actual_value = float((reconciliation or {}).get("actual") or 0.0)
+        won = float(actual_value) >= 1.0
+        row_status = "win" if won else "loss"
+        row_out["actual"] = float(actual_value)
+        row_out["reconciliation"] = {
+            "enabled": True,
+            "status": row_status,
+            "label": "Hit" if won else "Miss",
+            "actual": float(actual_value),
+            "target": 1,
+        }
+        result_counts[row_status] = int(result_counts.get(row_status, 0)) + 1
+        out_rows.append(row_out)
+
+    return out_rows, {
+        "enabled": True,
+        "resultCounts": dict(result_counts),
+        "settledCount": int(result_counts.get("win", 0) + result_counts.get("loss", 0)),
     }
 
 
@@ -4921,6 +5152,7 @@ def _prebuilt_pitcher_ladders_payload(
             "availableGames": int(len(payload.get("gameOptions") or [])),
             "availableStarters": int(len(payload.get("pitcherOptions") or [])),
         }
+        payload["reconciliation"] = _reconcile_historical_ladder_rows([], d=str(d), group="pitcher", prop=prop)[1]
         return payload
 
     payload["found"] = True
@@ -4940,6 +5172,14 @@ def _prebuilt_pitcher_ladders_payload(
         "availableGames": int(len(payload.get("gameOptions") or [])),
         "availableStarters": int(len(payload.get("pitcherOptions") or [])),
     }
+    payload["rows"], payload["reconciliation"] = _reconcile_historical_ladder_rows(
+        [dict(row) for row in (payload.get("rows") or []) if isinstance(row, dict)],
+        d=str(d),
+        group="pitcher",
+        prop=prop,
+    )
+    if payload.get("rows"):
+        payload["featuredRow"] = dict((payload.get("rows") or [payload.get("featuredRow")])[0])
     return payload
 
 
@@ -5022,6 +5262,7 @@ def _prebuilt_hitter_ladders_payload(
             "availableHitters": int(len(payload.get("hitterOptions") or [])),
             "topN": int(top_n) if _safe_int(top_n) is not None else None,
         }
+        payload["reconciliation"] = _reconcile_historical_ladder_rows([], d=str(d), group="hitter", prop=prop)[1]
         return payload
 
     payload["found"] = True
@@ -5044,6 +5285,14 @@ def _prebuilt_hitter_ladders_payload(
         "availableHitters": int(len(payload.get("hitterOptions") or [])),
         "topN": int(top_n) if _safe_int(top_n) is not None else None,
     }
+    payload["rows"], payload["reconciliation"] = _reconcile_historical_ladder_rows(
+        [dict(row) for row in (payload.get("rows") or []) if isinstance(row, dict)],
+        d=str(d),
+        group="hitter",
+        prop=prop,
+    )
+    if payload.get("rows"):
+        payload["featuredRow"] = dict((payload.get("rows") or [payload.get("featuredRow")])[0])
     return payload
 
 
@@ -5336,6 +5585,8 @@ def _daily_hr_targets_payload(
         row["teamId"] = _safe_int(row.get("teamId"))
         row["opponentTeamId"] = _safe_int(row.get("opponentTeamId"))
 
+    rows, reconciliation = _reconcile_historical_hr_target_rows(rows, d=str(d))
+
     hitter_options: List[Dict[str, Any]] = []
     for row in rows_all:
         batter_id = _safe_int(row.get("batter_id"))
@@ -5376,6 +5627,7 @@ def _daily_hr_targets_payload(
             "filteredRows": int(len(rows)),
             "games": int(len({int(row.get("game_pk") or 0) for row in rows_all if _safe_int(row.get("game_pk")) is not None})),
         },
+        "reconciliation": reconciliation,
         "nav": nav,
         "found": bool(isinstance(doc, dict) and bool(rows_all)),
     }
@@ -5538,6 +5790,14 @@ def _prebuilt_daily_top_props_payload(d: str, group: str) -> Optional[Dict[str, 
     if not isinstance(payload, dict):
         return None
     out = dict(payload)
+    if _top_props_supports_reconciliation(str(d)):
+        reconciled_sections, reconciliation = _reconcile_top_props_sections(
+            [dict(section) for section in (out.get("sections") or []) if isinstance(section, dict)],
+            d=str(d),
+            group=normalized_group,
+        )
+        out["sections"] = reconciled_sections
+        out["reconciliation"] = reconciliation
     out["artifactPath"] = _relative_path_str(artifact_path)
     out["artifactGeneratedAt"] = artifact_doc.get("generatedAt")
     out["artifactSource"] = "daily_update"

@@ -75,6 +75,20 @@
     return Number.isFinite(num) ? num : null;
   }
 
+  function resultToneClass(status) {
+    const normalized = String(status || "").toLowerCase();
+    if (normalized === "win") return "is-win";
+    if (normalized === "loss") return "is-loss";
+    if (normalized === "split") return "is-split";
+    if (normalized === "push") return "is-push";
+    if (normalized === "pending") return "is-pending";
+    return "is-unavailable";
+  }
+
+  function resultBadgeMarkup(label, status, extraClass = "") {
+    return `<span class="ladder-result-badge ${resultToneClass(status)}${extraClass ? ` ${extraClass}` : ""}">${escapeHtml(label || status || "Unavailable")}</span>`;
+  }
+
   function activeMarketEntry(row, payload) {
     const entries = Array.isArray(row.marketLinesByStat) ? row.marketLinesByStat : [];
     const activeStat = String(payload.prop || "");
@@ -210,12 +224,15 @@
     `;
   }
 
-  function renderTotalCell(row, total, prefix = "") {
+  function renderTotalCell(row, ladderRow, prefix = "") {
+    const total = ladderRow && ladderRow.total;
     const totalText = prefix ? `${prefix} ${formatCount(total)}` : formatCount(total);
+    const reconciliation = ladderRow && ladderRow.reconciliation ? ladderRow.reconciliation : {};
     return `
       <div class="ladder-total-cell">
         <span class="ladder-total-value">${escapeHtml(totalText)}</span>
         ${renderHistoryCallouts(row, total)}
+        ${reconciliation.status ? `<span class="ladder-row-result-chip ${resultToneClass(reconciliation.status)}">${escapeHtml(String(reconciliation.label || reconciliation.status || "Unavailable"))}</span>` : ""}
       </div>
     `;
   }
@@ -229,6 +246,18 @@
     const summary = payload.summary || {};
     const simCounts = Array.isArray(summary.simCounts) ? summary.simCounts : [];
     const isExact = String(payload.ladderShape || "threshold") === "exact";
+    const reconciliation = payload.reconciliation || {};
+    const reconciliationStats = reconciliation.enabled
+      ? `
+      <article class="ladder-stat">
+        <div class="ladder-stat-label">Settled rows</div>
+        <div class="ladder-stat-value">${formatCount(reconciliation.settledCount)}</div>
+      </article>
+      <article class="ladder-stat">
+        <div class="ladder-stat-label">Record</div>
+        <div class="ladder-stat-value">${escapeHtml(`${(reconciliation.resultCounts || {}).win || 0}-${(reconciliation.resultCounts || {}).loss || 0}-${(reconciliation.resultCounts || {}).split || 0}`)}</div>
+      </article>`
+      : "";
     summaryEl.innerHTML = `
       <article class="ladder-stat">
         <div class="ladder-stat-label">Date</div>
@@ -262,6 +291,7 @@
         <div class="ladder-stat-label">Sim counts seen</div>
         <div class="ladder-stat-value">${escapeHtml(simCounts.length ? simCounts.join(", ") : "-")}</div>
       </article>
+      ${reconciliationStats}
     `;
   }
 
@@ -289,10 +319,20 @@
     if (row.lineupOrder != null && row.lineupOrder !== "") {
       subtitleBits.push(`No. ${escapeHtml(formatCount(row.lineupOrder))}`);
     }
+    const rowReconciliation = row.reconciliation || {};
+    const marketReconciliation = row.marketReconciliation || {};
+    const reconciliationMarkup = rowReconciliation.enabled
+      ? `
+        <div class="ladder-reconciliation-row">
+          ${resultBadgeMarkup(String(rowReconciliation.label || rowReconciliation.status || "Unavailable"), rowReconciliation.status)}
+          ${row.actual != null ? `<span class="ladder-result-badge is-actual">Actual ${escapeHtml(formatNumber(row.actual, 0))}</span>` : ""}
+          ${marketReconciliation.status ? resultBadgeMarkup(`Market ${String(marketReconciliation.label || marketReconciliation.status || "Unavailable")}`, marketReconciliation.status, "is-market") : ""}
+        </div>`
+      : "";
     const ladderTableRows = isExact
       ? ladderRows.map((ladderRow) => `
         <tr>
-          <td>${renderTotalCell(row, ladderRow.total)}</td>
+          <td>${renderTotalCell(row, ladderRow)}</td>
           <td>${escapeHtml(formatCount(ladderRow.hitCount))}</td>
           <td>${escapeHtml(formatPercent(ladderRow.hitProb))}</td>
           <td>${escapeHtml(thresholdBookOdds(row, payload, ladderRow.total))}</td>
@@ -302,7 +342,7 @@
       `).join("")
       : ladderRows.map((ladderRow) => `
         <tr>
-          <td>${renderTotalCell(row, ladderRow.total, '>=')}</td>
+          <td>${renderTotalCell(row, ladderRow, '>=')}</td>
           <td>${escapeHtml(formatCount(ladderRow.hitCount))}</td>
           <td>${escapeHtml(formatPercent(ladderRow.hitProb))}</td>
           <td>${escapeHtml(thresholdBookOdds(row, payload, ladderRow.total))}</td>
@@ -332,6 +372,7 @@
           ${row.marketLine == null ? "" : `<span class="ladder-pill"><span>Market line</span><strong>${escapeHtml(formatNumber(row.marketLine, 1))}</strong></span>`}
           ${overLineText}
         </div>
+        ${reconciliationMarkup}
         ${renderMarketLineChips(row, payload)}
         <div class="ladder-table-wrap">
           <table class="ladder-table">
@@ -375,12 +416,16 @@
     const summary = payload.summary || {};
     const simCounts = Array.isArray(summary.simCounts) ? summary.simCounts : [];
     const shape = String(payload.ladderShape || "threshold");
+    const reconciliation = payload.reconciliation || {};
     const sortLabel = String((Array.isArray(payload.sortOptions) ? payload.sortOptions : []).find((option) => String(option.value || "") === String(payload.selectedSort || state.sort || "team"))?.label || (payload.selectedSort || state.sort || "team"));
     const gameLabel = String((Array.isArray(payload.gameOptions) ? payload.gameOptions : []).find((option) => String(option.value || "") === String(payload.selectedGame || state.game || ""))?.label || (payload.selectedGame || state.game || ""));
     const teamLabel = String((Array.isArray(payload.teamOptions) ? payload.teamOptions : []).find((option) => String(option.value || "") === String(payload.selectedTeam || state.team || ""))?.label || (payload.selectedTeam || state.team || ""));
     headerMetaEl.textContent = payload.found
       ? `${summary.hitters || 0} hitters across ${summary.games || 0} games from ${shape === "exact" ? "stored exact hitter distributions" : `stored top-${summary.topN || "?"} hitter likelihoods`}. Sorted by ${sortLabel}. Sim counts: ${simCounts.length ? simCounts.join(", ") : "-"}.${state.game ? ` Filtered to game ${gameLabel || state.game}.` : ""}${state.team ? ` Filtered to team ${teamLabel || state.team}.` : ""}${state.hitter ? ` Filtered to hitter ${state.hitter}.` : ""}`
       : "No hitter ladder data found for this selection.";
+    if (payload.found && reconciliation.enabled) {
+      headerMetaEl.textContent += ` Settled rows: ${reconciliation.settledCount || 0}. Wins ${(reconciliation.resultCounts || {}).win || 0}, losses ${(reconciliation.resultCounts || {}).loss || 0}, split ${(reconciliation.resultCounts || {}).split || 0}.`;
+    }
 
     sourceMetaEl.textContent = `Sim dir: ${payload.sourceDir || "-"} | Market file: ${payload.marketSource || "-"} | Default daily sims: ${payload.defaultSims || "-"} | Shape: ${shape} ladder`;
 

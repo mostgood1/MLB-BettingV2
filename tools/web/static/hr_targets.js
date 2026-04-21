@@ -78,6 +78,28 @@
     return "is-down";
   }
 
+  function historicalResultToneClass(status) {
+    const normalized = String(status || "").toLowerCase();
+    if (normalized === "win") return "is-win";
+    if (normalized === "loss") return "is-loss";
+    if (normalized === "push") return "is-push";
+    if (normalized === "pending") return "is-pending";
+    return "is-unavailable";
+  }
+
+  function hrTargetResultMarkup(row) {
+    const reconciliation = row && row.reconciliation ? row.reconciliation : {};
+    if (!reconciliation || !reconciliation.enabled) return "";
+    const actualValue = Number(reconciliation.actual);
+    const actualText = Number.isFinite(actualValue) ? `${formatNumber(actualValue, 0)} HR` : "Final unavailable";
+    return `
+      <div class="hr-target-result-row">
+        <span class="hr-target-result-badge ${historicalResultToneClass(reconciliation.status)}">${escapeHtml(String(reconciliation.label || reconciliation.status || "Unavailable"))}</span>
+        <span class="hr-target-result-badge is-actual">${escapeHtml(actualText)}</span>
+      </div>
+    `;
+  }
+
   function hrTargetDriverMarkup(row) {
     const drivers = Array.isArray(row && row.drivers) ? row.drivers : [];
     if (!drivers.length) return "";
@@ -141,7 +163,10 @@
       <article class="cards-hr-target-chip hr-target-page-chip">
         <div class="cards-hr-target-chip-top">
           <span class="cards-hr-target-rank">#${escapeHtml(row.rank || row.game_rank || "-")}</span>
-          <span class="cards-source-meta-pill ${hrSupportToneClass(row.supportLabel)}">${escapeHtml(String(row.supportLabel || "watch"))}</span>
+          <div class="hr-target-card-badges">
+            <span class="cards-source-meta-pill ${hrSupportToneClass(row.supportLabel)}">${escapeHtml(String(row.supportLabel || "watch"))}</span>
+            ${row.reconciliation && row.reconciliation.enabled ? `<span class="hr-target-result-badge ${historicalResultToneClass(row.reconciliation.status)}">${escapeHtml(String(row.reconciliation.label || row.reconciliation.status || "Unavailable"))}</span>` : ""}
+          </div>
         </div>
         <div class="cards-hr-target-identity">
           <div class="cards-hr-target-identity-main">
@@ -180,6 +205,7 @@
             <span>lineup spot</span>
           </div>
         </div>
+        ${hrTargetResultMarkup(row)}
         ${hrTargetDriverMarkup(row)}
         <div class="cards-hr-target-summary">${escapeHtml(String(row.writeup || row.summary || row.matchup || ""))}</div>
       </article>
@@ -210,6 +236,19 @@
   function renderSummary(payload) {
     const counts = payload && payload.counts ? payload.counts : {};
     const policy = payload && payload.policy ? payload.policy : {};
+    const reconciliation = payload && payload.reconciliation ? payload.reconciliation : {};
+    const reconciliationCards = reconciliation.enabled
+      ? `
+        <div class="hr-targets-summary-card">
+          <span class="hr-targets-summary-label">Settled targets</span>
+          <strong>${escapeHtml(reconciliation.settledCount || 0)}</strong>
+        </div>
+        <div class="hr-targets-summary-card">
+          <span class="hr-targets-summary-label">Record</span>
+          <strong>${escapeHtml(`${(reconciliation.resultCounts || {}).win || 0}-${(reconciliation.resultCounts || {}).loss || 0}`)}</strong>
+        </div>
+      `
+      : "";
     root.summary.innerHTML = `
       <div class="hr-targets-summary-grid">
         <div class="hr-targets-summary-card">
@@ -228,6 +267,7 @@
           <span class="hr-targets-summary-label">Min support</span>
           <strong>${escapeHtml(formatNumber(policy.min_support_score, 1))}</strong>
         </div>
+        ${reconciliationCards}
       </div>
     `;
   }
@@ -244,9 +284,14 @@
   function updateChrome(payload) {
     if (root.headerMeta) {
       const sourcePath = payload && payload.sourcePath ? `Source: ${payload.sourcePath}` : "HR targets artifact unavailable";
-      root.headerMeta.textContent = payload && payload.found
+      const reconciliation = payload && payload.reconciliation ? payload.reconciliation : {};
+      let headerText = payload && payload.found
         ? `${payload.counts.filteredRows || 0} visible HR targets across ${payload.counts.games || 0} games.`
         : "No HR targets found for this slate.";
+      if (payload && payload.found && reconciliation.enabled) {
+        headerText += ` Settled: ${reconciliation.settledCount || 0}. Wins ${(reconciliation.resultCounts || {}).win || 0}, losses ${(reconciliation.resultCounts || {}).loss || 0}.`;
+      }
+      root.headerMeta.textContent = headerText;
       if (root.sourceMeta) {
         root.sourceMeta.textContent = sourcePath;
       }
