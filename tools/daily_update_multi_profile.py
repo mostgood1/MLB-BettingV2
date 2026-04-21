@@ -60,6 +60,50 @@ _HR_TARGET_HIGH_SUPPORT_MIN_PROB = 0.12
 _HR_TARGET_MAX_PER_GAME = 3
 _HR_TARGET_MAX_PER_TEAM = 2
 
+_DEFAULT_HR_TARGET_POLICY_PRESET = "default"
+_HR_TARGET_POLICY_PRESETS: Dict[str, Dict[str, float | int | str]] = {
+    "default": {
+        "preset": "default",
+        "label": "Current default (hit-rate)",
+        "min_prob": 0.16,
+        "min_support_score": 60.0,
+        "high_support_score": 75.0,
+        "high_support_min_prob": 0.12,
+        "max_per_game": 2,
+        "max_per_team": 2,
+    },
+    "legacy": {
+        "preset": "legacy",
+        "label": "Prior baseline",
+        "min_prob": 0.14,
+        "min_support_score": 50.0,
+        "high_support_score": 70.0,
+        "high_support_min_prob": 0.12,
+        "max_per_game": 3,
+        "max_per_team": 2,
+    },
+    "efficiency": {
+        "preset": "efficiency",
+        "label": "Hit-rate sweep winner",
+        "min_prob": 0.16,
+        "min_support_score": 60.0,
+        "high_support_score": 75.0,
+        "high_support_min_prob": 0.12,
+        "max_per_game": 2,
+        "max_per_team": 2,
+    },
+    "volume": {
+        "preset": "volume",
+        "label": "Higher win-count sweep winner",
+        "min_prob": 0.10,
+        "min_support_score": 60.0,
+        "high_support_score": 65.0,
+        "high_support_min_prob": 0.10,
+        "max_per_game": 3,
+        "max_per_team": 2,
+    },
+}
+
 PITCHER_MARKET_SPECS: Dict[str, Dict[str, str]] = {
     "outs": {
         "market_key": "outs",
@@ -2715,11 +2759,18 @@ def _hitter_hr_target_rank_score(prob: float, support_score: float, pa_mean: Opt
     return round((100.0 * float(prob)) + (0.18 * float(support_score)) + (0.6 * opportunity) + lineup_bonus, 3)
 
 
-def _hitter_hr_target_min_prob_threshold(support_score: Optional[float]) -> float:
+def _hr_target_policy_config(preset: Any = _DEFAULT_HR_TARGET_POLICY_PRESET) -> Dict[str, Any]:
+    normalized = str(preset or _DEFAULT_HR_TARGET_POLICY_PRESET).strip().lower()
+    policy = _HR_TARGET_POLICY_PRESETS.get(normalized) or _HR_TARGET_POLICY_PRESETS[_DEFAULT_HR_TARGET_POLICY_PRESET]
+    return dict(policy)
+
+
+def _hitter_hr_target_min_prob_threshold(support_score: Optional[float], policy: Optional[Dict[str, Any]] = None) -> float:
+    resolved_policy = dict(policy or _hr_target_policy_config())
     score = _safe_float(support_score)
-    if score is not None and float(score) >= float(_HR_TARGET_HIGH_SUPPORT_SCORE):
-        return float(_HR_TARGET_HIGH_SUPPORT_MIN_PROB)
-    return float(_HR_TARGET_MIN_PROB)
+    if score is not None and float(score) >= float(resolved_policy.get("high_support_score") or _HR_TARGET_HIGH_SUPPORT_SCORE):
+        return float(resolved_policy.get("high_support_min_prob") or _HR_TARGET_HIGH_SUPPORT_MIN_PROB)
+    return float(resolved_policy.get("min_prob") or _HR_TARGET_MIN_PROB)
 
 
 def _is_hitter_hr_target_candidate(
@@ -2727,10 +2778,12 @@ def _is_hitter_hr_target_candidate(
     context_fields: Dict[str, Any],
     hr_prob: float,
     support_score: float,
+    policy: Optional[Dict[str, Any]] = None,
 ) -> bool:
-    if float(hr_prob) < float(_hitter_hr_target_min_prob_threshold(support_score)):
+    resolved_policy = dict(policy or _hr_target_policy_config())
+    if float(hr_prob) < float(_hitter_hr_target_min_prob_threshold(support_score, resolved_policy)):
         return False
-    if float(support_score) < float(_HR_TARGET_MIN_SUPPORT_SCORE):
+    if float(support_score) < float(resolved_policy.get("min_support_score") or _HR_TARGET_MIN_SUPPORT_SCORE):
         return False
     lineup_status = str(context_fields.get("lineup_status") or "").strip().lower()
     lineup_order = _safe_int(rec.get("lineup_order"))
@@ -2752,19 +2805,21 @@ def _hitter_hr_target_exclusion_reasons(
     context_fields: Dict[str, Any],
     hr_prob: Optional[float],
     support_score: Optional[float],
+    policy: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
+    resolved_policy = dict(policy or _hr_target_policy_config())
     reasons: List[str] = []
     if not _is_hitter_prediction_eligible(rec):
         return ["prediction_ineligible"]
     if hr_prob is None:
         return ["missing_hr_prob"]
-    min_prob_threshold = _hitter_hr_target_min_prob_threshold(support_score)
+    min_prob_threshold = _hitter_hr_target_min_prob_threshold(support_score, resolved_policy)
     if float(hr_prob) < float(min_prob_threshold):
         reasons.append("below_min_prob")
     if support_score is None:
         reasons.append("missing_support_score")
         return reasons
-    if float(support_score) < float(_HR_TARGET_MIN_SUPPORT_SCORE):
+    if float(support_score) < float(resolved_policy.get("min_support_score") or _HR_TARGET_MIN_SUPPORT_SCORE):
         reasons.append("below_support_score")
     lineup_status = str(context_fields.get("lineup_status") or "").strip().lower()
     lineup_order = _safe_int(rec.get("lineup_order"))
@@ -2805,7 +2860,9 @@ def _collect_daily_hr_targets(
     *,
     date: str,
     season: int,
+    hr_target_policy: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    resolved_hr_target_policy = dict(hr_target_policy or _hr_target_policy_config())
     if not sim_dir.exists() or not sim_dir.is_dir():
         return {
             "date": str(date),
@@ -2904,15 +2961,15 @@ def _collect_daily_hr_targets(
             context_fields = _hitter_recommendation_context_fields(rec, matchup_ctx, roster_snapshot, season=season)
             support = _hitter_hr_target_support(rec, context_fields)
             support_score = float(support.get("score") or 0.0)
-            exclusion_reasons = _hitter_hr_target_exclusion_reasons(rec, context_fields, hr_prob, support_score)
+            exclusion_reasons = _hitter_hr_target_exclusion_reasons(rec, context_fields, hr_prob, support_score, resolved_hr_target_policy)
             if exclusion_reasons:
                 primary_reason = _hr_target_exclusion_priority(exclusion_reasons)
                 exclusion_counts[primary_reason] = int(exclusion_counts.get(primary_reason, 0)) + 1
                 prob_gap = None
-                min_prob_threshold = _hitter_hr_target_min_prob_threshold(support_score)
+                min_prob_threshold = _hitter_hr_target_min_prob_threshold(support_score, resolved_hr_target_policy)
                 if hr_prob is not None:
                     prob_gap = round(float(min_prob_threshold) - float(hr_prob), 4)
-                support_gap = round(float(_HR_TARGET_MIN_SUPPORT_SCORE) - float(support_score), 1)
+                support_gap = round(float(resolved_hr_target_policy.get("min_support_score") or _HR_TARGET_MIN_SUPPORT_SCORE) - float(support_score), 1)
                 excluded_rows.append(
                     {
                         **base,
@@ -2957,7 +3014,7 @@ def _collect_daily_hr_targets(
                 "team_side": side,
                 "matchup": matchup,
                 "p_hr_1plus": round(float(hr_prob), 4),
-                "min_prob_threshold": round(float(_hitter_hr_target_min_prob_threshold(support_score)), 4),
+                "min_prob_threshold": round(float(_hitter_hr_target_min_prob_threshold(support_score, resolved_hr_target_policy)), 4),
                 "hr_support_score": support_score,
                 "hr_support_label": str(support.get("label") or ""),
                 "hr_target_score": rank_score,
@@ -3002,9 +3059,9 @@ def _collect_daily_hr_targets(
         team_counts: Counter[str] = Counter()
         for row in candidates:
             team_key = str(row.get("team") or "")
-            if len(selected) >= int(_HR_TARGET_MAX_PER_GAME):
+            if len(selected) >= int(resolved_hr_target_policy.get("max_per_game") or _HR_TARGET_MAX_PER_GAME):
                 break
-            if team_key and team_counts[team_key] >= int(_HR_TARGET_MAX_PER_TEAM):
+            if team_key and team_counts[team_key] >= int(resolved_hr_target_policy.get("max_per_team") or _HR_TARGET_MAX_PER_TEAM):
                 continue
             team_counts[team_key] += 1
             selected.append(row)
@@ -3050,12 +3107,14 @@ def _collect_daily_hr_targets(
         "source_sim_dir": _rel(sim_dir),
         "source_snapshot_dir": (_rel(snapshots_dir) if snapshots_dir is not None and snapshots_dir.exists() else None),
         "policy": {
-            "min_prob": float(_HR_TARGET_MIN_PROB),
-            "min_support_score": float(_HR_TARGET_MIN_SUPPORT_SCORE),
-            "high_support_score": float(_HR_TARGET_HIGH_SUPPORT_SCORE),
-            "high_support_min_prob": float(_HR_TARGET_HIGH_SUPPORT_MIN_PROB),
-            "max_per_game": int(_HR_TARGET_MAX_PER_GAME),
-            "max_per_team": int(_HR_TARGET_MAX_PER_TEAM),
+            "preset": str(resolved_hr_target_policy.get("preset") or _DEFAULT_HR_TARGET_POLICY_PRESET),
+            "label": str(resolved_hr_target_policy.get("label") or ""),
+            "min_prob": float(resolved_hr_target_policy.get("min_prob") or _HR_TARGET_MIN_PROB),
+            "min_support_score": float(resolved_hr_target_policy.get("min_support_score") or _HR_TARGET_MIN_SUPPORT_SCORE),
+            "high_support_score": float(resolved_hr_target_policy.get("high_support_score") or _HR_TARGET_HIGH_SUPPORT_SCORE),
+            "high_support_min_prob": float(resolved_hr_target_policy.get("high_support_min_prob") or _HR_TARGET_HIGH_SUPPORT_MIN_PROB),
+            "max_per_game": int(resolved_hr_target_policy.get("max_per_game") or _HR_TARGET_MAX_PER_GAME),
+            "max_per_team": int(resolved_hr_target_policy.get("max_per_team") or _HR_TARGET_MAX_PER_TEAM),
         },
         "diagnostics": {
             "excluded_counts": {str(k): int(v) for k, v in sorted(exclusion_counts.items())},
@@ -5022,6 +5081,12 @@ def main() -> int:
     )
 
     ap.add_argument(
+        "--hr-target-policy-preset",
+        choices=sorted(_HR_TARGET_POLICY_PRESETS.keys()),
+        default=str(__import__("os").environ.get("MLB_HR_TARGET_POLICY_PRESET") or _DEFAULT_HR_TARGET_POLICY_PRESET),
+        help="Named HR target policy preset for saved HR target artifacts.",
+    )
+    ap.add_argument(
         "--manifest-out",
         default="",
         help=(
@@ -5203,6 +5268,7 @@ def main() -> int:
         manifest_path = out_game / f"daily_summary_{token}_profile_bundle.json"
     pitcher_lines_path = _ROOT / "data" / "market" / "oddsapi" / f"oddsapi_pitcher_props_{token}.json"
     hitter_lines_path = _ROOT / "data" / "market" / "oddsapi" / f"oddsapi_hitter_props_{token}.json"
+    hr_target_policy = _hr_target_policy_config(args.hr_target_policy_preset)
     pitcher_market_entries = _market_entries_n(pitcher_lines_path, root_key="pitcher_props")
     hitter_market_entries = _market_entries_n(hitter_lines_path, root_key="hitter_props")
 
@@ -5441,6 +5507,7 @@ def main() -> int:
                 source_snapshot_dir,
                 date=str(args.date),
                 season=int(args.season),
+                hr_target_policy=hr_target_policy,
             )
             hr_targets_doc["source_profile"] = (
                 "hitter_props_recos" if source_sim_dir == hitter_sim_dir else "game_recos"
@@ -5495,6 +5562,7 @@ def main() -> int:
             "artifact_path": (_rel(hr_targets_path) if hr_targets_doc is not None else None),
             "games": int(((hr_targets_doc or {}).get("counts") or {}).get("games") or 0),
             "rows": int(((hr_targets_doc or {}).get("counts") or {}).get("rows") or 0),
+            "policy_preset": str(((hr_targets_doc or {}).get("policy") or {}).get("preset") or args.hr_target_policy_preset),
             "error": hr_targets_error,
         },
         "timings": {
