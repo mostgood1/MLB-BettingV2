@@ -351,12 +351,88 @@ function Test-PathSetOverlap {
     return $false
 }
 
+function Get-PathSetIntersection {
+    param(
+        [string[]]$LeftPaths,
+        [string[]]$RightPaths
+    )
+
+    if (-not $LeftPaths -or $LeftPaths.Count -eq 0 -or -not $RightPaths -or $RightPaths.Count -eq 0) {
+        return @()
+    }
+
+    $rightLookup = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($path in $RightPaths) {
+        [void]$rightLookup.Add([string]$path)
+    }
+
+    $intersection = [System.Collections.Generic.List[string]]::new()
+    foreach ($path in $LeftPaths) {
+        if ($rightLookup.Contains([string]$path)) {
+            $intersection.Add([string]$path) | Out-Null
+        }
+    }
+
+    return (Normalize-GitPaths -Paths $intersection.ToArray())
+}
+
+function Test-RunOwnedArtifactPaths {
+    param(
+        [string[]]$Paths,
+        [string[]]$OwnedDates
+    )
+
+    if (-not $Paths -or $Paths.Count -eq 0) {
+        return $true
+    }
+
+    $dateTokens = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($dateValue in @($OwnedDates)) {
+        $text = [string]$dateValue
+        if (-not $text) {
+            continue
+        }
+        [void]$dateTokens.Add($text)
+        [void]$dateTokens.Add($text.Replace('-', '_'))
+    }
+
+    foreach ($path in $Paths) {
+        $normalizedPath = ([string]$path).Trim().Replace('\\', '/')
+        if (-not $normalizedPath) {
+            continue
+        }
+
+        if ($normalizedPath.StartsWith('data/eval/', [System.StringComparison]::OrdinalIgnoreCase)) {
+            continue
+        }
+
+        if (-not $normalizedPath.StartsWith('data/daily/', [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $false
+        }
+
+        $matchesOwnedDate = $false
+        foreach ($token in $dateTokens) {
+            if ($token -and $normalizedPath.IndexOf($token, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                $matchesOwnedDate = $true
+                break
+            }
+        }
+
+        if (-not $matchesOwnedDate) {
+            return $false
+        }
+    }
+
+    return $true
+}
+
 function Assert-SafeArtifactPush {
     param(
         [string]$RepoRoot,
         [string]$Remote,
         [string]$Branch,
         [string[]]$ArtifactPaths,
+        [string[]]$OwnedDates = @(),
         [switch]$AllowArtifactRebase,
         [switch]$UseHeadCommit
     )
@@ -384,6 +460,12 @@ function Assert-SafeArtifactPush {
             return
         }
 
+        $overlappingArtifactPaths = Get-PathSetIntersection -LeftPaths $localArtifactPaths -RightPaths $remoteArtifactPaths
+        if (Test-RunOwnedArtifactPaths -Paths $overlappingArtifactPaths -OwnedDates $OwnedDates) {
+            Write-Host "Remote branch '$remoteRef' moved by $($divergence.Behind) commit(s), but the overlapping artifact paths belong to this run's owned dates. Proceeding with rebase so day-of data overwrites prior lookahead outputs."
+            return
+        }
+
         throw @(
             "Remote branch '$remoteRef' moved by $($divergence.Behind) commit(s) while this run changed generated artifact paths.",
             'Abort publish and rerun the workflow on the updated branch, or pass -AllowArtifactRebase to force the old rebase behavior.'
@@ -397,10 +479,11 @@ function Sync-GitBranchBeforePush {
         [string]$Remote,
         [string]$Branch,
         [string[]]$ArtifactPaths,
+        [string[]]$OwnedDates = @(),
         [switch]$AllowArtifactRebase
     )
 
-    Assert-SafeArtifactPush -RepoRoot $RepoRoot -Remote $Remote -Branch $Branch -ArtifactPaths $ArtifactPaths -AllowArtifactRebase:$AllowArtifactRebase -UseHeadCommit
+    Assert-SafeArtifactPush -RepoRoot $RepoRoot -Remote $Remote -Branch $Branch -ArtifactPaths $ArtifactPaths -OwnedDates $OwnedDates -AllowArtifactRebase:$AllowArtifactRebase -UseHeadCommit
     Invoke-GitCommand -RepoRoot $RepoRoot -Arguments @('rebase', "$Remote/$Branch") -StepName "Rebase onto $Remote/$Branch before push"
 }
 
@@ -433,6 +516,7 @@ $resolvedNextDate = if ($NextDate) { $NextDate } else { Get-DatePlusDays -BaseDa
 $reconcileDate = Get-DatePlusDays -BaseDate $Date -Days -1
 $nextSeason = Get-SeasonFromDate -Value $resolvedNextDate
 $artifactPaths = @('data/daily', 'data/eval')
+$ownedArtifactDates = @($reconcileDate, $Date, $resolvedNextDate)
 
 $sharedArgs = @()
 if ($SpringMode.IsPresent) {
@@ -527,7 +611,7 @@ Invoke-ExternalCommand -FilePath $python -Arguments $nextArgs -StepName "Next-da
 
 if ($GitPush -eq 'on') {
     $commitMessage = $GitCommitMessage.Replace('{date}', $Date).Replace('{next_date}', $resolvedNextDate).Replace('{workflow}', 'end-to-end')
-    Assert-SafeArtifactPush -RepoRoot $repoRoot -Remote $GitPushRemote -Branch $pushBranch -ArtifactPaths $artifactPaths -AllowArtifactRebase:$AllowArtifactRebase
+    Assert-SafeArtifactPush -RepoRoot $repoRoot -Remote $GitPushRemote -Branch $pushBranch -ArtifactPaths $artifactPaths -OwnedDates $ownedArtifactDates -AllowArtifactRebase:$AllowArtifactRebase
     Invoke-GitCommand -RepoRoot $repoRoot -Arguments (@('add', '-A', '--') + $artifactPaths) -StepName 'Stage workflow outputs'
 
     $stagedArtifactPaths = Get-StagedChangedPaths -RepoRoot $repoRoot -Paths $artifactPaths
@@ -541,7 +625,7 @@ if ($GitPush -eq 'on') {
         }
 
         Invoke-GitCommand -RepoRoot $repoRoot -Arguments @('commit', '-m', $commitMessage) -StepName 'Commit workflow outputs'
-        Sync-GitBranchBeforePush -RepoRoot $repoRoot -Remote $GitPushRemote -Branch $pushBranch -ArtifactPaths $artifactPaths -AllowArtifactRebase:$AllowArtifactRebase
+        Sync-GitBranchBeforePush -RepoRoot $repoRoot -Remote $GitPushRemote -Branch $pushBranch -ArtifactPaths $artifactPaths -OwnedDates $ownedArtifactDates -AllowArtifactRebase:$AllowArtifactRebase
         $pushArgs = @('push', $GitPushRemote, $pushBranch)
         Invoke-GitCommand -RepoRoot $repoRoot -Arguments $pushArgs -StepName 'Push workflow outputs'
     }
