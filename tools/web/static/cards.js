@@ -1891,36 +1891,79 @@
       }
     }
 
+    function renderLiveGameOverviewCard(entry) {
+      return `
+        <div class="cards-prop-overview-card">
+          <div class="cards-lens-head">
+            <div>
+              <div class="cards-lens-label">${escapeHtml(entry.label)}</div>
+              <div class="cards-lens-main">${escapeHtml(entry.playerName)}</div>
+              <div class="cards-subcopy">${escapeHtml(entry.marketLabel)}</div>
+            </div>
+            <span class="cards-lens-badge is-live">Live</span>
+          </div>
+          <div class="cards-prop-overview-metrics">
+            <div class="cards-data-pair"><span>${escapeHtml(entry.actualMetricLabel || 'Current')}</span><strong>${escapeHtml(entry.actualLabel)}</strong></div>
+            <div class="cards-data-pair"><span>Live proj</span><strong>${escapeHtml(entry.projectionLabel)}</strong></div>
+            <div class="cards-data-pair"><span>Line</span><strong>${escapeHtml(entry.lineLabel)}</strong></div>
+            <div class="cards-data-pair is-positive"><span>Live edge</span><strong>${escapeHtml(entry.edgeLabel)}</strong></div>
+          </div>
+          <div class="cards-prop-overview-foot">
+            <span>${escapeHtml(entry.footLeft)}</span>
+            <span>${escapeHtml(entry.footRight)}</span>
+          </div>
+        </div>`;
+    }
+
+    function renderPropOverviewRecoCard(entry) {
+      const stateObj = entry.state;
+      const reco = stateObj.reco;
+      const liveEdgeClass = stateObj.liveEdge == null ? "" : (stateObj.liveEdge >= 0 ? "is-positive" : "is-negative");
+      const reasonText = recoReasonText(reco);
+      return `
+        <div class="cards-prop-overview-card">
+          <div class="cards-lens-head">
+            <div>
+              <div class="cards-lens-label">${escapeHtml(entry.label)}</div>
+              <div class="cards-lens-main">${escapeHtml(propOwnerName(reco))}</div>
+              <div class="cards-subcopy">${escapeHtml(marketLabelLong(reco))}</div>
+            </div>
+            <span class="cards-lens-badge ${escapeHtml(stateObj.badge.className)}">${escapeHtml(stateObj.badge.label)}</span>
+          </div>
+          <div class="cards-prop-overview-metrics">
+            <div class="cards-data-pair"><span>Actual</span><strong>${escapeHtml(stateObj.actualValue == null ? '-' : formatLine(stateObj.actualValue))}</strong></div>
+            <div class="cards-data-pair"><span>Live proj</span><strong>${escapeHtml(stateObj.liveProjection == null ? '-' : formatLine(stateObj.liveProjection))}</strong></div>
+            <div class="cards-data-pair"><span>Line</span><strong>${escapeHtml(`${stateObj.lineLabel} ${formatOdds(reco?.odds)}`.trim())}</strong></div>
+            <div class="cards-data-pair ${liveEdgeClass}"><span>Live edge</span><strong>${escapeHtml(stateObj.liveEdge == null ? '-' : formatSigned(stateObj.liveEdge, 2))}</strong></div>
+          </div>
+          ${reasonText ? `<div class="cards-live-lens-reasons"><div class="cards-live-lens-reason">${escapeHtml(reasonText)}</div></div>` : ''}
+          <div class="cards-prop-overview-foot">
+            <span>${escapeHtml(stateObj.modelMean == null ? 'Model mean -' : `Model mean ${formatLine(stateObj.modelMean)}`)}</span>
+            <span>${escapeHtml(`${liveRowFreshnessText(reco, stateObj.tierLabel)} | ${formatOdds(reco?.odds)}`)}</span>
+          </div>
+        </div>`;
+    }
+
+    function renderPropOverviewLane(title, cardsMarkup, emptyMessage) {
+      return `
+        <div class="cards-prop-overview-lane">
+          <div class="cards-prop-overview-lane-title">${escapeHtml(title)}</div>
+          <div class="cards-prop-overview-grid">
+            ${cardsMarkup || `<div class="cards-empty-copy">${escapeHtml(emptyMessage)}</div>`}
+          </div>
+        </div>`;
+    }
+
     const livePayloadAvailable = hasLivePropPayload(detail);
     const liveRows = livePropRows(detail);
     if (liveStatus && !livePayloadAvailable) {
-      return liveGameCards.length
-        ? `
-      <div class="cards-prop-overview-grid">
-        ${liveGameCards.map((entry) => `
-          <div class="cards-prop-overview-card">
-            <div class="cards-lens-head">
-              <div>
-                <div class="cards-lens-label">${escapeHtml(entry.label)}</div>
-                <div class="cards-lens-main">${escapeHtml(entry.playerName)}</div>
-                <div class="cards-subcopy">${escapeHtml(entry.marketLabel)}</div>
-              </div>
-              <span class="cards-lens-badge is-live">Live</span>
-            </div>
-            <div class="cards-prop-overview-metrics">
-              <div class="cards-data-pair"><span>${escapeHtml(entry.actualMetricLabel || 'Current')}</span><strong>${escapeHtml(entry.actualLabel)}</strong></div>
-              <div class="cards-data-pair"><span>Live proj</span><strong>${escapeHtml(entry.projectionLabel)}</strong></div>
-              <div class="cards-data-pair"><span>Line</span><strong>${escapeHtml(entry.lineLabel)}</strong></div>
-              <div class="cards-data-pair is-positive"><span>Live edge</span><strong>${escapeHtml(entry.edgeLabel)}</strong></div>
-            </div>
-            <div class="cards-prop-overview-foot">
-              <span>${escapeHtml(entry.footLeft)}</span>
-              <span>${escapeHtml(entry.footRight)}</span>
-            </div>
-          </div>`).join('')}
-        <div class="cards-empty-copy">Loading current live prop lanes...</div>
-      </div>`
-        : `<div class="cards-empty-copy">${escapeHtml(simLoaded ? 'Loading current live prop lanes...' : 'Loading live sim context...')}</div>`;
+      const loadingMessage = simLoaded ? 'Loading current live prop lanes...' : 'Loading live sim context...';
+      return `
+        <div class="cards-prop-overview-lanes">
+          ${renderPropOverviewLane('Game live lens recos', liveGameCards.slice(0, 3).map(renderLiveGameOverviewCard).join(''), liveStatus ? 'No current game live lens recos.' : loadingMessage)}
+          ${renderPropOverviewLane('Hitter recos', '', loadingMessage)}
+          ${renderPropOverviewLane('Pitcher recos', '', loadingMessage)}
+        </div>`;
     }
     const overviewRows = livePayloadAvailable ? liveRows : (liveStatus ? liveLensAllPropRows(card) : []);
     const rankedRows = overviewRows
@@ -1952,92 +1995,26 @@
         return String(propOwnerName(left.reco) || "").localeCompare(String(propOwnerName(right.reco) || ""));
       });
 
-    let selectedRows = rankedRows.slice(0, 6);
-    if (liveRows.length) {
-      const pitcherRows = rankedRows.filter((entry) => String(entry?.reco?.market || '').toLowerCase() === 'pitcher_props');
-      const nonPitcherRows = rankedRows.filter((entry) => String(entry?.reco?.market || '').toLowerCase() !== 'pitcher_props');
-      const reservedPitcherCount = Math.min(2, pitcherRows.length);
-      if (reservedPitcherCount > 0) {
-        const picked = [];
-        const pickedKeys = new Set();
-        pitcherRows.slice(0, reservedPitcherCount).forEach((entry) => {
-          picked.push(entry);
-          pickedKeys.add(propKey(entry.reco));
-        });
-        rankedRows.forEach((entry) => {
-          if (picked.length >= 6) return;
-          const key = propKey(entry.reco);
-          if (pickedKeys.has(key)) return;
-          picked.push(entry);
-          pickedKeys.add(key);
-        });
-        selectedRows = picked.slice(0, 6);
-      }
-    }
+    const pitcherItems = rankedRows
+      .filter((entry) => String(entry?.reco?.market || '').toLowerCase() === 'pitcher_props')
+      .slice(0, 3)
+      .map((entry) => ({ label: 'Pitcher live lens', state: entry.state }));
+    const hitterItems = rankedRows
+      .filter((entry) => String(entry?.reco?.market || '').toLowerCase() !== 'pitcher_props')
+      .slice(0, 3)
+      .map((entry) => ({ label: 'Hitter live lens', state: entry.state }));
 
-    const items = selectedRows.map((entry) => {
-      const reco = entry.reco;
-      const label = String(reco?.market || '').toLowerCase() === 'pitcher_props' ? 'Pitcher live lens' : 'Hitter live lens';
-      return { label, state: entry.state };
-    });
-
-    if (!items.length && !liveGameCards.length) {
+    if (!hitterItems.length && !pitcherItems.length && !liveGameCards.length) {
       return livePayloadAvailable
         ? '<div class="cards-empty-copy">No unresolved live prop opportunities remain for this game.</div>'
         : '<div class="cards-empty-copy">No tracked live prop opportunities for this game.</div>';
     }
 
     return `
-      <div class="cards-prop-overview-grid">
-        ${liveGameCards.map((entry) => `
-          <div class="cards-prop-overview-card">
-            <div class="cards-lens-head">
-              <div>
-                <div class="cards-lens-label">${escapeHtml(entry.label)}</div>
-                <div class="cards-lens-main">${escapeHtml(entry.playerName)}</div>
-                <div class="cards-subcopy">${escapeHtml(entry.marketLabel)}</div>
-              </div>
-              <span class="cards-lens-badge is-live">Live</span>
-            </div>
-            <div class="cards-prop-overview-metrics">
-              <div class="cards-data-pair"><span>${escapeHtml(entry.actualMetricLabel || 'Current')}</span><strong>${escapeHtml(entry.actualLabel)}</strong></div>
-              <div class="cards-data-pair"><span>Live proj</span><strong>${escapeHtml(entry.projectionLabel)}</strong></div>
-              <div class="cards-data-pair"><span>Line</span><strong>${escapeHtml(entry.lineLabel)}</strong></div>
-              <div class="cards-data-pair is-positive"><span>Live edge</span><strong>${escapeHtml(entry.edgeLabel)}</strong></div>
-            </div>
-            <div class="cards-prop-overview-foot">
-              <span>${escapeHtml(entry.footLeft)}</span>
-              <span>${escapeHtml(entry.footRight)}</span>
-            </div>
-          </div>`).join('')}
-        ${items.map((entry) => {
-          const stateObj = entry.state;
-          const reco = stateObj.reco;
-          const liveEdgeClass = stateObj.liveEdge == null ? "" : (stateObj.liveEdge >= 0 ? "is-positive" : "is-negative");
-          const reasonText = recoReasonText(reco);
-          return `
-            <div class="cards-prop-overview-card">
-              <div class="cards-lens-head">
-                <div>
-                  <div class="cards-lens-label">${escapeHtml(entry.label)}</div>
-                  <div class="cards-lens-main">${escapeHtml(propOwnerName(reco))}</div>
-                  <div class="cards-subcopy">${escapeHtml(marketLabelLong(reco))}</div>
-                </div>
-                <span class="cards-lens-badge ${escapeHtml(stateObj.badge.className)}">${escapeHtml(stateObj.badge.label)}</span>
-              </div>
-              <div class="cards-prop-overview-metrics">
-                <div class="cards-data-pair"><span>Actual</span><strong>${escapeHtml(stateObj.actualValue == null ? '-' : formatLine(stateObj.actualValue))}</strong></div>
-                <div class="cards-data-pair"><span>Live proj</span><strong>${escapeHtml(stateObj.liveProjection == null ? '-' : formatLine(stateObj.liveProjection))}</strong></div>
-                <div class="cards-data-pair"><span>Line</span><strong>${escapeHtml(`${stateObj.lineLabel} ${formatOdds(reco?.odds)}`.trim())}</strong></div>
-                <div class="cards-data-pair ${liveEdgeClass}"><span>Live edge</span><strong>${escapeHtml(stateObj.liveEdge == null ? '-' : formatSigned(stateObj.liveEdge, 2))}</strong></div>
-              </div>
-              ${reasonText ? `<div class="cards-live-lens-reasons"><div class="cards-live-lens-reason">${escapeHtml(reasonText)}</div></div>` : ''}
-              <div class="cards-prop-overview-foot">
-                <span>${escapeHtml(stateObj.modelMean == null ? 'Model mean -' : `Model mean ${formatLine(stateObj.modelMean)}`)}</span>
-                <span>${escapeHtml(`${liveRowFreshnessText(reco, stateObj.tierLabel)} | ${formatOdds(reco?.odds)}`)}</span>
-              </div>
-            </div>`;
-        }).join('')}
+      <div class="cards-prop-overview-lanes">
+        ${renderPropOverviewLane('Game live lens recos', liveGameCards.slice(0, 3).map(renderLiveGameOverviewCard).join(''), 'No current game live lens recos.')}
+        ${renderPropOverviewLane('Hitter recos', hitterItems.map(renderPropOverviewRecoCard).join(''), livePayloadAvailable ? 'No unresolved hitter recos remain for this game.' : 'No tracked hitter recos for this game.')}
+        ${renderPropOverviewLane('Pitcher recos', pitcherItems.map(renderPropOverviewRecoCard).join(''), livePayloadAvailable ? 'No unresolved pitcher recos remain for this game.' : 'No tracked pitcher recos for this game.')}
       </div>`;
   }
 
