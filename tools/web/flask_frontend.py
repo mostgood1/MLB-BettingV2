@@ -1592,6 +1592,75 @@ def _game_lens_market_tracking_row(game_pk: int, row: Dict[str, Any], market_typ
     }
 
 
+def _find_live_game_registry_market_entry(
+    entries: Dict[str, Any],
+    game_pk: int,
+    lane_key: str,
+    market_type: str,
+) -> Optional[Dict[str, Any]]:
+    lane_key_norm = str(lane_key or "").strip().lower()
+    market_type_norm = str(market_type or "").strip().lower()
+    best_entry: Optional[Dict[str, Any]] = None
+    best_rank: Tuple[str, int] = ("", -1)
+    for entry in entries.values():
+        if not isinstance(entry, dict):
+            continue
+        if _safe_int(entry.get("gamePk")) != int(game_pk):
+            continue
+        if str(entry.get("laneKey") or "").strip().lower() != lane_key_norm:
+            continue
+        if str(entry.get("marketType") or "").strip().lower() != market_type_norm:
+            continue
+        rank = (
+            str(entry.get("lastSeenAt") or entry.get("firstSeenAt") or ""),
+            int(_safe_int(entry.get("seenCount")) or 0),
+        )
+        if best_entry is None or rank > best_rank:
+            best_entry = entry
+            best_rank = rank
+    return dict(best_entry) if isinstance(best_entry, dict) else None
+
+
+def _apply_live_game_registry_entry_to_market(
+    market: Dict[str, Any],
+    market_type: str,
+    entry: Dict[str, Any],
+    *,
+    badge_label: Optional[str] = None,
+) -> Dict[str, Any]:
+    updated = dict(market)
+    first_snapshot = entry.get("firstSeenSnapshot") if isinstance(entry.get("firstSeenSnapshot"), dict) else {}
+    last_snapshot = entry.get("lastSeenSnapshot") if isinstance(entry.get("lastSeenSnapshot"), dict) else {}
+    selection = str(updated.get("pick") or entry.get("selection") or "").strip().lower()
+    tracked_line = _safe_float(entry.get("marketLine"))
+
+    if selection and not str(updated.get("pick") or "").strip():
+        updated["pick"] = selection
+    if market_type == "spread" and updated.get("homeLine") is None and tracked_line is not None:
+        if selection == "away":
+            updated["homeLine"] = -float(tracked_line)
+        else:
+            updated["homeLine"] = float(tracked_line)
+    if market_type == "spread" and updated.get("selectedLine") is None and tracked_line is not None:
+        updated["selectedLine"] = float(tracked_line)
+    if market_type == "total" and updated.get("line") is None and tracked_line is not None:
+        updated["line"] = float(tracked_line)
+
+    updated["badgeLabel"] = badge_label or updated.get("badgeLabel") or _game_lens_market_badge_label(str(market_type))
+    updated["first_seen_at"] = entry.get("firstSeenAt")
+    updated["last_seen_at"] = entry.get("lastSeenAt")
+    updated["seen_count"] = _safe_int(entry.get("seenCount"))
+    updated["first_seen_line"] = _safe_float(first_snapshot.get("marketLine"))
+    updated["last_seen_line"] = _safe_float(last_snapshot.get("marketLine"))
+    updated["first_seen_odds"] = _safe_int(first_snapshot.get("odds"))
+    updated["last_seen_odds"] = _safe_int(last_snapshot.get("odds"))
+    updated["first_seen_edge"] = _safe_float(first_snapshot.get("edge"))
+    updated["last_seen_edge"] = _safe_float(last_snapshot.get("edge"))
+    updated["surface_result"] = _live_game_registry_result(market_type, entry.get("selection"), entry.get("marketLine"), first_snapshot)
+    updated["current_result"] = _live_game_registry_result(market_type, entry.get("selection"), entry.get("marketLine"), last_snapshot)
+    return updated
+
+
 def _enrich_game_lens_rows_with_registry(rows: List[Dict[str, Any]], game_pk: int, d: str, *, recorded_at: Optional[datetime] = None) -> List[Dict[str, Any]]:
     if not rows:
         return []
@@ -1610,6 +1679,18 @@ def _enrich_game_lens_rows_with_registry(rows: List[Dict[str, Any]], game_pk: in
             market = dict(markets.get(market_type) or {})
             tracking_row = _game_lens_market_tracking_row(int(game_pk), item, market_type, market)
             if tracking_row is None:
+                fallback_entry = _find_live_game_registry_market_entry(
+                    entries,
+                    int(game_pk),
+                    str(item.get("key") or ""),
+                    market_type,
+                )
+                if fallback_entry is not None:
+                    market = _apply_live_game_registry_entry_to_market(
+                        market,
+                        market_type,
+                        fallback_entry,
+                    )
                 new_markets[market_type] = market
                 continue
             key = _live_game_tracking_key(tracking_row)
@@ -1652,21 +1733,12 @@ def _enrich_game_lens_rows_with_registry(rows: List[Dict[str, Any]], game_pk: in
                 entry["seenCount"] = int(_safe_int(entry.get("seenCount")) or 0) + 1
             changed = True
 
-            first_snapshot = entry.get("firstSeenSnapshot") if isinstance(entry.get("firstSeenSnapshot"), dict) else {}
-            last_snapshot = entry.get("lastSeenSnapshot") if isinstance(entry.get("lastSeenSnapshot"), dict) else {}
-            market["badgeLabel"] = tracking_row.get("badgeLabel")
-            market["first_seen_at"] = entry.get("firstSeenAt")
-            market["last_seen_at"] = entry.get("lastSeenAt")
-            market["seen_count"] = _safe_int(entry.get("seenCount"))
-            market["first_seen_line"] = _safe_float(first_snapshot.get("marketLine"))
-            market["last_seen_line"] = _safe_float(last_snapshot.get("marketLine"))
-            market["first_seen_odds"] = _safe_int(first_snapshot.get("odds"))
-            market["last_seen_odds"] = _safe_int(last_snapshot.get("odds"))
-            market["first_seen_edge"] = _safe_float(first_snapshot.get("edge"))
-            market["last_seen_edge"] = _safe_float(last_snapshot.get("edge"))
-            market["surface_result"] = _live_game_registry_result(market_type, entry.get("selection"), entry.get("marketLine"), first_snapshot)
-            market["current_result"] = _live_game_registry_result(market_type, entry.get("selection"), entry.get("marketLine"), last_snapshot)
-            new_markets[market_type] = market
+            new_markets[market_type] = _apply_live_game_registry_entry_to_market(
+                market,
+                market_type,
+                entry,
+                badge_label=str(tracking_row.get("badgeLabel") or "").strip() or None,
+            )
         item["markets"] = new_markets
         out.append(item)
 

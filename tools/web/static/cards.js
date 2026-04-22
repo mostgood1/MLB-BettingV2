@@ -660,8 +660,54 @@
   }
 
   function buildGameLensRows(card, detail) {
+    function rowFingerprint(row) {
+      if (!row || typeof row !== 'object') return '';
+      return JSON.stringify({
+        closed: !!row.closed,
+        projection: {
+          away: toNumber(row?.projection?.away),
+          home: toNumber(row?.projection?.home),
+          total: toNumber(row?.projection?.total),
+          homeMargin: toNumber(row?.projection?.homeMargin),
+        },
+        modelHomeWinProb: toNumber(row?.modelHomeWinProb),
+        baselineHomeWinProb: toNumber(row?.baselineHomeWinProb),
+        markets: {
+          moneyline: {
+            pick: row?.markets?.moneyline?.pick || null,
+            edge: toNumber(row?.markets?.moneyline?.edge),
+            homeOdds: row?.markets?.moneyline?.homeOdds ?? null,
+            awayOdds: row?.markets?.moneyline?.awayOdds ?? null,
+            line: toNumber(row?.markets?.moneyline?.line),
+          },
+          spread: {
+            pick: row?.markets?.spread?.pick || null,
+            edge: toNumber(row?.markets?.spread?.edge),
+            homeLine: toNumber(row?.markets?.spread?.homeLine),
+            selectedLine: toNumber(row?.markets?.spread?.selectedLine),
+            homeOdds: row?.markets?.spread?.homeOdds ?? null,
+            awayOdds: row?.markets?.spread?.awayOdds ?? null,
+          },
+          total: {
+            pick: row?.markets?.total?.pick || null,
+            edge: toNumber(row?.markets?.total?.edge),
+            line: toNumber(row?.markets?.total?.line),
+            overOdds: row?.markets?.total?.overOdds ?? null,
+            underOdds: row?.markets?.total?.underOdds ?? null,
+          },
+        },
+      });
+    }
+    function dedupeGameLensRows(rows) {
+      if (!Array.isArray(rows) || rows.length < 2) return rows;
+      const liveRow = rows.find((row) => row?.key === 'live') || null;
+      const fullRow = rows.find((row) => row?.key === 'full') || null;
+      if (!liveRow || !fullRow) return rows;
+      if (rowFingerprint(liveRow) !== rowFingerprint(fullRow)) return rows;
+      return rows.filter((row) => row?.key !== 'full');
+    }
     if (Array.isArray(detail?.sim?.gameLens) && detail.sim.gameLens.length) {
-      return detail.sim.gameLens;
+      return dedupeGameLensRows(detail.sim.gameLens);
     }
     const snapshot = detail?.snapshot || null;
     const sim = detail?.sim || null;
@@ -680,7 +726,7 @@
       { key: "full", label: "Full", innings: 9 },
     ];
 
-    return segments.map((segment) => {
+    return dedupeGameLensRows(segments.map((segment) => {
       const segmentLines = (() => {
         const segmentBuckets = lines?.segments && typeof lines.segments === "object" ? lines.segments : {};
         if (segment.key === "live" || segment.key === "full") {
@@ -807,7 +853,7 @@
           },
         },
       };
-    });
+    }));
   }
 
   function renderGameLens(card, detail) {
@@ -899,6 +945,64 @@
       if (!text) return '';
       return `<div class="cards-live-lens-reason">${escapeHtml(`${label}: ${text}`)}</div>`;
     }
+    function scoreSummary(row) {
+      const actual = row?.actualSegment || {};
+      const away = toNumber(actual?.away);
+      const home = toNumber(actual?.home);
+      if (away == null || home == null) return row?.closed ? 'Segment closed' : 'Live score unavailable';
+      return `${card?.away?.abbr || 'Away'} ${formatLine(away)} - ${card?.home?.abbr || 'Home'} ${formatLine(home)}`;
+    }
+    function edgeComparable(marketType, market) {
+      const edge = toNumber(market?.edge);
+      if (edge == null) return null;
+      return marketType === 'moneyline' ? edge * 100 : edge;
+    }
+    function compactPickSummary(shortLabel, marketType, market) {
+      const pickLabel = selectedPickLabel(marketType, market);
+      if (!pickLabel) return null;
+      const odds = selectedOdds(marketType, market);
+      const edge = toNumber(market?.edge);
+      const edgeText = edge == null ? null : (marketType === 'moneyline' ? `${formatSigned(edge * 100, 1)} pts` : formatSigned(edge, 2));
+      return {
+        badge: market?.badgeLabel || `${shortLabel} Bet`,
+        main: `${pickLabel}${odds != null ? ` ${formatOdds(odds)}` : ''}`,
+        sub: `${shortLabel} ${edgeText || '-'}`,
+        reason: String(market?.reason || '').trim(),
+        recon: reconSummary(shortLabel, marketType, market),
+        status: marketStatusSummary(shortLabel, market),
+        edgeClass: edge != null ? (edge > 0 ? 'is-positive' : (edge < 0 ? 'is-negative' : '')) : '',
+        edgeValue: edgeText || '-',
+        sortEdge: Math.abs(edgeComparable(marketType, market) || 0),
+      };
+    }
+    function primaryMarketCard(row) {
+      const candidates = [
+        compactPickSummary('ML', 'moneyline', row?.markets?.moneyline),
+        compactPickSummary('Run line', 'spread', row?.markets?.spread),
+        compactPickSummary('Total', 'total', row?.markets?.total),
+      ].filter(Boolean);
+      if (!candidates.length) {
+        return {
+          badge: row?.closed ? 'Closed' : 'No bet',
+          main: row?.closed ? 'Segment decided' : 'No surfaced bet',
+          sub: row?.closed ? 'No active recommendation' : 'Below threshold',
+          reason: [
+            String(row?.markets?.moneyline?.reason || '').trim(),
+            String(row?.markets?.spread?.reason || '').trim(),
+            String(row?.markets?.total?.reason || '').trim(),
+          ].find(Boolean) || '',
+          recon: '',
+          status: '',
+          edgeClass: '',
+          edgeValue: '-',
+        };
+      }
+      candidates.sort((left, right) => right.sortEdge - left.sortEdge);
+      return candidates[0];
+    }
+    function marketHasReconciliation(market) {
+      return !!(market?.first_seen_at || market?.surface_result || market?.current_result);
+    }
     return rows.map((row) => {
       const projectionLine = row.closed || row.projection.total == null
         ? 'Segment closed'
@@ -906,11 +1010,6 @@
       const ml = row.markets.moneyline;
       const spread = row.markets.spread;
       const total = row.markets.total;
-      const signalBlock = [
-        marketSignalMarkup('ML', 'moneyline', ml),
-        marketSignalMarkup('Run line', 'spread', spread),
-        marketSignalMarkup('Total', 'total', total),
-      ].filter(Boolean).join('');
       function marketStatusSummary(label, market) {
         const parts = [
           resultLabel(market?.surface_result, 'Surface'),
@@ -921,44 +1020,53 @@
         if (!parts.length) return '';
         return `<div class="cards-live-lens-reason">${escapeHtml(`${label} status: ${parts.join(' | ')}`)}</div>`;
       }
+      const primaryCard = primaryMarketCard(row);
+      const trackedClosedBlocks = row.closed
+        ? [
+            { shortLabel: 'ML', marketType: 'moneyline', market: ml },
+            { shortLabel: 'Run line', marketType: 'spread', market: spread },
+            { shortLabel: 'Total', marketType: 'total', market: total },
+          ]
+            .filter((entry) => marketHasReconciliation(entry.market))
+            .map((entry) => [
+              reconSummary(entry.shortLabel, entry.marketType, entry.market),
+              marketStatusSummary(entry.shortLabel, entry.market),
+            ].filter(Boolean).join(''))
+            .filter(Boolean)
+        : [];
       const reasonBlock = [
-        reasonSummary('ML', ml),
-        reasonSummary('Run line', spread),
-        reasonSummary('Total', total),
-        reconSummary('ML', 'moneyline', ml),
-        reconSummary('Run line', 'spread', spread),
-        reconSummary('Total', 'total', total),
-        marketStatusSummary('ML', ml),
-        marketStatusSummary('Run line', spread),
-        marketStatusSummary('Total', total),
+        primaryCard.reason ? `<div class="cards-live-lens-reason">${escapeHtml(primaryCard.reason)}</div>` : '',
+        trackedClosedBlocks.length ? trackedClosedBlocks.join('') : primaryCard.recon,
+        trackedClosedBlocks.length ? '' : primaryCard.status,
       ].filter(Boolean).join('');
       const marketLine = [
         selectedPickLabel('total', total) ? `Total lane ${selectedPickLabel('total', total)}${selectedOdds('total', total) != null ? ` ${formatOdds(selectedOdds('total', total))}` : ''}` : (total.line != null ? `Total ${formatLine(total.line)}` : null),
         selectedPickLabel('spread', spread) ? `Run line ${selectedPickLabel('spread', spread)}${selectedOdds('spread', spread) != null ? ` ${formatOdds(selectedOdds('spread', spread))}` : ''}` : (spread.homeLine != null ? `Home ${formatSigned(spread.homeLine, 1)}` : null),
         ml.homeOdds || ml.awayOdds ? `${card?.away?.abbr || 'Away'} ${formatOdds(ml.awayOdds)} / ${card?.home?.abbr || 'Home'} ${formatOdds(ml.homeOdds)}` : null,
       ].filter(Boolean).join(' | ');
+      const marketProbText = formatPercent(ml.marketHomeProb, 1);
       return `
-        <div class="cards-live-lens-card ${row.closed ? 'is-closed' : ''}">
-          <div class="cards-live-lens-head">
-            <div class="cards-live-lens-title-block">
-              <strong>${escapeHtml(row.label)}</strong>
-              <div class="cards-live-lens-subtitle">${escapeHtml(projectionLine)}</div>
+        <div class="cards-prop-overview-card ${row.closed ? 'is-closed' : ''}">
+          <div class="cards-lens-head">
+            <div>
+              <div class="cards-lens-label">${escapeHtml(row.label)}</div>
+              <div class="cards-lens-main">${escapeHtml(primaryCard.main)}</div>
+              <div class="cards-subcopy">${escapeHtml(projectionLine)}</div>
             </div>
-            <span class="cards-chip ${row.closed ? 'is-candidate' : ''}">${escapeHtml(row.closed ? 'Closed' : 'Projection')}</span>
+            <span class="cards-lens-badge ${row.closed ? 'is-loss' : ''}">${escapeHtml(primaryCard.badge)}</span>
           </div>
-          <div class="cards-live-lens-summary-row">
+          <div class="cards-prop-overview-metrics">
+            <div class="cards-data-pair"><span>Score</span><strong>${escapeHtml(scoreSummary(row))}</strong></div>
             <div class="cards-data-pair"><span>Home win</span><strong>${escapeHtml(formatPercent(row.modelHomeWinProb, 1))}</strong></div>
-            <div class="cards-data-pair"><span>Market</span><strong>${escapeHtml(formatPercent(ml.marketHomeProb, 1))}</strong></div>
+            <div class="cards-data-pair"><span>Market</span><strong>${escapeHtml(marketProbText)}</strong></div>
+            <div class="cards-data-pair ${primaryCard.edgeClass}"><span>Best edge</span><strong>${escapeHtml(primaryCard.edgeValue)}</strong></div>
           </div>
-          ${signalBlock ? `<div class="cards-live-lens-signals">${signalBlock}</div>` : ''}
-          <div class="cards-live-lens-picks">
-            <div class="cards-live-lens-pick">${escapeHtml(pickSummary('ML', ml.pick, ml.edge, 'moneyline', selectedOdds('moneyline', ml)))}</div>
-            <div class="cards-live-lens-pick">${escapeHtml(pickSummary('Run line', spread.pick, spread.edge, 'spread', selectedOdds('spread', spread)))}</div>
-            <div class="cards-live-lens-pick">${escapeHtml(pickSummary('Total', total.pick, total.edge, 'total', selectedOdds('total', total)))}</div>
-          </div>
-          <div class="cards-live-lens-market">${escapeHtml(marketLine || 'No tracked market line')}</div>
+          <div class="cards-live-lens-market">${escapeHtml(primaryCard.sub)}</div>
           ${reasonBlock ? `<div class="cards-live-lens-reasons">${reasonBlock}</div>` : ''}
-          ${row.closed || row.projection.homeMargin == null ? '' : `<div class="cards-live-lens-margin">${escapeHtml(`Projected margin: ${formatSigned(row.projection.homeMargin, 2)}`)}</div>`}
+          <div class="cards-prop-overview-foot">
+            <span>${escapeHtml(marketLine || 'No tracked market line')}</span>
+            <span>${escapeHtml(row.closed || row.projection.homeMargin == null ? 'Segment closed' : `Projected margin ${formatSigned(row.projection.homeMargin, 2)}`)}</span>
+          </div>
         </div>`;
     }).join('');
   }
