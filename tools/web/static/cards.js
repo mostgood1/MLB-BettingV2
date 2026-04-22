@@ -829,6 +829,65 @@
       if (marketType === 'total') return pick === 'over' ? (market?.overOdds ?? null) : (pick === 'under' ? (market?.underOdds ?? null) : null);
       return null;
     }
+    function selectedLine(marketType, market) {
+      const pick = String(market?.pick || '').trim().toLowerCase();
+      if (!pick) return null;
+      if (marketType === 'spread') {
+        const homeLine = toNumber(market?.homeLine);
+        if (homeLine == null) return null;
+        return pick === 'home' ? homeLine : (pick === 'away' ? Number((-homeLine).toFixed(2)) : null);
+      }
+      if (marketType === 'total') return toNumber(market?.line);
+      return null;
+    }
+    function selectedPickLabel(marketType, market) {
+      const pick = String(market?.pick || '').trim().toLowerCase();
+      if (!pick) return null;
+      if (marketType === 'moneyline') return pick.toUpperCase();
+      if (marketType === 'spread') {
+        const line = selectedLine('spread', market);
+        if (pick === 'home') return `HOME ${line != null ? formatSigned(line, 1) : ''}`.trim();
+        if (pick === 'away') return `AWAY ${line != null ? formatSigned(line, 1) : ''}`.trim();
+      }
+      if (marketType === 'total') {
+        const line = selectedLine('total', market);
+        return `${pick.toUpperCase()}${line != null ? ` ${formatLine(line)}` : ''}`;
+      }
+      return pick.toUpperCase();
+    }
+    function marketSignalMarkup(shortLabel, marketType, market) {
+      const pickLabel = selectedPickLabel(marketType, market);
+      if (!pickLabel) return '';
+      const odds = selectedOdds(marketType, market);
+      const edge = toNumber(market?.edge);
+      const edgeText = edge == null ? '' : (marketType === 'moneyline' ? `${formatSigned(edge * 100, 1)} pts` : formatSigned(edge, 2));
+      const oddsText = odds != null ? formatOdds(odds) : 'No odds';
+      return `<div class="cards-live-lens-signal"><span class="cards-chip is-live">${escapeHtml(`${shortLabel} Bet`)}</span><span>${escapeHtml(`${pickLabel} ${oddsText}${edgeText ? ` | ${edgeText}` : ''}`)}</span></div>`;
+    }
+    function reconSummary(shortLabel, marketType, market) {
+      if (!market?.first_seen_at && !market?.surface_result && !market?.current_result) return '';
+      const surfacedOdds = toNumber(market?.first_seen_odds);
+      const surfacedLine = toNumber(market?.first_seen_line);
+      const currentOdds = selectedOdds(marketType, market) ?? toNumber(market?.last_seen_odds);
+      const currentLine = selectedLine(marketType, market) ?? toNumber(market?.last_seen_line);
+      const surfacedPick = selectedPickLabel(marketType, {
+        ...market,
+        homeLine: market?.first_seen_line != null ? market.first_seen_line : market?.homeLine,
+        line: market?.first_seen_line != null ? market.first_seen_line : market?.line,
+      }) || selectedPickLabel(marketType, market);
+      const currentPick = selectedPickLabel(marketType, market);
+      const surfacedBits = [surfacedPick, surfacedLine != null && marketType === 'moneyline' ? null : null, surfacedOdds != null ? formatOdds(surfacedOdds) : null].filter(Boolean);
+      const currentBits = [currentPick, currentOdds != null ? formatOdds(currentOdds) : null].filter(Boolean);
+      const parts = [
+        market?.first_seen_at ? `Surfaced ${formatTimestampShort(market.first_seen_at)}` : null,
+        surfacedBits.length ? `${shortLabel} open: ${surfacedBits.join(' ')}` : null,
+        resultLabel(market?.surface_result, 'Surface'),
+        currentBits.length ? `${shortLabel} now: ${currentBits.join(' ')}` : null,
+        resultLabel(market?.current_result, 'Current'),
+      ].filter(Boolean);
+      if (!parts.length) return '';
+      return `<div class="cards-live-lens-recon">${escapeHtml(parts.join(' | '))}</div>`;
+    }
     function pickSummary(label, pick, edge, kind, odds) {
       if (!pick || edge == null) return `${label}: -`;
       const oddsText = odds != null ? ` ${formatOdds(odds)}` : '';
@@ -847,6 +906,11 @@
       const ml = row.markets.moneyline;
       const spread = row.markets.spread;
       const total = row.markets.total;
+      const signalBlock = [
+        marketSignalMarkup('ML', 'moneyline', ml),
+        marketSignalMarkup('Run line', 'spread', spread),
+        marketSignalMarkup('Total', 'total', total),
+      ].filter(Boolean).join('');
       function marketStatusSummary(label, market) {
         const parts = [
           resultLabel(market?.surface_result, 'Surface'),
@@ -861,13 +925,16 @@
         reasonSummary('ML', ml),
         reasonSummary('Run line', spread),
         reasonSummary('Total', total),
+        reconSummary('ML', 'moneyline', ml),
+        reconSummary('Run line', 'spread', spread),
+        reconSummary('Total', 'total', total),
         marketStatusSummary('ML', ml),
         marketStatusSummary('Run line', spread),
         marketStatusSummary('Total', total),
       ].filter(Boolean).join('');
       const marketLine = [
-        total.line != null ? `Total ${formatLine(total.line)}${selectedOdds('total', total) != null ? ` ${formatOdds(selectedOdds('total', total))}` : ''}` : null,
-        spread.homeLine != null ? `Home ${formatSigned(spread.homeLine, 1)}${selectedOdds('spread', spread) != null ? ` ${formatOdds(selectedOdds('spread', spread))}` : ''}` : null,
+        selectedPickLabel('total', total) ? `Total lane ${selectedPickLabel('total', total)}${selectedOdds('total', total) != null ? ` ${formatOdds(selectedOdds('total', total))}` : ''}` : (total.line != null ? `Total ${formatLine(total.line)}` : null),
+        selectedPickLabel('spread', spread) ? `Run line ${selectedPickLabel('spread', spread)}${selectedOdds('spread', spread) != null ? ` ${formatOdds(selectedOdds('spread', spread))}` : ''}` : (spread.homeLine != null ? `Home ${formatSigned(spread.homeLine, 1)}` : null),
         ml.homeOdds || ml.awayOdds ? `${card?.away?.abbr || 'Away'} ${formatOdds(ml.awayOdds)} / ${card?.home?.abbr || 'Home'} ${formatOdds(ml.homeOdds)}` : null,
       ].filter(Boolean).join(' | ');
       return `
@@ -883,6 +950,7 @@
             <div class="cards-data-pair"><span>Home win</span><strong>${escapeHtml(formatPercent(row.modelHomeWinProb, 1))}</strong></div>
             <div class="cards-data-pair"><span>Market</span><strong>${escapeHtml(formatPercent(ml.marketHomeProb, 1))}</strong></div>
           </div>
+          ${signalBlock ? `<div class="cards-live-lens-signals">${signalBlock}</div>` : ''}
           <div class="cards-live-lens-picks">
             <div class="cards-live-lens-pick">${escapeHtml(pickSummary('ML', ml.pick, ml.edge, 'moneyline', selectedOdds('moneyline', ml)))}</div>
             <div class="cards-live-lens-pick">${escapeHtml(pickSummary('Run line', spread.pick, spread.edge, 'spread', selectedOdds('spread', spread)))}</div>

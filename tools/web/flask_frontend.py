@@ -1658,6 +1658,10 @@ def _enrich_game_lens_rows_with_registry(rows: List[Dict[str, Any]], game_pk: in
             market["first_seen_at"] = entry.get("firstSeenAt")
             market["last_seen_at"] = entry.get("lastSeenAt")
             market["seen_count"] = _safe_int(entry.get("seenCount"))
+            market["first_seen_line"] = _safe_float(first_snapshot.get("marketLine"))
+            market["last_seen_line"] = _safe_float(last_snapshot.get("marketLine"))
+            market["first_seen_odds"] = _safe_int(first_snapshot.get("odds"))
+            market["last_seen_odds"] = _safe_int(last_snapshot.get("odds"))
             market["first_seen_edge"] = _safe_float(first_snapshot.get("edge"))
             market["last_seen_edge"] = _safe_float(last_snapshot.get("edge"))
             market["surface_result"] = _live_game_registry_result(market_type, entry.get("selection"), entry.get("marketLine"), first_snapshot)
@@ -17439,21 +17443,31 @@ def _build_game_sim_payload(
         return out
 
     snapshot = _load_live_lens_snapshot(int(game_pk), d, feed=feed)
+    default_live_card = {
+        "gamePk": int(game_pk),
+        "status": {
+            "abstract": str((((snapshot or {}).get("status") or {}).get("abstractGameState") or "")),
+        },
+        "away": {
+            "name": _first_text((out.get("away") or {}).get("name"), (out.get("away") or {}).get("abbreviation")),
+            "abbr": _first_text((out.get("away") or {}).get("abbreviation"), (out.get("away") or {}).get("name")),
+        },
+        "home": {
+            "name": _first_text((out.get("home") or {}).get("name"), (out.get("home") or {}).get("abbreviation")),
+            "abbr": _first_text((out.get("home") or {}).get("abbreviation"), (out.get("home") or {}).get("name")),
+        },
+        "predictions": (out.get("segments") or {}),
+    }
     if not isinstance(live_card, dict):
+        live_card = default_live_card
+    else:
         live_card = {
-            "gamePk": int(game_pk),
-            "status": {
-                "abstract": str((((snapshot or {}).get("status") or {}).get("abstractGameState") or "")),
-            },
-            "away": {
-                "name": _first_text((out.get("away") or {}).get("name"), (out.get("away") or {}).get("abbreviation")),
-                "abbr": _first_text((out.get("away") or {}).get("abbreviation"), (out.get("away") or {}).get("name")),
-            },
-            "home": {
-                "name": _first_text((out.get("home") or {}).get("name"), (out.get("home") or {}).get("abbreviation")),
-                "abbr": _first_text((out.get("home") or {}).get("abbreviation"), (out.get("home") or {}).get("name")),
-            },
-            "predictions": (out.get("segments") or {}),
+            **default_live_card,
+            **live_card,
+            "status": {**(default_live_card.get("status") or {}), **((live_card.get("status") or {}) if isinstance(live_card.get("status"), dict) else {})},
+            "away": {**(default_live_card.get("away") or {}), **((live_card.get("away") or {}) if isinstance(live_card.get("away"), dict) else {})},
+            "home": {**(default_live_card.get("home") or {}), **((live_card.get("home") or {}) if isinstance(live_card.get("home"), dict) else {})},
+            "predictions": (live_card.get("predictions") if isinstance(live_card.get("predictions"), dict) and live_card.get("predictions") else default_live_card.get("predictions") or {}),
         }
     if out.get("found"):
         out["livePropRows"] = _current_live_prop_rows(
