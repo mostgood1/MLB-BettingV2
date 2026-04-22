@@ -814,15 +814,29 @@
       if (text === 'push') return `${prefix} push`;
       return '';
     }
-    function marketBadgeMarkup(market) {
-      const label = String(market?.badgeLabel || '').trim();
+    function selectedOdds(marketType, market) {
+      const pick = String(market?.pick || '').trim().toLowerCase();
+      if (!pick) return null;
+      if (marketType === 'moneyline') return market?.homeOdds ?? market?.awayOdds ?? null;
+      if (marketType === 'spread') return pick === 'home' ? (market?.homeOdds ?? null) : (pick === 'away' ? (market?.awayOdds ?? null) : null);
+      if (marketType === 'total') return pick === 'over' ? (market?.overOdds ?? null) : (pick === 'under' ? (market?.underOdds ?? null) : null);
+      return null;
+    }
+    function marketBadgeMarkup(marketType, market) {
+      let label = String(market?.badgeLabel || '').trim();
+      if (!label && market?.pick) {
+        if (marketType === 'moneyline') label = 'ML Bet';
+        else if (marketType === 'spread') label = 'Run Line Bet';
+        else if (marketType === 'total') label = 'Total Bet';
+      }
       if (!label) return '';
       return `<span class="cards-chip is-live">${escapeHtml(label)}</span>`;
     }
-    function pickSummary(label, pick, edge, kind) {
+    function pickSummary(label, pick, edge, kind, odds) {
       if (!pick || edge == null) return `${label}: -`;
-      if (kind === "moneyline") return `${label}: ${String(pick).toUpperCase()} ${formatSigned(edge * 100, 1)} pts`;
-      return `${label}: ${String(pick).toUpperCase()} ${formatSigned(edge, 2)}`;
+      const oddsText = odds != null ? ` ${formatOdds(odds)}` : '';
+      if (kind === "moneyline") return `${label}: ${String(pick).toUpperCase()}${oddsText} ${formatSigned(edge * 100, 1)} pts`;
+      return `${label}: ${String(pick).toUpperCase()}${oddsText} ${formatSigned(edge, 2)}`;
     }
     function reasonSummary(label, market) {
       const text = String(market?.reason || '').trim();
@@ -836,7 +850,11 @@
       const ml = row.markets.moneyline;
       const spread = row.markets.spread;
       const total = row.markets.total;
-      const badgeBlock = [marketBadgeMarkup(ml), marketBadgeMarkup(spread), marketBadgeMarkup(total)].filter(Boolean).join('');
+      const badgeBlock = [
+        marketBadgeMarkup('moneyline', ml),
+        marketBadgeMarkup('spread', spread),
+        marketBadgeMarkup('total', total)
+      ].filter(Boolean).join('');
       function marketStatusSummary(label, market) {
         const parts = [
           resultLabel(market?.surface_result, 'Surface'),
@@ -856,8 +874,8 @@
         marketStatusSummary('Total', total),
       ].filter(Boolean).join('');
       const marketLine = [
-        total.line != null ? `Total ${formatLine(total.line)}` : null,
-        spread.homeLine != null ? `Home ${formatSigned(spread.homeLine, 1)}` : null,
+        total.line != null ? `Total ${formatLine(total.line)}${selectedOdds('total', total) != null ? ` ${formatOdds(selectedOdds('total', total))}` : ''}` : null,
+        spread.homeLine != null ? `Home ${formatSigned(spread.homeLine, 1)}${selectedOdds('spread', spread) != null ? ` ${formatOdds(selectedOdds('spread', spread))}` : ''}` : null,
         ml.homeOdds || ml.awayOdds ? `${card?.away?.abbr || 'Away'} ${formatOdds(ml.awayOdds)} / ${card?.home?.abbr || 'Home'} ${formatOdds(ml.homeOdds)}` : null,
       ].filter(Boolean).join(' | ');
       return `
@@ -875,9 +893,9 @@
             <div class="cards-data-pair"><span>Market</span><strong>${escapeHtml(formatPercent(ml.marketHomeProb, 1))}</strong></div>
           </div>
           <div class="cards-live-lens-picks">
-            <div class="cards-live-lens-pick">${escapeHtml(pickSummary('ML', ml.pick, ml.edge, 'moneyline'))}</div>
-            <div class="cards-live-lens-pick">${escapeHtml(pickSummary('Run line', spread.pick, spread.edge, 'spread'))}</div>
-            <div class="cards-live-lens-pick">${escapeHtml(pickSummary('Total', total.pick, total.edge, 'total'))}</div>
+            <div class="cards-live-lens-pick">${escapeHtml(pickSummary('ML', ml.pick, ml.edge, 'moneyline', selectedOdds('moneyline', ml)))}</div>
+            <div class="cards-live-lens-pick">${escapeHtml(pickSummary('Run line', spread.pick, spread.edge, 'spread', selectedOdds('spread', spread)))}</div>
+            <div class="cards-live-lens-pick">${escapeHtml(pickSummary('Total', total.pick, total.edge, 'total', selectedOdds('total', total)))}</div>
           </div>
           <div class="cards-live-lens-market">${escapeHtml(marketLine || 'No tracked market line')}</div>
           ${reasonBlock ? `<div class="cards-live-lens-reasons">${reasonBlock}</div>` : ''}

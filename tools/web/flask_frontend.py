@@ -3083,7 +3083,10 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
     lineups = _load_json_file(lineups_path)
     market_availability = _load_market_availability(d)
     daily_ladders_path, daily_ladders = _load_daily_ladders_artifact(str(d))
+    allow_request_daily_ladders_refresh = not _is_current_local_date(str(d))
     if (
+        allow_request_daily_ladders_refresh
+        and
         isinstance(sim_dir, Path)
         and sim_dir.exists()
         and sim_dir.is_dir()
@@ -3130,6 +3133,47 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
             (canonical_locked_policy_path.exists() and canonical_locked_policy_path.is_file())
             or (canonical_game_summary_path.exists() and canonical_game_summary_path.is_file())
         ),
+    }
+
+
+def _load_hr_targets_artifact_context(d: str) -> Dict[str, Any]:
+    slug = _date_slug(d)
+    canonical_daily_dir = _DATA_DIR / "daily"
+    tracked_daily_dir = _TRACKED_DATA_DIR / "daily"
+    canonical_profile_bundle_path = canonical_daily_dir / f"daily_summary_{slug}_profile_bundle.json"
+    tracked_profile_bundle_path = tracked_daily_dir / f"daily_summary_{slug}_profile_bundle.json"
+    canonical_hr_targets_path = canonical_daily_dir / f"daily_summary_{slug}_hr_targets.json"
+    tracked_hr_targets_path = tracked_daily_dir / f"daily_summary_{slug}_hr_targets.json"
+
+    profile_bundle_path = _find_preferred_file([
+        canonical_profile_bundle_path,
+        tracked_profile_bundle_path,
+        _DATA_DIR / "_tmp_live_subcap_random_day" / f"daily_summary_{slug}_profile_bundle.json",
+        _DATA_DIR / "_tmp_live_subcap_smoke" / f"daily_summary_{slug}_profile_bundle.json",
+    ])
+    profile_bundle_path = _prefer_newer_file(profile_bundle_path, tracked_profile_bundle_path)
+    profile_bundle = _load_json_file(profile_bundle_path)
+
+    hr_targets_path = None
+    if isinstance(profile_bundle, dict):
+        hr_targets_path = _path_from_maybe_relative(((profile_bundle.get("hr_targets") or {}).get("artifact_path")))
+        hr_targets_path = _prefer_newer_file(hr_targets_path, canonical_hr_targets_path)
+        hr_targets_path = _prefer_newer_file(hr_targets_path, tracked_hr_targets_path)
+    if not hr_targets_path:
+        hr_targets_path = _find_preferred_file([
+            canonical_hr_targets_path,
+            tracked_hr_targets_path,
+        ])
+        hr_targets_path = _prefer_newer_file(hr_targets_path, tracked_hr_targets_path)
+    if _is_current_local_date(str(d)):
+        hr_targets_path = _prefer_richer_hr_targets_file(hr_targets_path, canonical_hr_targets_path)
+        hr_targets_path = _prefer_richer_hr_targets_file(hr_targets_path, tracked_hr_targets_path)
+
+    return {
+        "profile_bundle_path": profile_bundle_path,
+        "profile_bundle": profile_bundle,
+        "hr_targets_path": hr_targets_path,
+        "hr_targets": _load_json_file(hr_targets_path),
     }
 
 
@@ -5814,7 +5858,7 @@ def _sort_hr_target_rows(rows: List[Dict[str, Any]], sort_key: str) -> List[Dict
 
 
 def _daily_hr_targets_signature(d: str) -> Tuple[Any, ...]:
-    artifacts = _load_cards_artifacts(d)
+    artifacts = _load_hr_targets_artifact_context(d)
     hr_targets_path = artifacts.get("hr_targets_path") if isinstance(artifacts.get("hr_targets_path"), Path) else None
     profile_bundle_path = artifacts.get("profile_bundle_path") if isinstance(artifacts.get("profile_bundle_path"), Path) else None
     return (
@@ -5866,7 +5910,7 @@ def _daily_hr_targets_payload(
     selected_hitter = _normalize_hitter_selector(selected_hitter_value)
     sort_key = _normalize_hr_target_sort(sort_value)
     schedule_index = _hr_target_schedule_game_index(d)
-    artifacts = _load_cards_artifacts(d)
+    artifacts = _load_hr_targets_artifact_context(d)
     nav = _cards_nav_from_schedule(d) or {"season": _season_from_date_str(d)}
     doc = artifacts.get("hr_targets") if isinstance(artifacts.get("hr_targets"), dict) else None
     artifact_path = artifacts.get("hr_targets_path") if isinstance(artifacts.get("hr_targets_path"), Path) else None
@@ -15952,9 +15996,6 @@ def _build_cards_api_payload(
     archive: Optional[Dict[str, Any]] = None,
     game_line_index: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    if not _is_historical_date(d):
-        _maybe_refresh_live_oddsapi_markets(d)
-
     artifacts = artifacts if isinstance(artifacts, dict) else _load_cards_artifacts(d)
     archive = archive if isinstance(archive, dict) else (_load_cards_archive_context(d) if _should_load_cards_archive_context(d, artifacts) else {})
     game_line_index = game_line_index if isinstance(game_line_index, dict) else _load_game_line_market_index(d)
@@ -15981,13 +16022,18 @@ def _build_cards_api_payload(
         recos_by_game=recos_by_game,
     )
     _attach_cards_starter_ladder_badges(cards, artifacts.get("daily_ladders"))
-    pitcher_market_ctx = _load_pitcher_ladder_market_context(d)
+    cards_requiring_feed = [
+        card for card in cards
+        if isinstance(card, dict) and (_status_is_live(card.get("status")) or _status_is_final(card.get("status")))
+    ]
+    pitcher_market_ctx = _load_pitcher_ladder_market_context(d) if cards_requiring_feed else {}
     feed_cache: Dict[int, Optional[Dict[str, Any]]] = {}
     for card in cards:
         if not isinstance(card, dict):
             continue
         game_pk = _safe_int(card.get("gamePk"))
-        if game_pk:
+        needs_feed = _status_is_live(card.get("status")) or _status_is_final(card.get("status"))
+        if game_pk and needs_feed:
             feed = feed_cache.get(int(game_pk))
             if int(game_pk) not in feed_cache:
                 feed = _load_live_lens_feed(int(game_pk), d)
