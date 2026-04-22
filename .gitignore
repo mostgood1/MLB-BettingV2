@@ -33,10 +33,13 @@ data/daily/**
 !data/daily/ops/
 !data/daily/ops/**
 
-# Keep volatile sims and plain web snapshots local-only. They are reproducible,
-# create daily overlap churn, and are not required for published card artifacts.
+# Keep plain web snapshots local-only. Canonical per-game sim JSON artifacts are
+# required by the published cards UI, so re-include those files explicitly.
 data/daily/sims/**
 data/daily/snapshots/**
+!data/daily/sims/
+!data/daily/sims/*/
+!data/daily/sims/*/sim_*.json
 
 # Ignore optional archive/enrichment datasets to keep repo tracking lean.
 data/market/**
