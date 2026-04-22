@@ -16846,7 +16846,7 @@ def _build_game_card_detail_payload(game_pk: int, d: str) -> Dict[str, Any]:
         feed = None
         feed_error = "missing_feed"
 
-    sim = _build_game_sim_payload(int(game_pk), d, feed=feed)
+    sim = _build_game_sim_payload(int(game_pk), d, feed=feed, include_live_context=False)
     found = bool(snapshot is not None or sim.get("found"))
     return {
         "gamePk": int(game_pk),
@@ -17059,10 +17059,15 @@ def _build_game_sim_payload(
     d: str,
     *,
     feed: Optional[Dict[str, Any]] = None,
+    include_live_context: bool = True,
 ) -> Dict[str, Any]:
     artifacts, archive, game_line_index = _cards_payload_context(d)
     feed = feed if isinstance(feed, dict) else _load_live_lens_feed(int(game_pk), d)
     out = _load_sim_context_for_game(int(game_pk), d, artifacts=artifacts, archive=archive, feed=feed)
+    if not include_live_context:
+        out.pop("propModels", None)
+        return out
+
     snapshot = _load_live_lens_snapshot(int(game_pk), d, feed=feed)
     schedule_games = _schedule_games_for_date(d)
     live_card = next(
