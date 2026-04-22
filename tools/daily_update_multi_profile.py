@@ -59,6 +59,7 @@ _HR_TARGET_HIGH_SUPPORT_SCORE = 70.0
 _HR_TARGET_HIGH_SUPPORT_MIN_PROB = 0.12
 _HR_TARGET_MAX_PER_GAME = 3
 _HR_TARGET_MAX_PER_TEAM = 2
+_HR_TARGET_SUPPORT_RANK_WEIGHT = 0.12
 
 _DEFAULT_HR_TARGET_POLICY_PRESET = "default"
 _HR_TARGET_POLICY_PRESETS: Dict[str, Dict[str, float | int | str]] = {
@@ -2756,7 +2757,7 @@ def _hitter_hr_target_rank_score(prob: float, support_score: float, pa_mean: Opt
     lineup_bonus = 0.0
     if lineup_order is not None:
         lineup_bonus = max(0.0, 10.0 - float(lineup_order)) * 0.15
-    return round((100.0 * float(prob)) + (0.18 * float(support_score)) + (0.6 * opportunity) + lineup_bonus, 3)
+    return round((100.0 * float(prob)) + (_HR_TARGET_SUPPORT_RANK_WEIGHT * float(support_score)) + (0.6 * opportunity) + lineup_bonus, 3)
 
 
 def _hr_target_policy_config(preset: Any = _DEFAULT_HR_TARGET_POLICY_PRESET) -> Dict[str, Any]:

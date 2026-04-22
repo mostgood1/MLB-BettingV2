@@ -6,7 +6,14 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-from tools.eval.analyze_hr_target_eval import _bucket_summary, _md_table, _reason_breakdown, _summarize_rows
+from tools.eval.analyze_hr_target_eval import (
+    _bucket_summary,
+    _md_table,
+    _reason_breakdown,
+    _selected_rank_method_comparison,
+    _selected_signal_summary,
+    _summarize_rows,
+)
 from tools.eval.build_hr_target_eval_artifact import build_artifact
 
 
@@ -50,6 +57,61 @@ def _load_or_build_day(date_str: str, season: int) -> Dict[str, Any]:
     artifact = build_artifact(date=str(date_str), season=int(season))
     _write_json(out_path, artifact)
     return artifact
+
+
+def _range_rank_method_comparison(selected_rows: List[Dict[str, Any]], *, top_ns: Iterable[int] = (3, 5, 10)) -> Dict[str, Any]:
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for row in selected_rows:
+        if not bool(row.get("settled")) or row.get("y_hr_1plus") is None:
+            continue
+        day = str(row.get("date") or "").strip()
+        if not day:
+            continue
+        grouped.setdefault(day, []).append(row)
+
+    def _ordered(rows: List[Dict[str, Any]], method: str) -> List[Dict[str, Any]]:
+        if method == "prob":
+            return sorted(
+                rows,
+                key=lambda row: (
+                    float(row.get("p_hr_1plus") or 0.0),
+                    float(row.get("hr_target_score") or 0.0),
+                    float(row.get("hr_support_score") or 0.0),
+                ),
+                reverse=True,
+            )
+        return sorted(
+            rows,
+            key=lambda row: (
+                float(row.get("hr_target_score") or 0.0),
+                float(row.get("p_hr_1plus") or 0.0),
+                float(row.get("hr_support_score") or 0.0),
+            ),
+            reverse=True,
+        )
+
+    def _aggregate(method: str, top_n: int) -> Dict[str, Any]:
+        picked: List[Dict[str, Any]] = []
+        for _, rows in sorted(grouped.items()):
+            picked.extend(_ordered(rows, method)[: max(0, int(top_n))])
+        settled_rows = len(picked)
+        wins = sum(int(row.get("y_hr_1plus") or 0) for row in picked)
+        return {
+            "top_n": int(top_n),
+            "days": int(len(grouped)),
+            "settled_rows": int(settled_rows),
+            "wins": int(wins),
+            "hit_rate": (round(float(wins) / float(settled_rows), 4) if settled_rows else None),
+            "avg_p": (round(sum(float(row.get("p_hr_1plus") or 0.0) for row in picked) / float(settled_rows), 4) if settled_rows else None),
+            "avg_support": (round(sum(float(row.get("hr_support_score") or 0.0) for row in picked) / float(settled_rows), 2) if settled_rows else None),
+        }
+
+    return {
+        "coverage": "selected_rows_only_daily_top_n",
+        "days": int(len(grouped)),
+        "score_order": [_aggregate("score", int(top_n)) for top_n in top_ns],
+        "prob_order": [_aggregate("prob", int(top_n)) for top_n in top_ns],
+    }
 
 
 def summarize_range(*, start: str, end: str, season: int) -> Dict[str, Any]:
@@ -103,6 +165,8 @@ def summarize_range(*, start: str, end: str, season: int) -> Dict[str, Any]:
         "selected_overall": _summarize_rows(selected_rows),
         "selected_probability_buckets": _bucket_summary(selected_rows, "p_hr_1plus", [0.0, 0.05, 0.10, 0.15, 0.20]),
         "selected_support_buckets": _bucket_summary(selected_rows, "hr_support_score", [0.0, 50.0, 60.0, 70.0, 100.0], integer_output=True),
+        "selected_signal_summary": _selected_signal_summary(selected_rows),
+        "selected_rank_method_comparison": _range_rank_method_comparison(selected_rows),
         "excluded_overall": _summarize_rows(excluded_rows),
         "excluded_examples_overall": _summarize_rows(excluded_example_rows),
         "excluded_reason_breakdown": _reason_breakdown(exclusion_pool),
@@ -148,6 +212,36 @@ def _build_markdown(summary: Dict[str, Any], *, json_path: Path) -> str:
     lines.append("## Selected Support Buckets")
     lines.append("")
     lines.append(_md_table(["bucket", "n", "wins", "hit_rate", "avg_support"], support_rows) if support_rows else "(No settled selected rows.)")
+    lines.append("")
+
+    signal = summary.get("selected_signal_summary") or {}
+    lines.append("## Selected Signal Summary")
+    lines.append("")
+    lines.append(
+        f"- settled_rows: {signal.get('settled_rows')} | pearson_support_vs_success: {signal.get('pearson_support_vs_success')} | spearman_support_vs_success: {signal.get('spearman_support_vs_success')} | pearson_prob_vs_success: {signal.get('pearson_prob_vs_success')} | pearson_score_vs_success: {signal.get('pearson_score_vs_success')}"
+    )
+    lines.append("")
+
+    comparison = summary.get("selected_rank_method_comparison") or {}
+    score_rows = [
+        [str(row.get("top_n") or 0), str(row.get("settled_rows") or 0), str(row.get("wins") or 0), str(row.get("hit_rate") or ""), str(row.get("avg_p") or ""), str(row.get("avg_support") or "")]
+        for row in (comparison.get("score_order") or [])
+    ]
+    prob_rows = [
+        [str(row.get("top_n") or 0), str(row.get("settled_rows") or 0), str(row.get("wins") or 0), str(row.get("hit_rate") or ""), str(row.get("avg_p") or ""), str(row.get("avg_support") or "")]
+        for row in (comparison.get("prob_order") or [])
+    ]
+    lines.append("## Selected Rank Method Comparison")
+    lines.append("")
+    lines.append(f"- coverage: {comparison.get('coverage') or ''}")
+    lines.append("")
+    lines.append("### Score Order")
+    lines.append("")
+    lines.append(_md_table(["top_n", "settled_rows", "wins", "hit_rate", "avg_p", "avg_support"], score_rows) if score_rows else "(No settled selected rows.)")
+    lines.append("")
+    lines.append("### Probability Order")
+    lines.append("")
+    lines.append(_md_table(["top_n", "settled_rows", "wins", "hit_rate", "avg_p", "avg_support"], prob_rows) if prob_rows else "(No settled selected rows.)")
     lines.append("")
 
     reason_rows = [

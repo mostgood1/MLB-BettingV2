@@ -76,6 +76,40 @@ def _mean(values: Iterable[float]) -> Optional[float]:
     return float(sum(collected) / len(collected))
 
 
+def _pearson(xs: Sequence[float], ys: Sequence[float]) -> Optional[float]:
+    if len(xs) != len(ys) or len(xs) < 2:
+        return None
+    mean_x = float(sum(xs) / len(xs))
+    mean_y = float(sum(ys) / len(ys))
+    num = sum((float(x) - mean_x) * (float(y) - mean_y) for x, y in zip(xs, ys))
+    den_x = math.sqrt(sum((float(x) - mean_x) ** 2 for x in xs))
+    den_y = math.sqrt(sum((float(y) - mean_y) ** 2 for y in ys))
+    if den_x <= 0.0 or den_y <= 0.0:
+        return None
+    return float(num / (den_x * den_y))
+
+
+def _rankdata(values: Sequence[float]) -> List[float]:
+    ordered = sorted(enumerate(values), key=lambda item: float(item[1]))
+    ranks = [0.0] * len(values)
+    index = 0
+    while index < len(ordered):
+        end = index
+        while end + 1 < len(ordered) and float(ordered[end + 1][1]) == float(ordered[index][1]):
+            end += 1
+        avg_rank = float(index + end + 2) / 2.0
+        for pos in range(index, end + 1):
+            ranks[ordered[pos][0]] = avg_rank
+        index = end + 1
+    return ranks
+
+
+def _spearman(xs: Sequence[float], ys: Sequence[float]) -> Optional[float]:
+    if len(xs) != len(ys) or len(xs) < 2:
+        return None
+    return _pearson(_rankdata(xs), _rankdata(ys))
+
+
 def _brier(p: float, y: int) -> float:
     diff = float(p) - float(y)
     return float(diff * diff)
@@ -163,6 +197,89 @@ def _reason_breakdown(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return sorted(out, key=lambda row: (-int(row.get("settled_rows") or 0), str(row.get("reason") or "")))
 
 
+def _selected_signal_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    settled = [row for row in rows if bool(row.get("settled")) and _safe_int(row.get("y_hr_1plus")) is not None]
+    supports: List[float] = []
+    probs: List[float] = []
+    scores: List[float] = []
+    outcomes: List[float] = []
+    for row in settled:
+        outcome = _safe_int(row.get("y_hr_1plus"))
+        support = _safe_float(row.get("hr_support_score"))
+        prob = _safe_float(row.get("p_hr_1plus"))
+        score = _safe_float(row.get("hr_target_score"))
+        if outcome is None:
+            continue
+        outcomes.append(float(outcome))
+        supports.append(float(support) if support is not None else float("nan"))
+        probs.append(float(prob) if prob is not None else float("nan"))
+        scores.append(float(score) if score is not None else float("nan"))
+
+    def _paired(metric_values: Sequence[float], target_values: Sequence[float]) -> Tuple[List[float], List[float]]:
+        paired = [
+            (float(metric), float(target))
+            for metric, target in zip(metric_values, target_values)
+            if not math.isnan(float(metric)) and not math.isnan(float(target))
+        ]
+        return [item[0] for item in paired], [item[1] for item in paired]
+
+    support_x, support_y = _paired(supports, outcomes)
+    prob_x, prob_y = _paired(probs, outcomes)
+    score_x, score_y = _paired(scores, outcomes)
+    return {
+        "settled_rows": int(len(outcomes)),
+        "pearson_support_vs_success": (round(_pearson(support_x, support_y), 4) if _pearson(support_x, support_y) is not None else None),
+        "spearman_support_vs_success": (round(_spearman(support_x, support_y), 4) if _spearman(support_x, support_y) is not None else None),
+        "pearson_prob_vs_success": (round(_pearson(prob_x, prob_y), 4) if _pearson(prob_x, prob_y) is not None else None),
+        "spearman_prob_vs_success": (round(_spearman(prob_x, prob_y), 4) if _spearman(prob_x, prob_y) is not None else None),
+        "pearson_score_vs_success": (round(_pearson(score_x, score_y), 4) if _pearson(score_x, score_y) is not None else None),
+        "spearman_score_vs_success": (round(_spearman(score_x, score_y), 4) if _spearman(score_x, score_y) is not None else None),
+    }
+
+
+def _top_n_summary(rows: Sequence[Dict[str, Any]], top_n: int) -> Dict[str, Any]:
+    selected = list(rows[: max(0, int(top_n))])
+    settled = [row for row in selected if bool(row.get("settled")) and _safe_int(row.get("y_hr_1plus")) is not None]
+    wins = sum(int(_safe_int(row.get("y_hr_1plus")) or 0) for row in settled)
+    return {
+        "top_n": int(top_n),
+        "rows": int(len(selected)),
+        "settled_rows": int(len(settled)),
+        "wins": int(wins),
+        "hit_rate": (round(float(wins) / float(len(settled)), 4) if settled else None),
+        "avg_support": (round(_mean(float(_safe_float(row.get("hr_support_score")) or 0.0) for row in settled), 2) if settled else None),
+        "avg_p": (round(_mean(float(_safe_float(row.get("p_hr_1plus")) or 0.0) for row in settled), 4) if settled else None),
+    }
+
+
+def _selected_rank_method_comparison(rows: List[Dict[str, Any]], *, top_ns: Sequence[int] = (3, 5, 10)) -> Dict[str, Any]:
+    settled = [row for row in rows if bool(row.get("settled")) and _safe_int(row.get("y_hr_1plus")) is not None]
+    by_score = sorted(
+        settled,
+        key=lambda row: (
+            float(_safe_float(row.get("hr_target_score")) or 0.0),
+            float(_safe_float(row.get("p_hr_1plus")) or 0.0),
+            float(_safe_float(row.get("hr_support_score")) or 0.0),
+        ),
+        reverse=True,
+    )
+    by_prob = sorted(
+        settled,
+        key=lambda row: (
+            float(_safe_float(row.get("p_hr_1plus")) or 0.0),
+            float(_safe_float(row.get("hr_target_score")) or 0.0),
+            float(_safe_float(row.get("hr_support_score")) or 0.0),
+        ),
+        reverse=True,
+    )
+    return {
+        "coverage": "selected_rows_only",
+        "settled_rows": int(len(settled)),
+        "score_order": [_top_n_summary(by_score, int(top_n)) for top_n in top_ns],
+        "prob_order": [_top_n_summary(by_prob, int(top_n)) for top_n in top_ns],
+    }
+
+
 def analyze(doc: Dict[str, Any]) -> Dict[str, Any]:
     rows = doc.get("rows") or []
     if not isinstance(rows, list):
@@ -185,6 +302,8 @@ def analyze(doc: Dict[str, Any]) -> Dict[str, Any]:
         "selected_top10": _top_rank_summary(selected, 10),
         "selected_probability_buckets": _bucket_summary(selected, "p_hr_1plus", [0.0, 0.05, 0.10, 0.15, 0.20]),
         "selected_support_buckets": _bucket_summary(selected, "hr_support_score", [0.0, 50.0, 60.0, 70.0, 100.0], integer_output=True),
+        "selected_signal_summary": _selected_signal_summary(selected),
+        "selected_rank_method_comparison": _selected_rank_method_comparison(selected),
         "excluded_overall": _summarize_rows(excluded),
         "excluded_examples_overall": _summarize_rows(excluded_examples),
         "excluded_near_threshold_overall": _summarize_rows(near_threshold_pool),
@@ -250,6 +369,50 @@ def build_markdown(analysis: Dict[str, Any], *, artifact_path: Path) -> str:
     lines.append("## Selected Support Buckets")
     lines.append("")
     lines.append(_md_table(["bucket", "n", "wins", "hit_rate", "avg_support"], support_rows) if support_rows else "(No settled selected rows.)")
+    lines.append("")
+
+    signal = analysis.get("selected_signal_summary") or {}
+    lines.append("## Selected Signal Summary")
+    lines.append("")
+    lines.append(
+        f"- settled_rows: {signal.get('settled_rows')} | pearson_support_vs_success: {_fmt(signal.get('pearson_support_vs_success'))} | spearman_support_vs_success: {_fmt(signal.get('spearman_support_vs_success'))} | pearson_prob_vs_success: {_fmt(signal.get('pearson_prob_vs_success'))} | pearson_score_vs_success: {_fmt(signal.get('pearson_score_vs_success'))}"
+    )
+    lines.append("")
+
+    comparison = analysis.get("selected_rank_method_comparison") or {}
+    score_rows = [
+        [
+            str(row.get("top_n") or 0),
+            str(row.get("settled_rows") or 0),
+            str(row.get("wins") or 0),
+            _fmt(row.get("hit_rate")),
+            _fmt(row.get("avg_p")),
+            _fmt(row.get("avg_support"), 2),
+        ]
+        for row in (comparison.get("score_order") or [])
+    ]
+    prob_comp_rows = [
+        [
+            str(row.get("top_n") or 0),
+            str(row.get("settled_rows") or 0),
+            str(row.get("wins") or 0),
+            _fmt(row.get("hit_rate")),
+            _fmt(row.get("avg_p")),
+            _fmt(row.get("avg_support"), 2),
+        ]
+        for row in (comparison.get("prob_order") or [])
+    ]
+    lines.append("## Selected Rank Method Comparison")
+    lines.append("")
+    lines.append(f"- coverage: {comparison.get('coverage') or ''}")
+    lines.append("")
+    lines.append("### Score Order")
+    lines.append("")
+    lines.append(_md_table(["top_n", "settled_rows", "wins", "hit_rate", "avg_p", "avg_support"], score_rows) if score_rows else "(No settled selected rows.)")
+    lines.append("")
+    lines.append("### Probability Order")
+    lines.append("")
+    lines.append(_md_table(["top_n", "settled_rows", "wins", "hit_rate", "avg_p", "avg_support"], prob_comp_rows) if prob_comp_rows else "(No settled selected rows.)")
     lines.append("")
 
     reason_rows = []
