@@ -671,15 +671,6 @@
     const actualAway = toNumber(snapshot?.teams?.away?.totals?.R) || 0;
     const actualHome = toNumber(snapshot?.teams?.home?.totals?.R) || 0;
     const lines = trackedGameLines(card);
-    const h2h = lines.h2h || {};
-    const spreads = lines.spreads || {};
-    const totals = lines.totals || {};
-    const moneylineHomeOdds = h2h.home_odds || h2h.homeOdds || null;
-    const moneylineAwayOdds = h2h.away_odds || h2h.awayOdds || null;
-    const marketHomeProb = normalizeTwoWay(
-      americanOddsImpliedProb(moneylineHomeOdds),
-      americanOddsImpliedProb(moneylineAwayOdds)
-    ).first;
     const segments = [
       { key: "live", label: progress.label || "Live", innings: 9 },
       { key: "first1", label: "F1", innings: 1 },
@@ -690,6 +681,22 @@
     ];
 
     return segments.map((segment) => {
+      const segmentLines = (() => {
+        const segmentBuckets = lines?.segments && typeof lines.segments === "object" ? lines.segments : {};
+        if (segment.key === "live" || segment.key === "full") {
+          return segmentBuckets.full && typeof segmentBuckets.full === "object" ? segmentBuckets.full : lines;
+        }
+        return segmentBuckets[segment.key] && typeof segmentBuckets[segment.key] === "object" ? segmentBuckets[segment.key] : {};
+      })();
+      const h2h = segmentLines.h2h || {};
+      const spreads = segmentLines.spreads || {};
+      const totals = segmentLines.totals || {};
+      const moneylineHomeOdds = h2h.home_odds || h2h.homeOdds || null;
+      const moneylineAwayOdds = h2h.away_odds || h2h.awayOdds || null;
+      const marketHomeProb = normalizeTwoWay(
+        americanOddsImpliedProb(moneylineHomeOdds),
+        americanOddsImpliedProb(moneylineAwayOdds)
+      ).first;
       if (segment.key === "live" && !progress.isLive) {
         return {
           key: segment.key,
@@ -817,20 +824,10 @@
     function selectedOdds(marketType, market) {
       const pick = String(market?.pick || '').trim().toLowerCase();
       if (!pick) return null;
-      if (marketType === 'moneyline') return market?.homeOdds ?? market?.awayOdds ?? null;
+      if (marketType === 'moneyline') return pick === 'home' ? (market?.homeOdds ?? null) : (pick === 'away' ? (market?.awayOdds ?? null) : null);
       if (marketType === 'spread') return pick === 'home' ? (market?.homeOdds ?? null) : (pick === 'away' ? (market?.awayOdds ?? null) : null);
       if (marketType === 'total') return pick === 'over' ? (market?.overOdds ?? null) : (pick === 'under' ? (market?.underOdds ?? null) : null);
       return null;
-    }
-    function marketBadgeMarkup(marketType, market) {
-      let label = String(market?.badgeLabel || '').trim();
-      if (!label && market?.pick) {
-        if (marketType === 'moneyline') label = 'ML Bet';
-        else if (marketType === 'spread') label = 'Run Line Bet';
-        else if (marketType === 'total') label = 'Total Bet';
-      }
-      if (!label) return '';
-      return `<span class="cards-chip is-live">${escapeHtml(label)}</span>`;
     }
     function pickSummary(label, pick, edge, kind, odds) {
       if (!pick || edge == null) return `${label}: -`;
@@ -850,11 +847,6 @@
       const ml = row.markets.moneyline;
       const spread = row.markets.spread;
       const total = row.markets.total;
-      const badgeBlock = [
-        marketBadgeMarkup('moneyline', ml),
-        marketBadgeMarkup('spread', spread),
-        marketBadgeMarkup('total', total)
-      ].filter(Boolean).join('');
       function marketStatusSummary(label, market) {
         const parts = [
           resultLabel(market?.surface_result, 'Surface'),
@@ -887,7 +879,6 @@
             </div>
             <span class="cards-chip ${row.closed ? 'is-candidate' : ''}">${escapeHtml(row.closed ? 'Closed' : 'Projection')}</span>
           </div>
-          ${badgeBlock ? `<div class="cards-live-lens-picks">${badgeBlock}</div>` : ''}
           <div class="cards-live-lens-summary-row">
             <div class="cards-data-pair"><span>Home win</span><strong>${escapeHtml(formatPercent(row.modelHomeWinProb, 1))}</strong></div>
             <div class="cards-data-pair"><span>Market</span><strong>${escapeHtml(formatPercent(ml.marketHomeProb, 1))}</strong></div>
