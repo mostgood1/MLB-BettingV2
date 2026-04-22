@@ -16859,7 +16859,23 @@ def _build_game_card_detail_payload(game_pk: int, d: str) -> Dict[str, Any]:
         feed = None
         feed_error = "missing_feed"
 
-    sim = _build_game_sim_payload(int(game_pk), d, feed=feed, include_live_context=False)
+    detail_live_card = None
+    if isinstance(snapshot, dict):
+        detail_live_card = {
+            "gamePk": int(game_pk),
+            "status": {
+                "abstract": str((((snapshot or {}).get("status") or {}).get("abstractGameState") or "")),
+                "detailed": str((((snapshot or {}).get("status") or {}).get("detailedState") or "")),
+            },
+        }
+    sim = _build_game_sim_payload(
+        int(game_pk),
+        d,
+        feed=feed,
+        include_live_context=True,
+        ensure_market_fresh=False,
+        live_card=detail_live_card,
+    )
     found = bool(snapshot is not None or sim.get("found"))
     return {
         "gamePk": int(game_pk),
@@ -17073,6 +17089,8 @@ def _build_game_sim_payload(
     *,
     feed: Optional[Dict[str, Any]] = None,
     include_live_context: bool = True,
+    ensure_market_fresh: bool = True,
+    live_card: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     artifacts, archive, game_line_index = _cards_payload_context(d)
     feed = feed if isinstance(feed, dict) else _load_live_lens_feed(int(game_pk), d)
@@ -17082,21 +17100,21 @@ def _build_game_sim_payload(
         return out
 
     snapshot = _load_live_lens_snapshot(int(game_pk), d, feed=feed)
-    schedule_games = _schedule_games_for_date(d)
-    live_card = next(
-        (
-            card
-            for card in _load_live_lens_cards(d, artifacts=artifacts, archive=archive, schedule_games=schedule_games)
-            if _safe_int((card or {}).get("gamePk")) == int(game_pk)
-        ),
-        None,
-    )
     if not isinstance(live_card, dict):
         live_card = {
             "gamePk": int(game_pk),
             "status": {
                 "abstract": str((((snapshot or {}).get("status") or {}).get("abstractGameState") or "")),
             },
+            "away": {
+                "name": _first_text((out.get("away") or {}).get("name"), (out.get("away") or {}).get("abbreviation")),
+                "abbr": _first_text((out.get("away") or {}).get("abbreviation"), (out.get("away") or {}).get("name")),
+            },
+            "home": {
+                "name": _first_text((out.get("home") or {}).get("name"), (out.get("home") or {}).get("abbreviation")),
+                "abbr": _first_text((out.get("home") or {}).get("abbreviation"), (out.get("home") or {}).get("name")),
+            },
+            "predictions": (out.get("segments") or {}),
         }
     if out.get("found"):
         out["livePropRows"] = _current_live_prop_rows(
@@ -17104,7 +17122,7 @@ def _build_game_sim_payload(
             snapshot,
             out,
             d,
-            ensure_market_fresh=not _is_historical_date(d),
+            ensure_market_fresh=bool(ensure_market_fresh and not _is_historical_date(d)),
         )
         out["gameLens"] = _build_game_lens(
             live_card,
