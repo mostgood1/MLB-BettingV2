@@ -3213,6 +3213,24 @@ def _first_seen_pitcher_market_lines_from_registry(d: str) -> Dict[str, Dict[str
     return out
 
 
+def _merge_market_line_maps(
+    base_lines: Dict[str, Dict[str, Dict[str, Any]]],
+    override_lines: Dict[str, Dict[str, Dict[str, Any]]],
+) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    merged: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    for source in (base_lines, override_lines):
+        if not isinstance(source, dict):
+            continue
+        for player_key, markets in source.items():
+            if not isinstance(markets, dict):
+                continue
+            target = merged.setdefault(str(player_key), {})
+            for market_key, market in markets.items():
+                if isinstance(market, dict):
+                    target[str(market_key)] = dict(market)
+    return merged
+
+
 def _load_pitcher_ladder_market_context(d: str) -> Dict[str, Any]:
     current_path = _resolve_oddsapi_market_file(d, "oddsapi_pitcher_props")
     current_doc = _load_json_file(current_path)
@@ -3238,11 +3256,26 @@ def _load_pitcher_ladder_market_context(d: str) -> Dict[str, Any]:
     schedule_counts = _schedule_status_counts(d) if current_mode == "live" else {"known": False, "live": 0}
     if current_mode == "live" and bool(schedule_counts.get("known")) and int(schedule_counts.get("live") or 0) <= 0:
         effective_mode = "pregame"
+
+    use_merged_live = bool(pregame_lines) and bool(current_lines) and effective_mode == "live"
     use_pregame = bool(pregame_lines) and (effective_mode != "live" or not current_lines)
-    display_lines = pregame_lines if use_pregame else current_lines
-    display_source = pregame_source if use_pregame else _relative_path_str(current_path)
-    display_doc = pregame_doc if use_pregame else current_doc
-    display_path = pregame_path if use_pregame else current_path
+    if use_merged_live:
+        display_lines = _merge_market_line_maps(pregame_lines, current_lines)
+        display_source = " + ".join(
+            part
+            for part in (pregame_source, _relative_path_str(current_path))
+            if str(part or "").strip()
+        )
+        display_doc = {
+            "mode": current_mode or effective_mode,
+            "pitcher_props": display_lines,
+        }
+        display_path = current_path if current_path else pregame_path
+    else:
+        display_lines = pregame_lines if use_pregame else current_lines
+        display_source = pregame_source if use_pregame else _relative_path_str(current_path)
+        display_doc = pregame_doc if use_pregame else current_doc
+        display_path = pregame_path if use_pregame else current_path
 
     return {
         "currentPath": current_path,
