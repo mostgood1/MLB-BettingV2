@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from bisect import bisect_left
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -13947,6 +13947,115 @@ def _prop_lens_rows(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], si
     return rows
 
 
+def _card_reco_model_mean(reco: Dict[str, Any]) -> Optional[float]:
+    market_token = str(reco.get("market") or "").strip().lower()
+    prop_token = str(reco.get("prop") or "").strip().lower()
+    for prop_key, cfg in _PITCHER_LADDER_PROPS.items():
+        market_key = str(cfg.get("market_key") or "").strip().lower()
+        if prop_token in {str(prop_key), market_key} or (market_token == "pitcher_props" and prop_token == str(prop_key)):
+            return _safe_float(reco.get(str(cfg.get("mean_key") or "")))
+    for prop_key, cfg in _HITTER_LADDER_PROPS.items():
+        market_key = str(cfg.get("market_key") or "").strip().lower()
+        if prop_token in {str(prop_key), market_key} or market_token == market_key:
+            return _safe_float(reco.get(str(cfg.get("mean_key") or "")))
+    return _safe_float(reco.get("outs_mean"))
+
+
+def _fallback_live_prop_rows_from_card(
+    card: Dict[str, Any],
+    snapshot: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    if not isinstance(snapshot, dict):
+        return []
+    status = (snapshot.get("status") or {}) if isinstance(snapshot.get("status"), dict) else {}
+    abstract = str(status.get("abstractGameState") or ((card.get("status") or {}).get("abstract") or "")).strip().lower()
+    if abstract != "live":
+        return []
+
+    progress_fraction = float((_live_game_progress(snapshot, card).get("fraction") or 0.0))
+    actual_teams = ((snapshot or {}).get("teams") or {})
+    rows: List[Dict[str, Any]] = []
+
+    for key in ("pitcherProps", "extraPitcherProps", "hitterProps", "extraHitterProps"):
+        for reco in (((card.get("markets") or {}).get(key)) or []):
+            if not isinstance(reco, dict):
+                continue
+            owner_name = _prop_owner_name(reco)
+            if not owner_name:
+                continue
+            side = _prop_side(card, reco)
+            is_pitcher = str(reco.get("market") or "").strip().lower() == "pitcher_props"
+            if is_pitcher and side in {"away", "home"} and _starter_removed_from_snapshot(snapshot, str(side)):
+                continue
+
+            type_key = "pitching" if is_pitcher else "batting"
+            actual_row = None
+            search_sides = (side,) if side in {"away", "home"} else ("away", "home")
+            for candidate_side in search_sides:
+                actual_row = _lookup_boxscore_row((((actual_teams.get(candidate_side) or {}).get("boxscore") or {}).get(type_key) or []), owner_name)
+                if actual_row:
+                    break
+
+            actual_value = _live_stat_value(actual_row, reco)
+            market_line = _safe_float(reco.get("market_line"))
+            if _live_prop_market_resolved(actual_value, market_line):
+                continue
+
+            model_mean = _card_reco_model_mean(reco)
+            live_projection = (
+                _project_live_pitcher_value(
+                    prop=str(reco.get("prop") or ""),
+                    team_side=str(side or ""),
+                    actual_value=actual_value,
+                    model_mean=model_mean,
+                    progress_fraction=progress_fraction,
+                    actual_row=actual_row,
+                    model_row=reco,
+                    pitcher_profile=None,
+                    current_profile=None,
+                    bullpen_profiles=[],
+                    snapshot=snapshot,
+                )
+                if is_pitcher
+                else _project_live_hitter_value(
+                    prop=str(reco.get("prop") or ""),
+                    player_name=owner_name,
+                    team_side=str(side or ""),
+                    actual_value=actual_value,
+                    model_mean=model_mean,
+                    progress_fraction=progress_fraction,
+                    actual_row=actual_row,
+                    model_row=reco,
+                    snapshot=snapshot,
+                )
+            )
+            selection = str(reco.get("selection") or "").strip().lower()
+            live_edge = _selection_live_edge(selection, live_projection, market_line)
+            if live_edge is None or float(live_edge) <= 0.0:
+                continue
+
+            item = dict(reco)
+            item["recommendation_tier"] = "live"
+            item["source"] = "tracked_prop"
+            item["team_side"] = side
+            item["actual"] = actual_value
+            item["actual_value"] = actual_value
+            item["model_mean"] = model_mean
+            item["live_projection"] = live_projection
+            item["live_edge"] = live_edge
+            rows.append(item)
+
+    rows.sort(
+        key=lambda row: (
+            0 if str(row.get("market") or "").strip().lower() == "pitcher_props" else 1,
+            -abs(float(_safe_float(row.get("live_edge")) or 0.0)),
+            -abs(float(_safe_float(row.get("edge")) or 0.0)),
+            str(_prop_owner_name(row) or ""),
+        )
+    )
+    return rows
+
+
 def _normalize_live_lens_live_prop_row(row: Dict[str, Any], snapshot: Optional[Dict[str, Any]], card: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     status_text = ((snapshot or {}).get("status") or {}).get("abstractGameState") or (((card or {}).get("status") or {}).get("abstract") or "")
     actual_value = _safe_float(row.get("actual_value"))
@@ -16916,24 +17025,24 @@ def _build_game_sim_payload(
     artifacts, archive, game_line_index = _cards_payload_context(d)
     feed = feed if isinstance(feed, dict) else _load_live_lens_feed(int(game_pk), d)
     out = _load_sim_context_for_game(int(game_pk), d, artifacts=artifacts, archive=archive, feed=feed)
+    snapshot = _load_live_lens_snapshot(int(game_pk), d, feed=feed)
+    schedule_games = _schedule_games_for_date(d)
+    live_card = next(
+        (
+            card
+            for card in _load_live_lens_cards(d, artifacts=artifacts, archive=archive, schedule_games=schedule_games)
+            if _safe_int((card or {}).get("gamePk")) == int(game_pk)
+        ),
+        None,
+    )
+    if not isinstance(live_card, dict):
+        live_card = {
+            "gamePk": int(game_pk),
+            "status": {
+                "abstract": str((((snapshot or {}).get("status") or {}).get("abstractGameState") or "")),
+            },
+        }
     if out.get("found"):
-        snapshot = _load_live_lens_snapshot(int(game_pk), d, feed=feed)
-        schedule_games = _schedule_games_for_date(d)
-        live_card = next(
-            (
-                card
-                for card in _load_live_lens_cards(d, artifacts=artifacts, archive=archive, schedule_games=schedule_games)
-                if _safe_int((card or {}).get("gamePk")) == int(game_pk)
-            ),
-            None,
-        )
-        if not isinstance(live_card, dict):
-            live_card = {
-                "gamePk": int(game_pk),
-                "status": {
-                    "abstract": str((((snapshot or {}).get("status") or {}).get("abstractGameState") or "")),
-                },
-            }
         out["livePropRows"] = _current_live_prop_rows(
             live_card,
             snapshot,
@@ -16950,6 +17059,8 @@ def _build_game_sim_payload(
         )
         out["livePitcherModelMismatches"] = list(out.get("livePitcherModelMismatches") or [])
         out.pop("propModels", None)
+    else:
+        out["livePropRows"] = _fallback_live_prop_rows_from_card(live_card, snapshot)
     return out
 
 
@@ -16982,3 +17093,4 @@ if __name__ == "__main__":
     debug = debug_env in {"1", "true", "yes", "on"}
     start_live_lens_background_loop()
     app.run(host=host, port=port, debug=debug, threaded=True)
+
