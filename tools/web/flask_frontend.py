@@ -5412,7 +5412,7 @@ def _pitcher_ladders_payload_cached(
         selected_game_value=selected_game,
         selected_pitcher_value=selected_pitcher,
     )
-    if isinstance(prebuilt_payload, dict):
+    if isinstance(prebuilt_payload, dict) and prebuilt_payload.get("found"):
         return prebuilt_payload
     cache_key = f"{str(d)}:{prop}:{sort_key}:{selected_game}:{selected_pitcher}"
     return _payload_cache_get_or_build(
@@ -5452,7 +5452,7 @@ def _hitter_ladders_payload_cached(
         selected_hitter_value=selected_hitter,
         sort_value=sort_key,
     )
-    if isinstance(prebuilt_payload, dict):
+    if isinstance(prebuilt_payload, dict) and prebuilt_payload.get("found"):
         return prebuilt_payload
     cache_key = f"{str(d)}:{prop}:{sort_key}:{selected_game}:{selected_team}:{selected_hitter}"
     return _payload_cache_get_or_build(
