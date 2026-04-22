@@ -2324,6 +2324,17 @@ def _prefer_newer_file(primary: Optional[Path], challenger: Optional[Path]) -> O
     return primary
 
 
+def _prefer_newer_path(primary: Optional[Path], challenger: Optional[Path], *, pattern: str = "*.json") -> Optional[Path]:
+    if challenger and challenger.exists():
+        if not primary or not primary.exists():
+            return challenger
+        primary_mtime = _latest_path_mtime(primary, pattern=pattern)
+        challenger_mtime = _latest_path_mtime(challenger, pattern=pattern)
+        if challenger_mtime is not None and (primary_mtime is None or challenger_mtime > primary_mtime):
+            return challenger
+    return primary
+
+
 def _synthetic_settlement_from_summary(summary: Dict[str, Any]) -> Dict[str, Any]:
     settlement: Dict[str, Any] = {
         "_settled_rows": [],
@@ -2677,16 +2688,18 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
         tracked_game_summary_path = tracked_daily_dir / f"daily_summary_{slug}.json"
         if tracked_game_summary_path.exists() and tracked_game_summary_path.is_file():
             game_summary_path = tracked_game_summary_path
+    tracked_sim_dir = tracked_daily_dir / "sims" / str(d)
+    tracked_snapshot_dir = tracked_daily_dir / "snapshots" / str(d)
     sim_dir: Optional[Path] = canonical_sim_dir if canonical_sim_dir.exists() and canonical_sim_dir.is_dir() else None
-    if not sim_dir:
-        tracked_sim_dir = tracked_daily_dir / "sims" / str(d)
-        if tracked_sim_dir.exists() and tracked_sim_dir.is_dir():
-            sim_dir = tracked_sim_dir
+    sim_dir = _prefer_newer_path(
+        sim_dir,
+        tracked_sim_dir if tracked_sim_dir.exists() and tracked_sim_dir.is_dir() else None,
+    )
     snapshot_dir: Optional[Path] = canonical_snapshot_dir if canonical_snapshot_dir.exists() and canonical_snapshot_dir.is_dir() else None
-    if not snapshot_dir:
-        tracked_snapshot_dir = tracked_daily_dir / "snapshots" / str(d)
-        if tracked_snapshot_dir.exists() and tracked_snapshot_dir.is_dir():
-            snapshot_dir = tracked_snapshot_dir
+    snapshot_dir = _prefer_newer_path(
+        snapshot_dir,
+        tracked_snapshot_dir if tracked_snapshot_dir.exists() and tracked_snapshot_dir.is_dir() else None,
+    )
     for artifact in (locked_policy, profile_bundle):
         if not isinstance(artifact, dict):
             continue
