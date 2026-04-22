@@ -945,6 +945,16 @@
       if (!text) return '';
       return `<div class="cards-live-lens-reason">${escapeHtml(`${label}: ${text}`)}</div>`;
     }
+    function marketStatusSummary(label, market) {
+      const parts = [
+        resultLabel(market?.surface_result, 'Surface'),
+        resultLabel(market?.current_result, 'Current'),
+        market?.first_seen_at ? `Active since ${formatTimestampShort(market.first_seen_at)}` : '',
+        market?.seen_count ? `Seen ${market.seen_count}x` : '',
+      ].filter(Boolean);
+      if (!parts.length) return '';
+      return `<div class="cards-live-lens-reason">${escapeHtml(`${label} status: ${parts.join(' | ')}`)}</div>`;
+    }
     function scoreSummary(row) {
       const actual = row?.actualSegment || {};
       const away = toNumber(actual?.away);
@@ -1010,16 +1020,6 @@
       const ml = row.markets.moneyline;
       const spread = row.markets.spread;
       const total = row.markets.total;
-      function marketStatusSummary(label, market) {
-        const parts = [
-          resultLabel(market?.surface_result, 'Surface'),
-          resultLabel(market?.current_result, 'Current'),
-          market?.first_seen_at ? `Active since ${formatTimestampShort(market.first_seen_at)}` : '',
-          market?.seen_count ? `Seen ${market.seen_count}x` : '',
-        ].filter(Boolean);
-        if (!parts.length) return '';
-        return `<div class="cards-live-lens-reason">${escapeHtml(`${label} status: ${parts.join(' | ')}`)}</div>`;
-      }
       const primaryCard = primaryMarketCard(row);
       const trackedClosedBlocks = row.closed
         ? [
