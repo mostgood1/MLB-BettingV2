@@ -3,6 +3,8 @@ param(
     [string]$Date = (Get-Date).ToString('yyyy-MM-dd'),
     [int]$Season = [int](Get-Date).Year,
     [string]$NextDate = '',
+    [ValidateSet('on', 'off')]
+    [string]$BuildNextDay = 'off',
     [int]$Sims = 1000,
     [int]$Workers = 4,
     [string]$Pbp = 'off',
@@ -527,11 +529,14 @@ if (-not (Test-Path $dailyUpdatePy)) {
     throw "Missing daily update tool: $dailyUpdatePy"
 }
 
+$enableNextDayBuild = $BuildNextDay -eq 'on'
 $resolvedNextDate = if ($NextDate) { $NextDate } else { Get-DatePlusDays -BaseDate $Date -Days 1 }
 $reconcileDate = Get-DatePlusDays -BaseDate $Date -Days -1
-$nextSeason = Get-SeasonFromDate -Value $resolvedNextDate
 $artifactPaths = @('data/daily', 'data/eval', 'data/raw/statsapi/feed_live')
-$ownedArtifactDates = @($reconcileDate, $Date, $resolvedNextDate)
+$ownedArtifactDates = @($reconcileDate, $Date)
+if ($enableNextDayBuild) {
+    $ownedArtifactDates += $resolvedNextDate
+}
 
 $sharedArgs = @()
 if ($SpringMode.IsPresent) {
@@ -609,20 +614,23 @@ else {
     )
 }
 
-$nextArgs = @(
-    $dailyUpdatePy,
-    '--date', $resolvedNextDate,
-    '--season', $nextSeason.ToString(),
-    '--workflow', 'ui-daily',
-    '--reconcile-date', $Date,
-    '--refresh-prior-feed-live', 'off',
-    '--settle-prior-card', 'off',
-    '--refresh-season-manifests', 'off',
-    '--git-push', 'off'
-) + $sharedArgs
-
 Invoke-ExternalCommand -FilePath $python -Arguments $currentArgs -StepName "Current-day ui-daily ($Date)" -WorkingDirectory $repoRoot
-Invoke-ExternalCommand -FilePath $python -Arguments $nextArgs -StepName "Next-day forward build ($resolvedNextDate)" -WorkingDirectory $repoRoot
+if ($enableNextDayBuild) {
+    $nextSeason = Get-SeasonFromDate -Value $resolvedNextDate
+    $nextArgs = @(
+        $dailyUpdatePy,
+        '--date', $resolvedNextDate,
+        '--season', $nextSeason.ToString(),
+        '--workflow', 'ui-daily',
+        '--reconcile-date', $Date,
+        '--refresh-prior-feed-live', 'off',
+        '--settle-prior-card', 'off',
+        '--refresh-season-manifests', 'off',
+        '--git-push', 'off'
+    ) + $sharedArgs
+
+    Invoke-ExternalCommand -FilePath $python -Arguments $nextArgs -StepName "Next-day forward build ($resolvedNextDate)" -WorkingDirectory $repoRoot
+}
 
 if ($GitPush -eq 'on') {
     $commitMessage = $GitCommitMessage.Replace('{date}', $Date).Replace('{next_date}', $resolvedNextDate).Replace('{workflow}', 'end-to-end')
@@ -650,4 +658,4 @@ Write-Host ''
 Write-Host 'End-to-end daily update completed.'
 Write-Host "  Reconciled prior day: $(if ($SkipPriorReconcile.IsPresent) { 'skipped' } else { $reconcileDate })"
 Write-Host "  Built current day:    $Date"
-Write-Host "  Built next day:       $resolvedNextDate"
+Write-Host "  Built next day:       $(if ($enableNextDayBuild) { $resolvedNextDate } else { 'skipped' })"
