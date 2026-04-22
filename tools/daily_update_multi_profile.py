@@ -150,15 +150,15 @@ DEFAULT_LOCK_POLICY: Dict[str, Any] = {
     "hitter_edge_min": 0.0,
     "hitter_edge_min_by_market": dict(DEFAULT_HITTER_EDGE_MIN_BY_MARKET),
     "hitter_model_prob_min_by_market": dict(DEFAULT_HITTER_MODEL_PROB_MIN_BY_MARKET),
-    "hitter_max_favorite_odds": -200,
-    "hitter_hr_under_0_5_max_favorite_odds": -200,
+    "hitter_max_favorite_odds": -149,
+    "hitter_hr_under_0_5_max_favorite_odds": -149,
     "pitcher_market": "best",
     "pitcher_side": "best_edge_side",
     "pitcher_edge_min": 0.01,
     "pitcher_strikeout_under_edge_min": 0.03,
     "pitcher_strikeout_under_mean_gap": 0.5,
     "pitcher_strikeout_under_min_line": 7.5,
-    "pitcher_max_favorite_odds": -200,
+    "pitcher_max_favorite_odds": -149,
 }
 
 DEFAULT_STANDARD_STAKE_U = 1.0
