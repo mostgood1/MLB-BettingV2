@@ -804,7 +804,7 @@
   }
 
   function renderGameLens(card, detail) {
-    const rows = buildGameLensRows(card, detail).filter((row) => row?.key !== "live");
+    const rows = buildGameLensRows(card, detail);
     if (!rows.length) return '<div class="cards-empty-copy">No live game lens available.</div>';
     function pickSummary(label, pick, edge, kind) {
       if (!pick || edge == null) return `${label}: -`;
@@ -1826,95 +1826,6 @@
   function renderPropOverviewLens(card, detail) {
     const liveStatus = isLiveStatus(detail?.snapshot?.status?.abstractGameState || card?.status?.abstract);
     const simLoaded = !!detail?.sim;
-    const liveGameRows = buildGameLensRows(card, detail);
-    const liveGameRow = liveGameRows.find((row) => row?.key === "live") || null;
-    const liveGameCards = [];
-    if (liveGameRow && !liveGameRow.closed) {
-      const moneyline = liveGameRow.markets?.moneyline || {};
-      const spread = liveGameRow.markets?.spread || {};
-      const total = liveGameRow.markets?.total || {};
-      const awayCode = card?.away?.abbr || "Away";
-      const homeCode = card?.home?.abbr || "Home";
-      const currentAwayRuns = toNumber(detail?.snapshot?.teams?.away?.totals?.R) || 0;
-      const currentHomeRuns = toNumber(detail?.snapshot?.teams?.home?.totals?.R) || 0;
-      const currentMargin = Number((currentHomeRuns - currentAwayRuns).toFixed(2));
-      const currentTotal = Number((currentAwayRuns + currentHomeRuns).toFixed(2));
-      if (moneyline.pick && moneyline.edge != null) {
-        const selectedTeamCode = moneyline.pick === "home" ? homeCode : awayCode;
-        liveGameCards.push({
-          label: "Game live lens",
-          playerName: `${selectedTeamCode} ML`,
-          marketLabel: "Moneyline",
-          actualLabel: `${awayCode} ${formatLine(currentAwayRuns)} - ${homeCode} ${formatLine(currentHomeRuns)}`,
-          projectionLabel: formatPercent(moneyline.modelProb, 1),
-          lineLabel: moneyline.pick === "home"
-            ? `${homeCode} ${formatOdds(moneyline.homeOdds)}`
-            : `${awayCode} ${formatOdds(moneyline.awayOdds)}`,
-          edgeLabel: formatSigned((toNumber(moneyline.edge) || 0) * 100, 1),
-          actualMetricLabel: "Current",
-          footLeft: moneyline.reason || `Market ${formatPercent(moneyline.marketProb, 1)} ${selectedTeamCode}`,
-          footRight: `${liveGameRow.label} | ML`,
-        });
-      }
-      if (spread.pick && spread.edge != null) {
-        const homeLine = toNumber(spread.homeLine);
-        const spreadLineValue = formatSigned(spread.selectedLine, 1);
-        const runLineText = spread.pick === "home"
-          ? `${homeCode} ${formatSigned(homeLine, 1)} ${formatOdds(spread.homeOdds)}`
-          : `${awayCode} ${formatSigned(homeLine == null ? null : -homeLine, 1)} ${formatOdds(spread.awayOdds)}`;
-        liveGameCards.push({
-          label: "Game live lens",
-          playerName: `${spread.pick === "home" ? homeCode : awayCode} ${spreadLineValue}`,
-          marketLabel: "Run line",
-          actualLabel: formatSigned(currentMargin, 2),
-          projectionLabel: liveGameRow.projection?.homeMargin == null ? "-" : formatSigned(liveGameRow.projection.homeMargin, 2),
-          lineLabel: runLineText,
-          edgeLabel: formatSigned(spread.edge, 2),
-          actualMetricLabel: "Current",
-          footLeft: spread.reason || `Projected margin ${formatSigned(liveGameRow.projection?.homeMargin, 2)}`,
-          footRight: `${liveGameRow.label} | RL`,
-        });
-      }
-      if (total.pick && total.edge != null) {
-        liveGameCards.push({
-          label: "Game live lens",
-          playerName: `${String(total.pick || "").replace(/^./, (m) => m.toUpperCase())} ${formatLine(total.line)}`,
-          marketLabel: "Total",
-          actualLabel: formatLine(currentTotal),
-          projectionLabel: liveGameRow.projection?.total == null ? "-" : formatLine(liveGameRow.projection.total),
-          lineLabel: `${String(total.pick || "").replace(/^./, (m) => m.toUpperCase())} ${formatLine(total.line)} ${formatOdds(total.pick === "over" ? total.overOdds : total.underOdds)}`,
-          edgeLabel: formatSigned(total.edge, 2),
-          actualMetricLabel: "Current",
-          footLeft: total.reason || `Projected total ${formatLine(liveGameRow.projection?.total)}`,
-          footRight: `${liveGameRow.label} | Total`,
-        });
-      }
-    }
-
-    function renderLiveGameOverviewCard(entry) {
-      return `
-        <div class="cards-prop-overview-card">
-          <div class="cards-lens-head">
-            <div>
-              <div class="cards-lens-label">${escapeHtml(entry.label)}</div>
-              <div class="cards-lens-main">${escapeHtml(entry.playerName)}</div>
-              <div class="cards-subcopy">${escapeHtml(entry.marketLabel)}</div>
-            </div>
-            <span class="cards-lens-badge is-live">Live</span>
-          </div>
-          <div class="cards-prop-overview-metrics">
-            <div class="cards-data-pair"><span>${escapeHtml(entry.actualMetricLabel || 'Current')}</span><strong>${escapeHtml(entry.actualLabel)}</strong></div>
-            <div class="cards-data-pair"><span>Live proj</span><strong>${escapeHtml(entry.projectionLabel)}</strong></div>
-            <div class="cards-data-pair"><span>Line</span><strong>${escapeHtml(entry.lineLabel)}</strong></div>
-            <div class="cards-data-pair is-positive"><span>Live edge</span><strong>${escapeHtml(entry.edgeLabel)}</strong></div>
-          </div>
-          <div class="cards-prop-overview-foot">
-            <span>${escapeHtml(entry.footLeft)}</span>
-            <span>${escapeHtml(entry.footRight)}</span>
-          </div>
-        </div>`;
-    }
-
     function renderPropOverviewRecoCard(entry) {
       const stateObj = entry.state;
       const reco = stateObj.reco;
@@ -1960,7 +1871,6 @@
       const loadingMessage = simLoaded ? 'Loading current live prop lanes...' : 'Loading live sim context...';
       return `
         <div class="cards-prop-overview-lanes">
-          ${renderPropOverviewLane('Game live lens recos', liveGameCards.slice(0, 3).map(renderLiveGameOverviewCard).join(''), liveStatus ? 'No current game live lens recos.' : loadingMessage)}
           ${renderPropOverviewLane('Hitter recos', '', loadingMessage)}
           ${renderPropOverviewLane('Pitcher recos', '', loadingMessage)}
         </div>`;
@@ -2004,7 +1914,7 @@
       .slice(0, 3)
       .map((entry) => ({ label: 'Hitter live lens', state: entry.state }));
 
-    if (!hitterItems.length && !pitcherItems.length && !liveGameCards.length) {
+    if (!hitterItems.length && !pitcherItems.length) {
       return livePayloadAvailable
         ? '<div class="cards-empty-copy">No unresolved live prop opportunities remain for this game.</div>'
         : '<div class="cards-empty-copy">No tracked live prop opportunities for this game.</div>';
@@ -2012,7 +1922,6 @@
 
     return `
       <div class="cards-prop-overview-lanes">
-        ${renderPropOverviewLane('Game live lens recos', liveGameCards.slice(0, 3).map(renderLiveGameOverviewCard).join(''), 'No current game live lens recos.')}
         ${renderPropOverviewLane('Hitter recos', hitterItems.map(renderPropOverviewRecoCard).join(''), livePayloadAvailable ? 'No unresolved hitter recos remain for this game.' : 'No tracked hitter recos for this game.')}
         ${renderPropOverviewLane('Pitcher recos', pitcherItems.map(renderPropOverviewRecoCard).join(''), livePayloadAvailable ? 'No unresolved pitcher recos remain for this game.' : 'No tracked pitcher recos for this game.')}
       </div>`;
