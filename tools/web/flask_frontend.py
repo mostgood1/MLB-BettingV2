@@ -16808,52 +16808,51 @@ def api_game_snapshot(game_pk: int) -> Response:
 
 def _build_game_card_detail_payload(game_pk: int, d: str) -> Dict[str, Any]:
     feed = _load_live_lens_feed(int(game_pk), d)
-    if not isinstance(feed, dict) or not feed:
-        return {
+    snapshot = None
+    feed_error = None
+    if isinstance(feed, dict) and feed:
+        away_sp = _get_box_starting_pitcher_id(feed, "away")
+        home_sp = _get_box_starting_pitcher_id(feed, "home")
+        snapshot = {
             "gamePk": int(game_pk),
             "date": d or None,
-            "found": False,
-            "error": "missing_feed",
-            "snapshot": None,
-            "sim": {"found": False, "error": "missing_feed"},
+            "archived": bool(_is_historical_date(d)),
+            "streamAvailable": bool(not _is_historical_date(d) and d == _today_iso()),
+            "generatedAt": _local_timestamp_text(),
+            "status": (feed.get("gameData") or {}).get("status") or {},
+            "current": _current_matchup(feed),
+            "teams": {
+                "away": {
+                    "lineup": _lineup_from_box(feed, "away"),
+                    "starter": {"id": away_sp, "name": _player_name_from_box(feed, away_sp) if away_sp else ""},
+                    "totals": _team_totals(feed, "away"),
+                    "boxscore": {
+                        "batting": _boxscore_batting(feed, "away"),
+                        "pitching": _boxscore_pitching(feed, "away"),
+                    },
+                },
+                "home": {
+                    "lineup": _lineup_from_box(feed, "home"),
+                    "starter": {"id": home_sp, "name": _player_name_from_box(feed, home_sp) if home_sp else ""},
+                    "totals": _team_totals(feed, "home"),
+                    "boxscore": {
+                        "batting": _boxscore_batting(feed, "home"),
+                        "pitching": _boxscore_pitching(feed, "home"),
+                    },
+                },
+            },
         }
+    else:
+        feed = None
+        feed_error = "missing_feed"
 
-    away_sp = _get_box_starting_pitcher_id(feed, "away")
-    home_sp = _get_box_starting_pitcher_id(feed, "home")
-    snapshot = {
-        "gamePk": int(game_pk),
-        "date": d or None,
-        "archived": bool(_is_historical_date(d)),
-        "streamAvailable": bool(not _is_historical_date(d) and d == _today_iso()),
-        "generatedAt": _local_timestamp_text(),
-        "status": (feed.get("gameData") or {}).get("status") or {},
-        "current": _current_matchup(feed),
-        "teams": {
-            "away": {
-                "lineup": _lineup_from_box(feed, "away"),
-                "starter": {"id": away_sp, "name": _player_name_from_box(feed, away_sp) if away_sp else ""},
-                "totals": _team_totals(feed, "away"),
-                "boxscore": {
-                    "batting": _boxscore_batting(feed, "away"),
-                    "pitching": _boxscore_pitching(feed, "away"),
-                },
-            },
-            "home": {
-                "lineup": _lineup_from_box(feed, "home"),
-                "starter": {"id": home_sp, "name": _player_name_from_box(feed, home_sp) if home_sp else ""},
-                "totals": _team_totals(feed, "home"),
-                "boxscore": {
-                    "batting": _boxscore_batting(feed, "home"),
-                    "pitching": _boxscore_pitching(feed, "home"),
-                },
-            },
-        },
-    }
     sim = _build_game_sim_payload(int(game_pk), d, feed=feed)
+    found = bool(snapshot is not None or sim.get("found"))
     return {
         "gamePk": int(game_pk),
         "date": d or None,
-        "found": True,
+        "found": found,
+        "error": None if found else feed_error,
         "generatedAt": _local_timestamp_text(),
         "snapshot": snapshot,
         "sim": sim,
