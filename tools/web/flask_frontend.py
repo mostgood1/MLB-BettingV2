@@ -2335,6 +2335,34 @@ def _prefer_newer_path(primary: Optional[Path], challenger: Optional[Path], *, p
     return primary
 
 
+def _prefer_richer_hr_targets_file(primary: Optional[Path], challenger: Optional[Path]) -> Optional[Path]:
+    if not isinstance(challenger, Path) or not challenger.exists() or not challenger.is_file():
+        return primary
+    if not isinstance(primary, Path) or not primary.exists() or not primary.is_file():
+        return challenger
+
+    primary_doc = _load_json_file(primary)
+    challenger_doc = _load_json_file(challenger)
+    if not isinstance(primary_doc, dict) or not isinstance(challenger_doc, dict):
+        return _prefer_newer_file(primary, challenger)
+
+    primary_rows = len([row for row in (primary_doc.get("rows") or []) if isinstance(row, dict)])
+    challenger_rows = len([row for row in (challenger_doc.get("rows") or []) if isinstance(row, dict)])
+    if challenger_rows > primary_rows:
+        return challenger
+    if challenger_rows < primary_rows:
+        return primary
+
+    primary_games = _safe_int(((primary_doc.get("counts") or {}).get("games"))) or 0
+    challenger_games = _safe_int(((challenger_doc.get("counts") or {}).get("games"))) or 0
+    if challenger_games > primary_games:
+        return challenger
+    if challenger_games < primary_games:
+        return primary
+
+    return _prefer_newer_file(primary, challenger)
+
+
 def _synthetic_settlement_from_summary(summary: Dict[str, Any]) -> Dict[str, Any]:
     settlement: Dict[str, Any] = {
         "_settled_rows": [],
@@ -2658,6 +2686,9 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
             tracked_hr_targets_path,
         ])
         hr_targets_path = _prefer_newer_file(hr_targets_path, tracked_hr_targets_path)
+    if _is_current_local_date(str(d)):
+        hr_targets_path = _prefer_richer_hr_targets_file(hr_targets_path, canonical_hr_targets_path)
+        hr_targets_path = _prefer_richer_hr_targets_file(hr_targets_path, tracked_hr_targets_path)
     hr_targets = _load_json_file(hr_targets_path)
 
     settlement_path = _find_preferred_file([
@@ -2746,7 +2777,8 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
             hr_source_sim_dir = game_sim_dir
             hr_source_snapshot_dir = game_snapshot_dir if isinstance(game_snapshot_dir, Path) else hr_source_snapshot_dir
 
-    if not _derived_artifact_refresh_in_progress("hr_targets", str(d)) and _artifact_is_stale(
+    allow_request_hr_target_refresh = not _is_current_local_date(str(d))
+    if allow_request_hr_target_refresh and not _derived_artifact_refresh_in_progress("hr_targets", str(d)) and _artifact_is_stale(
         hr_targets_path,
         dependency_paths=[hr_source_snapshot_dir],
         dependency_dirs=[hr_source_sim_dir],
