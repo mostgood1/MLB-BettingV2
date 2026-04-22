@@ -1314,6 +1314,14 @@ def _live_prop_observation_log_path(d: str) -> Path:
     return _ensure_dir(_LIVE_LENS_DIR / "prop_registry") / f"live_prop_observations_{_date_slug(d)}.jsonl"
 
 
+def _live_game_registry_path(d: str) -> Path:
+    return _ensure_dir(_LIVE_LENS_DIR / "game_registry") / f"live_game_registry_{_date_slug(d)}.json"
+
+
+def _live_game_registry_log_path(d: str) -> Path:
+    return _ensure_dir(_LIVE_LENS_DIR / "game_registry") / f"live_game_registry_{_date_slug(d)}.jsonl"
+
+
 def _live_prop_tracking_key(row: Dict[str, Any]) -> str:
     owner = normalize_pitcher_name(_prop_owner_name(row) or "")
     market = str(row.get("market") or "").strip().lower()
@@ -1327,6 +1335,23 @@ def _live_prop_tracking_key(row: Dict[str, Any]) -> str:
             owner,
             market,
             prop,
+            selection,
+            "" if line is None else f"{float(line):.3f}",
+        ]
+    )
+
+
+def _live_game_tracking_key(row: Dict[str, Any]) -> str:
+    game_pk = _safe_int(row.get("gamePk") or row.get("game_pk")) or 0
+    lane_key = str(row.get("laneKey") or row.get("lane_key") or "").strip().lower()
+    market_type = str(row.get("marketType") or row.get("market_type") or "").strip().lower()
+    selection = str(row.get("selection") or "").strip().lower()
+    line = _safe_float(row.get("marketLine") if row.get("marketLine") is not None else row.get("market_line"))
+    return "|".join(
+        [
+            str(game_pk),
+            lane_key,
+            market_type,
             selection,
             "" if line is None else f"{float(line):.3f}",
         ]
@@ -1360,6 +1385,26 @@ def _live_prop_capture_snapshot(row: Dict[str, Any]) -> Dict[str, Any]:
             for reason in (row.get("reasons") or [])
             if str(reason).strip()
         ],
+    }
+
+
+def _live_game_capture_snapshot(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "selection": str(row.get("selection") or ""),
+        "marketLine": _safe_float(row.get("marketLine") if row.get("marketLine") is not None else row.get("market_line")),
+        "odds": _safe_int(row.get("odds")),
+        "edge": _safe_float(row.get("edge")),
+        "actualHome": _safe_float(row.get("actualHome")),
+        "actualAway": _safe_float(row.get("actualAway")),
+        "actualTotal": _safe_float(row.get("actualTotal")),
+        "actualHomeMargin": _safe_float(row.get("actualHomeMargin")),
+        "projectionHomeMargin": _safe_float(row.get("projectionHomeMargin")),
+        "projectionTotal": _safe_float(row.get("projectionTotal")),
+        "modelHomeProb": _safe_float(row.get("modelHomeProb")),
+        "marketHomeProb": _safe_float(row.get("marketHomeProb")),
+        "closed": bool(row.get("closed")),
+        "label": str(row.get("label") or "").strip(),
+        "marketType": str(row.get("marketType") or "").strip(),
     }
 
 
@@ -1434,6 +1479,16 @@ def _load_live_prop_registry(d: str) -> Dict[str, Any]:
     }
 
 
+def _load_live_game_registry(d: str) -> Dict[str, Any]:
+    doc = _load_json_file(_live_game_registry_path(d)) or {}
+    entries = doc.get("entries") if isinstance(doc.get("entries"), dict) else {}
+    return {
+        "date": str(doc.get("date") or d),
+        "updatedAt": doc.get("updatedAt"),
+        "entries": dict(entries),
+    }
+
+
 def _live_prop_registry_result(selection: Any, market_line: Any, actual_value: Any) -> str:
     line = _safe_float(market_line)
     actual = _safe_float(actual_value)
@@ -1444,6 +1499,178 @@ def _live_prop_registry_result(selection: Any, market_line: Any, actual_value: A
         return "push"
     did_win = float(actual) < float(line) if side == "under" else float(actual) > float(line)
     return "win" if did_win else "loss"
+
+
+def _live_game_registry_result(market_type: Any, selection: Any, market_line: Any, snapshot: Any) -> str:
+    snap = snapshot if isinstance(snapshot, dict) else {}
+    if not bool(snap.get("closed")):
+        return "pending"
+    market = str(market_type or "").strip().lower()
+    side = str(selection or "").strip().lower()
+    actual_home = _safe_float(snap.get("actualHome"))
+    actual_away = _safe_float(snap.get("actualAway"))
+    actual_total = _safe_float(snap.get("actualTotal"))
+    actual_margin = _safe_float(snap.get("actualHomeMargin"))
+    line = _safe_float(market_line)
+    if market == "moneyline":
+        if actual_home is None or actual_away is None:
+            return "pending"
+        if abs(float(actual_home) - float(actual_away)) < 1e-9:
+            return "push"
+        winner = "home" if float(actual_home) > float(actual_away) else "away"
+        return "win" if winner == side else "loss"
+    if market == "spread":
+        if actual_margin is None or line is None:
+            return "pending"
+        cover_margin = float(actual_margin) + float(line)
+        if abs(cover_margin) < 1e-9:
+            return "push"
+        winner = "home" if cover_margin > 0 else "away"
+        return "win" if winner == side else "loss"
+    if market == "total":
+        if actual_total is None or line is None:
+            return "pending"
+        if abs(float(actual_total) - float(line)) < 1e-9:
+            return "push"
+        winner = "over" if float(actual_total) > float(line) else "under"
+        return "win" if winner == side else "loss"
+    return "pending"
+
+
+def _game_lens_market_badge_label(market_type: str) -> str:
+    key = str(market_type or "").strip().lower()
+    if key == "moneyline":
+        return "ML Bet"
+    if key == "spread":
+        return "Run Line Bet"
+    if key == "total":
+        return "Total Bet"
+    return "Game Bet"
+
+
+def _game_lens_market_tracking_row(game_pk: int, row: Dict[str, Any], market_type: str, market: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    selection = str(market.get("pick") or "").strip().lower()
+    if not selection:
+        return None
+    edge = _safe_float(market.get("edge"))
+    if edge is None:
+        return None
+    label = str(row.get("label") or "").strip()
+    actual_segment = row.get("actualSegment") if isinstance(row.get("actualSegment"), dict) else {}
+    projection = row.get("projection") if isinstance(row.get("projection"), dict) else {}
+    line_value: Optional[float] = None
+    odds: Any = None
+    market_home_prob = _safe_float(market.get("marketHomeProb"))
+    if market_type == "moneyline":
+        odds = market.get("homeOdds") if selection == "home" else market.get("awayOdds")
+    elif market_type == "spread":
+        home_line = _safe_float(market.get("homeLine"))
+        line_value = home_line if selection == "home" else (-float(home_line) if home_line is not None else None)
+        odds = market.get("homeOdds") if selection == "home" else market.get("awayOdds")
+    elif market_type == "total":
+        line_value = _safe_float(market.get("line"))
+        odds = market.get("overOdds") if selection == "over" else market.get("underOdds")
+    return {
+        "gamePk": int(game_pk),
+        "laneKey": str(row.get("key") or ""),
+        "label": label,
+        "marketType": str(market_type),
+        "selection": selection,
+        "marketLine": line_value,
+        "odds": odds,
+        "edge": edge,
+        "actualHome": _safe_float(actual_segment.get("home")),
+        "actualAway": _safe_float(actual_segment.get("away")),
+        "actualTotal": _safe_float(actual_segment.get("total")),
+        "actualHomeMargin": _safe_float(actual_segment.get("homeMargin")),
+        "projectionHomeMargin": _safe_float(projection.get("homeMargin")),
+        "projectionTotal": _safe_float(projection.get("total")),
+        "modelHomeProb": _safe_float(row.get("modelHomeWinProb")),
+        "marketHomeProb": market_home_prob,
+        "closed": bool(row.get("closed")),
+        "badgeLabel": _game_lens_market_badge_label(str(market_type)),
+    }
+
+
+def _enrich_game_lens_rows_with_registry(rows: List[Dict[str, Any]], game_pk: int, d: str, *, recorded_at: Optional[datetime] = None) -> List[Dict[str, Any]]:
+    if not rows:
+        return []
+    stamp = recorded_at.astimezone(_USER_TIMEZONE) if isinstance(recorded_at, datetime) else _local_now()
+    stamp_text = _local_timestamp_text(stamp)
+    registry = _load_live_game_registry(d)
+    entries = registry.get("entries") if isinstance(registry.get("entries"), dict) else {}
+    changed = False
+    out: List[Dict[str, Any]] = []
+
+    for row in rows:
+        item = dict(row)
+        markets = item.get("markets") if isinstance(item.get("markets"), dict) else {}
+        new_markets: Dict[str, Any] = {}
+        for market_type in ("moneyline", "spread", "total"):
+            market = dict(markets.get(market_type) or {})
+            tracking_row = _game_lens_market_tracking_row(int(game_pk), item, market_type, market)
+            if tracking_row is None:
+                new_markets[market_type] = market
+                continue
+            key = _live_game_tracking_key(tracking_row)
+            snapshot = _live_game_capture_snapshot(tracking_row)
+            entry = entries.get(key) if isinstance(entries.get(key), dict) else None
+            if not entry:
+                entry = {
+                    "key": key,
+                    "date": str(d),
+                    "gamePk": int(game_pk),
+                    "laneKey": tracking_row.get("laneKey"),
+                    "label": tracking_row.get("label"),
+                    "marketType": tracking_row.get("marketType"),
+                    "selection": tracking_row.get("selection"),
+                    "marketLine": _safe_float(tracking_row.get("marketLine")),
+                    "firstSeenAt": stamp_text,
+                    "firstSeenSnapshot": snapshot,
+                    "lastSeenAt": stamp_text,
+                    "lastSeenSnapshot": snapshot,
+                    "seenCount": 1,
+                }
+                entries[key] = entry
+                _append_jsonl(
+                    _live_game_registry_log_path(d),
+                    {
+                        "recordedAt": stamp_text,
+                        "event": "first_seen",
+                        "date": str(d),
+                        "key": key,
+                        "gamePk": int(game_pk),
+                        "laneKey": tracking_row.get("laneKey"),
+                        "marketType": tracking_row.get("marketType"),
+                        "selection": tracking_row.get("selection"),
+                        "snapshot": snapshot,
+                    },
+                )
+            else:
+                entry["lastSeenAt"] = stamp_text
+                entry["lastSeenSnapshot"] = snapshot
+                entry["seenCount"] = int(_safe_int(entry.get("seenCount")) or 0) + 1
+            changed = True
+
+            first_snapshot = entry.get("firstSeenSnapshot") if isinstance(entry.get("firstSeenSnapshot"), dict) else {}
+            last_snapshot = entry.get("lastSeenSnapshot") if isinstance(entry.get("lastSeenSnapshot"), dict) else {}
+            market["badgeLabel"] = tracking_row.get("badgeLabel")
+            market["first_seen_at"] = entry.get("firstSeenAt")
+            market["last_seen_at"] = entry.get("lastSeenAt")
+            market["seen_count"] = _safe_int(entry.get("seenCount"))
+            market["first_seen_edge"] = _safe_float(first_snapshot.get("edge"))
+            market["last_seen_edge"] = _safe_float(last_snapshot.get("edge"))
+            market["surface_result"] = _live_game_registry_result(market_type, entry.get("selection"), entry.get("marketLine"), first_snapshot)
+            market["current_result"] = _live_game_registry_result(market_type, entry.get("selection"), entry.get("marketLine"), last_snapshot)
+            new_markets[market_type] = market
+        item["markets"] = new_markets
+        out.append(item)
+
+    if changed:
+        registry["updatedAt"] = stamp_text
+        registry["entries"] = entries
+        _write_json_file(_live_game_registry_path(d), registry)
+    return out
 
 
 def _live_prop_registry_summary(d: str) -> Dict[str, Any]:
@@ -17156,12 +17383,16 @@ def _build_game_sim_payload(
             d,
             ensure_market_fresh=bool(ensure_market_fresh and not _is_historical_date(d)),
         )
-        out["gameLens"] = _build_game_lens(
-            live_card,
-            snapshot,
-            out,
-            _game_line_market_for_card(live_card, game_line_index),
-            date_str=str(d),
+        out["gameLens"] = _enrich_game_lens_rows_with_registry(
+            _build_game_lens(
+                live_card,
+                snapshot,
+                out,
+                _game_line_market_for_card(live_card, game_line_index),
+                date_str=str(d),
+            ),
+            int(game_pk),
+            d,
         )
         out["livePitcherModelMismatches"] = list(out.get("livePitcherModelMismatches") or [])
         out.pop("propModels", None)

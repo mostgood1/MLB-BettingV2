@@ -806,6 +806,19 @@
   function renderGameLens(card, detail) {
     const rows = buildGameLensRows(card, detail);
     if (!rows.length) return '<div class="cards-empty-copy">No live game lens available.</div>';
+    function resultLabel(result, prefix) {
+      const text = String(result || '').trim().toLowerCase();
+      if (!text || text === 'pending') return '';
+      if (text === 'win') return `${prefix} correct`;
+      if (text === 'loss') return `${prefix} incorrect`;
+      if (text === 'push') return `${prefix} push`;
+      return '';
+    }
+    function marketBadgeMarkup(market) {
+      const label = String(market?.badgeLabel || '').trim();
+      if (!label) return '';
+      return `<span class="cards-chip is-live">${escapeHtml(label)}</span>`;
+    }
     function pickSummary(label, pick, edge, kind) {
       if (!pick || edge == null) return `${label}: -`;
       if (kind === "moneyline") return `${label}: ${String(pick).toUpperCase()} ${formatSigned(edge * 100, 1)} pts`;
@@ -823,10 +836,24 @@
       const ml = row.markets.moneyline;
       const spread = row.markets.spread;
       const total = row.markets.total;
+      const badgeBlock = [marketBadgeMarkup(ml), marketBadgeMarkup(spread), marketBadgeMarkup(total)].filter(Boolean).join('');
+      function marketStatusSummary(label, market) {
+        const parts = [
+          resultLabel(market?.surface_result, 'Surface'),
+          resultLabel(market?.current_result, 'Current'),
+          market?.first_seen_at ? `Active since ${formatTimestampShort(market.first_seen_at)}` : '',
+          market?.seen_count ? `Seen ${market.seen_count}x` : '',
+        ].filter(Boolean);
+        if (!parts.length) return '';
+        return `<div class="cards-live-lens-reason">${escapeHtml(`${label} status: ${parts.join(' | ')}`)}</div>`;
+      }
       const reasonBlock = [
         reasonSummary('ML', ml),
         reasonSummary('Run line', spread),
         reasonSummary('Total', total),
+        marketStatusSummary('ML', ml),
+        marketStatusSummary('Run line', spread),
+        marketStatusSummary('Total', total),
       ].filter(Boolean).join('');
       const marketLine = [
         total.line != null ? `Total ${formatLine(total.line)}` : null,
@@ -842,6 +869,7 @@
             </div>
             <span class="cards-chip ${row.closed ? 'is-candidate' : ''}">${escapeHtml(row.closed ? 'Closed' : 'Projection')}</span>
           </div>
+          ${badgeBlock ? `<div class="cards-live-lens-picks">${badgeBlock}</div>` : ''}
           <div class="cards-live-lens-summary-row">
             <div class="cards-data-pair"><span>Home win</span><strong>${escapeHtml(formatPercent(row.modelHomeWinProb, 1))}</strong></div>
             <div class="cards-data-pair"><span>Market</span><strong>${escapeHtml(formatPercent(ml.marketHomeProb, 1))}</strong></div>
