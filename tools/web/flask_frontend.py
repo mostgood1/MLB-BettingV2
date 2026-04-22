@@ -2811,10 +2811,16 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
     lineups = _load_json_file(lineups_path)
     market_availability = _load_market_availability(d)
     daily_ladders_path, daily_ladders = _load_daily_ladders_artifact(str(d))
-    if not _derived_artifact_refresh_in_progress("daily_ladders", str(d)) and _artifact_is_stale(
-        daily_ladders_path,
-        dependency_paths=_market_context_dependency_paths(pitcher_market_ctx, hitter_market_ctx),
-        dependency_dirs=[sim_dir],
+    if (
+        isinstance(sim_dir, Path)
+        and sim_dir.exists()
+        and sim_dir.is_dir()
+        and not _derived_artifact_refresh_in_progress("daily_ladders", str(d))
+        and _artifact_is_stale(
+            daily_ladders_path,
+            dependency_paths=_market_context_dependency_paths(pitcher_market_ctx, hitter_market_ctx),
+            dependency_dirs=[sim_dir],
+        )
     ):
         if _begin_derived_artifact_refresh("daily_ladders", str(d)):
             try:
