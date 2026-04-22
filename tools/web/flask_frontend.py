@@ -12785,6 +12785,28 @@ def _normalize_two_way_probs(first_prob: Optional[float], second_prob: Optional[
     return float(first_prob) / denom, float(second_prob) / denom
 
 
+def _normalize_three_way_probs(
+    first_prob: Optional[float],
+    second_prob: Optional[float],
+    third_prob: Optional[float],
+) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+    present = [
+        float(value)
+        for value in (first_prob, second_prob, third_prob)
+        if value is not None and float(value) > 0.0
+    ]
+    if not present:
+        return None, None, None
+    denom = float(sum(present))
+    if denom <= 0.0:
+        return None, None, None
+    return (
+        (float(first_prob) / denom) if first_prob is not None and float(first_prob) > 0.0 else None,
+        (float(second_prob) / denom) if second_prob is not None and float(second_prob) > 0.0 else None,
+        (float(third_prob) / denom) if third_prob is not None and float(third_prob) > 0.0 else None,
+    )
+
+
 def _live_margin_win_prob(home_margin: Optional[float]) -> Optional[float]:
     margin = _safe_float(home_margin)
     if margin is None:
@@ -12852,14 +12874,24 @@ def _game_lens_moneyline_market(
     closed: bool,
     home_odds: Any,
     away_odds: Any,
+    draw_odds: Any = None,
     snapshot: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     home_prob_market = _american_odds_implied_prob(home_odds)
     away_prob_market = _american_odds_implied_prob(away_odds)
-    home_prob_market, away_prob_market = _normalize_two_way_probs(home_prob_market, away_prob_market)
+    draw_prob_market = _american_odds_implied_prob(draw_odds)
+    if draw_prob_market is not None:
+        home_prob_market, away_prob_market, draw_prob_market = _normalize_three_way_probs(
+            home_prob_market,
+            away_prob_market,
+            draw_prob_market,
+        )
+    else:
+        home_prob_market, away_prob_market = _normalize_two_way_probs(home_prob_market, away_prob_market)
     out = {
         "homeOdds": home_odds,
         "awayOdds": away_odds,
+        "drawOdds": draw_odds,
         "marketHomeProb": home_prob_market,
         "pick": None,
         "edge": None,
@@ -14087,6 +14119,7 @@ def _build_game_lens(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], s
 
         home_odds = h2h.get("home_odds") or h2h.get("homeOdds")
         away_odds = h2h.get("away_odds") or h2h.get("awayOdds")
+        draw_odds = h2h.get("draw_odds") or h2h.get("drawOdds")
         spread_line = _safe_float(spreads.get("home_line") or spreads.get("homeLine"))
         spread_home_odds = spreads.get("home_odds") or spreads.get("homeOdds")
         spread_away_odds = spreads.get("away_odds") or spreads.get("awayOdds")
@@ -14104,6 +14137,7 @@ def _build_game_lens(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], s
             closed=bool(projection.get("closed")),
             home_odds=home_odds,
             away_odds=away_odds,
+            draw_odds=draw_odds,
             snapshot=snapshot,
         )
         spread_market = _game_lens_spread_market(

@@ -245,6 +245,77 @@ def _select_primary_prop_lane(lanes: List[Dict[str, Any]], market_name: Optional
     return min(lanes, key=_primary_lane_sort_key) if lanes else {}
 
 
+def _game_total_lane_sort_key(row: Dict[str, Any]) -> Tuple[float, float, float, float]:
+    from sim_engine.market_pitcher_props import american_implied_prob
+
+    p_over = american_implied_prob(row.get("over_odds"))
+    p_under = american_implied_prob(row.get("under_odds"))
+    line_value = float(row.get("line") or 0.0)
+
+    if p_over is not None and p_under is not None:
+        return (
+            0.0,
+            abs(float(p_over) - float(p_under)),
+            abs(float(p_over + p_under) - 1.0),
+            abs(line_value),
+        )
+
+    implied = p_over if p_over is not None else p_under
+    if implied is not None:
+        return (1.0, abs(float(implied) - 0.5), 0.0, abs(line_value))
+
+    return (2.0, 1e9, 1e9, abs(line_value))
+
+
+def _select_primary_game_total_lane(lanes: List[Dict[str, Any]]) -> Dict[str, Any]:
+    return min(lanes, key=_game_total_lane_sort_key) if lanes else {}
+
+
+def _game_spread_lane_sort_key(row: Dict[str, Any]) -> Tuple[float, float, float, float]:
+    from sim_engine.market_pitcher_props import american_implied_prob
+
+    p_home = american_implied_prob(row.get("home_odds"))
+    p_away = american_implied_prob(row.get("away_odds"))
+    line_value = abs(float(row.get("home_line") or 0.0))
+
+    if p_home is not None and p_away is not None:
+        return (
+            0.0,
+            abs(float(p_home) - float(p_away)),
+            abs(float(p_home + p_away) - 1.0),
+            line_value,
+        )
+
+    implied = p_home if p_home is not None else p_away
+    if implied is not None:
+        return (1.0, abs(float(implied) - 0.5), 0.0, line_value)
+
+    return (2.0, 1e9, 1e9, line_value)
+
+
+def _select_primary_game_spread_lane(lanes: List[Dict[str, Any]]) -> Dict[str, Any]:
+    return min(lanes, key=_game_spread_lane_sort_key) if lanes else {}
+
+
+def _normalize_three_way_probs(
+    first_prob: Optional[float],
+    second_prob: Optional[float],
+    third_prob: Optional[float],
+) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+    values = [
+        float(first_prob) if first_prob is not None else None,
+        float(second_prob) if second_prob is not None else None,
+        float(third_prob) if third_prob is not None else None,
+    ]
+    present = [value for value in values if value is not None and value > 0]
+    if not present:
+        return first_prob, second_prob, third_prob
+    total = float(sum(present))
+    if total <= 0:
+        return first_prob, second_prob, third_prob
+    return tuple((value / total) if value is not None and value > 0 else None for value in values)  # type: ignore[return-value]
+
+
 def _finalize_prop_market(row: Dict[str, Any], market_name: Optional[str] = None) -> Dict[str, Any]:
     lanes_map = (row or {}).get("_lanes") or {}
     lanes: List[Dict[str, Any]] = []
@@ -398,17 +469,29 @@ def _extract_game_lines(
         "spreads": ("full", "spreads"),
         "totals": ("full", "totals"),
         "h2h_1st_1_innings": ("first1", "h2h"),
+        "h2h_3_way_1st_1_innings": ("first1", "h2h_3_way"),
         "spreads_1st_1_innings": ("first1", "spreads"),
+        "alternate_spreads_1st_1_innings": ("first1", "spreads_alt"),
         "totals_1st_1_innings": ("first1", "totals"),
+        "alternate_totals_1st_1_innings": ("first1", "totals_alt"),
         "h2h_1st_3_innings": ("first3", "h2h"),
+        "h2h_3_way_1st_3_innings": ("first3", "h2h_3_way"),
         "spreads_1st_3_innings": ("first3", "spreads"),
+        "alternate_spreads_1st_3_innings": ("first3", "spreads_alt"),
         "totals_1st_3_innings": ("first3", "totals"),
+        "alternate_totals_1st_3_innings": ("first3", "totals_alt"),
         "h2h_1st_5_innings": ("first5", "h2h"),
+        "h2h_3_way_1st_5_innings": ("first5", "h2h_3_way"),
         "spreads_1st_5_innings": ("first5", "spreads"),
+        "alternate_spreads_1st_5_innings": ("first5", "spreads_alt"),
         "totals_1st_5_innings": ("first5", "totals"),
+        "alternate_totals_1st_5_innings": ("first5", "totals_alt"),
         "h2h_1st_7_innings": ("first7", "h2h"),
+        "h2h_3_way_1st_7_innings": ("first7", "h2h_3_way"),
         "spreads_1st_7_innings": ("first7", "spreads"),
+        "alternate_spreads_1st_7_innings": ("first7", "spreads_alt"),
         "totals_1st_7_innings": ("first7", "totals"),
+        "alternate_totals_1st_7_innings": ("first7", "totals_alt"),
     }
     out: Dict[str, Any] = {
         "h2h": None,
@@ -425,6 +508,8 @@ def _extract_game_lines(
 
     home = str(home_team or "").strip().lower()
     away = str(away_team or "").strip().lower()
+    spread_lanes: Dict[str, Dict[str, Dict[str, Any]]] = {key: {} for key in ("full", "first1", "first3", "first5", "first7")}
+    total_lanes: Dict[str, Dict[str, Dict[str, Any]]] = {key: {} for key in ("full", "first1", "first3", "first5", "first7")}
 
     for m in _as_market_list(markets):
         key = (m.get("key") or "").lower().strip()
@@ -449,59 +534,100 @@ def _extract_game_lines(
                 if segment_key == "full":
                     out["h2h"] = row
 
-        elif market_key == "totals":
-            row = {"line": None, "over_odds": None, "under_odds": None}
+        elif market_key == "h2h_3_way":
+            row = {"home_odds": None, "away_odds": None, "draw_odds": None, "is_3_way": True}
+            for oc in outcomes:
+                nm = str(oc.get("name") or "").strip().lower()
+                price = oc.get("price")
+                if not nm:
+                    continue
+                if nm == home and row["home_odds"] is None:
+                    row["home_odds"] = _american_str(price)
+                elif nm == away and row["away_odds"] is None:
+                    row["away_odds"] = _american_str(price)
+                elif nm in {"draw", "tie"} and row["draw_odds"] is None:
+                    row["draw_odds"] = _american_str(price)
+            current_h2h = ((out.get("segments") or {}).get(segment_key) or {}).get("h2h")
+            if not isinstance(current_h2h, dict) and (row["home_odds"] is not None or row["away_odds"] is not None):
+                out["segments"][segment_key]["h2h"] = row
+                if segment_key == "full":
+                    out["h2h"] = row
+
+        elif market_key in {"totals", "totals_alt"}:
             for oc in outcomes:
                 side = str(oc.get("name") or "").strip().lower()  # Over/Under
                 price = oc.get("price")
                 point = oc.get("point")
-                if row["line"] is None and point is not None:
-                    try:
-                        row["line"] = float(point)
-                    except Exception:
-                        row["line"] = None
-                if side.startswith("over") and row["over_odds"] is None:
-                    row["over_odds"] = _american_str(price)
-                elif side.startswith("under") and row["under_odds"] is None:
-                    row["under_odds"] = _american_str(price)
-            if row["line"] is not None:
-                out["segments"][segment_key]["totals"] = row
-                if segment_key == "full":
-                    out["totals"] = row
+                try:
+                    line_value = float(point)
+                except Exception:
+                    line_value = None
+                if line_value is None:
+                    continue
+                lane_key = f"{line_value:.3f}"
+                lane = total_lanes[segment_key].setdefault(lane_key, {"line": line_value, "over_odds": None, "under_odds": None})
+                if side.startswith("over") and lane.get("over_odds") is None:
+                    lane["over_odds"] = _american_str(price)
+                elif side.startswith("under") and lane.get("under_odds") is None:
+                    lane["under_odds"] = _american_str(price)
 
-        elif market_key == "spreads":
-            row = {
-                "home_line": None,
-                "home_odds": None,
-                "away_line": None,
-                "away_odds": None,
-            }
+        elif market_key in {"spreads", "spreads_alt"}:
             for oc in outcomes:
                 nm = str(oc.get("name") or "").strip().lower()
                 price = oc.get("price")
                 point = oc.get("point")
                 if not nm:
                     continue
+                try:
+                    point_value = float(point)
+                except Exception:
+                    point_value = None
                 if nm == home:
-                    if row["home_line"] is None and point is not None:
-                        try:
-                            row["home_line"] = float(point)
-                        except Exception:
-                            row["home_line"] = None
-                    if row["home_odds"] is None:
-                        row["home_odds"] = _american_str(price)
+                    if point_value is None:
+                        continue
+                    lane_key = f"{point_value:.3f}"
+                    lane = spread_lanes[segment_key].setdefault(lane_key, {
+                        "home_line": point_value,
+                        "home_odds": None,
+                        "away_line": None,
+                        "away_odds": None,
+                    })
+                    if lane.get("home_odds") is None:
+                        lane["home_odds"] = _american_str(price)
                 elif nm == away:
-                    if row["away_line"] is None and point is not None:
-                        try:
-                            row["away_line"] = float(point)
-                        except Exception:
-                            row["away_line"] = None
-                    if row["away_odds"] is None:
-                        row["away_odds"] = _american_str(price)
-            if row["home_line"] is not None or row["away_line"] is not None:
-                out["segments"][segment_key]["spreads"] = row
-                if segment_key == "full":
-                    out["spreads"] = row
+                    if point_value is None:
+                        continue
+                    home_line = -float(point_value)
+                    lane_key = f"{home_line:.3f}"
+                    lane = spread_lanes[segment_key].setdefault(lane_key, {
+                        "home_line": home_line,
+                        "home_odds": None,
+                        "away_line": point_value,
+                        "away_odds": None,
+                    })
+                    lane["away_line"] = point_value
+                    if lane.get("away_odds") is None:
+                        lane["away_odds"] = _american_str(price)
+
+    for segment_key, lane_map in total_lanes.items():
+        lanes = [lane for lane in lane_map.values() if isinstance(lane, dict) and lane.get("line") is not None]
+        primary = _select_primary_game_total_lane(lanes)
+        if primary:
+            out["segments"][segment_key]["totals"] = primary
+            if segment_key == "full":
+                out["totals"] = primary
+
+    for segment_key, lane_map in spread_lanes.items():
+        lanes = [
+            lane
+            for lane in lane_map.values()
+            if isinstance(lane, dict) and (lane.get("home_line") is not None or lane.get("away_line") is not None)
+        ]
+        primary = _select_primary_game_spread_lane(lanes)
+        if primary:
+            out["segments"][segment_key]["spreads"] = primary
+            if segment_key == "full":
+                out["spreads"] = primary
 
     if not any(
         any(bucket.get(market) is not None for market in ("h2h", "spreads", "totals"))
