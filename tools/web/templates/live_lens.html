@@ -4,9 +4,9 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{{ page_title or ('MLB Live Lens - ' ~ date) }}</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='20260421-back-to-top-v1') }}" />
     {% if season %}
-    <link rel="stylesheet" href="{{ url_for('static', filename='cards.css') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='cards.css', v='20260421-back-to-top-v2') }}" />
     <link rel="stylesheet" href="{{ url_for('static', filename='season.css', v='20260328-season-mobile-v8') }}" />
     {% endif %}
   </head>
@@ -103,5 +103,6 @@
       };
     </script>
     <script src="{{ url_for('static', filename='live_lens.js', v='20260403-live-lens-copy-v1') }}"></script>
+    <script src="{{ url_for('static', filename='back_to_top.js', v='20260421-back-to-top-v1') }}"></script>
   </body>
 </html>

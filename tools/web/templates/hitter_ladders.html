@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Hitter Ladders — {{ date }}</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='cards.css', v='20260401-ladder-history-chart') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='cards.css', v='20260421-back-to-top-v2') }}" />
     <link rel="stylesheet" href="{{ url_for('static', filename='pitcher_ladders.css', v='20260421-historical-results-v1') }}" />
   </head>
   <body class="cards-body ladder-body">
@@ -77,5 +77,6 @@
 
     <script id="hitterLaddersBootstrap" type="application/json">{{ {'date': date, 'prop': prop, 'game': game, 'team': team, 'hitter': hitter, 'sort': sort}|tojson }}</script>
     <script src="{{ url_for('static', filename='hitter_ladders.js', v='20260421-historical-results-v1') }}"></script>
+    <script src="{{ url_for('static', filename='back_to_top.js', v='20260421-back-to-top-v1') }}"></script>
   </body>
 </html>

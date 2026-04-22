@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Game {{ game_pk }} — {{ date }}</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='20260421-back-to-top-v1') }}" />
   </head>
   <body data-gamepk="{{ game_pk }}" data-date="{{ date }}" data-stream-enabled="{{ 'true' if stream_enabled else 'false' }}" data-historical="{{ 'true' if is_historical else 'false' }}">
     <div class="container">
@@ -261,5 +261,6 @@
         if (streamEnabled || isHistorical) startStream();
       });
     </script>
+    <script src="{{ url_for('static', filename='back_to_top.js', v='20260421-back-to-top-v1') }}"></script>
   </body>
 </html>
