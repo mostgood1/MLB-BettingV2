@@ -8770,22 +8770,12 @@ def _official_betting_card_manifest_response_payload(
         f"{int(season)}:{str(profile_name or '')}",
         signature_factory=lambda: _season_betting_manifest_payload_signature(int(season), profile_name, manifest_path),
         max_age_seconds=float(_CARDS_CACHE_TTL_SECONDS),
-        builder=lambda: (
-            _official_betting_card_manifest_payload(
-                int(season),
-                profile_name,
-                manifest_path,
-                manifest,
-                available_profiles,
-            )
-            if _season_betting_manifest_needs_refresh(int(season), manifest)
-            else _official_betting_card_manifest_static_payload(
-                int(season),
-                profile_name,
-                manifest_path,
-                manifest,
-                available_profiles,
-            )
+        builder=lambda: _official_betting_card_manifest_static_payload(
+            int(season),
+            profile_name,
+            manifest_path,
+            manifest,
+            available_profiles,
         ),
     )
 
@@ -8813,6 +8803,30 @@ def _season_betting_manifest_static_payload(
     return payload
 
 
+def _upsert_season_manifest_day_row(
+    day_rows: Sequence[Dict[str, Any]],
+    supplemental_row: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    rows = [dict(row) for row in day_rows if isinstance(row, dict)]
+    if not isinstance(supplemental_row, dict):
+        return rows
+    target_date = str(supplemental_row.get("date") or "").strip()
+    if not target_date:
+        return rows
+    out: List[Dict[str, Any]] = []
+    replaced = False
+    for row in rows:
+        if str(row.get("date") or "").strip() == target_date:
+            out.append(dict(supplemental_row))
+            replaced = True
+        else:
+            out.append(row)
+    if not replaced:
+        out.append(dict(supplemental_row))
+    out.sort(key=lambda row: str(row.get("date") or ""))
+    return out
+
+
 def _official_betting_card_manifest_static_payload(
     season: int,
     profile_name: str,
@@ -8827,6 +8841,15 @@ def _official_betting_card_manifest_static_payload(
         manifest,
         available_profiles,
     )
+    today_str = _today_iso()
+    if _season_from_date_str(today_str) == int(season):
+        today_payload = _prebuilt_official_betting_card_day_payload(int(season), today_str, profile_name)
+        if isinstance(today_payload, dict) and today_payload.get("found"):
+            payload["days"] = _upsert_season_manifest_day_row(
+                payload.get("days") or [],
+                _season_betting_manifest_day_row_from_payload(today_payload),
+            )
+            payload["source_kind"] = "season_manifest_static_supplemented"
     active_days = _official_betting_card_active_days(payload.get("days") or [])
     active_results = _merge_settled_results_blocks([row.get("results") or {} for row in active_days])
     active_combined = active_results.get("combined") or _blank_settled_summary()
