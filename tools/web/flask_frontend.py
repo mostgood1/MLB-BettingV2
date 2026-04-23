@@ -2989,9 +2989,8 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
             tracked_hr_targets_path,
         ])
         hr_targets_path = _prefer_newer_file(hr_targets_path, tracked_hr_targets_path)
-    if _is_current_local_date(str(d)):
-        hr_targets_path = _prefer_richer_hr_targets_file(hr_targets_path, canonical_hr_targets_path)
-        hr_targets_path = _prefer_richer_hr_targets_file(hr_targets_path, tracked_hr_targets_path)
+    hr_targets_path = _prefer_richer_hr_targets_file(hr_targets_path, canonical_hr_targets_path)
+    hr_targets_path = _prefer_richer_hr_targets_file(hr_targets_path, tracked_hr_targets_path)
     hr_targets = _load_json_file(hr_targets_path)
 
     settlement_path = _find_preferred_file([
@@ -3241,9 +3240,8 @@ def _load_hr_targets_artifact_context(d: str) -> Dict[str, Any]:
             tracked_hr_targets_path,
         ])
         hr_targets_path = _prefer_newer_file(hr_targets_path, tracked_hr_targets_path)
-    if _is_current_local_date(str(d)):
-        hr_targets_path = _prefer_richer_hr_targets_file(hr_targets_path, canonical_hr_targets_path)
-        hr_targets_path = _prefer_richer_hr_targets_file(hr_targets_path, tracked_hr_targets_path)
+    hr_targets_path = _prefer_richer_hr_targets_file(hr_targets_path, canonical_hr_targets_path)
+    hr_targets_path = _prefer_richer_hr_targets_file(hr_targets_path, tracked_hr_targets_path)
 
     return {
         "profile_bundle_path": profile_bundle_path,

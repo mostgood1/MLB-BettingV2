@@ -635,7 +635,11 @@ if ($enableNextDayBuild) {
 if ($GitPush -eq 'on') {
     $commitMessage = $GitCommitMessage.Replace('{date}', $Date).Replace('{next_date}', $resolvedNextDate).Replace('{workflow}', 'end-to-end')
     Assert-SafeArtifactPush -RepoRoot $repoRoot -Remote $GitPushRemote -Branch $pushBranch -ArtifactPaths $artifactPaths -OwnedDates $ownedArtifactDates -AllowArtifactRebase:$AllowArtifactRebase
-    Invoke-GitCommand -RepoRoot $repoRoot -Arguments (@('add', '-A', '--') + $artifactPaths) -StepName 'Stage workflow outputs'
+
+    $changedArtifactPaths = Get-WorkingTreeChangedPaths -RepoRoot $repoRoot -Paths $artifactPaths
+    if ($changedArtifactPaths.Count -gt 0) {
+        Invoke-GitCommand -RepoRoot $repoRoot -Arguments (@('add', '-A', '--') + $changedArtifactPaths) -StepName 'Stage workflow outputs'
+    }
 
     $stagedArtifactPaths = Get-StagedChangedPaths -RepoRoot $repoRoot -Paths $artifactPaths
     if ($stagedArtifactPaths.Count -eq 0) {
