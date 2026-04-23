@@ -3131,6 +3131,26 @@ def _collect_daily_hr_targets(
     }
 
 
+def _hr_targets_doc_quality(doc: Optional[Dict[str, Any]]) -> Tuple[int, int, str]:
+    if not isinstance(doc, dict):
+        return (-1, -1, "")
+    rows = len([row for row in (doc.get("rows") or []) if isinstance(row, dict)])
+    games = _safe_int(((doc.get("counts") or {}).get("games"))) or 0
+    generated_at = str(doc.get("generated_at") or "")
+    return (int(rows), int(games), generated_at)
+
+
+def _prefer_richer_hr_targets_doc(
+    primary: Optional[Dict[str, Any]],
+    challenger: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    if not isinstance(challenger, dict):
+        return primary if isinstance(primary, dict) else None
+    if not isinstance(primary, dict):
+        return challenger
+    return challenger if _hr_targets_doc_quality(challenger) > _hr_targets_doc_quality(primary) else primary
+
+
 def _build_recommendation_reasons(row: Dict[str, Any]) -> List[str]:
     market = str(row.get("market") or "").strip().lower()
     selection = str(row.get("selection") or "").strip().lower()
@@ -5497,24 +5517,46 @@ def main() -> int:
         game_sim_dir = _path_from_maybe_relative(game_profile.get("sim_dir"))
         game_snapshot_dir = _path_from_maybe_relative(game_profile.get("snapshot_dir"))
 
-        source_sim_dir = hitter_sim_dir if hitter_sim_dir and hitter_sim_dir.exists() and hitter_sim_dir.is_dir() else game_sim_dir
-        source_snapshot_dir = (
-            hitter_snapshot_dir if source_sim_dir == hitter_sim_dir and hitter_snapshot_dir is not None else game_snapshot_dir
-        )
+        existing_hr_targets_doc: Optional[Dict[str, Any]] = None
+        try:
+            if hr_targets_path.exists() and hr_targets_path.is_file():
+                loaded_existing = _read_json(hr_targets_path)
+                existing_hr_targets_doc = loaded_existing if isinstance(loaded_existing, dict) else None
+        except Exception:
+            existing_hr_targets_doc = None
 
-        if source_sim_dir and source_sim_dir.exists() and source_sim_dir.is_dir():
-            hr_targets_doc = _collect_daily_hr_targets(
+        candidate_docs: List[Dict[str, Any]] = []
+        seen_sim_dirs: set[str] = set()
+        for source_profile, source_sim_dir, source_snapshot_dir in (
+            ("hitter_props_recos", hitter_sim_dir, hitter_snapshot_dir),
+            ("game_recos", game_sim_dir, game_snapshot_dir),
+        ):
+            if not isinstance(source_sim_dir, Path) or not source_sim_dir.exists() or not source_sim_dir.is_dir():
+                continue
+            sim_key = str(source_sim_dir.resolve())
+            if sim_key in seen_sim_dirs:
+                continue
+            seen_sim_dirs.add(sim_key)
+            candidate_doc = _collect_daily_hr_targets(
                 source_sim_dir,
                 source_snapshot_dir,
                 date=str(args.date),
                 season=int(args.season),
                 hr_target_policy=hr_target_policy,
             )
-            hr_targets_doc["source_profile"] = (
-                "hitter_props_recos" if source_sim_dir == hitter_sim_dir else "game_recos"
-            )
-            _write_json(hr_targets_path, hr_targets_doc)
-            print(f"[multi-profile] Wrote HR targets artifact: {_rel(hr_targets_path)}")
+            candidate_doc["source_profile"] = source_profile
+            candidate_docs.append(candidate_doc)
+
+        if candidate_docs:
+            selected_hr_targets_doc: Optional[Dict[str, Any]] = None
+            for candidate_doc in candidate_docs:
+                selected_hr_targets_doc = _prefer_richer_hr_targets_doc(selected_hr_targets_doc, candidate_doc)
+            hr_targets_doc = _prefer_richer_hr_targets_doc(existing_hr_targets_doc, selected_hr_targets_doc)
+            if hr_targets_doc is not existing_hr_targets_doc and isinstance(hr_targets_doc, dict):
+                _write_json(hr_targets_path, hr_targets_doc)
+                print(f"[multi-profile] Wrote HR targets artifact: {_rel(hr_targets_path)}")
+            elif isinstance(hr_targets_doc, dict):
+                print(f"[multi-profile] Kept richer existing HR targets artifact: {_rel(hr_targets_path)}")
         else:
             hr_targets_error = "missing hitter props and game sim_dir"
             print(f"[multi-profile] HR targets skipped: {hr_targets_error}")

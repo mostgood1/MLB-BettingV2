@@ -53,6 +53,7 @@ from tools.daily_update_multi_profile import (
     _hitter_bvp_reason,
     _hitter_pitch_mix_reason,
     _hitter_platoon_reason,
+    _prefer_richer_hr_targets_doc,
     _hitter_statcast_quality_reason,
     _opponent_lineup_reason,
     _pitch_mix_reason,
@@ -2719,6 +2720,24 @@ def _resolve_hr_targets_artifact(
     )
 
     hr_source_profile = "game_recos"
+    hr_candidate_sources: List[Tuple[str, Path, Optional[Path]]] = []
+
+    def _append_hr_candidate_source(source_profile: str, sim_dir: Optional[Path], snapshot_dir: Optional[Path]) -> None:
+        if not isinstance(sim_dir, Path) or not sim_dir.exists() or not sim_dir.is_dir():
+            return
+        try:
+            sim_key = str(sim_dir.resolve())
+        except Exception:
+            sim_key = str(sim_dir)
+        for _, existing_sim_dir, _ in hr_candidate_sources:
+            try:
+                existing_key = str(existing_sim_dir.resolve())
+            except Exception:
+                existing_key = str(existing_sim_dir)
+            if existing_key == sim_key:
+                return
+        hr_candidate_sources.append((str(source_profile), sim_dir, snapshot_dir if isinstance(snapshot_dir, Path) else None))
+
     if isinstance(profile_bundle, dict):
         profiles = profile_bundle.get("profiles") if isinstance(profile_bundle.get("profiles"), dict) else {}
         hitter_profile = profiles.get("hitter_props_recos") if isinstance(profiles.get("hitter_props_recos"), dict) else {}
@@ -2731,9 +2750,13 @@ def _resolve_hr_targets_artifact(
             hr_source_sim_dir = hitter_sim_dir
             hr_source_snapshot_dir = hitter_snapshot_dir if isinstance(hitter_snapshot_dir, Path) else hr_source_snapshot_dir
             hr_source_profile = "hitter_props_recos"
+            _append_hr_candidate_source("hitter_props_recos", hitter_sim_dir, hitter_snapshot_dir)
         elif game_sim_dir and game_sim_dir.exists() and game_sim_dir.is_dir():
             hr_source_sim_dir = game_sim_dir
             hr_source_snapshot_dir = game_snapshot_dir if isinstance(game_snapshot_dir, Path) else hr_source_snapshot_dir
+        _append_hr_candidate_source("game_recos", game_sim_dir, game_snapshot_dir)
+
+    _append_hr_candidate_source(hr_source_profile, hr_source_sim_dir, hr_source_snapshot_dir)
 
     if not _derived_artifact_refresh_in_progress("hr_targets", str(d)) and _artifact_is_stale(
         hr_targets_path,
@@ -2742,18 +2765,23 @@ def _resolve_hr_targets_artifact(
     ):
         if _begin_derived_artifact_refresh("hr_targets", str(d)):
             try:
-                if isinstance(hr_source_sim_dir, Path) and hr_source_sim_dir.exists() and hr_source_sim_dir.is_dir():
+                if hr_candidate_sources:
                     hr_targets_destination = hr_targets_path or canonical_hr_targets_path
-                    rebuilt_hr_targets = _collect_daily_hr_targets(
-                        hr_source_sim_dir,
-                        hr_source_snapshot_dir,
-                        date=str(d),
-                        season=int(_season_from_date_str(str(d))),
-                    )
-                    rebuilt_hr_targets["source_profile"] = hr_source_profile
-                    _write_json_file(hr_targets_destination, rebuilt_hr_targets)
-                    hr_targets_path = hr_targets_destination
-                    hr_targets = rebuilt_hr_targets
+                    rebuilt_hr_targets: Optional[Dict[str, Any]] = None
+                    for source_profile, source_sim_dir, source_snapshot_dir in hr_candidate_sources:
+                        candidate_doc = _collect_daily_hr_targets(
+                            source_sim_dir,
+                            source_snapshot_dir,
+                            date=str(d),
+                            season=int(_season_from_date_str(str(d))),
+                        )
+                        candidate_doc["source_profile"] = source_profile
+                        rebuilt_hr_targets = _prefer_richer_hr_targets_doc(rebuilt_hr_targets, candidate_doc)
+                    selected_hr_targets = _prefer_richer_hr_targets_doc(hr_targets, rebuilt_hr_targets)
+                    if selected_hr_targets is not hr_targets and isinstance(selected_hr_targets, dict):
+                        _write_json_file(hr_targets_destination, selected_hr_targets)
+                        hr_targets_path = hr_targets_destination
+                        hr_targets = selected_hr_targets
             except Exception:
                 app.logger.exception("failed to refresh stale hr targets artifact for %s", d)
             finally:
