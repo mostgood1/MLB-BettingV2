@@ -2666,6 +2666,102 @@ def _prefer_richer_hr_targets_file(primary: Optional[Path], challenger: Optional
     return _prefer_newer_file(primary, challenger)
 
 
+def _resolve_hr_targets_artifact(
+    d: str,
+    *,
+    profile_bundle: Optional[Dict[str, Any]] = None,
+    fallback_sim_dir: Optional[Path] = None,
+    fallback_snapshot_dir: Optional[Path] = None,
+) -> Tuple[Optional[Path], Optional[Dict[str, Any]]]:
+    slug = _date_slug(d)
+    canonical_daily_dir = _DATA_DIR / "daily"
+    tracked_daily_dir = _TRACKED_DATA_DIR / "daily"
+    canonical_hr_targets_path = canonical_daily_dir / f"daily_summary_{slug}_hr_targets.json"
+    tracked_hr_targets_path = tracked_daily_dir / f"daily_summary_{slug}_hr_targets.json"
+    canonical_sim_dir = canonical_daily_dir / "sims" / str(d)
+    canonical_snapshot_dir = canonical_daily_dir / "snapshots" / str(d)
+    tracked_sim_dir = tracked_daily_dir / "sims" / str(d)
+    tracked_snapshot_dir = tracked_daily_dir / "snapshots" / str(d)
+
+    hr_targets_path = None
+    if isinstance(profile_bundle, dict):
+        hr_targets_path = _path_from_maybe_relative(((profile_bundle.get("hr_targets") or {}).get("artifact_path")))
+        hr_targets_path = _prefer_newer_file(hr_targets_path, canonical_hr_targets_path)
+        hr_targets_path = _prefer_newer_file(hr_targets_path, tracked_hr_targets_path)
+    if not hr_targets_path:
+        hr_targets_path = _find_preferred_file([
+            canonical_hr_targets_path,
+            tracked_hr_targets_path,
+        ])
+        hr_targets_path = _prefer_newer_file(hr_targets_path, tracked_hr_targets_path)
+    hr_targets_path = _prefer_richer_hr_targets_file(hr_targets_path, canonical_hr_targets_path)
+    hr_targets_path = _prefer_richer_hr_targets_file(hr_targets_path, tracked_hr_targets_path)
+    hr_targets = _load_json_file(hr_targets_path)
+
+    hr_source_sim_dir: Optional[Path] = None
+    if isinstance(fallback_sim_dir, Path) and fallback_sim_dir.exists() and fallback_sim_dir.is_dir():
+        hr_source_sim_dir = fallback_sim_dir
+    if not hr_source_sim_dir and canonical_sim_dir.exists() and canonical_sim_dir.is_dir():
+        hr_source_sim_dir = canonical_sim_dir
+    hr_source_sim_dir = _prefer_newer_path(
+        hr_source_sim_dir,
+        tracked_sim_dir if tracked_sim_dir.exists() and tracked_sim_dir.is_dir() else None,
+    )
+
+    hr_source_snapshot_dir: Optional[Path] = None
+    if isinstance(fallback_snapshot_dir, Path) and fallback_snapshot_dir.exists() and fallback_snapshot_dir.is_dir():
+        hr_source_snapshot_dir = fallback_snapshot_dir
+    if not hr_source_snapshot_dir and canonical_snapshot_dir.exists() and canonical_snapshot_dir.is_dir():
+        hr_source_snapshot_dir = canonical_snapshot_dir
+    hr_source_snapshot_dir = _prefer_newer_path(
+        hr_source_snapshot_dir,
+        tracked_snapshot_dir if tracked_snapshot_dir.exists() and tracked_snapshot_dir.is_dir() else None,
+    )
+
+    hr_source_profile = "game_recos"
+    if isinstance(profile_bundle, dict):
+        profiles = profile_bundle.get("profiles") if isinstance(profile_bundle.get("profiles"), dict) else {}
+        hitter_profile = profiles.get("hitter_props_recos") if isinstance(profiles.get("hitter_props_recos"), dict) else {}
+        game_profile = profiles.get("game_recos") if isinstance(profiles.get("game_recos"), dict) else {}
+        hitter_sim_dir = _path_from_maybe_relative(hitter_profile.get("sim_dir"))
+        hitter_snapshot_dir = _path_from_maybe_relative(hitter_profile.get("snapshot_dir"))
+        game_sim_dir = _path_from_maybe_relative(game_profile.get("sim_dir"))
+        game_snapshot_dir = _path_from_maybe_relative(game_profile.get("snapshot_dir"))
+        if hitter_sim_dir and hitter_sim_dir.exists() and hitter_sim_dir.is_dir():
+            hr_source_sim_dir = hitter_sim_dir
+            hr_source_snapshot_dir = hitter_snapshot_dir if isinstance(hitter_snapshot_dir, Path) else hr_source_snapshot_dir
+            hr_source_profile = "hitter_props_recos"
+        elif game_sim_dir and game_sim_dir.exists() and game_sim_dir.is_dir():
+            hr_source_sim_dir = game_sim_dir
+            hr_source_snapshot_dir = game_snapshot_dir if isinstance(game_snapshot_dir, Path) else hr_source_snapshot_dir
+
+    if not _derived_artifact_refresh_in_progress("hr_targets", str(d)) and _artifact_is_stale(
+        hr_targets_path,
+        dependency_paths=[hr_source_snapshot_dir],
+        dependency_dirs=[hr_source_sim_dir],
+    ):
+        if _begin_derived_artifact_refresh("hr_targets", str(d)):
+            try:
+                if isinstance(hr_source_sim_dir, Path) and hr_source_sim_dir.exists() and hr_source_sim_dir.is_dir():
+                    hr_targets_destination = hr_targets_path or canonical_hr_targets_path
+                    rebuilt_hr_targets = _collect_daily_hr_targets(
+                        hr_source_sim_dir,
+                        hr_source_snapshot_dir,
+                        date=str(d),
+                        season=int(_season_from_date_str(str(d))),
+                    )
+                    rebuilt_hr_targets["source_profile"] = hr_source_profile
+                    _write_json_file(hr_targets_destination, rebuilt_hr_targets)
+                    hr_targets_path = hr_targets_destination
+                    hr_targets = rebuilt_hr_targets
+            except Exception:
+                app.logger.exception("failed to refresh stale hr targets artifact for %s", d)
+            finally:
+                _end_derived_artifact_refresh("hr_targets", str(d))
+
+    return hr_targets_path, hr_targets
+
+
 def _synthetic_settlement_from_summary(summary: Dict[str, Any]) -> Dict[str, Any]:
     settlement: Dict[str, Any] = {
         "_settled_rows": [],
@@ -2977,22 +3073,6 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
     profile_bundle_path = _prefer_newer_file(profile_bundle_path, tracked_profile_bundle_path)
     profile_bundle = _load_json_file(profile_bundle_path)
 
-    hr_targets_path = None
-    hr_targets = None
-    if isinstance(profile_bundle, dict):
-        hr_targets_path = _path_from_maybe_relative(((profile_bundle.get("hr_targets") or {}).get("artifact_path")))
-        hr_targets_path = _prefer_newer_file(hr_targets_path, canonical_hr_targets_path)
-        hr_targets_path = _prefer_newer_file(hr_targets_path, tracked_hr_targets_path)
-    if not hr_targets_path:
-        hr_targets_path = _find_preferred_file([
-            canonical_hr_targets_path,
-            tracked_hr_targets_path,
-        ])
-        hr_targets_path = _prefer_newer_file(hr_targets_path, tracked_hr_targets_path)
-    hr_targets_path = _prefer_richer_hr_targets_file(hr_targets_path, canonical_hr_targets_path)
-    hr_targets_path = _prefer_richer_hr_targets_file(hr_targets_path, tracked_hr_targets_path)
-    hr_targets = _load_json_file(hr_targets_path)
-
     settlement_path = _find_preferred_file([
         canonical_daily_dir / "settlements" / f"daily_summary_{slug}_locked_policy_settlement.json",
         tracked_daily_dir / "settlements" / f"daily_summary_{slug}_locked_policy_settlement.json",
@@ -3079,30 +3159,12 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
             hr_source_sim_dir = game_sim_dir
             hr_source_snapshot_dir = game_snapshot_dir if isinstance(game_snapshot_dir, Path) else hr_source_snapshot_dir
 
-    allow_request_hr_target_refresh = not _is_current_local_date(str(d))
-    if allow_request_hr_target_refresh and not _derived_artifact_refresh_in_progress("hr_targets", str(d)) and _artifact_is_stale(
-        hr_targets_path,
-        dependency_paths=[hr_source_snapshot_dir],
-        dependency_dirs=[hr_source_sim_dir],
-    ):
-        if _begin_derived_artifact_refresh("hr_targets", str(d)):
-            try:
-                if isinstance(hr_source_sim_dir, Path) and hr_source_sim_dir.exists() and hr_source_sim_dir.is_dir():
-                    hr_targets_destination = hr_targets_path or canonical_hr_targets_path
-                    rebuilt_hr_targets = _collect_daily_hr_targets(
-                        hr_source_sim_dir,
-                        hr_source_snapshot_dir,
-                        date=str(d),
-                        season=int(_season_from_date_str(str(d))),
-                    )
-                    rebuilt_hr_targets["source_profile"] = hr_source_profile
-                    _write_json_file(hr_targets_destination, rebuilt_hr_targets)
-                    hr_targets_path = hr_targets_destination
-                    hr_targets = rebuilt_hr_targets
-            except Exception:
-                app.logger.exception("failed to refresh stale hr targets artifact for %s", d)
-            finally:
-                _end_derived_artifact_refresh("hr_targets", str(d))
+    hr_targets_path, hr_targets = _resolve_hr_targets_artifact(
+        d,
+        profile_bundle=profile_bundle if isinstance(profile_bundle, dict) else None,
+        fallback_sim_dir=hr_source_sim_dir,
+        fallback_snapshot_dir=hr_source_snapshot_dir,
+    )
 
     pitcher_market_ctx = _load_pitcher_ladder_market_context(d)
     hitter_market_ctx = _load_hitter_ladder_market_context(d)
@@ -3229,25 +3291,16 @@ def _load_hr_targets_artifact_context(d: str) -> Dict[str, Any]:
     profile_bundle_path = _prefer_newer_file(profile_bundle_path, tracked_profile_bundle_path)
     profile_bundle = _load_json_file(profile_bundle_path)
 
-    hr_targets_path = None
-    if isinstance(profile_bundle, dict):
-        hr_targets_path = _path_from_maybe_relative(((profile_bundle.get("hr_targets") or {}).get("artifact_path")))
-        hr_targets_path = _prefer_newer_file(hr_targets_path, canonical_hr_targets_path)
-        hr_targets_path = _prefer_newer_file(hr_targets_path, tracked_hr_targets_path)
-    if not hr_targets_path:
-        hr_targets_path = _find_preferred_file([
-            canonical_hr_targets_path,
-            tracked_hr_targets_path,
-        ])
-        hr_targets_path = _prefer_newer_file(hr_targets_path, tracked_hr_targets_path)
-    hr_targets_path = _prefer_richer_hr_targets_file(hr_targets_path, canonical_hr_targets_path)
-    hr_targets_path = _prefer_richer_hr_targets_file(hr_targets_path, tracked_hr_targets_path)
+    hr_targets_path, hr_targets = _resolve_hr_targets_artifact(
+        d,
+        profile_bundle=profile_bundle if isinstance(profile_bundle, dict) else None,
+    )
 
     return {
         "profile_bundle_path": profile_bundle_path,
         "profile_bundle": profile_bundle,
         "hr_targets_path": hr_targets_path,
-        "hr_targets": _load_json_file(hr_targets_path),
+        "hr_targets": hr_targets,
     }
 
 
