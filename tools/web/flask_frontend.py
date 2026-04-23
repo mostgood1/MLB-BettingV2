@@ -7439,34 +7439,6 @@ def _prebuilt_season_day_payload(season: int, date_str: str, requested_profile: 
     artifact_path, artifact_doc = _load_daily_season_frontend_artifact(
         lambda root: daily_season_day_artifact_path(int(season), str(date_str), profile=requested_profile, data_root=root)
     )
-    daily_artifacts = _load_cards_artifacts(str(date_str))
-    season_dependency_paths = [
-        daily_artifacts.get("profile_bundle_path") if isinstance(daily_artifacts.get("profile_bundle_path"), Path) else None,
-        daily_artifacts.get("hr_targets_path") if isinstance(daily_artifacts.get("hr_targets_path"), Path) else None,
-        daily_artifacts.get("locked_policy_path") if isinstance(daily_artifacts.get("locked_policy_path"), Path) else None,
-        daily_artifacts.get("game_summary_path") if isinstance(daily_artifacts.get("game_summary_path"), Path) else None,
-        daily_artifacts.get("daily_ladders_path") if isinstance(daily_artifacts.get("daily_ladders_path"), Path) else None,
-    ]
-    refresh_key = f"{season}:{date_str}:{requested_profile}"
-    if not _derived_artifact_refresh_in_progress("season_frontend", refresh_key) and _artifact_is_stale(
-        artifact_path,
-        dependency_paths=season_dependency_paths,
-    ):
-        if _begin_derived_artifact_refresh("season_frontend", refresh_key):
-            try:
-                write_current_day_season_frontend_artifacts(
-                    int(season),
-                    str(date_str),
-                    betting_profile=requested_profile,
-                    out_dir=(artifact_path.parent if isinstance(artifact_path, Path) else None),
-                )
-                artifact_path, artifact_doc = _load_daily_season_frontend_artifact(
-                    lambda root: daily_season_day_artifact_path(int(season), str(date_str), profile=requested_profile, data_root=root)
-                )
-            except Exception:
-                app.logger.exception("failed to refresh stale season frontend day artifact for %s", date_str)
-            finally:
-                _end_derived_artifact_refresh("season_frontend", refresh_key)
     if not artifact_path or not isinstance(artifact_doc, dict) or not artifact_doc.get("found"):
         return None
     out = dict(artifact_doc)
@@ -7481,34 +7453,6 @@ def _prebuilt_season_betting_day_payload(season: int, date_str: str, requested_p
     artifact_path, artifact_doc = _load_daily_season_frontend_artifact(
         lambda root: daily_season_betting_day_artifact_path(int(season), str(date_str), profile=requested_profile, data_root=root)
     )
-    daily_artifacts = _load_cards_artifacts(str(date_str))
-    season_dependency_paths = [
-        daily_artifacts.get("profile_bundle_path") if isinstance(daily_artifacts.get("profile_bundle_path"), Path) else None,
-        daily_artifacts.get("hr_targets_path") if isinstance(daily_artifacts.get("hr_targets_path"), Path) else None,
-        daily_artifacts.get("locked_policy_path") if isinstance(daily_artifacts.get("locked_policy_path"), Path) else None,
-        daily_artifacts.get("game_summary_path") if isinstance(daily_artifacts.get("game_summary_path"), Path) else None,
-        daily_artifacts.get("daily_ladders_path") if isinstance(daily_artifacts.get("daily_ladders_path"), Path) else None,
-    ]
-    refresh_key = f"{season}:{date_str}:{requested_profile}"
-    if not _derived_artifact_refresh_in_progress("season_frontend", refresh_key) and _artifact_is_stale(
-        artifact_path,
-        dependency_paths=season_dependency_paths,
-    ):
-        if _begin_derived_artifact_refresh("season_frontend", refresh_key):
-            try:
-                write_current_day_season_frontend_artifacts(
-                    int(season),
-                    str(date_str),
-                    betting_profile=requested_profile,
-                    out_dir=(artifact_path.parent if isinstance(artifact_path, Path) else None),
-                )
-                artifact_path, artifact_doc = _load_daily_season_frontend_artifact(
-                    lambda root: daily_season_betting_day_artifact_path(int(season), str(date_str), profile=requested_profile, data_root=root)
-                )
-            except Exception:
-                app.logger.exception("failed to refresh stale season betting day artifact for %s", date_str)
-            finally:
-                _end_derived_artifact_refresh("season_frontend", refresh_key)
     if not artifact_path or not isinstance(artifact_doc, dict) or not artifact_doc.get("found"):
         return None
     out = dict(artifact_doc)
@@ -7523,34 +7467,6 @@ def _prebuilt_official_betting_card_day_payload(season: int, date_str: str, requ
     artifact_path, artifact_doc = _load_daily_season_frontend_artifact(
         lambda root: daily_official_betting_card_day_artifact_path(int(season), str(date_str), profile=requested_profile, data_root=root)
     )
-    daily_artifacts = _load_cards_artifacts(str(date_str))
-    season_dependency_paths = [
-        daily_artifacts.get("profile_bundle_path") if isinstance(daily_artifacts.get("profile_bundle_path"), Path) else None,
-        daily_artifacts.get("hr_targets_path") if isinstance(daily_artifacts.get("hr_targets_path"), Path) else None,
-        daily_artifacts.get("locked_policy_path") if isinstance(daily_artifacts.get("locked_policy_path"), Path) else None,
-        daily_artifacts.get("game_summary_path") if isinstance(daily_artifacts.get("game_summary_path"), Path) else None,
-        daily_artifacts.get("daily_ladders_path") if isinstance(daily_artifacts.get("daily_ladders_path"), Path) else None,
-    ]
-    refresh_key = f"{season}:{date_str}:{requested_profile}"
-    if not _derived_artifact_refresh_in_progress("season_frontend", refresh_key) and _artifact_is_stale(
-        artifact_path,
-        dependency_paths=season_dependency_paths,
-    ):
-        if _begin_derived_artifact_refresh("season_frontend", refresh_key):
-            try:
-                write_current_day_season_frontend_artifacts(
-                    int(season),
-                    str(date_str),
-                    betting_profile=requested_profile,
-                    out_dir=(artifact_path.parent if isinstance(artifact_path, Path) else None),
-                )
-                artifact_path, artifact_doc = _load_daily_season_frontend_artifact(
-                    lambda root: daily_official_betting_card_day_artifact_path(int(season), str(date_str), profile=requested_profile, data_root=root)
-                )
-            except Exception:
-                app.logger.exception("failed to refresh stale official betting card day artifact for %s", date_str)
-            finally:
-                _end_derived_artifact_refresh("season_frontend", refresh_key)
     if not artifact_path or not isinstance(artifact_doc, dict) or not artifact_doc.get("found"):
         return None
     out = dict(artifact_doc)
