@@ -1984,14 +1984,33 @@ def _path_from_maybe_relative(value: Any) -> Optional[Path]:
     candidates.append(_ROOT_DIR / Path(normalized or raw))
 
     seen: set[str] = set()
+    existing_files: List[Path] = []
+    existing_dirs: List[Path] = []
     for candidate in candidates:
         resolved = candidate.resolve()
         key = str(resolved)
         if key in seen:
             continue
         seen.add(key)
-        if resolved.exists():
-            return resolved
+        if resolved.exists() and resolved.is_file():
+            existing_files.append(resolved)
+            continue
+        if resolved.exists() and resolved.is_dir():
+            existing_dirs.append(resolved)
+
+    if existing_files:
+        preferred_file: Optional[Path] = None
+        for candidate in existing_files:
+            preferred_file = _prefer_newer_file(preferred_file, candidate)
+        if preferred_file is not None:
+            return preferred_file
+
+    if existing_dirs:
+        preferred_dir: Optional[Path] = None
+        for candidate in existing_dirs:
+            preferred_dir = _prefer_newer_path(preferred_dir, candidate)
+        if preferred_dir is not None:
+            return preferred_dir
 
     return candidates[0].resolve() if candidates else None
 
