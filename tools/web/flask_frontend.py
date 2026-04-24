@@ -8923,12 +8923,22 @@ def _official_betting_card_manifest_response_payload(
         f"{int(season)}:{str(profile_name or '')}",
         signature_factory=lambda: _season_betting_manifest_payload_signature(int(season), profile_name, manifest_path),
         max_age_seconds=float(_CARDS_CACHE_TTL_SECONDS),
-        builder=lambda: _official_betting_card_manifest_static_payload(
-            int(season),
-            profile_name,
-            manifest_path,
-            manifest,
-            available_profiles,
+        builder=lambda: (
+            _official_betting_card_manifest_payload(
+                int(season),
+                profile_name,
+                manifest_path,
+                manifest,
+                available_profiles,
+            )
+            if _season_betting_manifest_needs_refresh(int(season), manifest)
+            else _official_betting_card_manifest_static_payload(
+                int(season),
+                profile_name,
+                manifest_path,
+                manifest,
+                available_profiles,
+            )
         ),
     )
 

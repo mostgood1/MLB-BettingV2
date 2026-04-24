@@ -110,6 +110,17 @@
     return num > 0 ? `+${fixed}u` : `${fixed}u`;
   }
 
+  function formatDollars(value, digits) {
+    const num = toNumber(value);
+    if (num == null) return "-";
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency: "USD",
+      minimumFractionDigits: digits == null ? 2 : digits,
+      maximumFractionDigits: digits == null ? 2 : digits,
+    }).format(num);
+  }
+
   function formatLine(value) {
     const num = toNumber(value);
     if (num == null) return "-";
@@ -125,6 +136,13 @@
       if (Number.isFinite(num)) return String(num);
     }
     return text;
+  }
+
+  function dailyBudgetDollars() {
+    const url = new URL(window.location.href);
+    const raw = url.searchParams.get("dailyBudget") || url.searchParams.get("daily_budget") || "500";
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 500;
   }
 
   function formatDateLong(dateStr) {
@@ -373,6 +391,15 @@
     return bits.join(" | ") || "Saved card recommendation";
   }
 
+  function bettingStakeText(reco) {
+    const stakeDollars = toNumber(reco?.stake_dollars);
+    const stakeUnits = toNumber(reco?.stake_u) ?? toNumber(reco?.settlement?.stake_u);
+    const parts = [];
+    if (stakeDollars != null) parts.push(formatDollars(stakeDollars, 2));
+    if (stakeUnits != null) parts.push(`${formatNumber(stakeUnits, stakeUnits % 1 === 0 ? 0 : 2)}u`);
+    return parts.join(" | ") || "-";
+  }
+
   function bettingOfficialRows(betting) {
     const markets = betting?.markets || {};
     const rows = [];
@@ -596,6 +623,7 @@
             <div class="season-betting-cell-sub">${escapeHtml(bettingDetailText(reco))}</div>
           </td>
           <td>${escapeHtml(formatOdds(reco?.odds))}</td>
+          <td>${escapeHtml(bettingStakeText(reco))}</td>
           <td>${escapeHtml(formatSignedPercentPoints(reco?.edge, 1))}</td>
           <td><span class="season-ticket-pill ${tone}" style="${seasonTicketPillStyle(tone)}">${escapeHtml(statusText)}</span></td>
           <td>
@@ -639,6 +667,10 @@
               <div class="betting-card-mobile-value">${escapeHtml(formatOdds(reco?.odds))}</div>
             </div>
             <div class="betting-card-mobile-stat">
+              <div class="betting-card-mobile-label">Stake</div>
+              <div class="betting-card-mobile-value">${escapeHtml(bettingStakeText(reco))}</div>
+            </div>
+            <div class="betting-card-mobile-stat">
               <div class="betting-card-mobile-label">Edge</div>
               <div class="betting-card-mobile-value">${escapeHtml(formatSignedPercentPoints(reco?.edge, 1))}</div>
             </div>
@@ -680,6 +712,7 @@
                 <th>Market</th>
                 <th>Pick</th>
                 <th>Odds</th>
+                <th>Stake</th>
                 <th>Edge</th>
                 <th>Status</th>
                 <th>Profit</th>
@@ -719,7 +752,8 @@
       metricCard("Games", formatNumber(games.length, 0), "Matchups with official-card action"),
       metricCard("Official bets", formatNumber(counts?.combined, 0), `Tot ${counts?.totals ?? 0} | ML ${counts?.ml ?? 0} | P ${counts?.pitcher_props ?? 0} | H ${counts?.hitter_props ?? 0}`),
       metricCard("Profit", formatUnits(combined?.profit_u, 2), `${formatNumber(combined?.wins, 0)} wins | ${formatNumber(combined?.losses, 0)} losses`),
-      metricCard("ROI", formatPercent(combined?.roi, 1), `${formatNumber(combined?.stake_u, 2)}u staked`),
+      metricCard("ROI", formatPercent(combined?.roi, 1), `${formatDollars(state.day?.staking_plan?.total_stake_dollars, 2)} | ${formatNumber(combined?.stake_u, 2)}u staked`),
+      metricCard("Unit size", formatDollars(state.day?.staking_plan?.unit_dollars, 2), `${formatDollars(state.day?.staking_plan?.daily_budget_dollars, 2)} daily budget`),
       metricCard("Settled", formatNumber(combined?.n, 0), `${formatNumber(state.day?.summary?.unresolved_n, 0)} unresolved`),
       metricCard("Cap profile", String(state.day?.cap_profile || "-"), "Official locked-policy card only"),
     ].join("");
@@ -742,6 +776,7 @@
             <div class="season-betting-cell-sub">${escapeHtml(bettingDetailText(reco))}</div>
           </td>
           <td>${escapeHtml(formatOdds(reco?.odds))}</td>
+          <td>${escapeHtml(bettingStakeText(reco))}</td>
           <td>${escapeHtml(formatSignedPercentPoints(reco?.edge, 1))}</td>
           <td><span class="season-ticket-pill ${tone}" style="${seasonTicketPillStyle(tone)}">${escapeHtml(bettingResultLabel(reco))}</span></td>
           <td>
@@ -775,6 +810,10 @@
             <div class="betting-card-mobile-stat">
               <div class="betting-card-mobile-label">Odds</div>
               <div class="betting-card-mobile-value">${escapeHtml(formatOdds(reco?.odds))}</div>
+            </div>
+            <div class="betting-card-mobile-stat">
+              <div class="betting-card-mobile-label">Stake</div>
+              <div class="betting-card-mobile-value">${escapeHtml(bettingStakeText(reco))}</div>
             </div>
             <div class="betting-card-mobile-stat">
               <div class="betting-card-mobile-label">Edge</div>
@@ -841,7 +880,7 @@
             <div class="season-stat-grid season-game-betting-stats">
               ${metricCard("Picks", formatNumber(officialRows.length, 0), "Official card only")}
               ${metricCard("Profit", formatUnits(combined?.profit_u, 2), `${formatNumber(combined?.wins, 0)} wins | ${formatNumber(combined?.losses, 0)} losses`)}
-              ${metricCard("ROI", formatPercent(combined?.roi, 1), `${formatNumber(combined?.stake_u, 2)}u staked`)}
+              ${metricCard("ROI", formatPercent(combined?.roi, 1), `${formatDollars(((officialRows || []).reduce((sum, row) => sum + (toNumber(row?.stake_dollars) || 0), 0)), 2)} | ${formatNumber(combined?.stake_u, 2)}u staked`)}
               ${metricCard("Settled", formatNumber(combined?.n, 0), `Game ${formatNumber(game?.game_pk, 0)}`)}
             </div>
             <section class="season-breakdown-card season-game-betting-card">
@@ -853,6 +892,7 @@
                       <th>Market</th>
                       <th>Pick</th>
                       <th>Odds</th>
+                      <th>Stake</th>
                       <th>Edge</th>
                       <th>Status</th>
                       <th>Profit</th>
@@ -885,7 +925,10 @@
     if (root.dayPicks) root.dayPicks.innerHTML = '<div class="cards-loading-state">Loading official picks...</div>';
     if (root.games) root.games.innerHTML = '<div class="cards-loading-state">Loading official card games...</div>';
     try {
-      state.day = await fetchJson(`/api/season/${encodeURIComponent(state.season)}/betting-card/day/${encodeURIComponent(state.selectedDate)}?profile=${encodeURIComponent(state.profile)}`);
+      const dayUrl = new URL(`/api/season/${encodeURIComponent(state.season)}/betting-card/day/${encodeURIComponent(state.selectedDate)}`, window.location.origin);
+      dayUrl.searchParams.set("profile", state.profile);
+      dayUrl.searchParams.set("dailyBudget", String(dailyBudgetDollars()));
+      state.day = await fetchJson(dayUrl.toString());
       renderDay();
     } catch (error) {
       const message = error && error.message ? error.message : "Unknown error";
