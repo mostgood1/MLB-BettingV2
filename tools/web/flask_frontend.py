@@ -7533,17 +7533,75 @@ def _prebuilt_season_betting_day_payload(season: int, date_str: str, requested_p
     return out
 
 
+def _official_betting_card_day_payload_from_betting_payload(
+    season: int,
+    date_str: str,
+    betting_payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "season": int(season),
+        "date": str(date_str),
+        "profile": betting_payload.get("profile"),
+        "available_profiles": betting_payload.get("available_profiles") or [],
+        "found": False,
+        "games": [],
+    }
+    if not betting_payload.get("found"):
+        payload.update(
+            {
+                "error": betting_payload.get("error"),
+                "detail": betting_payload.get("detail"),
+                "manifest_source": betting_payload.get("manifest_source"),
+            }
+        )
+        return payload
+
+    selected_counts = _betting_selected_counts_with_defaults(betting_payload.get("selected_counts") or {})
+    if int(selected_counts.get("combined") or 0) <= 0:
+        payload["error"] = "official_betting_card_day_missing"
+        return payload
+
+    daily_artifacts = _load_cards_artifacts(str(date_str))
+    has_cards = bool(daily_artifacts.get("locked_policy") or daily_artifacts.get("game_summary"))
+    betting_games = betting_payload.get("games") if isinstance(betting_payload.get("games"), dict) else {}
+    payload.update(
+        {
+            "found": True,
+            "manifest_source": betting_payload.get("manifest_source"),
+            "card_source": betting_payload.get("card_source"),
+            "source_kind": betting_payload.get("source_kind"),
+            "summary": dict(betting_payload.get("summary") or {}),
+            "cap_profile": betting_payload.get("cap_profile"),
+            "selected_counts": selected_counts,
+            "results": _merge_settled_results_blocks([betting_payload.get("results") or {}]),
+            "cards_available": bool(has_cards),
+            "cards_url": (f"/?date={date_str}" if has_cards else None),
+            "games": _official_betting_card_games_payload(str(date_str), betting_games),
+        }
+    )
+    return payload
+
+
 def _prebuilt_official_betting_card_day_payload(season: int, date_str: str, requested_profile: str) -> Optional[Dict[str, Any]]:
     if str(date_str or "").strip() != _today_iso():
         return None
     artifact_path, artifact_doc = _load_daily_season_frontend_artifact(
         lambda root: daily_official_betting_card_day_artifact_path(int(season), str(date_str), profile=requested_profile, data_root=root)
     )
-    if not artifact_path or not isinstance(artifact_doc, dict) or not artifact_doc.get("found"):
+    if artifact_path and isinstance(artifact_doc, dict) and artifact_doc.get("found"):
+        out = dict(artifact_doc)
+        out["artifactPath"] = _relative_path_str(artifact_path)
+        out["artifactSource"] = "daily_update"
+        return out
+
+    betting_payload = _prebuilt_season_betting_day_payload(int(season), str(date_str), requested_profile)
+    if not isinstance(betting_payload, dict) or not betting_payload.get("found"):
         return None
-    out = dict(artifact_doc)
-    out["artifactPath"] = _relative_path_str(artifact_path)
-    out["artifactSource"] = "daily_update"
+
+    out = _official_betting_card_day_payload_from_betting_payload(int(season), str(date_str), betting_payload)
+    out["artifactPath"] = betting_payload.get("artifactPath")
+    out["artifactSource"] = "daily_update_derived"
+    out["source_kind"] = str(out.get("source_kind") or "prebuilt_season_betting_day_derived")
     return out
 
 
@@ -9253,48 +9311,16 @@ def _official_betting_card_games_payload(date_str: str, betting_games: Dict[int,
 
 def _official_betting_card_day_payload(season: int, date_str: str, requested_profile: str) -> Dict[str, Any]:
     betting_payload = _season_betting_day_payload(int(season), str(date_str), requested_profile)
-    payload: Dict[str, Any] = {
-        "season": int(season),
-        "date": str(date_str),
-        "profile": betting_payload.get("profile"),
-        "available_profiles": betting_payload.get("available_profiles") or [],
-        "found": False,
-        "games": [],
-    }
-    if not betting_payload.get("found"):
-        payload.update(
-            {
-                "error": betting_payload.get("error"),
-                "detail": betting_payload.get("detail"),
-                "manifest_source": betting_payload.get("manifest_source"),
-            }
-        )
-        return payload
+    return _official_betting_card_day_payload_from_betting_payload(int(season), str(date_str), betting_payload)
 
-    selected_counts = _betting_selected_counts_with_defaults(betting_payload.get("selected_counts") or {})
-    if int(selected_counts.get("combined") or 0) <= 0:
-        payload["error"] = "official_betting_card_day_missing"
-        return payload
 
-    daily_artifacts = _load_cards_artifacts(str(date_str))
-    has_cards = bool(daily_artifacts.get("locked_policy") or daily_artifacts.get("game_summary"))
-    betting_games = betting_payload.get("games") if isinstance(betting_payload.get("games"), dict) else {}
-    payload.update(
-        {
-            "found": True,
-            "manifest_source": betting_payload.get("manifest_source"),
-            "card_source": betting_payload.get("card_source"),
-            "source_kind": betting_payload.get("source_kind"),
-            "summary": dict(betting_payload.get("summary") or {}),
-            "cap_profile": betting_payload.get("cap_profile"),
-            "selected_counts": selected_counts,
-            "results": _merge_settled_results_blocks([betting_payload.get("results") or {}]),
-            "cards_available": bool(has_cards),
-            "cards_url": (f"/?date={date_str}" if has_cards else None),
-            "games": _official_betting_card_games_payload(str(date_str), betting_games),
-        }
+def _official_betting_card_day_payload_cached(season: int, date_str: str, requested_profile: str) -> Dict[str, Any]:
+    return _payload_cache_get_or_build(
+        "season_official_betting_day_api",
+        f"{int(season)}:{str(date_str or '')}:{str(requested_profile or '').strip().lower()}",
+        max_age_seconds=_cards_cache_ttl_seconds_for_date(str(date_str)),
+        builder=lambda: _official_betting_card_day_payload(int(season), str(date_str), requested_profile),
     )
-    return payload
 
 
 def write_current_day_season_frontend_artifacts(
@@ -17270,7 +17296,7 @@ def api_season_official_betting_card_day(season: int, date_str: str) -> Response
     if isinstance(prebuilt_payload, dict):
         return _jsonify_no_store(_with_app_build(_annotate_betting_payload_dollars(prebuilt_payload, daily_budget_dollars)))
 
-    payload = _official_betting_card_day_payload(int(season), str(date_str), requested_profile)
+    payload = _official_betting_card_day_payload_cached(int(season), str(date_str), requested_profile)
     if payload.get("found"):
         payload = _annotate_betting_payload_dollars(payload, daily_budget_dollars)
         return _jsonify_no_store(_with_app_build(payload))
