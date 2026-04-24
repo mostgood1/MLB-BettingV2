@@ -125,6 +125,17 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return bool(default)
 
 
+def _env_float(name: str, default: float, *, minimum: Optional[float] = None) -> float:
+    raw = str(os.environ.get(name) or "").strip()
+    try:
+        value = float(raw or default)
+    except Exception:
+        value = float(default)
+    if minimum is not None:
+        value = max(float(minimum), float(value))
+    return float(value)
+
+
 def _live_lens_optimization_regime(d: Any) -> Dict[str, Any]:
     date_str = str(d or "").strip()
     regime = {
@@ -196,6 +207,7 @@ _LIVE_LENS_LOOP_MIN_INTERVAL_SECONDS = 5
 _LIVE_ODDSAPI_REFRESH_MIN_INTERVAL_SECONDS = 15
 _LIVE_LENS_REPORT_REFRESH_DEFAULT_INTERVAL_SECONDS = 120
 _LIVE_LENS_REPORT_MAX_AGE_DEFAULT_SECONDS = 180
+_BETTING_CARD_DEFAULT_DAILY_BUDGET_DOLLARS = _env_float("MLB_BETTING_CARD_DAILY_BUDGET_DOLLARS", 500.0, minimum=0.0)
 _LIVE_LENS_LOOP_THREAD: Optional[threading.Thread] = None
 _LIVE_LENS_LOOP_LOCK = threading.Lock()
 _LIVE_LENS_LOOP_STOP = threading.Event()
@@ -8388,6 +8400,134 @@ def _merge_settled_results_blocks(blocks: Sequence[Any]) -> Dict[str, Any]:
         out[str(market_name)] = _merge_settled_summary_blocks(summaries)
     if "combined" not in out:
         out["combined"] = _blank_settled_summary()
+    return out
+
+
+def _daily_budget_dollars_from_request(default: Optional[float] = None) -> float:
+    fallback = _BETTING_CARD_DEFAULT_DAILY_BUDGET_DOLLARS if default is None else float(default)
+    raw = str(request.args.get("dailyBudget") or request.args.get("daily_budget") or "").strip()
+    try:
+        value = float(raw or fallback)
+    except Exception:
+        value = float(fallback)
+    return max(0.0, float(value))
+
+
+def _rounded_stake_dollars_from_unit(stake_u: Any, unit_dollars: Any) -> Optional[float]:
+    stake = _safe_float(stake_u)
+    unit = _safe_float(unit_dollars)
+    if stake is None or unit is None:
+        return None
+    return round(float(stake) * float(unit), 2)
+
+
+def _annotate_exact_stake_dollars(rows: Sequence[Dict[str, Any]], daily_budget_dollars: float) -> Dict[str, Any]:
+    working_rows = [row for row in rows if isinstance(row, dict) and float(row.get("stake_u") or 0.0) > 0.0]
+    total_units = sum(float(row.get("stake_u") or 0.0) for row in working_rows)
+    plan = {
+        "daily_budget_dollars": round(float(daily_budget_dollars), 2),
+        "unit_dollars": None,
+        "total_units": round(float(total_units), 4),
+        "total_stake_dollars": 0.0,
+        "bets": int(len(working_rows)),
+    }
+    if not working_rows or float(total_units) <= 0.0:
+        return plan
+
+    budget_cents = int(round(float(daily_budget_dollars) * 100.0))
+    raw_cents: List[float] = [budget_cents * float(row.get("stake_u") or 0.0) / float(total_units) for row in working_rows]
+    floor_cents: List[int] = [int(math.floor(value)) for value in raw_cents]
+    remainder = int(budget_cents - sum(floor_cents))
+    order = sorted(range(len(raw_cents)), key=lambda idx: (raw_cents[idx] - floor_cents[idx], -idx), reverse=True)
+    for idx in order[:max(0, remainder)]:
+        floor_cents[idx] += 1
+
+    unit_dollars = float(daily_budget_dollars) / float(total_units)
+    for row, cents in zip(working_rows, floor_cents):
+        row["stake_dollars"] = round(float(cents) / 100.0, 2)
+
+    plan["unit_dollars"] = round(float(unit_dollars), 4)
+    plan["total_stake_dollars"] = round(sum(float(cents) for cents in floor_cents) / 100.0, 2)
+    return plan
+
+
+def _annotate_betting_payload_dollars(payload: Dict[str, Any], daily_budget_dollars: float) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        return payload
+    out = dict(payload)
+
+    if isinstance(out.get("card"), dict):
+        card = dict(out.get("card") or {})
+        markets = card.get("markets") if isinstance(card.get("markets"), dict) else {}
+        official_rows: List[Dict[str, Any]] = []
+        for section in markets.values():
+            if not isinstance(section, dict):
+                continue
+            recs = section.get("recommendations") or []
+            if not isinstance(recs, list):
+                continue
+            for rec in recs:
+                if isinstance(rec, dict):
+                    official_rows.append(rec)
+        stake_plan = _annotate_exact_stake_dollars(official_rows, float(daily_budget_dollars))
+        unit_dollars = stake_plan.get("unit_dollars")
+        for section in markets.values():
+            if not isinstance(section, dict):
+                continue
+            for key in ("other_playable_candidates",):
+                recs = section.get(key) or []
+                if not isinstance(recs, list):
+                    continue
+                for rec in recs:
+                    if isinstance(rec, dict):
+                        rec["stake_dollars"] = _rounded_stake_dollars_from_unit(rec.get("stake_u"), unit_dollars)
+        card["markets"] = markets
+        card["staking_plan"] = stake_plan
+        out["card"] = card
+        out["staking_plan"] = dict(stake_plan)
+
+    games = out.get("games")
+    if isinstance(games, list):
+        official_rows = []
+        for game in games:
+            if not isinstance(game, dict):
+                continue
+            betting = game.get("betting") if isinstance(game.get("betting"), dict) else {}
+            markets = betting.get("markets") if isinstance(betting.get("markets"), dict) else {}
+            for key in ("totals", "ml"):
+                item = markets.get(key)
+                if isinstance(item, dict):
+                    official_rows.append(item)
+            for key in ("pitcherProps", "hitterProps"):
+                rows = markets.get(key) or []
+                if isinstance(rows, list):
+                    official_rows.extend([row for row in rows if isinstance(row, dict)])
+        stake_plan = _annotate_exact_stake_dollars(official_rows, float(daily_budget_dollars))
+        unit_dollars = stake_plan.get("unit_dollars")
+        for game in games:
+            if not isinstance(game, dict):
+                continue
+            betting = game.get("betting") if isinstance(game.get("betting"), dict) else {}
+            markets = betting.get("markets") if isinstance(betting.get("markets"), dict) else {}
+            for key in ("extraPitcherProps", "extraHitterProps"):
+                rows = markets.get(key) or []
+                if isinstance(rows, list):
+                    for row in rows:
+                        if isinstance(row, dict):
+                            row["stake_dollars"] = _rounded_stake_dollars_from_unit(row.get("stake_u"), unit_dollars)
+            betting["markets"] = markets
+            game["betting"] = betting
+        out["games"] = games
+        if not isinstance(out.get("staking_plan"), dict):
+            out["staking_plan"] = stake_plan
+
+    summary = out.get("summary") if isinstance(out.get("summary"), dict) else None
+    if isinstance(summary, dict):
+        stake_plan = out.get("staking_plan") if isinstance(out.get("staking_plan"), dict) else {}
+        summary = dict(summary)
+        summary["staking_plan"] = dict(stake_plan)
+        out["summary"] = summary
+
     return out
 
 
@@ -17092,31 +17232,35 @@ def api_season_official_betting_card(season: int) -> Response:
 @app.get("/api/season/<int:season>/betting-cards/day/<date_str>")
 def api_season_betting_cards_day(season: int, date_str: str) -> Response:
     requested_profile = str(request.args.get("profile") or "").strip().lower()
+    daily_budget_dollars = _daily_budget_dollars_from_request()
     prebuilt_payload = _prebuilt_season_betting_day_payload(int(season), str(date_str), requested_profile)
     if isinstance(prebuilt_payload, dict):
-        return _jsonify_no_store(_with_app_build(prebuilt_payload))
+        return _jsonify_no_store(_with_app_build(_annotate_betting_payload_dollars(prebuilt_payload, daily_budget_dollars)))
 
     payload = _season_betting_day_payload(int(season), str(date_str), requested_profile)
     if payload.get("found"):
         card_path = _path_from_maybe_relative(payload.get("card_source"))
         payload["card"] = _load_json_file(card_path)
+        payload = _annotate_betting_payload_dollars(payload, daily_budget_dollars)
         return _jsonify_no_store(_with_app_build(payload))
 
-    return _jsonify_no_store(_with_app_build(payload), 404)
+    return _jsonify_no_store(_with_app_build(_annotate_betting_payload_dollars(payload, daily_budget_dollars)), 404)
 
 
 @app.get("/api/season/<int:season>/betting-card/day/<date_str>")
 def api_season_official_betting_card_day(season: int, date_str: str) -> Response:
     requested_profile = str(request.args.get("profile") or "").strip().lower()
+    daily_budget_dollars = _daily_budget_dollars_from_request()
     prebuilt_payload = _prebuilt_official_betting_card_day_payload(int(season), str(date_str), requested_profile)
     if isinstance(prebuilt_payload, dict):
-        return _jsonify_no_store(_with_app_build(prebuilt_payload))
+        return _jsonify_no_store(_with_app_build(_annotate_betting_payload_dollars(prebuilt_payload, daily_budget_dollars)))
 
     payload = _official_betting_card_day_payload(int(season), str(date_str), requested_profile)
     if payload.get("found"):
+        payload = _annotate_betting_payload_dollars(payload, daily_budget_dollars)
         return _jsonify_no_store(_with_app_build(payload))
 
-    return _jsonify_no_store(_with_app_build(payload), 404)
+    return _jsonify_no_store(_with_app_build(_annotate_betting_payload_dollars(payload, daily_budget_dollars)), 404)
 
 
 @app.get("/api/season/<int:season>/day/<date_str>")
