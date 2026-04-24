@@ -11652,11 +11652,16 @@ def _live_stat_value(row: Optional[Dict[str, Any]], reco: Dict[str, Any]) -> Opt
         return None
     market = str(reco.get("market") or "").strip().lower()
     prop = str(reco.get("prop") or "").strip().lower()
+    if "hits_runs_rbis" in market or prop == "hits_runs_rbis":
+        hits = _safe_float(row.get("H")) or 0.0
+        runs = _safe_float(row.get("R")) or 0.0
+        rbis = _safe_float(row.get("RBI")) or 0.0
+        return float(hits) + float(runs) + float(rbis)
     if "home_runs" in market or "home_runs" in prop:
         return _safe_float(row.get("HR"))
     if "total_bases" in market or "total_bases" in prop:
         return _safe_float(row.get("TB"))
-    if "rbis" in market or prop == "rbi":
+    if "rbis" in market or prop in {"rbi", "rbis"}:
         return _safe_float(row.get("RBI"))
     if "hitter_runs" in market or "runs_scored" in prop or prop == "runs":
         return _safe_float(row.get("R"))
