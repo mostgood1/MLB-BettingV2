@@ -4,6 +4,7 @@ from bisect import bisect_left
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import redirect_stderr, redirect_stdout
 from functools import lru_cache
+import atexit
 import copy
 import gzip
 import io
@@ -101,6 +102,16 @@ try:
     _USER_TIMEZONE = ZoneInfo(_USER_TIMEZONE_NAME)
 except Exception:
     _USER_TIMEZONE = ZoneInfo("America/Chicago")
+
+try:
+    import fcntl  # type: ignore
+except Exception:
+    fcntl = None
+
+try:
+    import msvcrt  # type: ignore
+except Exception:
+    msvcrt = None
 
 
 def _env_int(name: str, default: int, *, minimum: Optional[int] = None) -> int:
@@ -217,6 +228,7 @@ _LIVE_FEED_CACHE_LOCK = threading.Lock()
 _LIVE_FEED_CACHE: Dict[Tuple[str, int], Tuple[float, Dict[str, Any]]] = {}
 _PAYLOAD_CACHE_LOCK = threading.Lock()
 _PAYLOAD_CACHE: Dict[Tuple[str, str], Dict[str, Any]] = {}
+_LIVE_LENS_PROCESS_LOCK_HANDLE: Optional[io.TextIOWrapper] = None
 _LIVE_PROP_MARKET_REFRESH_LOCK = threading.Lock()
 _LIVE_PROP_MARKET_REFRESH_IN_PROGRESS: set[str] = set()
 _LIVE_PROP_MARKET_REFRESH_LAST_ATTEMPT: Dict[str, float] = {}
@@ -1334,6 +1346,65 @@ def _live_prop_registry_path(d: str) -> Path:
 
 def _live_prop_registry_log_path(d: str) -> Path:
     return _ensure_dir(_LIVE_LENS_DIR / "prop_registry") / f"live_prop_registry_{_date_slug(d)}.jsonl"
+
+
+def _live_lens_process_lock_path() -> Path:
+    return _ensure_dir(_LIVE_LENS_DIR) / "live_lens_background_loop.lock"
+
+
+def _release_live_lens_process_lock() -> None:
+    global _LIVE_LENS_PROCESS_LOCK_HANDLE
+    handle = _LIVE_LENS_PROCESS_LOCK_HANDLE
+    if handle is None:
+        return
+    _LIVE_LENS_PROCESS_LOCK_HANDLE = None
+    try:
+        if fcntl is not None:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        elif msvcrt is not None:
+            handle.seek(0)
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    try:
+        handle.close()
+    except Exception:
+        pass
+
+
+def _acquire_live_lens_process_lock() -> bool:
+    global _LIVE_LENS_PROCESS_LOCK_HANDLE
+    if _LIVE_LENS_PROCESS_LOCK_HANDLE is not None:
+        return True
+    lock_path = _live_lens_process_lock_path()
+    try:
+        handle = open(lock_path, "a+", encoding="utf-8")
+    except Exception:
+        return False
+    try:
+        handle.seek(0)
+        handle.write(f"pid={os.getpid()}\n")
+        handle.truncate()
+        handle.flush()
+    except Exception:
+        pass
+    try:
+        if fcntl is not None:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        elif msvcrt is not None:
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        _LIVE_LENS_PROCESS_LOCK_HANDLE = handle
+        return True
+    except Exception:
+        try:
+            handle.close()
+        except Exception:
+            pass
+        return False
 
 
 def _live_prop_observation_log_path(d: str) -> Path:
@@ -15190,6 +15261,8 @@ def start_live_lens_background_loop() -> bool:
     with _LIVE_LENS_LOOP_LOCK:
         if _LIVE_LENS_LOOP_THREAD is not None and _LIVE_LENS_LOOP_THREAD.is_alive():
             return False
+        if not _acquire_live_lens_process_lock():
+            return False
         _LIVE_LENS_LOOP_STOP.clear()
         _LIVE_LENS_LOOP_THREAD = threading.Thread(
             target=_live_lens_background_loop,
@@ -15198,6 +15271,9 @@ def start_live_lens_background_loop() -> bool:
         )
         _LIVE_LENS_LOOP_THREAD.start()
         return True
+
+
+atexit.register(_release_live_lens_process_lock)
 
 
 def _season_live_lens_payload(season: int, d: str) -> Dict[str, Any]:
