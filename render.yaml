@@ -5,7 +5,7 @@ services:
     plan: starter
     autoDeploy: true
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn wsgi:app --preload --bind 0.0.0.0:$PORT --workers 2 --threads 1 --timeout 120 --max-requests 200 --max-requests-jitter 25
+    startCommand: gunicorn wsgi:app --bind 0.0.0.0:$PORT --workers 2 --threads 1 --timeout 120 --max-requests 200 --max-requests-jitter 25
     disk:
       name: mlb-betting-v2-data
       mountPath: /opt/render/project/data
@@ -18,7 +18,7 @@ services:
       - key: MLB_LIVE_LENS_DIR
         value: /opt/render/project/data/live_lens
       - key: MLB_ENABLE_LIVE_LENS_LOOP
-        value: on
+        value: off
       - key: MLB_ENABLE_LIVE_LENS_BACKGROUND_REPORTS
         value: off
       - key: MLB_ENABLE_INLINE_SEASON_MANIFEST_REBUILD
