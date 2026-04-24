@@ -65,6 +65,10 @@ _HITTER_PROP_SPECS: List[Tuple[str, str, str, str, int]] = [
     ("hits_1plus", "p_h_1plus", "H", "h_mean", 1),
     ("hits_2plus", "p_h_2plus", "H", "h_mean", 2),
     ("hits_3plus", "p_h_3plus", "H", "h_mean", 3),
+    ("hits_runs_rbis_2plus", "p_hrr_2plus", "H+R+RBI", "hrr_mean", 2),
+    ("hits_runs_rbis_3plus", "p_hrr_3plus", "H+R+RBI", "hrr_mean", 3),
+    ("hits_runs_rbis_4plus", "p_hrr_4plus", "H+R+RBI", "hrr_mean", 4),
+    ("hits_runs_rbis_5plus", "p_hrr_5plus", "H+R+RBI", "hrr_mean", 5),
     ("doubles_1plus", "p_2b_1plus", "2B", "2b_mean", 1),
     ("triples_1plus", "p_3b_1plus", "3B", "3b_mean", 1),
     ("runs_1plus", "p_r_1plus", "R", "r_mean", 1),
@@ -557,6 +561,11 @@ def _sim_many(
     rbi_ge2: Dict[str, Dict[int, int]] = {"away": {}, "home": {}}
     rbi_ge3: Dict[str, Dict[int, int]] = {"away": {}, "home": {}}
     rbi_ge4: Dict[str, Dict[int, int]] = {"away": {}, "home": {}}
+    hrr_sum: Dict[str, Dict[int, float]] = {"away": {}, "home": {}}
+    hrr_ge2: Dict[str, Dict[int, int]] = {"away": {}, "home": {}}
+    hrr_ge3: Dict[str, Dict[int, int]] = {"away": {}, "home": {}}
+    hrr_ge4: Dict[str, Dict[int, int]] = {"away": {}, "home": {}}
+    hrr_ge5: Dict[str, Dict[int, int]] = {"away": {}, "home": {}}
     tb_sum: Dict[str, Dict[int, float]] = {"away": {}, "home": {}}
     tb_ge1: Dict[str, Dict[int, int]] = {"away": {}, "home": {}}
     tb_ge2: Dict[str, Dict[int, int]] = {"away": {}, "home": {}}
@@ -586,6 +595,11 @@ def _sim_many(
         rbi_ge2["away"][pid] = 0
         rbi_ge3["away"][pid] = 0
         rbi_ge4["away"][pid] = 0
+        hrr_sum["away"][pid] = 0.0
+        hrr_ge2["away"][pid] = 0
+        hrr_ge3["away"][pid] = 0
+        hrr_ge4["away"][pid] = 0
+        hrr_ge5["away"][pid] = 0
         tb_sum["away"][pid] = 0.0
         tb_ge1["away"][pid] = 0
         tb_ge2["away"][pid] = 0
@@ -615,6 +629,11 @@ def _sim_many(
         rbi_ge2["home"][pid] = 0
         rbi_ge3["home"][pid] = 0
         rbi_ge4["home"][pid] = 0
+        hrr_sum["home"][pid] = 0.0
+        hrr_ge2["home"][pid] = 0
+        hrr_ge3["home"][pid] = 0
+        hrr_ge4["home"][pid] = 0
+        hrr_ge5["home"][pid] = 0
         tb_sum["home"][pid] = 0.0
         tb_ge1["home"][pid] = 0
         tb_ge2["home"][pid] = 0
@@ -763,6 +782,7 @@ def _sim_many(
                         rbi_i = int(row.get("RBI") or 0)
                     except Exception:
                         rbi_i = 0
+                    hrr_i = int(h_i + r_i + rbi_i)
                     try:
                         sb_i = int(row.get("SB") or 0)
                     except Exception:
@@ -807,6 +827,16 @@ def _sim_many(
                         rbi_ge3[side][int(pid)] = int(rbi_ge3[side].get(int(pid), 0) + 1)
                     if rbi_i >= 4:
                         rbi_ge4[side][int(pid)] = int(rbi_ge4[side].get(int(pid), 0) + 1)
+
+                    hrr_sum[side][int(pid)] = float(hrr_sum[side].get(int(pid), 0.0)) + float(hrr_i)
+                    if hrr_i >= 2:
+                        hrr_ge2[side][int(pid)] = int(hrr_ge2[side].get(int(pid), 0) + 1)
+                    if hrr_i >= 3:
+                        hrr_ge3[side][int(pid)] = int(hrr_ge3[side].get(int(pid), 0) + 1)
+                    if hrr_i >= 4:
+                        hrr_ge4[side][int(pid)] = int(hrr_ge4[side].get(int(pid), 0) + 1)
+                    if hrr_i >= 5:
+                        hrr_ge5[side][int(pid)] = int(hrr_ge5[side].get(int(pid), 0) + 1)
 
                     tb_sum[side][int(pid)] = float(tb_sum[side].get(int(pid), 0.0)) + float(tb_i)
                     if tb_i > 0:
@@ -898,6 +928,11 @@ def _sim_many(
                         "p_rbi_3plus": float(int((rbi_ge3.get(side) or {}).get(int(pid), 0) or 0)) / float(denom),
                         "p_rbi_4plus": float(int((rbi_ge4.get(side) or {}).get(int(pid), 0) or 0)) / float(denom),
                         "rbi_mean": float(float((rbi_sum.get(side) or {}).get(int(pid), 0.0) or 0.0)) / float(denom),
+                        "p_hrr_2plus": float(int((hrr_ge2.get(side) or {}).get(int(pid), 0) or 0)) / float(denom),
+                        "p_hrr_3plus": float(int((hrr_ge3.get(side) or {}).get(int(pid), 0) or 0)) / float(denom),
+                        "p_hrr_4plus": float(int((hrr_ge4.get(side) or {}).get(int(pid), 0) or 0)) / float(denom),
+                        "p_hrr_5plus": float(int((hrr_ge5.get(side) or {}).get(int(pid), 0) or 0)) / float(denom),
+                        "hrr_mean": float(float((hrr_sum.get(side) or {}).get(int(pid), 0.0) or 0.0)) / float(denom),
                         "p_tb_1plus": float(int((tb_ge1.get(side) or {}).get(int(pid), 0) or 0)) / float(denom),
                         "p_tb_2plus": float(int((tb_ge2.get(side) or {}).get(int(pid), 0) or 0)) / float(denom),
                         "p_tb_3plus": float(int((tb_ge3.get(side) or {}).get(int(pid), 0) or 0)) / float(denom),
@@ -2851,6 +2886,12 @@ def main() -> int:
             def _actual_stat(pid: int, key: str) -> int:
                 if pid in away_box:
                     try:
+                        if str(key) == "H+R+RBI":
+                            row = away_box.get(pid) or {}
+                            hits = int(row.get("H") or 0)
+                            runs = int(row.get("R") or 0)
+                            rbis = int(row.get("RBI") or 0)
+                            return int(hits + runs + rbis)
                         if str(key) == "TB":
                             row = away_box.get(pid) or {}
                             hits = int(row.get("H") or 0)
@@ -2863,6 +2904,12 @@ def main() -> int:
                         return 0
                 if pid in home_box:
                     try:
+                        if str(key) == "H+R+RBI":
+                            row = home_box.get(pid) or {}
+                            hits = int(row.get("H") or 0)
+                            runs = int(row.get("R") or 0)
+                            rbis = int(row.get("RBI") or 0)
+                            return int(hits + runs + rbis)
                         if str(key) == "TB":
                             row = home_box.get(pid) or {}
                             hits = int(row.get("H") or 0)

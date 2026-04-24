@@ -3,14 +3,17 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from sim_engine.prob_calibration import apply_prop_prob_calibration
-
 
 _ROOT = Path(__file__).resolve().parents[2]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from sim_engine.prob_calibration import apply_prop_prob_calibration
 
 
 def _read_json(path: Path) -> Any:
@@ -202,6 +205,7 @@ def _betting_counts_with_defaults(counts: Any) -> Dict[str, int]:
             "hitter_props",
             "hitter_home_runs",
             "hitter_hits",
+            "hitter_hits_runs_rbis",
             "hitter_total_bases",
             "hitter_runs",
             "hitter_rbis",
@@ -220,7 +224,7 @@ def _playable_counts_from_card(card_obj: Dict[str, Any]) -> Dict[str, int]:
     if not isinstance(markets, dict):
         return counts
 
-    hitter_market_names = {"hitter_home_runs", "hitter_hits", "hitter_total_bases", "hitter_runs", "hitter_rbis"}
+    hitter_market_names = {"hitter_home_runs", "hitter_hits", "hitter_hits_runs_rbis", "hitter_total_bases", "hitter_runs", "hitter_rbis"}
     for market_name, market_info in markets.items():
         if not isinstance(market_info, dict):
             continue

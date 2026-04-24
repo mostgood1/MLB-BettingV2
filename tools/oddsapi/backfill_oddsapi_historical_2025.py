@@ -29,6 +29,7 @@ DEFAULT_HITTER_MARKETS: List[str] = [
     # These keys are supported by OddsAPI for MLB player props, but availability varies by event/book.
     # We keep a small default set and rely on --probe-markets / snapshots for coverage.
     "batter_hits",
+    "batter_hits_runs_rbis",
     "batter_total_bases",
     "batter_home_runs",
     "batter_rbis",
@@ -49,6 +50,7 @@ PITCHER_MARKET_KEY_MAP: Dict[str, str] = {
 PLAYER_PROP_PRIMARY_LINE_PREFERENCES: Dict[str, Tuple[float, ...]] = {
     "batter_home_runs": (0.5,),
     "batter_hits": (0.5,),
+    "batter_hits_runs_rbis": (1.5, 2.5, 3.5),
     "batter_rbis": (0.5,),
     "batter_runs_scored": (0.5,),
     "batter_strikeouts": (0.5, 1.5),

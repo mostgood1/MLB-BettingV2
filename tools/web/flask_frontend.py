@@ -277,6 +277,19 @@ _HITTER_LADDER_PROPS: Dict[str, Dict[str, Any]] = {
             {"total": 3, "section_key": "hits_3plus", "prob_key": "p_h_3plus"},
         ),
     },
+    "hits_runs_rbis": {
+        "label": "Hits + Runs + RBIs",
+        "dist_key": "hits_runs_rbis_dist",
+        "mean_key": "hrr_mean",
+        "market_key": "batter_hits_runs_rbis",
+        "unit": "H+R+R",
+        "thresholds": (
+            {"total": 2, "section_key": "hits_runs_rbis_2plus", "prob_key": "p_hrr_2plus"},
+            {"total": 3, "section_key": "hits_runs_rbis_3plus", "prob_key": "p_hrr_3plus"},
+            {"total": 4, "section_key": "hits_runs_rbis_4plus", "prob_key": "p_hrr_4plus"},
+            {"total": 5, "section_key": "hits_runs_rbis_5plus", "prob_key": "p_hrr_5plus"},
+        ),
+    },
     "home_runs": {
         "label": "Home Runs",
         "dist_key": "home_runs_dist",

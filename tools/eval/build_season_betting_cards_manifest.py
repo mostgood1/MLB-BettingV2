@@ -65,6 +65,7 @@ SETTLED_MARKET_ORDER: Tuple[str, ...] = (
     "pitcher_props",
     "hitter_home_runs",
     "hitter_hits",
+    "hitter_hits_runs_rbis",
     "hitter_total_bases",
     "hitter_runs",
     "hitter_rbis",
@@ -131,6 +132,8 @@ def _recommendations_by_game(card: Optional[Dict[str, Any]]) -> Dict[int, Dict[s
             "hitter_props": [],
             "extra_pitcher_props": [],
             "extra_hitter_props": [],
+            "shadow_pitcher_props": [],
+            "shadow_hitter_props": [],
         }
     )
     markets = card.get("markets") or {}
@@ -145,9 +148,19 @@ def _recommendations_by_game(card: Optional[Dict[str, Any]]) -> Dict[int, Dict[s
         elif market_name == "ml":
             bucket["ml"] = item
         elif market_name == "pitcher_props":
-            bucket["extra_pitcher_props" if tier == "candidate" else "pitcher_props"].append(item)
+            if tier == "candidate":
+                bucket["extra_pitcher_props"].append(item)
+            elif tier == "shadow":
+                bucket["shadow_pitcher_props"].append(item)
+            else:
+                bucket["pitcher_props"].append(item)
         else:
-            bucket["extra_hitter_props" if tier == "candidate" else "hitter_props"].append(item)
+            if tier == "candidate":
+                bucket["extra_hitter_props"].append(item)
+            elif tier == "shadow":
+                bucket["shadow_hitter_props"].append(item)
+            else:
+                bucket["hitter_props"].append(item)
 
     for market_name, section in markets.items():
         if not isinstance(section, dict):
@@ -171,11 +184,29 @@ def _recommendations_by_game(card: Optional[Dict[str, Any]]) -> Dict[int, Dict[s
                     continue
                 _append_reco(grouped[int(game_pk)], str(market_name), reco, tier="candidate")
 
+    shadow_markets = card.get("shadow_markets") or {}
+    if isinstance(shadow_markets, dict):
+        for market_name, section in shadow_markets.items():
+            if not isinstance(section, dict):
+                continue
+            recos = section.get("recommendations") or []
+            if not isinstance(recos, list):
+                continue
+            for reco in recos:
+                if not isinstance(reco, dict):
+                    continue
+                game_pk = _safe_int(reco.get("game_pk"))
+                if not game_pk or int(game_pk) <= 0:
+                    continue
+                _append_reco(grouped[int(game_pk)], str(market_name), reco, tier="shadow")
+
     for bucket in grouped.values():
         bucket["pitcher_props"].sort(key=lambda reco: (_safe_int(reco.get("rank")) or 9999, -(reco.get("edge") or 0.0)))
         bucket["hitter_props"].sort(key=lambda reco: (_safe_int(reco.get("rank")) or 9999, -(reco.get("edge") or 0.0)))
         bucket["extra_pitcher_props"].sort(key=lambda reco: (_safe_int(reco.get("rank")) or 9999, -(reco.get("edge") or 0.0)))
         bucket["extra_hitter_props"].sort(key=lambda reco: (_safe_int(reco.get("rank")) or 9999, -(reco.get("edge") or 0.0)))
+        bucket["shadow_pitcher_props"].sort(key=lambda reco: (_safe_int(reco.get("rank")) or 9999, -(reco.get("edge") or 0.0)))
+        bucket["shadow_hitter_props"].sort(key=lambda reco: (_safe_int(reco.get("rank")) or 9999, -(reco.get("edge") or 0.0)))
     return dict(grouped)
 
 
@@ -183,10 +214,13 @@ def _season_betting_games_payload(card: Dict[str, Any], settled_card: Dict[str, 
     recos_by_game = _recommendations_by_game(card)
     settled_rows_by_game: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
     playable_settled_rows_by_game: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+    shadow_settled_rows_by_game: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
     unresolved_rows_by_game: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
     playable_unresolved_rows_by_game: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+    shadow_unresolved_rows_by_game: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
     settled_lookup: Dict[Tuple[Optional[int], str, str, Optional[float], str], List[Dict[str, Any]]] = defaultdict(list)
     playable_lookup: Dict[Tuple[Optional[int], str, str, Optional[float], str], List[Dict[str, Any]]] = defaultdict(list)
+    shadow_lookup: Dict[Tuple[Optional[int], str, str, Optional[float], str], List[Dict[str, Any]]] = defaultdict(list)
 
     for row in settled_card.get("_settled_rows") or []:
         if not isinstance(row, dict):
@@ -204,6 +238,14 @@ def _season_betting_games_payload(card: Dict[str, Any], settled_card: Dict[str, 
             playable_settled_rows_by_game[int(game_pk)].append(dict(row))
         playable_lookup[_settlement_lookup_key(row)].append(dict(row))
 
+    for row in settled_card.get("_shadow_settled_rows") or []:
+        if not isinstance(row, dict):
+            continue
+        game_pk = _safe_int(row.get("game_pk"))
+        if game_pk and int(game_pk) > 0:
+            shadow_settled_rows_by_game[int(game_pk)].append(dict(row))
+        shadow_lookup[_settlement_lookup_key(row)].append(dict(row))
+
     for row in settled_card.get("unresolved_recommendations") or []:
         if not isinstance(row, dict):
             continue
@@ -218,6 +260,13 @@ def _season_betting_games_payload(card: Dict[str, Any], settled_card: Dict[str, 
         if game_pk and int(game_pk) > 0:
             playable_unresolved_rows_by_game[int(game_pk)].append(dict(row))
 
+    for row in settled_card.get("shadow_unresolved_recommendations") or []:
+        if not isinstance(row, dict):
+            continue
+        game_pk = _safe_int(row.get("game_pk"))
+        if game_pk and int(game_pk) > 0:
+            shadow_unresolved_rows_by_game[int(game_pk)].append(dict(row))
+
     out: Dict[int, Dict[str, Any]] = {}
     for game_pk, bucket in recos_by_game.items():
         totals = bucket.get("totals")
@@ -228,14 +277,19 @@ def _season_betting_games_payload(card: Dict[str, Any], settled_card: Dict[str, 
         hitter_props = [_annotated_reco(row, settled_lookup) for row in (bucket.get("hitter_props") or [])]
         extra_pitcher_props = [_annotated_reco(row, playable_lookup) for row in (bucket.get("extra_pitcher_props") or [])]
         extra_hitter_props = [_annotated_reco(row, playable_lookup) for row in (bucket.get("extra_hitter_props") or [])]
+        shadow_pitcher_props = [_annotated_reco(row, shadow_lookup) for row in (bucket.get("shadow_pitcher_props") or [])]
+        shadow_hitter_props = [_annotated_reco(row, shadow_lookup) for row in (bucket.get("shadow_hitter_props") or [])]
         settled_rows = list(settled_rows_by_game.get(int(game_pk), []))
         playable_settled_rows = list(playable_settled_rows_by_game.get(int(game_pk), []))
+        shadow_settled_rows = list(shadow_settled_rows_by_game.get(int(game_pk), []))
         all_settled_rows = list(settled_rows) + list(playable_settled_rows)
         unresolved_rows = list(unresolved_rows_by_game.get(int(game_pk), []))
         playable_unresolved_rows = list(playable_unresolved_rows_by_game.get(int(game_pk), []))
+        shadow_unresolved_rows = list(shadow_unresolved_rows_by_game.get(int(game_pk), []))
         all_unresolved_rows = list(unresolved_rows) + list(playable_unresolved_rows)
         official_count = int(bool(totals_item)) + int(bool(ml_item)) + len(pitcher_props) + len(hitter_props)
         playable_count = len(extra_pitcher_props) + len(extra_hitter_props)
+        shadow_count = len(shadow_pitcher_props) + len(shadow_hitter_props)
 
         out[int(game_pk)] = {
             "markets": {
@@ -245,28 +299,37 @@ def _season_betting_games_payload(card: Dict[str, Any], settled_card: Dict[str, 
                 "hitterProps": hitter_props,
                 "extraPitcherProps": extra_pitcher_props,
                 "extraHitterProps": extra_hitter_props,
+                "shadowPitcherProps": shadow_pitcher_props,
+                "shadowHitterProps": shadow_hitter_props,
             },
             "results": _results_from_rows(settled_rows),
             "playable_results": _results_from_rows(playable_settled_rows),
+            "shadow_results": _results_from_rows(shadow_settled_rows),
             "all_results": _results_from_rows(all_settled_rows),
             "settled_rows": settled_rows,
             "playable_settled_rows": playable_settled_rows,
+            "shadow_settled_rows": shadow_settled_rows,
             "all_settled_rows": all_settled_rows,
             "unresolved_rows": unresolved_rows,
             "playable_unresolved_rows": playable_unresolved_rows,
+            "shadow_unresolved_rows": shadow_unresolved_rows,
             "all_unresolved_rows": all_unresolved_rows,
             "counts": {
                 "official": int(official_count),
                 "playable": int(playable_count),
+                "shadow": int(shadow_count),
                 "pitcher": int(len(pitcher_props)),
                 "hitter": int(len(hitter_props)),
                 "extra_pitcher": int(len(extra_pitcher_props)),
                 "extra_hitter": int(len(extra_hitter_props)),
+                "shadow_pitcher": int(len(shadow_pitcher_props)),
+                "shadow_hitter": int(len(shadow_hitter_props)),
             },
             "flags": {
-                "hasAnyRecommendations": bool(official_count or playable_count),
+                "hasAnyRecommendations": bool(official_count or playable_count or shadow_count),
                 "hasOfficialRecommendations": bool(official_count),
                 "hasPlayableCandidates": bool(playable_count),
+                "hasShadowCandidates": bool(shadow_count),
             },
         }
     return out
@@ -304,8 +367,10 @@ def _static_day_payload(
         "selected_counts": dict(settled_card.get("selected_counts") or summary.get("selected_counts") or {}),
         "playable_selected_counts": dict(settled_card.get("playable_selected_counts") or {}),
         "all_selected_counts": dict(settled_card.get("all_selected_counts") or {}),
+        "shadow_selected_counts": dict(settled_card.get("shadow_selected_counts") or {}),
         "results": dict(settled_card.get("results") or {}),
         "playable_results": dict(settled_card.get("playable_results") or {}),
+        "shadow_results": dict(settled_card.get("shadow_results") or {}),
         "all_results": dict(settled_card.get("all_results") or {}),
         "games": _season_betting_games_payload(card, settled_card),
         }
@@ -1239,6 +1304,7 @@ def _build_card_from_report(
                 "Hitter submarkets are capped independently at "
                 f"HR {_cap_text(normalized_hitter_subcaps.get('hitter_home_runs'))} / "
                 f"Hits {_cap_text(normalized_hitter_subcaps.get('hitter_hits'))} / "
+                f"H+R+R {_cap_text(normalized_hitter_subcaps.get('hitter_hits_runs_rbis'))} / "
                 f"Total Bases {_cap_text(normalized_hitter_subcaps.get('hitter_total_bases'))} / "
                 f"Runs {_cap_text(normalized_hitter_subcaps.get('hitter_runs'))} / "
                 f"RBIs {_cap_text(normalized_hitter_subcaps.get('hitter_rbis'))}, "
@@ -1403,6 +1469,7 @@ def _render_recap_markdown(manifest: Dict[str, Any]) -> str:
             "hitter_props": "Hitter Props",
             "hitter_home_runs": "Hitter HR",
             "hitter_hits": "Hitter Hits",
+            "hitter_hits_runs_rbis": "Hitter H+R+R",
             "hitter_total_bases": "Hitter TB",
             "hitter_runs": "Hitter Runs",
             "hitter_rbis": "Hitter RBIs",
@@ -1444,6 +1511,7 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--ml-edge-min", type=float, default=None, help="Override moneyline no-vig edge threshold")
     ap.add_argument("--hitter-edge-min", type=float, default=None, help="Override hitter prop edge threshold")
     ap.add_argument("--hitter-runs-edge-min", type=float, default=None, help="Override hitter runs edge threshold")
+    ap.add_argument("--hitter-hrr-edge-min", type=float, default=None, help="Override hitter H+R+R edge threshold")
     ap.add_argument("--hitter-rbi-edge-min", type=float, default=None, help="Override hitter RBI edge threshold")
     ap.add_argument("--pitcher-edge-min", type=float, default=None, help="Override pitcher outs edge threshold")
     ap.add_argument("--totals-cap", type=int, default=None, help="Override totals daily cap")
@@ -1452,6 +1520,7 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--hitter-cap", type=int, default=None, help="Override aggregate hitter props daily cap")
     ap.add_argument("--hitter-hr-cap", type=int, default=None, help="Override hitter HR daily subcap")
     ap.add_argument("--hitter-hits-cap", type=int, default=None, help="Override hitter hits daily subcap")
+    ap.add_argument("--hitter-hrr-cap", type=int, default=None, help="Override hitter H+R+R daily subcap")
     ap.add_argument("--hitter-tb-cap", type=int, default=None, help="Override hitter total bases daily subcap")
     ap.add_argument("--hitter-runs-cap", type=int, default=None, help="Override hitter runs daily subcap")
     ap.add_argument("--hitter-rbi-cap", type=int, default=None, help="Override hitter RBI daily subcap")
@@ -1509,6 +1578,7 @@ def main() -> int:
         },
         hitter_edge_updates={
             "hitter_runs": args.hitter_runs_edge_min,
+            "hitter_hits_runs_rbis": args.hitter_hrr_edge_min,
             "hitter_rbis": args.hitter_rbi_edge_min,
         },
     )
@@ -1529,6 +1599,7 @@ def main() -> int:
             {
                 "hitter_home_runs": args.hitter_hr_cap,
                 "hitter_hits": args.hitter_hits_cap,
+                "hitter_hits_runs_rbis": args.hitter_hrr_cap,
                 "hitter_total_bases": args.hitter_tb_cap,
                 "hitter_runs": args.hitter_runs_cap,
                 "hitter_rbis": args.hitter_rbi_cap,

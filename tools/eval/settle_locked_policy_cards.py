@@ -218,18 +218,28 @@ HITTER_STAT_KEYS: Dict[str, str] = {
     "hitter_hits": "hits",
     "hitter_total_bases": "totalBases",
     "hitter_home_runs": "homeRuns",
+    "hitter_hits_runs_rbis": "hits_runs_rbis",
     "hitter_runs": "runs",
     "hitter_rbis": "rbi",
+    "hitter_strikeouts": "strikeOuts",
 }
+
+
+def _hitter_actual_value(batting: Dict[str, Any], market: str) -> float:
+    if str(market) == "hitter_hits_runs_rbis":
+        return float(batting.get("hits") or 0.0) + float(batting.get("runs") or 0.0) + float(batting.get("rbi") or 0.0)
+    return float(batting.get(HITTER_STAT_KEYS[market]) or 0.0)
 
 PITCHER_PROP_STAT_KEYS: Dict[str, str] = {
     "strikeouts": "strikeOuts",
     "outs": "outs",
     "earned_runs": "earnedRuns",
     "walks": "baseOnBalls",
+    "walks_allowed": "baseOnBalls",
     "batters_faced": "battersFaced",
     "pitches": "pitchesThrown",
     "hits": "hits",
+    "hits_allowed": "hits",
 }
 
 
@@ -251,6 +261,7 @@ def _normalize_pitcher_prop(value: Any) -> str:
         "bb": "walks",
         "walk": "walks",
         "walks": "walks",
+        "walks_allowed": "walks_allowed",
         "bf": "batters_faced",
         "batter_faced": "batters_faced",
         "batters_faced": "batters_faced",
@@ -259,6 +270,7 @@ def _normalize_pitcher_prop(value: Any) -> str:
         "pitches": "pitches",
         "hit": "hits",
         "hits": "hits",
+        "hits_allowed": "hits_allowed",
     }
     normalized = aliases.get(token, token)
     return normalized if normalized in PITCHER_PROP_STAT_KEYS else ""
@@ -318,120 +330,149 @@ def _results_from_rows(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     return results
 
 
+def _shadow_selected_counts(card: Dict[str, Any]) -> Dict[str, int]:
+    counts: Dict[str, int] = {"pitcher_props": 0, "hitter_props": 0, "combined": 0}
+    shadow_markets = (card.get("shadow_markets") or {}) if isinstance(card, dict) else {}
+    if not isinstance(shadow_markets, dict):
+        return counts
+    for market_name, market_info in shadow_markets.items():
+        if not isinstance(market_info, dict):
+            continue
+        recs = market_info.get("recommendations") or []
+        if not isinstance(recs, list):
+            continue
+        bucket = str(market_name or "")
+        counts[bucket] = counts.get(bucket, 0) + len(recs)
+        counts["combined"] += len(recs)
+    return counts
+
+
 def _settle_card(path: Path) -> Dict[str, Any]:
     card = _read_json(path)
     date = str(card.get("date") or "").strip()
     selected_counts = _selected_counts(card) if isinstance(card, dict) else {}
     playable_selected_counts = _playable_selected_counts(card) if isinstance(card, dict) else {}
     all_selected_counts = _merged_selected_counts(selected_counts, playable_selected_counts)
+    shadow_selected_counts = _shadow_selected_counts(card) if isinstance(card, dict) else {}
     feed_cache: Dict[int, Dict[str, Any]] = {}
     settled_rows: List[Dict[str, Any]] = []
     playable_settled_rows: List[Dict[str, Any]] = []
+    shadow_settled_rows: List[Dict[str, Any]] = []
     unresolved_rows: List[Dict[str, Any]] = []
     playable_unresolved_rows: List[Dict[str, Any]] = []
+    shadow_unresolved_rows: List[Dict[str, Any]] = []
 
-    for market_name, market_info in ((card.get("markets") or {}) or {}).items():
-        if not isinstance(market_info, dict):
-            continue
-        for reco_key, tier_name, tier_settled_rows, tier_unresolved_rows in (
+    for market_group, tier_specs in (
+        ((card.get("markets") or {}) or {}, (
             ("recommendations", "official", settled_rows, unresolved_rows),
             ("other_playable_candidates", "candidate", playable_settled_rows, playable_unresolved_rows),
-        ):
-            recs = market_info.get(reco_key) or []
-            if not isinstance(recs, list):
+        )),
+        ((card.get("shadow_markets") or {}) or {}, (
+            ("recommendations", "shadow", shadow_settled_rows, shadow_unresolved_rows),
+        )),
+    ):
+        if not isinstance(market_group, dict):
+            continue
+        for market_name, market_info in market_group.items():
+            if not isinstance(market_info, dict):
                 continue
-            for rec in recs:
-                if not isinstance(rec, dict):
+            for reco_key, tier_name, tier_settled_rows, tier_unresolved_rows in tier_specs:
+                recs = market_info.get(reco_key) or []
+                if not isinstance(recs, list):
                     continue
-                market = str(rec.get("market") or market_name)
-                game_pk = int(rec.get("game_pk") or 0)
-                line = float(rec.get("market_line") or 0.0)
-                selection = str(rec.get("selection") or "")
-                stake_u = float(rec.get("stake_u") or 0.0)
-                odds = rec.get("odds")
-                player_label = rec.get("player_name") or rec.get("pitcher_name") or None
-                prop_key = _resolve_pitcher_prop(rec)
-                try:
-                    feed = feed_cache.setdefault(game_pk, _load_feed(date, game_pk))
-                    if not _feed_is_final(feed):
-                        raise LookupError("game not final")
-                    actual_value: Any
-                    won: Optional[bool]
-                    if market == "totals":
-                        teams = (((feed.get("liveData") or {}).get("linescore") or {}).get("teams") or {})
-                        away_runs = float(((teams.get("away") or {}).get("runs")) or 0.0)
-                        home_runs = float(((teams.get("home") or {}).get("runs")) or 0.0)
-                        actual_value = float(away_runs + home_runs)
-                        won = _settle_over_under(float(actual_value), line, selection)
-                    elif market == "ml":
-                        teams = (((feed.get("liveData") or {}).get("linescore") or {}).get("teams") or {})
-                        away_runs = float(((teams.get("away") or {}).get("runs")) or 0.0)
-                        home_runs = float(((teams.get("home") or {}).get("runs")) or 0.0)
-                        actual_value = "home" if home_runs > away_runs else "away" if away_runs > home_runs else "tie"
-                        won = str(actual_value) == selection
-                    elif market == "pitcher_props":
-                        side = _team_side(feed, str(rec.get("team") or ""))
-                        if not side:
-                            raise LookupError("missing pitcher team side")
-                        pitching = _player_stats(feed, side, str(rec.get("pitcher_name") or ""), "pitching")
-                        stat_key = PITCHER_PROP_STAT_KEYS.get(prop_key)
-                        if not stat_key:
-                            raise LookupError(f"unsupported pitcher prop: {rec.get('prop')}")
-                        actual_value = float((pitching or {}).get(stat_key) or 0.0)
-                        won = _settle_over_under(float(actual_value), line, selection)
-                    elif market in HITTER_STAT_KEYS:
-                        side = _team_side(feed, str(rec.get("team") or ""))
-                        if not side:
-                            raise LookupError("missing hitter team side")
-                        batting = _player_stats(feed, side, str(rec.get("player_name") or ""), "batting")
-                        actual_value = float((batting or {}).get(HITTER_STAT_KEYS[market]) or 0.0)
-                        won = _settle_over_under(float(actual_value), line, selection)
-                    else:
-                        raise LookupError(f"unsupported market: {market}")
-                    if won is None:
-                        raise LookupError("unresolved outcome")
-                    profit_u = _american_profit(odds, stake_u) if bool(won) else -float(stake_u)
-                    tier_settled_rows.append(
-                        {
-                            "path": str(path),
-                            "date": date,
-                            "game_pk": game_pk,
-                            "market": market,
-                            "player_name": player_label,
-                            "pitcher_name": rec.get("pitcher_name") or player_label,
-                            "team": rec.get("team"),
-                            "prop": prop_key or rec.get("prop"),
-                            "selection": selection,
-                            "market_line": line,
-                            "odds": odds,
-                            "stake_u": stake_u,
-                            "actual": actual_value,
-                            "result": "win" if bool(won) else "loss",
-                            "profit_u": round(float(profit_u), 4),
-                            "recommendation_tier": tier_name,
-                        }
-                    )
-                except Exception as exc:
-                    tier_unresolved_rows.append(
-                        {
-                            "path": str(path),
-                            "date": date,
-                            "game_pk": game_pk,
-                            "market": market,
-                            "player_name": player_label,
-                            "pitcher_name": rec.get("pitcher_name") or player_label,
-                            "team": rec.get("team"),
-                            "prop": prop_key or rec.get("prop"),
-                            "selection": selection,
-                            "market_line": line,
-                            "reason": str(exc),
-                            "recommendation_tier": tier_name,
-                        }
-                    )
+                for rec in recs:
+                    if not isinstance(rec, dict):
+                        continue
+                    market = str(rec.get("market") or market_name)
+                    game_pk = int(rec.get("game_pk") or 0)
+                    line = float(rec.get("market_line") or 0.0)
+                    selection = str(rec.get("selection") or "")
+                    stake_u = float(rec.get("stake_u") or 0.0)
+                    odds = rec.get("odds")
+                    player_label = rec.get("player_name") or rec.get("pitcher_name") or None
+                    prop_key = _resolve_pitcher_prop(rec)
+                    try:
+                        feed = feed_cache.setdefault(game_pk, _load_feed(date, game_pk))
+                        if not _feed_is_final(feed):
+                            raise LookupError("game not final")
+                        actual_value: Any
+                        won: Optional[bool]
+                        if market == "totals":
+                            teams = (((feed.get("liveData") or {}).get("linescore") or {}).get("teams") or {})
+                            away_runs = float(((teams.get("away") or {}).get("runs")) or 0.0)
+                            home_runs = float(((teams.get("home") or {}).get("runs")) or 0.0)
+                            actual_value = float(away_runs + home_runs)
+                            won = _settle_over_under(float(actual_value), line, selection)
+                        elif market == "ml":
+                            teams = (((feed.get("liveData") or {}).get("linescore") or {}).get("teams") or {})
+                            away_runs = float(((teams.get("away") or {}).get("runs")) or 0.0)
+                            home_runs = float(((teams.get("home") or {}).get("runs")) or 0.0)
+                            actual_value = "home" if home_runs > away_runs else "away" if away_runs > home_runs else "tie"
+                            won = str(actual_value) == selection
+                        elif market == "pitcher_props":
+                            side = _team_side(feed, str(rec.get("team") or ""))
+                            if not side:
+                                raise LookupError("missing pitcher team side")
+                            pitching = _player_stats(feed, side, str(rec.get("pitcher_name") or ""), "pitching")
+                            stat_key = PITCHER_PROP_STAT_KEYS.get(prop_key)
+                            if not stat_key:
+                                raise LookupError(f"unsupported pitcher prop: {rec.get('prop')}")
+                            actual_value = float((pitching or {}).get(stat_key) or 0.0)
+                            won = _settle_over_under(float(actual_value), line, selection)
+                        elif market in HITTER_STAT_KEYS:
+                            side = _team_side(feed, str(rec.get("team") or ""))
+                            if not side:
+                                raise LookupError("missing hitter team side")
+                            batting = _player_stats(feed, side, str(rec.get("player_name") or ""), "batting")
+                            actual_value = _hitter_actual_value((batting or {}), market)
+                            won = _settle_over_under(float(actual_value), line, selection)
+                        else:
+                            raise LookupError(f"unsupported market: {market}")
+                        if won is None:
+                            raise LookupError("unresolved outcome")
+                        profit_u = _american_profit(odds, stake_u) if bool(won) else -float(stake_u)
+                        tier_settled_rows.append(
+                            {
+                                "path": str(path),
+                                "date": date,
+                                "game_pk": game_pk,
+                                "market": market,
+                                "player_name": player_label,
+                                "pitcher_name": rec.get("pitcher_name") or player_label,
+                                "team": rec.get("team"),
+                                "prop": prop_key or rec.get("prop"),
+                                "selection": selection,
+                                "market_line": line,
+                                "odds": odds,
+                                "stake_u": stake_u,
+                                "actual": actual_value,
+                                "result": "win" if bool(won) else "loss",
+                                "profit_u": round(float(profit_u), 4),
+                                "recommendation_tier": tier_name,
+                            }
+                        )
+                    except Exception as exc:
+                        tier_unresolved_rows.append(
+                            {
+                                "path": str(path),
+                                "date": date,
+                                "game_pk": game_pk,
+                                "market": market,
+                                "player_name": player_label,
+                                "pitcher_name": rec.get("pitcher_name") or player_label,
+                                "team": rec.get("team"),
+                                "prop": prop_key or rec.get("prop"),
+                                "selection": selection,
+                                "market_line": line,
+                                "reason": str(exc),
+                                "recommendation_tier": tier_name,
+                            }
+                        )
 
     all_settled_rows = list(settled_rows) + list(playable_settled_rows)
     results = _results_from_rows(settled_rows)
     playable_results = _results_from_rows(playable_settled_rows)
+    shadow_results = _results_from_rows(shadow_settled_rows)
     all_results = _results_from_rows(all_settled_rows)
 
     return {
@@ -441,20 +482,26 @@ def _settle_card(path: Path) -> Dict[str, Any]:
         "selected_counts": selected_counts,
         "playable_selected_counts": playable_selected_counts,
         "all_selected_counts": all_selected_counts,
+        "shadow_selected_counts": shadow_selected_counts,
         "results": results,
         "playable_results": playable_results,
+        "shadow_results": shadow_results,
         "all_results": all_results,
         "settled_n": int(len(settled_rows)),
         "playable_settled_n": int(len(playable_settled_rows)),
+        "shadow_settled_n": int(len(shadow_settled_rows)),
         "all_settled_n": int(len(all_settled_rows)),
         "unresolved_n": int(len(unresolved_rows)),
         "playable_unresolved_n": int(len(playable_unresolved_rows)),
+        "shadow_unresolved_n": int(len(shadow_unresolved_rows)),
         "all_unresolved_n": int(len(unresolved_rows) + len(playable_unresolved_rows)),
         "unresolved_recommendations": unresolved_rows,
         "playable_unresolved_recommendations": playable_unresolved_rows,
+        "shadow_unresolved_recommendations": shadow_unresolved_rows,
         "all_unresolved_recommendations": list(unresolved_rows) + list(playable_unresolved_rows),
         "_settled_rows": settled_rows,
         "_playable_settled_rows": playable_settled_rows,
+        "_shadow_settled_rows": shadow_settled_rows,
         "_all_settled_rows": all_settled_rows,
     }
 

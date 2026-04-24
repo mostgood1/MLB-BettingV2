@@ -37,6 +37,7 @@ from sim_engine.data.statsapi import StatsApiClient, fetch_person_gamelog
 HITTER_MARKET_ORDER: Tuple[str, ...] = (
     "hitter_home_runs",
     "hitter_hits",
+    "hitter_hits_runs_rbis",
     "hitter_total_bases",
     "hitter_runs",
     "hitter_rbis",
@@ -168,6 +169,7 @@ DEFAULT_HITTER_STAKE_U = 0.5
 DEFAULT_OFFICIAL_HITTER_SUBCAPS: Dict[str, int] = {
     "hitter_home_runs": 0,
     "hitter_hits": 4,
+    "hitter_hits_runs_rbis": 0,
     "hitter_total_bases": 6,
     "hitter_runs": 1,
     "hitter_rbis": 0,
@@ -192,6 +194,7 @@ KNOWN_OFFICIAL_CAP_PROFILES: Dict[str, Dict[str, Dict[str, int]]] = {
         "hitter_subcaps": {
             "hitter_home_runs": 0,
             "hitter_hits": 4,
+            "hitter_hits_runs_rbis": 0,
             "hitter_total_bases": 6,
             "hitter_runs": 1,
             "hitter_rbis": 0,
@@ -207,6 +210,7 @@ KNOWN_OFFICIAL_CAP_PROFILES: Dict[str, Dict[str, Dict[str, int]]] = {
         "hitter_subcaps": {
             "hitter_home_runs": 2,
             "hitter_hits": 4,
+            "hitter_hits_runs_rbis": 0,
             "hitter_total_bases": 4,
             "hitter_runs": 1,
             "hitter_rbis": 0,
@@ -222,6 +226,7 @@ KNOWN_OFFICIAL_CAP_PROFILES: Dict[str, Dict[str, Dict[str, int]]] = {
         "hitter_subcaps": {
             "hitter_home_runs": 2,
             "hitter_hits": 4,
+            "hitter_hits_runs_rbis": 0,
             "hitter_total_bases": 4,
             "hitter_runs": 2,
             "hitter_rbis": 0,
@@ -237,6 +242,7 @@ KNOWN_OFFICIAL_CAP_PROFILES: Dict[str, Dict[str, Dict[str, int]]] = {
         "hitter_subcaps": {
             "hitter_home_runs": 2,
             "hitter_hits": 4,
+            "hitter_hits_runs_rbis": 0,
             "hitter_total_bases": 4,
             "hitter_runs": 0,
             "hitter_rbis": 0,
@@ -260,6 +266,14 @@ HITTER_MARKET_SPECS: Dict[str, Dict[str, Any]] = {
         "dist_key": "hits_dist",
         "mean_key": "h_mean",
         "primary_lines": (0.5,),
+    },
+    "batter_hits_runs_rbis": {
+        "market": "hitter_hits_runs_rbis",
+        "label": "Hitter H+R+R",
+        "prob_base": "hits_runs_rbis",
+        "dist_key": "hits_runs_rbis_dist",
+        "mean_key": "hrr_mean",
+        "primary_lines": (1.5, 2.5, 3.5),
     },
     "batter_total_bases": {
         "market": "hitter_total_bases",
@@ -307,6 +321,10 @@ HITTER_PREDICTION_FIELDS: Dict[str, Tuple[str, str]] = {
     "hits_1plus": ("p_h_1plus_cal", "p_h_1plus"),
     "hits_2plus": ("p_h_2plus_cal", "p_h_2plus"),
     "hits_3plus": ("p_h_3plus_cal", "p_h_3plus"),
+    "hits_runs_rbis_2plus": ("p_hrr_2plus_cal", "p_hrr_2plus"),
+    "hits_runs_rbis_3plus": ("p_hrr_3plus_cal", "p_hrr_3plus"),
+    "hits_runs_rbis_4plus": ("p_hrr_4plus_cal", "p_hrr_4plus"),
+    "hits_runs_rbis_5plus": ("p_hrr_5plus_cal", "p_hrr_5plus"),
     "runs_1plus": ("p_r_1plus_cal", "p_r_1plus"),
     "runs_2plus": ("p_r_2plus_cal", "p_r_2plus"),
     "runs_3plus": ("p_r_3plus_cal", "p_r_3plus"),
@@ -1356,7 +1374,7 @@ def _recommendation_market_label(row: Dict[str, Any]) -> str:
     if market == "pitcher_props":
         prop = str(row.get("prop") or "").strip().replace("_", " ")
         return f"pitcher_props:{prop}" if prop else "pitcher_props"
-    if market in {"hitter_home_runs", "hitter_hits", "hitter_total_bases", "hitter_runs", "hitter_rbis"}:
+    if market in {"hitter_home_runs", "hitter_hits", "hitter_hits_runs_rbis", "hitter_total_bases", "hitter_runs", "hitter_rbis"}:
         return market
     return market or "unknown"
 
@@ -3660,6 +3678,7 @@ def _extract_hitter_predictions(sim_obj: Dict[str, Any]) -> Dict[str, Dict[str, 
             for key in (
                 "h_mean",
                 "hr_mean",
+                "hrr_mean",
                 "tb_mean",
                 "r_mean",
                 "rbi_mean",
@@ -3675,6 +3694,7 @@ def _extract_hitter_predictions(sim_obj: Dict[str, Any]) -> Dict[str, Dict[str, 
             for key in (
                 "hits_dist",
                 "home_runs_dist",
+                "hits_runs_rbis_dist",
                 "total_bases_dist",
                 "runs_dist",
                 "rbi_dist",
@@ -4908,6 +4928,7 @@ def _build_locked_policy_card(
             "Hitter submarkets are separated in output and capped independently at "
             f"HR {_cap_text(normalized_hitter_subcaps.get('hitter_home_runs'))} / "
             f"Hits {_cap_text(normalized_hitter_subcaps.get('hitter_hits'))} / "
+            f"H+R+R {_cap_text(normalized_hitter_subcaps.get('hitter_hits_runs_rbis'))} / "
             f"Total Bases {_cap_text(normalized_hitter_subcaps.get('hitter_total_bases'))} / "
             f"Runs {_cap_text(normalized_hitter_subcaps.get('hitter_runs'))} / "
             f"RBIs {_cap_text(normalized_hitter_subcaps.get('hitter_rbis'))}, "
@@ -5166,6 +5187,12 @@ def main() -> int:
         help="Daily max hitter hits props for the official locked-policy card (negative = uncapped).",
     )
     ap.add_argument(
+        "--official-hitter-hrr-cap",
+        type=int,
+        default=DEFAULT_OFFICIAL_HITTER_SUBCAPS["hitter_hits_runs_rbis"],
+        help="Daily max hitter H+R+R props for the official locked-policy card (negative = uncapped).",
+    )
+    ap.add_argument(
         "--official-hitter-tb-cap",
         type=int,
         default=DEFAULT_OFFICIAL_HITTER_SUBCAPS["hitter_total_bases"],
@@ -5206,6 +5233,12 @@ def main() -> int:
         type=float,
         default=float(_hitter_edge_min_for_market(DEFAULT_LOCK_POLICY, "hitter_runs")),
         help="Override minimum no-vig edge for official hitter runs picks.",
+    )
+    ap.add_argument(
+        "--official-hitter-hrr-edge-min",
+        type=float,
+        default=float(_hitter_edge_min_for_market(DEFAULT_LOCK_POLICY, "hitter_hits_runs_rbis")),
+        help="Override minimum no-vig edge for official hitter H+R+R picks.",
     )
     ap.add_argument(
         "--official-hitter-rbis-edge-min",
@@ -5442,6 +5475,7 @@ def main() -> int:
         {
             "hitter_home_runs": args.official_hitter_hr_cap,
             "hitter_hits": args.official_hitter_hits_cap,
+            "hitter_hits_runs_rbis": args.official_hitter_hrr_cap,
             "hitter_total_bases": args.official_hitter_tb_cap,
             "hitter_runs": args.official_hitter_runs_cap,
             "hitter_rbis": args.official_hitter_rbis_cap,
@@ -5459,6 +5493,7 @@ def main() -> int:
         },
         hitter_edge_updates={
             "hitter_runs": args.official_hitter_runs_edge_min,
+            "hitter_hits_runs_rbis": args.official_hitter_hrr_edge_min,
             "hitter_rbis": args.official_hitter_rbis_edge_min,
         },
     )

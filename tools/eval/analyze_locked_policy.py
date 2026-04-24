@@ -46,6 +46,7 @@ HITTER_STAKE_U = 0.5
 HITTER_SUBMARKETS: Tuple[str, ...] = (
     "hitter_home_runs",
     "hitter_hits",
+    "hitter_hits_runs_rbis",
     "hitter_total_bases",
     "hitter_runs",
     "hitter_rbis",
@@ -54,6 +55,11 @@ HITTER_SUBMARKETS: Tuple[str, ...] = (
 HITTER_MARKET_SPECS: Dict[str, Dict[str, str]] = {
     "batter_home_runs": {"submarket": "hitter_home_runs", "prob_base": "hr", "actual_field": "actual_hr_y"},
     "batter_hits": {"submarket": "hitter_hits", "prob_base": "hits", "actual_field": "actual_hits"},
+    "batter_hits_runs_rbis": {
+        "submarket": "hitter_hits_runs_rbis",
+        "prob_base": "hits_runs_rbis",
+        "actual_field": "actual_hits_runs_rbis",
+    },
     "batter_total_bases": {
         "submarket": "hitter_total_bases",
         "prob_base": "total_bases",
@@ -67,6 +73,10 @@ HITTER_BACKTEST_PROP_FIELDS: List[Tuple[str, str]] = [
     ("hits_1plus", "actual_hits"),
     ("hits_2plus", "actual_hits"),
     ("hits_3plus", "actual_hits"),
+    ("hits_runs_rbis_2plus", "actual_hits_runs_rbis"),
+    ("hits_runs_rbis_3plus", "actual_hits_runs_rbis"),
+    ("hits_runs_rbis_4plus", "actual_hits_runs_rbis"),
+    ("hits_runs_rbis_5plus", "actual_hits_runs_rbis"),
     ("runs_1plus", "actual_runs"),
     ("runs_2plus", "actual_runs"),
     ("runs_3plus", "actual_runs"),
@@ -295,6 +305,7 @@ def _score_hitter_batch(root: Path, batch_dir: Path, policy: Dict[str, Any]) -> 
                     pred[key] = {
                         "hr_1plus": None,
                         "actual_hits": None,
+                        "actual_hits_runs_rbis": None,
                         "actual_runs": None,
                         "actual_rbi": None,
                         "actual_total_bases": None,

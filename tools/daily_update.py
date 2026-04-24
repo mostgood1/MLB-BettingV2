@@ -112,6 +112,7 @@ _HITTER_PROP_DIST_SPECS: Tuple[Tuple[str, str, str], ...] = (
     ("total_bases", "TB", "tb_mean"),
     ("runs", "R", "r_mean"),
     ("rbi", "RBI", "rbi_mean"),
+    ("hits_runs_rbis", "H+R+RBI", "hrr_mean"),
     ("strikeouts", "SO", "so_mean"),
     ("doubles", "2B", "2b_mean"),
     ("triples", "3B", "3b_mean"),
@@ -2953,12 +2954,14 @@ def _sim_many(
                     except Exception:
                         continue
                     tb = int(h + d2 + 2 * d3 + 3 * hr)
+                    hrr = int(h + rr + rbi)
                     hitter_stat_values = {
                         "H": h,
                         "HR": hr,
                         "TB": tb,
                         "R": rr,
                         "RBI": rbi,
+                        "H+R+RBI": hrr,
                         "2B": d2,
                         "3B": d3,
                         "SB": sb,
@@ -2992,6 +2995,7 @@ def _sim_many(
                         _inc_ge("triples_1plus", pid)
                     if hr >= 1:
                         _inc_ge("hr_1plus", pid)
+                    _inc_ge_thresholds("hits_runs_rbis", pid, hrr, 5)
                     _inc_ge_thresholds("runs", pid, rr, 3)
                     _inc_ge_thresholds("rbi", pid, rbi, 4)
                     _inc_ge_thresholds("total_bases", pid, tb, 5)
@@ -3138,6 +3142,10 @@ def _sim_many(
                 "hits_1plus": ("p_h_1plus", "H", "h_mean"),
                 "hits_2plus": ("p_h_2plus", "H", "h_mean"),
                 "hits_3plus": ("p_h_3plus", "H", "h_mean"),
+                "hits_runs_rbis_2plus": ("p_hrr_2plus", "H+R+RBI", "hrr_mean"),
+                "hits_runs_rbis_3plus": ("p_hrr_3plus", "H+R+RBI", "hrr_mean"),
+                "hits_runs_rbis_4plus": ("p_hrr_4plus", "H+R+RBI", "hrr_mean"),
+                "hits_runs_rbis_5plus": ("p_hrr_5plus", "H+R+RBI", "hrr_mean"),
                 "doubles_1plus": ("p_2b_1plus", "2B", "2b_mean"),
                 "triples_1plus": ("p_3b_1plus", "3B", "3b_mean"),
                 "runs_1plus": ("p_r_1plus", "R", "r_mean"),
