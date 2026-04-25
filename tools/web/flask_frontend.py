@@ -9018,8 +9018,7 @@ def _season_betting_manifest_response_payload(
     return _payload_cache_get_or_build(
         "season_betting_manifest_api",
         f"{int(season)}:{str(profile_name or '')}",
-        signature_factory=lambda: _season_betting_manifest_payload_signature(int(season), profile_name, manifest_path),
-        max_age_seconds=float(_CARDS_CACHE_TTL_SECONDS),
+        max_age_seconds=max(float(_CARDS_CACHE_TTL_SECONDS), 300.0),
         builder=lambda: (
             _rebuild_season_betting_manifest_payload(
                 int(season),
@@ -9050,8 +9049,7 @@ def _official_betting_card_manifest_response_payload(
     return _payload_cache_get_or_build(
         "season_official_betting_manifest_api",
         f"{int(season)}:{str(profile_name or '')}",
-        signature_factory=lambda: _season_betting_manifest_payload_signature(int(season), profile_name, manifest_path),
-        max_age_seconds=float(_CARDS_CACHE_TTL_SECONDS),
+        max_age_seconds=max(float(_CARDS_CACHE_TTL_SECONDS), 300.0),
         builder=lambda: (
             _official_betting_card_manifest_payload(
                 int(season),
