@@ -5584,6 +5584,16 @@ def _hr_target_schedule_game_index(d: str) -> Dict[int, Dict[str, Any]]:
     return indexed
 
 
+def _hr_target_game_sort_key(schedule_row: Optional[Dict[str, Any]], game_pk: Any) -> Tuple[str, str, str, int]:
+    row = schedule_row if isinstance(schedule_row, dict) else {}
+    return (
+        str(row.get("gameDate") or ""),
+        str(row.get("startTime") or ""),
+        str(row.get("matchup") or ""),
+        int(_safe_int(game_pk) or 0),
+    )
+
+
 def _hr_target_resolved_team_ids(
     row: Dict[str, Any],
     schedule_row: Optional[Dict[str, Any]] = None,
@@ -5646,12 +5656,7 @@ def _hr_target_game_options(rows: List[Dict[str, Any]], d: str) -> List[Dict[str
         }
     return sorted(
         game_map.values(),
-        key=lambda item: (
-            int(item.get("orderIndex") or 9999),
-            str(item.get("startTime") or ""),
-            str(item.get("matchup") or ""),
-            int(item.get("gamePk") or 0),
-        ),
+        key=lambda item: _hr_target_game_sort_key(schedule_index.get(int(item.get("gamePk") or 0)), item.get("gamePk")),
     )
 
 
@@ -6265,12 +6270,7 @@ def _daily_hr_targets_payload(
     }
     ordered_game_pks = sorted(
         seen_games,
-        key=lambda game_pk: (
-            int((schedule_index.get(int(game_pk)) or {}).get("orderIndex") or 9999),
-            str((schedule_index.get(int(game_pk)) or {}).get("startTime") or ""),
-            str((schedule_index.get(int(game_pk)) or {}).get("matchup") or ""),
-            int(game_pk),
-        ),
+        key=lambda game_pk: _hr_target_game_sort_key(schedule_index.get(int(game_pk)), game_pk),
     )
     for game_pk in ordered_game_pks:
         game_rows = [row for row in rows if _safe_int(row.get("gamePk")) == int(game_pk)]
