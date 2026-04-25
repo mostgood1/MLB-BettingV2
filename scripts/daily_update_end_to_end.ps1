@@ -443,6 +443,89 @@ function Test-RunOwnedArtifactPaths {
     return $true
 }
 
+function Get-GitUnmergedPaths {
+    param(
+        [string]$RepoRoot,
+        [string[]]$Paths = @()
+    )
+
+    $pathArgs = if ($Paths -and $Paths.Count -gt 0) { @('--') + $Paths } else { @() }
+    $unmergedArgs = @('diff', '--name-only', '--diff-filter=U') + $pathArgs
+    $unmerged = (& git -C $RepoRoot @unmergedArgs 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Failed to inspect unmerged rebase paths.'
+    }
+
+    return Normalize-GitPaths -Paths $unmerged
+}
+
+function Resolve-OwnedArtifactRebaseConflicts {
+    param(
+        [string]$RepoRoot,
+        [string[]]$ArtifactPaths,
+        [string[]]$OwnedDates
+    )
+
+    $unmergedPaths = Get-GitUnmergedPaths -RepoRoot $RepoRoot -Paths $ArtifactPaths
+    if ($unmergedPaths.Count -eq 0) {
+        return $false
+    }
+
+    if (-not (Test-PathsWithinRoots -Paths $unmergedPaths -Roots $ArtifactPaths)) {
+        throw 'Rebase produced conflicts outside the managed artifact paths.'
+    }
+
+    if (-not (Test-RunOwnedArtifactPaths -Paths $unmergedPaths -OwnedDates $OwnedDates)) {
+        throw 'Rebase produced conflicts for artifact paths outside this run''s owned dates.'
+    }
+
+    Write-Host 'Auto-resolving owned artifact rebase conflicts by keeping the newly generated daily-update versions.'
+    foreach ($path in $unmergedPaths) {
+        & git -C $RepoRoot checkout --theirs -- $path 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to keep rebased artifact version for $path"
+        }
+    }
+
+    Invoke-GitCommand -RepoRoot $RepoRoot -Arguments (@('add', '--') + $unmergedPaths) -StepName 'Stage auto-resolved owned artifact conflicts'
+    return $true
+}
+
+function Invoke-OwnedArtifactRebase {
+    param(
+        [string]$RepoRoot,
+        [string]$RemoteRef,
+        [string[]]$ArtifactPaths,
+        [string[]]$OwnedDates,
+        [string]$StepName
+    )
+
+    Write-Host "==> $StepName"
+    Write-Host "git -C $RepoRoot rebase -X theirs $RemoteRef"
+    Push-Location $RepoRoot
+    try {
+        & git -C $RepoRoot rebase -X theirs $RemoteRef
+        $exitCode = $LASTEXITCODE
+        while ($exitCode -ne 0) {
+            $rebaseInProgress = (Test-Path (Join-Path $RepoRoot '.git\rebase-merge')) -or (Test-Path (Join-Path $RepoRoot '.git\rebase-apply'))
+            if (-not $rebaseInProgress) {
+                throw "$StepName failed with exit code $exitCode"
+            }
+
+            $resolved = Resolve-OwnedArtifactRebaseConflicts -RepoRoot $RepoRoot -ArtifactPaths $ArtifactPaths -OwnedDates $OwnedDates
+            if (-not $resolved) {
+                throw "$StepName failed with exit code $exitCode"
+            }
+
+            & git -c core.editor=true -C $RepoRoot rebase --continue
+            $exitCode = $LASTEXITCODE
+        }
+    }
+    finally {
+        Pop-Location
+    }
+}
+
 function Assert-SafeArtifactPush {
     param(
         [string]$RepoRoot,
@@ -500,8 +583,9 @@ function Sync-GitBranchBeforePush {
         [switch]$AllowArtifactRebase
     )
 
+    $remoteRef = "$Remote/$Branch"
     Assert-SafeArtifactPush -RepoRoot $RepoRoot -Remote $Remote -Branch $Branch -ArtifactPaths $ArtifactPaths -OwnedDates $OwnedDates -AllowArtifactRebase:$AllowArtifactRebase -UseHeadCommit
-    Invoke-GitCommand -RepoRoot $RepoRoot -Arguments @('rebase', "$Remote/$Branch") -StepName "Rebase onto $Remote/$Branch before push"
+    Invoke-OwnedArtifactRebase -RepoRoot $RepoRoot -RemoteRef $remoteRef -ArtifactPaths $ArtifactPaths -OwnedDates $OwnedDates -StepName "Rebase onto $remoteRef before push"
 }
 
 function Sync-GitBranchBeforeRun {
