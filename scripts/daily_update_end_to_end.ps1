@@ -592,7 +592,10 @@ function Sync-GitBranchBeforeRun {
     param(
         [string]$RepoRoot,
         [string]$Remote,
-        [string]$Branch
+        [string]$Branch,
+        [string[]]$ArtifactPaths,
+        [string[]]$OwnedDates = @(),
+        [switch]$AllowArtifactRebase
     )
 
     $remoteRef = "$Remote/$Branch"
@@ -602,7 +605,8 @@ function Sync-GitBranchBeforeRun {
         return
     }
 
-    Invoke-GitCommand -RepoRoot $RepoRoot -Arguments @('rebase', $remoteRef) -StepName "Rebase onto $remoteRef before workflow run"
+    Assert-SafeArtifactPush -RepoRoot $RepoRoot -Remote $Remote -Branch $Branch -ArtifactPaths $ArtifactPaths -OwnedDates $OwnedDates -AllowArtifactRebase:$AllowArtifactRebase -UseHeadCommit
+    Invoke-OwnedArtifactRebase -RepoRoot $RepoRoot -RemoteRef $remoteRef -ArtifactPaths $ArtifactPaths -OwnedDates $OwnedDates -StepName "Rebase onto $remoteRef before workflow run"
 }
 
 $repoRoot = Get-RepoRoot
@@ -663,7 +667,7 @@ if ($GitPush -eq 'on') {
 
     $pushBranch = if ($GitPushBranch) { $GitPushBranch } else { Get-GitCurrentBranch -RepoRoot $repoRoot }
     if (-not $initialGitStatus) {
-        Sync-GitBranchBeforeRun -RepoRoot $repoRoot -Remote $GitPushRemote -Branch $pushBranch
+        Sync-GitBranchBeforeRun -RepoRoot $repoRoot -Remote $GitPushRemote -Branch $pushBranch -ArtifactPaths $artifactPaths -OwnedDates $ownedArtifactDates -AllowArtifactRebase:$AllowArtifactRebase
     }
 }
 
