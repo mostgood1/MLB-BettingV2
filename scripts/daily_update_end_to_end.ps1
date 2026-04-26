@@ -655,7 +655,16 @@ if ($GitPush -eq 'on') {
     $initialGitStatus = (& git -C $repoRoot status --porcelain) -join "`n"
     if ($initialGitStatus) {
         $allChangedPaths = Get-WorkingTreeChangedPaths -RepoRoot $repoRoot
-        if (Test-PathsWithinRoots -Paths $allChangedPaths -Roots $artifactPaths) {
+        $managedArtifactChanges = @($allChangedPaths | Where-Object {
+            $candidate = ([string]$_).Trim().Replace('\\', '/')
+            foreach ($root in $artifactPaths) {
+                if ($candidate.Equals($root, [System.StringComparison]::OrdinalIgnoreCase) -or $candidate.StartsWith("$root/", [System.StringComparison]::OrdinalIgnoreCase)) {
+                    return $true
+                }
+            }
+            return $false
+        })
+        if ($managedArtifactChanges.Count -gt 0) {
             Clear-ManagedArtifactPaths -RepoRoot $repoRoot -ArtifactPaths $artifactPaths
             $initialGitStatus = (& git -C $repoRoot status --porcelain) -join "`n"
         }
