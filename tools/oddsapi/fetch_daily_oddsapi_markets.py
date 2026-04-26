@@ -91,6 +91,28 @@ def _write_json(path: Path, obj: Any) -> None:
     tmp.replace(path)
 
 
+def _read_json_if_exists(path: Path) -> Optional[Dict[str, Any]]:
+    if not path.exists():
+        return None
+    try:
+        obj = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def _market_doc_entry_count(doc: Optional[Dict[str, Any]], kind: str) -> int:
+    if not isinstance(doc, dict):
+        return 0
+    meta = doc.get("meta") if isinstance(doc.get("meta"), dict) else {}
+    counts = meta.get("counts") if isinstance(meta.get("counts"), dict) else {}
+    if kind == "game_lines":
+        return int(counts.get("games") or 0)
+    if kind in {"pitcher_props", "hitter_props"}:
+        return int(counts.get("players") or 0)
+    return 0
+
+
 def _unwrap_live_odds_payload(obj: Any) -> Optional[Dict[str, Any]]:
     if isinstance(obj, dict):
         return obj
@@ -462,12 +484,42 @@ def fetch_and_write_live_odds_for_date(
         events=live_events,
     )
 
+    warnings: List[str] = []
+    existing_game_lines_doc = _read_json_if_exists(game_lines_path)
+    existing_pitcher_props_doc = _read_json_if_exists(pitcher_props_path)
+    existing_hitter_props_doc = _read_json_if_exists(hitter_props_path)
+
+    if (
+        _market_doc_entry_count(game_lines_doc, "game_lines") <= 0
+        and _market_doc_entry_count(existing_game_lines_doc, "game_lines") > 0
+    ):
+        game_lines_doc = existing_game_lines_doc or game_lines_doc
+        warnings.append(
+            f"preserved existing game lines for {date_str} because live refresh returned no matched events"
+        )
+    if (
+        _market_doc_entry_count(pitcher_props_doc, "pitcher_props") <= 0
+        and _market_doc_entry_count(existing_pitcher_props_doc, "pitcher_props") > 0
+    ):
+        pitcher_props_doc = existing_pitcher_props_doc or pitcher_props_doc
+        warnings.append(
+            f"preserved existing pitcher props for {date_str} because live refresh returned no player props"
+        )
+    if (
+        _market_doc_entry_count(hitter_props_doc, "hitter_props") <= 0
+        and _market_doc_entry_count(existing_hitter_props_doc, "hitter_props") > 0
+    ):
+        hitter_props_doc = existing_hitter_props_doc or hitter_props_doc
+        warnings.append(
+            f"preserved existing hitter props for {date_str} because live refresh returned no player props"
+        )
+
     _write_json(game_lines_path, game_lines_doc)
     _write_json(pitcher_props_path, pitcher_props_doc)
     _write_json(hitter_props_path, hitter_props_doc)
 
-    return {
-        "status": "ok",
+    result = {
+        "status": ("warning" if warnings else "ok"),
         "date": str(date_str),
         "mode": "live",
         "out_dir": str(target_dir),
@@ -480,6 +532,9 @@ def fetch_and_write_live_odds_for_date(
             "hitter_props": dict(((hitter_props_doc.get("meta") or {}).get("counts") or {})),
         },
     }
+    if warnings:
+        result["warnings"] = list(warnings)
+    return result
 
 
 def main() -> int:
