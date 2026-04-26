@@ -261,10 +261,26 @@ function Clear-ManagedArtifactPaths {
 
     Write-Host 'Clearing previously generated artifact changes before syncing with remote.'
 
-    $restoreArgs = @('restore', '--source=HEAD', '--staged', '--worktree', '--') + $ArtifactPaths
-    & git -C $RepoRoot @restoreArgs 2>$null
+    $trackedArtifactPaths = Normalize-GitPaths -Paths (& git -C $RepoRoot ls-files -- $ArtifactPaths 2>$null)
     if ($LASTEXITCODE -ne 0) {
-        throw 'Failed to reset tracked generated artifact files before sync.'
+        throw 'Failed to enumerate tracked generated artifact files before sync.'
+    }
+
+    if ($trackedArtifactPaths.Count -gt 0) {
+        $pathspecFile = [System.IO.Path]::GetTempFileName()
+        try {
+            [System.IO.File]::WriteAllLines($pathspecFile, $trackedArtifactPaths)
+            $restoreArgs = @('restore', '--source=HEAD', '--staged', '--worktree', "--pathspec-from-file=$pathspecFile")
+            & git -C $RepoRoot @restoreArgs 2>$null
+            if ($LASTEXITCODE -ne 0) {
+                throw 'Failed to reset tracked generated artifact files before sync.'
+            }
+        }
+        finally {
+            if (Test-Path $pathspecFile) {
+                Remove-Item $pathspecFile -Force -ErrorAction SilentlyContinue
+            }
+        }
     }
 
     $cleanArgs = @('clean', '-fd', '--') + $ArtifactPaths
