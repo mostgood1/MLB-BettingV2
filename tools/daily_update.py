@@ -40,6 +40,13 @@ _DATA_ROOT_DIR_ENV = str(
 ).strip()
 _DATA_DIR = (Path(_DATA_ROOT_DIR_ENV).resolve() if _DATA_ROOT_DIR_ENV else _TRACKED_DATA_DIR)
 _OFFICIAL_CARD_MIN_PUBLISH_SIMS = 250
+_UI_DAILY_MANAGED_GIT_ROOTS: Tuple[str, ...] = (
+    "data/daily",
+    "data/daily_pitcher_props",
+    "data/daily_hitter_props",
+    "data/eval",
+    "data/raw/statsapi/feed_live",
+)
 if str(_ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(_ROOT_DIR))
 
@@ -1215,6 +1222,42 @@ def _argv_has_flag(argv: List[str], flag: str) -> bool:
     return False
 
 
+def _normalize_git_path(path: str) -> str:
+    return str(path or "").strip().replace("\\", "/")
+
+
+def _path_is_within_roots(path: str, roots: Tuple[str, ...]) -> bool:
+    normalized_path = _normalize_git_path(path)
+    if not normalized_path:
+        return False
+    for root in roots:
+        normalized_root = _normalize_git_path(root)
+        if normalized_path == normalized_root or normalized_path.startswith(f"{normalized_root}/"):
+            return True
+    return False
+
+
+def _resolve_skip_started_games(args: argparse.Namespace, raw_argv: List[str]) -> str:
+    requested = str(getattr(args, "skip_started_games", "auto") or "auto").strip().lower()
+    if requested in {"on", "off"}:
+        return requested
+    try:
+        target_date = _parse_date_str(str(getattr(args, "date", "") or ""))
+    except Exception:
+        return "off"
+    return "on" if target_date == datetime.now().date() else "off"
+
+
+def _apply_ui_daily_defaults(args: argparse.Namespace, raw_argv: List[str]) -> None:
+    args.skip_started_games = _resolve_skip_started_games(args, raw_argv)
+    if str(getattr(args, "workflow", "core") or "core") != "ui-daily":
+        return
+    if not _argv_has_flag(list(raw_argv), "--git-push"):
+        args.git_push = "on"
+    if not _argv_has_flag(list(raw_argv), "--build-next-day"):
+        args.build_next_day = "on"
+
+
 def _apply_forward_tuning_defaults(args: argparse.Namespace, raw_argv: List[str]) -> None:
     if not should_use_forward_tuning(str(getattr(args, "date", "") or "")):
         return
@@ -1246,6 +1289,95 @@ def _resolve_effective_seed(args: argparse.Namespace, raw_argv: List[str]) -> Tu
         return _fresh_auto_seed(), "auto_future_date", False
 
     return int(args.seed), "default_fixed", False
+
+
+def _git_list_paths(repo_ROOT_DIR: Path, args: List[str]) -> List[str]:
+    result = _git_run(repo_ROOT_DIR, args)
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or "git path query failed").strip())
+    paths = []
+    for raw_line in str(result.stdout or "").splitlines():
+        line = _normalize_git_path(raw_line)
+        if line:
+            paths.append(line)
+    return paths
+
+
+def _git_staged_paths(repo_ROOT_DIR: Path) -> List[str]:
+    return _git_list_paths(repo_ROOT_DIR, ["diff", "--cached", "--name-only", "--relative"])
+
+
+def _git_unmerged_paths(repo_ROOT_DIR: Path) -> List[str]:
+    return _git_list_paths(repo_ROOT_DIR, ["diff", "--name-only", "--diff-filter=U"])
+
+
+def _git_rebase_in_progress(repo_ROOT_DIR: Path) -> bool:
+    git_dir = repo_ROOT_DIR / ".git"
+    return (git_dir / "rebase-merge").exists() or (git_dir / "rebase-apply").exists()
+
+
+def _git_run_with_overrides(
+    repo_ROOT_DIR: Path,
+    args: List[str],
+    *,
+    config_pairs: Optional[List[Tuple[str, str]]] = None,
+) -> subprocess.CompletedProcess:
+    cmd = ["git"]
+    for key, value in list(config_pairs or []):
+        cmd.extend(["-c", f"{key}={value}"])
+    cmd.extend(["-C", str(repo_ROOT_DIR), *[str(part) for part in args]])
+    return subprocess.run(cmd, check=False, capture_output=True, text=True)
+
+
+def _rebase_daily_update_commit(
+    *,
+    repo_ROOT_DIR: Path,
+    remote: str,
+    branch: str,
+    owned_paths: List[str],
+) -> Dict[str, Any]:
+    fetch_result = _git_run(repo_ROOT_DIR, ["fetch", str(remote), str(branch)])
+    if fetch_result.returncode != 0:
+        raise RuntimeError((fetch_result.stderr or fetch_result.stdout or "git fetch failed").strip())
+
+    remote_ref = f"{str(remote)}/{str(branch)}"
+    owned_path_set = {_normalize_git_path(path) for path in owned_paths if _normalize_git_path(path)}
+    auto_resolved_conflicts = 0
+
+    rebase_result = _git_run(repo_ROOT_DIR, ["rebase", "-X", "theirs", remote_ref])
+    while rebase_result.returncode != 0:
+        if not _git_rebase_in_progress(repo_ROOT_DIR):
+            raise RuntimeError((rebase_result.stderr or rebase_result.stdout or "git rebase failed").strip())
+
+        unmerged_paths = _git_unmerged_paths(repo_ROOT_DIR)
+        if not unmerged_paths:
+            raise RuntimeError((rebase_result.stderr or rebase_result.stdout or "git rebase failed").strip())
+
+        unexpected_paths = [path for path in unmerged_paths if _normalize_git_path(path) not in owned_path_set]
+        if unexpected_paths:
+            raise RuntimeError(
+                "git rebase produced conflicts outside managed daily-update artifacts: "
+                + ", ".join(unexpected_paths[:10])
+            )
+
+        checkout_result = _git_run(repo_ROOT_DIR, ["checkout", "--theirs", "--", *unmerged_paths])
+        if checkout_result.returncode != 0:
+            raise RuntimeError((checkout_result.stderr or checkout_result.stdout or "git checkout --theirs failed").strip())
+        add_result = _git_run(repo_ROOT_DIR, ["add", "--", *unmerged_paths])
+        if add_result.returncode != 0:
+            raise RuntimeError((add_result.stderr or add_result.stdout or "git add after conflict resolution failed").strip())
+
+        auto_resolved_conflicts += int(len(unmerged_paths))
+        rebase_result = _git_run_with_overrides(
+            repo_ROOT_DIR,
+            ["rebase", "--continue"],
+            config_pairs=[("core.editor", "true")],
+        )
+
+    return {
+        "remote_ref": remote_ref,
+        "auto_resolved_conflicts": int(auto_resolved_conflicts),
+    }
 
 
 def _refresh_feed_live_cache_for_date(
@@ -1611,18 +1743,34 @@ def _maybe_git_push_daily_update(
     remote: str,
     branch: str,
     commit_message: str,
+    next_date: str = "",
 ) -> Dict[str, Any]:
     if not enabled:
         return {"status": "skipped", "reason": "git_push=off"}
 
+    preexisting_staged_paths = _git_staged_paths(repo_ROOT_DIR)
+    non_managed_staged_paths = [
+        path for path in preexisting_staged_paths if not _path_is_within_roots(path, _UI_DAILY_MANAGED_GIT_ROOTS)
+    ]
+    if non_managed_staged_paths:
+        raise RuntimeError(
+            "git index already contains staged non-artifact changes: " + ", ".join(non_managed_staged_paths[:10])
+        )
+
     before = set(preexisting_changes or set())
     after = _git_current_change_set(repo_ROOT_DIR)
-    candidate_paths = sorted(path for path in after if path not in before)
+    preexisting_managed_paths = sorted(path for path in before if _path_is_within_roots(path, _UI_DAILY_MANAGED_GIT_ROOTS))
+    candidate_paths = sorted(
+        path
+        for path in after
+        if _path_is_within_roots(path, _UI_DAILY_MANAGED_GIT_ROOTS)
+    )
     if not candidate_paths:
         return {
             "status": "skipped",
-            "reason": "no new repository changes to commit",
+            "reason": "no managed repository changes to commit",
             "preexisting_change_count": int(len(before)),
+            "preexisting_managed_change_count": int(len(preexisting_managed_paths)),
         }
 
     add_result = _git_run(repo_ROOT_DIR, ["add", "-A", "--", *candidate_paths])
@@ -1640,7 +1788,11 @@ def _maybe_git_push_daily_update(
             "candidate_paths": candidate_paths,
         }
 
-    normalized_message = str(commit_message or "").format(date=str(date_str), workflow=str(workflow or "core")).strip()
+    normalized_message = str(commit_message or "").format(
+        date=str(date_str),
+        workflow=str(workflow or "core"),
+        next_date=str(next_date or ""),
+    ).strip()
     if not normalized_message:
         normalized_message = f"Daily update {date_str}"
     commit_result = _git_run(repo_ROOT_DIR, ["commit", "-m", normalized_message])
@@ -1648,6 +1800,12 @@ def _maybe_git_push_daily_update(
         raise RuntimeError((commit_result.stderr or commit_result.stdout or "git commit failed").strip())
 
     push_branch = str(branch or "").strip() or _git_current_branch(repo_ROOT_DIR)
+    rebase_details = _rebase_daily_update_commit(
+        repo_ROOT_DIR=repo_ROOT_DIR,
+        remote=str(remote),
+        branch=str(push_branch),
+        owned_paths=staged_paths,
+    )
     push_result = _git_run(repo_ROOT_DIR, ["push", str(remote), push_branch])
     if push_result.returncode != 0:
         raise RuntimeError((push_result.stderr or push_result.stdout or "git push failed").strip())
@@ -1662,7 +1820,77 @@ def _maybe_git_push_daily_update(
         "commit_sha": commit_sha,
         "committed_paths": staged_paths,
         "preexisting_change_count": int(len(before)),
+        "preexisting_managed_change_count": int(len(preexisting_managed_paths)),
+        "rebase": rebase_details,
     }
+
+
+def _build_next_day_ui_daily_command(args: argparse.Namespace, raw_argv: List[str], next_date: str) -> List[str]:
+    passthrough_args = _strip_cli_args(
+        list(raw_argv),
+        flags_with_values=(
+            "--workflow",
+            "--date",
+            "--season",
+            "--out",
+            "--workflow-out-pitcher",
+            "--workflow-out-hitter",
+            "--reconcile-date",
+            "--refresh-prior-feed-live",
+            "--settle-prior-card",
+            "--prior-card-settlement-out",
+            "--ops-report-out",
+            "--sync-live-lens",
+            "--live-lens-base-url",
+            "--live-lens-cron-token",
+            "--live-lens-timeout-seconds",
+            "--live-lens-sync-out",
+            "--refresh-current-oddsapi",
+            "--current-oddsapi-overwrite",
+            "--current-oddsapi-regions",
+            "--current-oddsapi-bookmakers",
+            "--current-oddsapi-hitter-markets",
+            "--git-push",
+            "--git-push-remote",
+            "--git-push-branch",
+            "--git-commit-message",
+            "--build-next-day",
+            "--next-date",
+        ),
+        flags_no_values=(),
+    )
+    next_season = _season_from_date_str(str(next_date), int(args.season))
+    cmd = [
+        str(Path(sys.executable).resolve()),
+        str(Path(__file__).resolve()),
+        "--workflow",
+        "ui-daily",
+        "--date",
+        str(next_date),
+        "--season",
+        str(int(next_season)),
+        "--reconcile-date",
+        str(args.date),
+        "--refresh-prior-feed-live",
+        "off",
+        "--settle-prior-card",
+        "off",
+        "--refresh-season-manifests",
+        "off",
+        "--git-push",
+        "off",
+        "--build-next-day",
+        "off",
+    ]
+    cmd.extend(passthrough_args)
+    if not _argv_has_flag(list(raw_argv), "--seed"):
+        cmd.extend([
+            "--seed",
+            str(int(getattr(args, "seed", 1337) or 1337)),
+            "--seed-source",
+            str(getattr(args, "seed_source", "default_fixed") or "default_fixed"),
+        ])
+    return cmd
 
 
 def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> int:
@@ -1768,7 +1996,26 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
         "warnings": [],
         "errors": [],
     }
+    build_next_day_enabled = str(getattr(args, "build_next_day", "off") or "off") == "on"
+    next_date_value = str(getattr(args, "next_date", "") or "").strip() or _date_plus_days(str(args.date), 1)
+    report["next_day"] = {
+        "requested": bool(build_next_day_enabled),
+        "date": str(next_date_value),
+        "season": int(_season_from_date_str(str(next_date_value), int(args.season))),
+    }
     git_push_enabled = str(getattr(args, "git_push", "off") or "off") == "on"
+    print(
+        f"[ui-daily] Starting workflow for {args.date} "
+        f"(season {int(args.season)}, prior-day reconcile {prior_date}, "
+        f"next-day {'on' if build_next_day_enabled else 'off'} -> {next_date_value}, "
+        f"git-push {'on' if git_push_enabled else 'off'})"
+    )
+    print(f"[ui-daily] Prior-day reconciliation target: {prior_date} (season {int(prior_season)})")
+    if build_next_day_enabled:
+        print(
+            f"[ui-daily] Next-day forward build is queued for {next_date_value} "
+            f"and will start after current-day artifact publication completes."
+        )
     git_push_stage: Dict[str, Any] = {
         "requested": bool(git_push_enabled),
         "remote": str(getattr(args, "git_push_remote", "origin") or "origin"),
@@ -2470,6 +2717,34 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
             report["errors"].append(f"current-day season frontend artifact build failed: {type(exc).__name__}: {exc}")
     report["stages"]["current_day_season_frontend_artifacts"] = season_frontend_stage
 
+    next_day_stage: Dict[str, Any]
+    if build_next_day_enabled:
+        print(f"[ui-daily] Building next-day forward outputs for {next_date_value}...")
+        next_day_cmd = _build_next_day_ui_daily_command(args, raw_argv, str(next_date_value))
+        next_day_stage = {
+            "status": "ok",
+            "date": str(next_date_value),
+            "season": int(_season_from_date_str(str(next_date_value), int(args.season))),
+            "command": [str(part) for part in next_day_cmd],
+        }
+        try:
+            next_day_rc = subprocess.run(next_day_cmd, check=False).returncode
+            next_day_stage["exit_code"] = int(next_day_rc)
+            if next_day_rc != 0:
+                next_day_stage["status"] = "error"
+                report["errors"].append(f"next-day forward build failed with exit {next_day_rc}")
+        except Exception as exc:
+            next_day_stage["status"] = "error"
+            next_day_stage["error"] = f"{type(exc).__name__}: {exc}"
+            report["errors"].append(f"next-day forward build failed: {type(exc).__name__}: {exc}")
+    else:
+        next_day_stage = {
+            "status": "skipped",
+            "date": str(next_date_value),
+            "reason": "build_next_day=off",
+        }
+    report["stages"]["next_day_forward_build"] = next_day_stage
+
     current_inputs = _current_day_inputs_stage(game_out=game_out, date_str=str(args.date))
     report["stages"]["current_day_roster_snapshot"] = current_inputs["roster_snapshot"]
     report["stages"]["current_day_batting_lineups"] = current_inputs["batting_lineups"]
@@ -2516,6 +2791,7 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
                 remote=str(getattr(args, "git_push_remote", "origin") or "origin"),
                 branch=str(getattr(args, "git_push_branch", "") or ""),
                 commit_message=str(getattr(args, "git_commit_message", "Daily update {date}") or "Daily update {date}"),
+                next_date=(str(next_date_value) if build_next_day_enabled else ""),
             )
             report["git_push"].update(git_push_result)
             print(
@@ -3426,7 +3702,7 @@ def main() -> int:
     ap.add_argument(
         "--workflow",
         choices=["core", "ui-daily"],
-        default="core",
+        default="ui-daily",
         help=(
             "core = single-profile snapshot/sim rebuild used by internal callers; "
             "ui-daily = refresh yesterday's actual feed/PBP cache, settle yesterday's locked card, "
@@ -3508,9 +3784,9 @@ def main() -> int:
     )
     ap.add_argument(
         "--skip-started-games",
-        choices=["on", "off"],
-        default="off",
-        help="If on, skip rebuilding games that are no longer in a Preview state and preserve any existing artifacts for them.",
+        choices=["auto", "on", "off"],
+        default="auto",
+        help="If on, skip rebuilding games that are no longer in a Preview state and preserve any existing artifacts for them. auto enables this for same-day runs.",
     )
     ap.add_argument("--cache-ttl-hours", type=int, default=6)
     ap.add_argument(
@@ -3643,8 +3919,8 @@ def main() -> int:
     ap.add_argument(
         "--git-push",
         choices=["on", "off"],
-        default="off",
-        help="If on, auto-commit and push new repository changes produced by --workflow ui-daily after a successful run.",
+        default="on",
+        help="If on, auto-commit and push new repository changes produced by --workflow ui-daily after a successful run. Use off to disable.",
     )
     ap.add_argument(
         "--git-push-remote",
@@ -3659,7 +3935,18 @@ def main() -> int:
     ap.add_argument(
         "--git-commit-message",
         default="Daily update {date}",
-        help="Commit message template used when --git-push on. Supports {date} and {workflow} placeholders.",
+        help="Commit message template used when --git-push on. Supports {date}, {next_date}, and {workflow} placeholders.",
+    )
+    ap.add_argument(
+        "--build-next-day",
+        choices=["on", "off"],
+        default="on",
+        help="If on during --workflow ui-daily, run a second forward-build for the next date with prior-day reconciliation stages disabled. Use off to disable.",
+    )
+    ap.add_argument(
+        "--next-date",
+        default="",
+        help="Optional next-date override used when --build-next-day on (defaults to --date plus one day).",
     )
     ap.add_argument(
         "--prior-eval-sims",
@@ -4006,6 +4293,7 @@ def main() -> int:
     args.seed_source = str(seed_source)
     args.seed_explicit = bool(seed_explicit)
     _apply_forward_tuning_defaults(args, raw_argv)
+    _apply_ui_daily_defaults(args, raw_argv)
 
     if str(getattr(args, "workflow", "core") or "core") == "ui-daily":
         return _run_ui_daily_workflow(args, raw_argv=raw_argv)

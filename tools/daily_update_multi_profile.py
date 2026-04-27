@@ -5042,6 +5042,8 @@ def _run_profile(
     cmd: List[str] = [
         str(py_exe),
         str(daily_update_py),
+        "--workflow",
+        "core",
         "--date",
         str(date),
         "--season",

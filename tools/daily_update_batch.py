@@ -69,6 +69,8 @@ def main() -> int:
             str(py),
             "-u",
             str(daily_update),
+            "--workflow",
+            "core",
             "--date",
             str(d),
             "--season",
