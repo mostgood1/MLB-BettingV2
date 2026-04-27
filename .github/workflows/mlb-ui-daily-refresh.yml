@@ -124,15 +124,46 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Run end-to-end ui-daily refresh
+      - name: Run current-day ui-daily refresh
         shell: pwsh
         run: |
-          ./scripts/daily_update_end_to_end.ps1 `
-            -Date "${{ steps.resolve.outputs.build_date }}" `
-            -Season "${{ steps.resolve.outputs.season }}" `
-            -NextDate "${{ steps.resolve.outputs.next_date }}" `
-            -Sims "${{ steps.resolve.outputs.sims }}" `
-            -Workers "${{ steps.resolve.outputs.workers }}" `
-            -Pbp "${{ steps.resolve.outputs.pbp }}" `
-            -PythonExe "${{ steps.setup-python.outputs.python-path }}" `
-            -GitPush on
+          & "${{ steps.setup-python.outputs.python-path }}" tools/daily_update.py `
+            --date "${{ steps.resolve.outputs.build_date }}" `
+            --season "${{ steps.resolve.outputs.season }}" `
+            --workflow ui-daily `
+            --reconcile-date "$((Get-Date "${{ steps.resolve.outputs.build_date }}").AddDays(-1).ToString('yyyy-MM-dd'))" `
+            --sims "${{ steps.resolve.outputs.sims }}" `
+            --workers "${{ steps.resolve.outputs.workers }}" `
+            --pbp "${{ steps.resolve.outputs.pbp }}" `
+            --use-roster-artifacts on `
+            --write-roster-artifacts on `
+            --git-push off
+
+      - name: Run next-day forward ui-daily refresh
+        shell: pwsh
+        run: |
+          & "${{ steps.setup-python.outputs.python-path }}" tools/daily_update.py `
+            --date "${{ steps.resolve.outputs.next_date }}" `
+            --season "$((Get-Date "${{ steps.resolve.outputs.next_date }}").Year)" `
+            --workflow ui-daily `
+            --reconcile-date "${{ steps.resolve.outputs.build_date }}" `
+            --refresh-prior-feed-live off `
+            --settle-prior-card off `
+            --refresh-season-manifests off `
+            --sims "${{ steps.resolve.outputs.sims }}" `
+            --workers "${{ steps.resolve.outputs.workers }}" `
+            --pbp "${{ steps.resolve.outputs.pbp }}" `
+            --use-roster-artifacts on `
+            --write-roster-artifacts on `
+            --git-push off
+
+      - name: Commit and push refreshed artifacts
+        shell: pwsh
+        run: |
+          git add -A -- data/daily data/daily_pitcher_props data/daily_hitter_props data/eval data/raw/statsapi/feed_live
+          if (-not (git diff --cached --quiet)) {
+            git commit -m "Daily end-to-end ${{ steps.resolve.outputs.build_date }} + ${{ steps.resolve.outputs.next_date }}"
+            git push origin HEAD:main
+          } else {
+            Write-Host "No managed artifact changes detected after workflow run."
+          }

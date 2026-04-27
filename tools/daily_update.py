@@ -3410,6 +3410,16 @@ def _as_boxscore(game_result) -> Dict[str, Any]:
 
 
 def main() -> int:
+    # Keep existing progress prints visible in real time during long-running daily updates.
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(line_buffering=True, write_through=True)
+            except Exception:
+                pass
+
     ap = argparse.ArgumentParser(description="V2 daily updater: core sim rebuild or UI daily ops workflow")
     ap.add_argument("--date", default=datetime.now().strftime("%Y-%m-%d"))
     ap.add_argument("--season", type=int, default=datetime.now().year)
@@ -4005,6 +4015,10 @@ def main() -> int:
     if stats_season <= 0:
         stats_season = int(args.season) - 1 if spring_mode else int(args.season)
     args.stats_season = int(stats_season)
+    print(
+        f"[core] Starting daily update for {args.date} "
+        f"(season={int(args.season)}, sims={int(args.sims)}, workers={int(getattr(args, 'workers', 1) or 1)})"
+    )
 
     hitter_hr_prob_calibration = _load_json_cfg(str(getattr(args, "hitter_hr_prob_calibration", "") or ""))
     hitter_props_prob_calibration = _load_json_cfg(str(getattr(args, "hitter_props_prob_calibration", "") or ""))
@@ -4158,6 +4172,7 @@ def main() -> int:
     _ensure_dir(sim_dir)
     roster_obj_dir = snapshot_dir / "roster_objs"
     _ensure_dir(roster_obj_dir)
+    print(f"[core] Syncing OddsAPI market snapshots into {snapshot_dir}...")
     _sync_oddsapi_market_snapshots(str(args.date), snapshot_dir)
 
     # Persist run metadata for debugging/repro.
@@ -4199,13 +4214,16 @@ def main() -> int:
     bvp_clamp_hi = float(args.bvp_clamp_hi)
     bvp_cache = default_bvp_cache() if bvp_hr_on else None
 
+    print(f"[core] Fetching schedule for {args.date}...")
     games = fetch_schedule_for_date(client, args.date)
     if not games:
         print(f"No games found for {args.date}")
         return 2
+    print(f"[core] Loaded {len(games)} scheduled game(s) for {args.date}.")
 
     if int(getattr(args, "max_games", 0) or 0) > 0:
         games = list(games)[: int(args.max_games)]
+        print(f"[core] Limiting run to first {len(games)} game(s) due to --max-games.")
 
     # Save raw schedule snapshot
     _write_json(snapshot_dir / "schedule_raw.json", games)

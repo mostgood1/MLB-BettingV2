@@ -66,7 +66,7 @@ The live-lens tick workflow is manual-only because GitHub Actions cron cannot sc
 
 The season republish workflow is what keeps `/opt/render/project/data/eval/seasons/...` current without relying on a user request to trigger a rebuild.
 
-The ui-daily refresh workflow is what keeps repo-tracked current-day frontend artifacts fresh without requiring a manual local rerun. It uses the existing `scripts/daily_update_end_to_end.ps1` flow, which builds:
+The ui-daily refresh workflow is what keeps repo-tracked current-day frontend artifacts fresh without requiring a manual local rerun. It calls `tools/daily_update.py` directly for the current-day build and the next-day forward build, which produces:
 
 - prior-day reconciliation and season publish inputs for the selected date
 - current-day canonical UI artifacts under `data/daily`, `data/daily_pitcher_props`, and `data/daily_hitter_props`
