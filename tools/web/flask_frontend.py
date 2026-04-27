@@ -2873,35 +2873,6 @@ def _resolve_hr_targets_artifact(
 
     _append_hr_candidate_source(hr_source_profile, hr_source_sim_dir, hr_source_snapshot_dir)
 
-    if not _derived_artifact_refresh_in_progress("hr_targets", str(d)) and _artifact_is_stale(
-        hr_targets_path,
-        dependency_paths=[hr_source_snapshot_dir],
-        dependency_dirs=[hr_source_sim_dir],
-    ):
-        if _begin_derived_artifact_refresh("hr_targets", str(d)):
-            try:
-                if hr_candidate_sources:
-                    hr_targets_destination = hr_targets_path or canonical_hr_targets_path
-                    rebuilt_hr_targets: Optional[Dict[str, Any]] = None
-                    for source_profile, source_sim_dir, source_snapshot_dir in hr_candidate_sources:
-                        candidate_doc = _collect_daily_hr_targets(
-                            source_sim_dir,
-                            source_snapshot_dir,
-                            date=str(d),
-                            season=int(_season_from_date_str(str(d))),
-                        )
-                        candidate_doc["source_profile"] = source_profile
-                        rebuilt_hr_targets = _prefer_richer_hr_targets_doc(rebuilt_hr_targets, candidate_doc)
-                    selected_hr_targets = _prefer_richer_hr_targets_doc(hr_targets, rebuilt_hr_targets)
-                    if selected_hr_targets is not hr_targets and isinstance(selected_hr_targets, dict):
-                        _write_json_file(hr_targets_destination, selected_hr_targets)
-                        hr_targets_path = hr_targets_destination
-                        hr_targets = selected_hr_targets
-            except Exception:
-                app.logger.exception("failed to refresh stale hr targets artifact for %s", d)
-            finally:
-                _end_derived_artifact_refresh("hr_targets", str(d))
-
     return hr_targets_path, hr_targets
 
 
@@ -9023,22 +8994,12 @@ def _season_betting_manifest_response_payload(
         "season_betting_manifest_api",
         f"{int(season)}:{str(profile_name or '')}",
         max_age_seconds=max(float(_CARDS_CACHE_TTL_SECONDS), 300.0),
-        builder=lambda: (
-            _rebuild_season_betting_manifest_payload(
-                int(season),
-                profile_name,
-                manifest_path,
-                manifest,
-                available_profiles,
-            )
-            if _season_betting_manifest_needs_refresh(int(season), manifest)
-            else _season_betting_manifest_static_payload(
-                int(season),
-                profile_name,
-                manifest_path,
-                manifest,
-                available_profiles,
-            )
+        builder=lambda: _season_betting_manifest_static_payload(
+            int(season),
+            profile_name,
+            manifest_path,
+            manifest,
+            available_profiles,
         ),
     )
 
@@ -9054,22 +9015,12 @@ def _official_betting_card_manifest_response_payload(
         "season_official_betting_manifest_api",
         f"{int(season)}:{str(profile_name or '')}",
         max_age_seconds=max(float(_CARDS_CACHE_TTL_SECONDS), 300.0),
-        builder=lambda: (
-            _official_betting_card_manifest_payload(
-                int(season),
-                profile_name,
-                manifest_path,
-                manifest,
-                available_profiles,
-            )
-            if _season_betting_manifest_needs_refresh(int(season), manifest)
-            else _official_betting_card_manifest_static_payload(
-                int(season),
-                profile_name,
-                manifest_path,
-                manifest,
-                available_profiles,
-            )
+        builder=lambda: _official_betting_card_manifest_static_payload(
+            int(season),
+            profile_name,
+            manifest_path,
+            manifest,
+            available_profiles,
         ),
     )
 
