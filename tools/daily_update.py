@@ -1893,6 +1893,70 @@ def _build_next_day_ui_daily_command(args: argparse.Namespace, raw_argv: List[st
     return cmd
 
 
+def _validate_render_page_artifacts(
+    *,
+    game_out: Path,
+    date_str: str,
+    current_stage: Dict[str, Any],
+    season_frontend_stage: Dict[str, Any],
+    report: Dict[str, Any],
+) -> None:
+    token = str(date_str).replace("-", "_")
+    bundle_path = game_out / f"daily_summary_{token}_profile_bundle.json"
+
+    bundle_doc: Dict[str, Any] = {}
+    try:
+        loaded_bundle = json.loads(bundle_path.read_text(encoding="utf-8")) if bundle_path.exists() else {}
+        bundle_doc = loaded_bundle if isinstance(loaded_bundle, dict) else {}
+    except Exception as exc:
+        current_stage["status"] = "error"
+        current_stage["render_artifact_validation_error"] = f"profile_bundle_unreadable: {type(exc).__name__}: {exc}"
+        report["errors"].append(f"render artifact validation failed: profile bundle unreadable: {type(exc).__name__}: {exc}")
+        return
+
+    hr_targets_info = dict(bundle_doc.get("hr_targets") or {})
+    hr_targets_path = _resolve_path_arg(str(hr_targets_info.get("artifact_path") or ""), default=(game_out / f"daily_summary_{token}_hr_targets.json"))
+    hr_targets_error = str(hr_targets_info.get("error") or "").strip()
+    hr_targets_rows = int(hr_targets_info.get("rows") or 0)
+    current_stage["hr_targets_artifact_path"] = _relative_path_str(hr_targets_path)
+    current_stage["hr_targets_artifact_exists"] = bool(hr_targets_path.exists())
+    current_stage["hr_targets_rows"] = int(hr_targets_rows)
+    if hr_targets_error or not hr_targets_path.exists():
+        current_stage["status"] = "error"
+        current_stage["render_artifact_validation_error"] = (
+            hr_targets_error or "hr_targets_artifact_missing"
+        )
+        report["errors"].append(
+            "render artifact validation failed: hr-targets artifact missing or errored"
+            + (f" ({hr_targets_error})" if hr_targets_error else "")
+        )
+
+    frontend_artifacts = dict(season_frontend_stage.get("artifacts") or {})
+    required_frontend = (
+        "season_manifest",
+        "season_day",
+        "season_betting_day",
+        "season_official_betting_day",
+    )
+    missing_frontend: List[str] = []
+    for name in required_frontend:
+        info = dict(frontend_artifacts.get(name) or {})
+        artifact_path = _resolve_path_arg(str(info.get("path") or ""), default=(game_out / "season_frontend" / f"{name}.json"))
+        exists = artifact_path.exists()
+        info["exists"] = bool(exists)
+        frontend_artifacts[name] = info
+        if not exists:
+            missing_frontend.append(str(name))
+    season_frontend_stage["artifacts"] = frontend_artifacts
+    if missing_frontend:
+        season_frontend_stage["status"] = "error"
+        current_stage["status"] = "error"
+        report["errors"].append(
+            "render artifact validation failed: missing current-day season frontend artifact(s): "
+            + ", ".join(missing_frontend)
+        )
+
+
 def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> int:
     game_out = _resolve_path_arg(str(getattr(args, "out", "") or ""), default=(_DATA_DIR / "daily"))
     default_pitcher_out, default_hitter_out = _default_ui_profile_out_dirs(game_out)
@@ -2716,6 +2780,13 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
             }
             report["errors"].append(f"current-day season frontend artifact build failed: {type(exc).__name__}: {exc}")
     report["stages"]["current_day_season_frontend_artifacts"] = season_frontend_stage
+    _validate_render_page_artifacts(
+        game_out=game_out,
+        date_str=str(args.date),
+        current_stage=current_stage,
+        season_frontend_stage=season_frontend_stage,
+        report=report,
+    )
 
     next_day_stage: Dict[str, Any]
     if build_next_day_enabled:
