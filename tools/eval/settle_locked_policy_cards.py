@@ -39,6 +39,13 @@ def _resolve_path(value: str) -> Path:
     return path.resolve()
 
 
+def _relative_path_str(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(REPO_ROOT.resolve())).replace("\\", "/")
+    except Exception:
+        return str(path.resolve()).replace("\\", "/")
+
+
 def _feed_live_path(date: str, game_pk: int) -> Path:
     year = str(date).split("-", 1)[0]
     if DATA_ROOT is not None:
@@ -349,6 +356,7 @@ def _shadow_selected_counts(card: Dict[str, Any]) -> Dict[str, int]:
 
 def _settle_card(path: Path) -> Dict[str, Any]:
     card = _read_json(path)
+    path_value = _relative_path_str(path)
     date = str(card.get("date") or "").strip()
     selected_counts = _selected_counts(card) if isinstance(card, dict) else {}
     playable_selected_counts = _playable_selected_counts(card) if isinstance(card, dict) else {}
@@ -433,7 +441,7 @@ def _settle_card(path: Path) -> Dict[str, Any]:
                         profit_u = _american_profit(odds, stake_u) if bool(won) else -float(stake_u)
                         tier_settled_rows.append(
                             {
-                                "path": str(path),
+                                "path": path_value,
                                 "date": date,
                                 "game_pk": game_pk,
                                 "market": market,
@@ -454,7 +462,7 @@ def _settle_card(path: Path) -> Dict[str, Any]:
                     except Exception as exc:
                         tier_unresolved_rows.append(
                             {
-                                "path": str(path),
+                                "path": path_value,
                                 "date": date,
                                 "game_pk": game_pk,
                                 "market": market,
@@ -476,7 +484,7 @@ def _settle_card(path: Path) -> Dict[str, Any]:
     all_results = _results_from_rows(all_settled_rows)
 
     return {
-        "path": str(path),
+        "path": path_value,
         "date": date,
         "cap_profile": card.get("cap_profile"),
         "selected_counts": selected_counts,
