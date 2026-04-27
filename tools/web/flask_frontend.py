@@ -8437,7 +8437,7 @@ def _betting_selected_counts_with_defaults(counts: Any) -> Dict[str, int]:
     out: Dict[str, int] = {key: 0 for key in _BETTING_COUNT_KEYS}
     if isinstance(counts, dict):
         for key in out:
-            out[key] = int(counts.get(key) or 0)
+            out[key] = int(_safe_int(counts.get(key)) or 0)
     if out["hitter_props"] <= 0:
         out["hitter_props"] = int(
             out["hitter_home_runs"]
@@ -8500,11 +8500,11 @@ def _merge_settled_summary_blocks(blocks: Sequence[Any]) -> Dict[str, Any]:
     for block in blocks:
         if not isinstance(block, dict):
             continue
-        total_n += int(block.get("n") or 0)
-        total_wins += int(block.get("wins") or 0)
-        total_losses += int(block.get("losses") or 0)
-        total_stake += float(block.get("stake_u") or 0.0)
-        total_profit += float(block.get("profit_u") or 0.0)
+        total_n += int(_safe_int(block.get("n")) or 0)
+        total_wins += int(_safe_int(block.get("wins")) or 0)
+        total_losses += int(_safe_int(block.get("losses")) or 0)
+        total_stake += float(_safe_float(block.get("stake_u")) or 0.0)
+        total_profit += float(_safe_float(block.get("profit_u")) or 0.0)
     return {
         "n": int(total_n),
         "wins": int(total_wins),
@@ -8679,16 +8679,20 @@ def _median_float(values: Sequence[float]) -> Optional[float]:
 
 
 def _season_betting_daily_stats(day_rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
-    profits = [float(((row.get("results") or {}).get("combined") or {}).get("profit_u") or 0.0) for row in day_rows]
-    cards_with_bets = [row for row in day_rows if int((((row.get("results") or {}).get("combined") or {}).get("n") or 0)) > 0]
+    profits = [float(_safe_float(((row.get("results") or {}).get("combined") or {}).get("profit_u")) or 0.0) for row in day_rows]
+    cards_with_bets = [
+        row
+        for row in day_rows
+        if int(_safe_int((((row.get("results") or {}).get("combined") or {}).get("n"))) or 0) > 0
+    ]
     best_day = max(
         day_rows,
-        key=lambda row: float((((row.get("results") or {}).get("combined") or {}).get("profit_u") or 0.0)),
+        key=lambda row: float(_safe_float((((row.get("results") or {}).get("combined") or {}).get("profit_u")) or 0.0) or 0.0),
         default=None,
     )
     worst_day = min(
         day_rows,
-        key=lambda row: float((((row.get("results") or {}).get("combined") or {}).get("profit_u") or 0.0)),
+        key=lambda row: float(_safe_float((((row.get("results") or {}).get("combined") or {}).get("profit_u")) or 0.0) or 0.0),
         default=None,
     )
     mean_u = (round(float(sum(profits) / len(profits)), 4) if profits else None)
@@ -8712,7 +8716,7 @@ def _season_betting_daily_stats(day_rows: Sequence[Dict[str, Any]]) -> Dict[str,
         "best_day": (
             {
                 "date": str(best_day.get("date") or ""),
-                "profit_u": round(float((((best_day.get("results") or {}).get("combined") or {}).get("profit_u") or 0.0)), 4),
+                "profit_u": round(float(_safe_float((((best_day.get("results") or {}).get("combined") or {}).get("profit_u")) or 0.0) or 0.0), 4),
             }
             if isinstance(best_day, dict)
             else {"date": None, "profit_u": None}
@@ -8720,7 +8724,7 @@ def _season_betting_daily_stats(day_rows: Sequence[Dict[str, Any]]) -> Dict[str,
         "worst_day": (
             {
                 "date": str(worst_day.get("date") or ""),
-                "profit_u": round(float((((worst_day.get("results") or {}).get("combined") or {}).get("profit_u") or 0.0)), 4),
+                "profit_u": round(float(_safe_float((((worst_day.get("results") or {}).get("combined") or {}).get("profit_u")) or 0.0) or 0.0), 4),
             }
             if isinstance(worst_day, dict)
             else {"date": None, "profit_u": None}
@@ -9180,10 +9184,10 @@ def _official_betting_card_active_days(day_rows: Sequence[Dict[str, Any]]) -> Li
         row["month"] = str(row.get("month") or str(row.get("date") or "")[:7])
         row["selected_counts"] = selected_counts
         row["results"] = results
-        row["profit_u"] = round(float(combined.get("profit_u") or row.get("profit_u") or 0.0), 4)
+        row["profit_u"] = round(float(_safe_float(combined.get("profit_u")) or _safe_float(row.get("profit_u")) or 0.0), 4)
         row["roi"] = combined.get("roi")
-        row["settled_n"] = int(combined.get("n") or row.get("settled_n") or 0)
-        row["unresolved_n"] = int(row.get("unresolved_n") or 0)
+        row["settled_n"] = int(_safe_int(combined.get("n")) or _safe_int(row.get("settled_n")) or 0)
+        row["unresolved_n"] = int(_safe_int(row.get("unresolved_n")) or 0)
         out.append(row)
     out.sort(key=lambda row: str(row.get("date") or ""))
     return out
