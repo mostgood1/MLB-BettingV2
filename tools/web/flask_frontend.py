@@ -207,6 +207,49 @@ def _load_live_pitcher_strikeouts_correction_artifact() -> Optional[Dict[str, An
     return artifact if isinstance(artifact, dict) else None
 
 
+def _live_pitcher_correction_status(
+    *,
+    prop_name: str,
+    enabled: bool,
+    path: Path,
+    artifact: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    model = artifact.get("model") if isinstance(artifact, dict) and isinstance(artifact.get("model"), dict) else {}
+    feature_names = artifact.get("feature_names") if isinstance(artifact, dict) and isinstance(artifact.get("feature_names"), list) else []
+    return {
+        "prop": str(prop_name),
+        "enabled": bool(enabled),
+        "path": _relative_path_str(path),
+        "fileExists": bool(path.exists() and path.is_file()),
+        "loaded": bool(isinstance(artifact, dict)),
+        "hasModel": bool(isinstance(model, dict) and model),
+        "featureCount": int(len(feature_names)),
+    }
+
+
+def _live_pitcher_corrections_status_payload() -> Dict[str, Any]:
+    outs_path = _live_pitcher_outs_correction_path()
+    strikeouts_path = _live_pitcher_strikeouts_correction_path()
+    outs_artifact = _load_live_pitcher_outs_correction_artifact() if _is_live_pitcher_outs_correction_enabled() else None
+    strikeouts_artifact = (
+        _load_live_pitcher_strikeouts_correction_artifact() if _is_live_pitcher_strikeouts_correction_enabled() else None
+    )
+    return {
+        "outs": _live_pitcher_correction_status(
+            prop_name="outs",
+            enabled=_is_live_pitcher_outs_correction_enabled(),
+            path=outs_path,
+            artifact=outs_artifact,
+        ),
+        "strikeouts": _live_pitcher_correction_status(
+            prop_name="strikeouts",
+            enabled=_is_live_pitcher_strikeouts_correction_enabled(),
+            path=strikeouts_path,
+            artifact=strikeouts_artifact,
+        ),
+    }
+
+
 def _live_lens_optimization_regime(d: Any) -> Dict[str, Any]:
     date_str = str(d or "").strip()
     regime = {
@@ -2239,7 +2282,9 @@ _APP_BUILD_INFO = _detect_app_build_info()
 
 def _with_app_build(payload: Dict[str, Any]) -> Dict[str, Any]:
     merged = dict(payload)
-    merged["app"] = dict(_APP_BUILD_INFO)
+    app_info = dict(_APP_BUILD_INFO)
+    app_info["livePitcherCorrections"] = _live_pitcher_corrections_status_payload()
+    merged["app"] = app_info
     return merged
 
 
