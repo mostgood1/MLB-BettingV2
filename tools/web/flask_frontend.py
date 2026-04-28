@@ -171,12 +171,33 @@ def _live_pitcher_strikeouts_correction_path() -> Path:
     return (_DATA_DIR / "eval" / "live_pitcher_strikeouts_correction.json").resolve()
 
 
+def _tracked_live_pitcher_correction_path(filename: str) -> Path:
+    return (_TRACKED_DATA_DIR / "eval" / str(filename)).resolve()
+
+
+def _resolve_live_pitcher_correction_path(configured_path: Path, *, filename: str) -> Path:
+    candidates = [configured_path]
+    tracked_path = _tracked_live_pitcher_correction_path(filename)
+    if str(tracked_path) != str(configured_path):
+        candidates.append(tracked_path)
+    for candidate in candidates:
+        try:
+            if candidate.exists() and candidate.is_file():
+                return candidate
+        except Exception:
+            continue
+    return configured_path
+
+
 _LIVE_PITCHER_OUTS_CORRECTION_CACHE: Dict[str, Any] = {"path": None, "mtime": None, "artifact": None}
 _LIVE_PITCHER_STRIKEOUTS_CORRECTION_CACHE: Dict[str, Any] = {"path": None, "mtime": None, "artifact": None}
 
 
 def _load_live_pitcher_outs_correction_artifact() -> Optional[Dict[str, Any]]:
-    path = _live_pitcher_outs_correction_path()
+    path = _resolve_live_pitcher_correction_path(
+        _live_pitcher_outs_correction_path(),
+        filename="live_pitcher_outs_correction.json",
+    )
     try:
         mtime = path.stat().st_mtime if path.exists() and path.is_file() else None
     except Exception:
@@ -192,7 +213,10 @@ def _load_live_pitcher_outs_correction_artifact() -> Optional[Dict[str, Any]]:
 
 
 def _load_live_pitcher_strikeouts_correction_artifact() -> Optional[Dict[str, Any]]:
-    path = _live_pitcher_strikeouts_correction_path()
+    path = _resolve_live_pitcher_correction_path(
+        _live_pitcher_strikeouts_correction_path(),
+        filename="live_pitcher_strikeouts_correction.json",
+    )
     try:
         mtime = path.stat().st_mtime if path.exists() and path.is_file() else None
     except Exception:
@@ -211,12 +235,13 @@ def _live_pitcher_correction_status(
     *,
     prop_name: str,
     enabled: bool,
+    configured_path: Path,
     path: Path,
     artifact: Optional[Dict[str, Any]],
 ) -> Dict[str, Any]:
     model = artifact.get("model") if isinstance(artifact, dict) and isinstance(artifact.get("model"), dict) else {}
     feature_names = artifact.get("feature_names") if isinstance(artifact, dict) and isinstance(artifact.get("feature_names"), list) else []
-    return {
+    status = {
         "prop": str(prop_name),
         "enabled": bool(enabled),
         "path": _relative_path_str(path),
@@ -225,11 +250,22 @@ def _live_pitcher_correction_status(
         "hasModel": bool(isinstance(model, dict) and model),
         "featureCount": int(len(feature_names)),
     }
+    if str(configured_path) != str(path):
+        status["configuredPath"] = _relative_path_str(configured_path)
+    return status
 
 
 def _live_pitcher_corrections_status_payload() -> Dict[str, Any]:
-    outs_path = _live_pitcher_outs_correction_path()
-    strikeouts_path = _live_pitcher_strikeouts_correction_path()
+    configured_outs_path = _live_pitcher_outs_correction_path()
+    configured_strikeouts_path = _live_pitcher_strikeouts_correction_path()
+    outs_path = _resolve_live_pitcher_correction_path(
+        configured_outs_path,
+        filename="live_pitcher_outs_correction.json",
+    )
+    strikeouts_path = _resolve_live_pitcher_correction_path(
+        configured_strikeouts_path,
+        filename="live_pitcher_strikeouts_correction.json",
+    )
     outs_artifact = _load_live_pitcher_outs_correction_artifact() if _is_live_pitcher_outs_correction_enabled() else None
     strikeouts_artifact = (
         _load_live_pitcher_strikeouts_correction_artifact() if _is_live_pitcher_strikeouts_correction_enabled() else None
@@ -238,12 +274,14 @@ def _live_pitcher_corrections_status_payload() -> Dict[str, Any]:
         "outs": _live_pitcher_correction_status(
             prop_name="outs",
             enabled=_is_live_pitcher_outs_correction_enabled(),
+            configured_path=configured_outs_path,
             path=outs_path,
             artifact=outs_artifact,
         ),
         "strikeouts": _live_pitcher_correction_status(
             prop_name="strikeouts",
             enabled=_is_live_pitcher_strikeouts_correction_enabled(),
+            configured_path=configured_strikeouts_path,
             path=strikeouts_path,
             artifact=strikeouts_artifact,
         ),
