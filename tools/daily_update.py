@@ -10,6 +10,7 @@ import multiprocessing.spawn
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import unicodedata
@@ -1253,17 +1254,47 @@ def _refresh_live_pitcher_corrections_stage(args: argparse.Namespace, *, max_dat
     return stage
 
 
-def _remove_path_if_exists(path: Path) -> bool:
+def _remove_path_if_exists(path: Path) -> Tuple[bool, Optional[str]]:
+    def _force_unlink(file_path: Path) -> None:
+        try:
+            file_path.unlink()
+        except PermissionError:
+            os.chmod(file_path, stat.S_IWRITE)
+            file_path.unlink()
+
     try:
         if not path.exists():
-            return False
-        if path.is_dir():
-            shutil.rmtree(path)
-        else:
-            path.unlink()
-        return True
+            return False, None
+        if path.is_file() or path.is_symlink():
+            _force_unlink(path)
+            return True, None
+        removed_any = False
+        warnings: List[str] = []
+        for child in sorted(path.rglob("*"), key=lambda candidate: len(candidate.parts), reverse=True):
+            try:
+                if child.is_dir() and not child.is_symlink():
+                    child.rmdir()
+                else:
+                    _force_unlink(child)
+                removed_any = True
+            except FileNotFoundError:
+                continue
+            except Exception as exc:
+                warnings.append(f"{_relative_path_str(child)} -> {type(exc).__name__}: {exc}")
+        try:
+            path.rmdir()
+            removed_any = True
+        except FileNotFoundError:
+            removed_any = True
+        except OSError:
+            if any(path.iterdir()):
+                warnings.append(f"{_relative_path_str(path)} still contains locked entries after cleanup")
+            else:
+                warnings.append(f"{_relative_path_str(path)} was emptied but Windows kept the root directory in place")
+                removed_any = True
+        return removed_any, ("; ".join(warnings) if warnings else None)
     except FileNotFoundError:
-        return False
+        return False, None
 
 
 def _prepare_current_day_overwrite_stage(
@@ -1309,12 +1340,20 @@ def _prepare_current_day_overwrite_stage(
     ]
 
     removed: List[str] = []
+    warnings: List[str] = []
     for candidate in candidate_paths:
-        if _remove_path_if_exists(candidate):
+        removed_candidate, warning_text = _remove_path_if_exists(candidate)
+        if removed_candidate:
             removed.append(_relative_path_str(candidate))
+        if warning_text:
+            warnings.append(str(warning_text))
     stage["removed"] = removed
     stage["removed_count"] = int(len(removed))
-    stage["status"] = "ok"
+    if warnings:
+        stage["warnings"] = warnings
+        stage["status"] = "warning"
+    else:
+        stage["status"] = "ok"
     return stage
 
 
@@ -2636,6 +2675,8 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
         hitter_out=hitter_out,
     )
     report["stages"]["current_day_overwrite_prep"] = current_day_overwrite_stage
+    for warning_text in list(current_day_overwrite_stage.get("warnings") or []):
+        report["warnings"].append(f"current-day overwrite prep warning: {warning_text}")
 
     print(f"[ui-daily] Building current-day multi-profile outputs for {args.date}...")
     passthrough_args = _strip_cli_args(
