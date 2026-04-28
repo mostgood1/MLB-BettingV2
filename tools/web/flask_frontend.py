@@ -8834,6 +8834,33 @@ def _season_betting_manifest_day_row_from_payload(day_payload: Dict[str, Any]) -
     return row
 
 
+def _load_static_season_betting_day_payload(
+    season: int,
+    date_str: str,
+    profile_name: str,
+) -> Optional[Dict[str, Any]]:
+    prebuilt_payload = _prebuilt_season_betting_day_payload(int(season), str(date_str), profile_name)
+    if isinstance(prebuilt_payload, dict) and prebuilt_payload.get("found"):
+        return prebuilt_payload
+
+    normalized_profile = str(profile_name or "retuned").strip().lower()
+    if normalized_profile not in {"baseline", "retuned"}:
+        normalized_profile = "retuned"
+    payload_dir_name = "betting_day_payloads_retuned" if normalized_profile == "retuned" else "betting_day_payloads"
+    payload_name = f"season_betting_day_{_date_slug(date_str)}.json"
+    candidate_paths = [
+        data_root / "eval" / "seasons" / str(int(season)) / payload_dir_name / payload_name
+        for data_root in _data_roots()
+    ]
+    payload_path = _find_preferred_file(candidate_paths)
+    payload_doc = _load_json_file(payload_path)
+    if not payload_path or not isinstance(payload_doc, dict) or not payload_doc.get("found"):
+        return None
+    out = dict(payload_doc)
+    out.setdefault("payload_source", _relative_path_str(payload_path))
+    return out
+
+
 def _embedded_settlement_is_usable(summary: Optional[Dict[str, Any]]) -> bool:
     if not isinstance(summary, dict):
         return False
@@ -8879,7 +8906,9 @@ def _rebuild_season_betting_manifest_payload(
             corrected_days.append(day_row)
             days_out.append(day_row)
             continue
-        day_payload = _season_betting_day_payload(int(season), date_str, profile_name)
+        day_payload = _load_static_season_betting_day_payload(int(season), date_str, profile_name)
+        if not isinstance(day_payload, dict) or not day_payload.get("found"):
+            day_payload = _season_betting_day_payload(int(season), date_str, profile_name)
         if not day_payload.get("found"):
             day_row["selected_counts"] = _betting_selected_counts_with_defaults(day_row.get("selected_counts") or {})
             day_row["results"] = _merge_settled_results_blocks([day_row.get("results") or {}])
@@ -8913,7 +8942,9 @@ def _rebuild_season_betting_manifest_payload(
         if d not in manifest_dates and (not manifest_floor or d >= manifest_floor) and d <= today_str
     ]
     for date_str in supplemental_dates:
-        day_payload = _season_betting_day_payload(int(season), date_str, profile_name)
+        day_payload = _load_static_season_betting_day_payload(int(season), date_str, profile_name)
+        if not isinstance(day_payload, dict) or not day_payload.get("found"):
+            day_payload = _season_betting_day_payload(int(season), date_str, profile_name)
         if not day_payload.get("found"):
             continue
         supplemental_day = _season_betting_manifest_day_row_from_payload(day_payload)
