@@ -2321,8 +2321,15 @@ _APP_BUILD_INFO = _detect_app_build_info()
 def _with_app_build(payload: Dict[str, Any]) -> Dict[str, Any]:
     merged = dict(payload)
     app_info = dict(_APP_BUILD_INFO)
-    app_info["livePitcherCorrections"] = _live_pitcher_corrections_status_payload()
+    live_pitcher_corrections = _live_pitcher_corrections_status_payload()
+    app_info["livePitcherCorrections"] = live_pitcher_corrections
     merged["app"] = app_info
+    meta = merged.get("meta")
+    if isinstance(meta, dict):
+        meta_out = dict(meta)
+        meta_out["app"] = app_info
+        meta_out["livePitcherCorrections"] = live_pitcher_corrections
+        merged["meta"] = meta_out
     return merged
 
 
@@ -9218,6 +9225,11 @@ def _season_betting_manifest_response_payload(
     return _payload_cache_get_or_build(
         "season_betting_manifest_api",
         f"{int(season)}:{str(profile_name or '')}",
+        signature_factory=lambda: _season_betting_manifest_payload_signature(
+            int(season),
+            profile_name,
+            manifest_path,
+        ),
         max_age_seconds=max(float(_CARDS_CACHE_TTL_SECONDS), 300.0),
         builder=lambda: _season_betting_manifest_static_payload(
             int(season),
@@ -9239,6 +9251,11 @@ def _official_betting_card_manifest_response_payload(
     return _payload_cache_get_or_build(
         "season_official_betting_manifest_api",
         f"{int(season)}:{str(profile_name or '')}",
+        signature_factory=lambda: _season_betting_manifest_payload_signature(
+            int(season),
+            profile_name,
+            manifest_path,
+        ),
         max_age_seconds=max(float(_CARDS_CACHE_TTL_SECONDS), 300.0),
         builder=lambda: _official_betting_card_manifest_static_payload(
             int(season),
