@@ -9258,8 +9258,21 @@ def _season_betting_manifest_static_payload(
     available_profiles: Sequence[str],
 ) -> Dict[str, Any]:
     # Season betting-card manifests are already published as frontend-ready JSON.
-    # Keep this route on the artifact fast path, but use the betting-specific
-    # rebuild helper so we only supplement betting rows and summaries.
+    # Only fall back to the slower rebuild path when the tracked manifest is stale
+    # relative to newer daily artifacts or missing the current-day supplement.
+    if not _season_betting_manifest_needs_refresh(int(season), manifest):
+        payload = dict(manifest)
+        meta = dict(payload.get("meta") or {})
+        sources = dict(meta.get("sources") or {})
+        sources["manifest"] = _relative_path_str(manifest_path)
+        meta["sources"] = sources
+        payload["meta"] = meta
+        payload["profile"] = profile_name
+        payload["available_profiles"] = list(available_profiles)
+        payload["source_kind"] = str(payload.get("source_kind") or "season_manifest_static")
+        payload["found"] = True
+        return payload
+
     return _rebuild_season_betting_manifest_payload(
         int(season),
         profile_name,
