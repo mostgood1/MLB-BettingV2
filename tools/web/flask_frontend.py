@@ -8861,6 +8861,43 @@ def _load_static_season_betting_day_payload(
     return out
 
 
+def _season_betting_manifest_day_row_from_daily_artifacts(
+    season: int,
+    date_str: str,
+) -> Optional[Dict[str, Any]]:
+    daily_artifacts = _load_cards_artifacts(str(date_str))
+    card_path = daily_artifacts.get("locked_policy_path") if isinstance(daily_artifacts.get("locked_policy_path"), Path) else None
+    card_obj = daily_artifacts.get("locked_policy") if isinstance(daily_artifacts.get("locked_policy"), dict) else None
+    if not card_path or not isinstance(card_obj, dict):
+        return None
+
+    settled_card = daily_artifacts.get("settlement") if isinstance(daily_artifacts.get("settlement"), dict) else None
+    embedded_summary = (
+        daily_artifacts.get("embedded_settlement_summary")
+        if isinstance(daily_artifacts.get("embedded_settlement_summary"), dict)
+        else None
+    )
+    if not isinstance(settled_card, dict) and _embedded_settlement_is_usable(embedded_summary):
+        settled_card = _synthetic_settlement_from_summary(embedded_summary)
+    if not isinstance(settled_card, dict):
+        return None
+
+    selected_counts = _betting_selected_counts_with_defaults(settled_card.get("selected_counts") or {})
+    results = _merge_settled_results_blocks([settled_card.get("results") or {}])
+    summary = _normalized_season_betting_summary(
+        date_str=str(date_str),
+        card_path=card_path,
+        source_summary=embedded_summary,
+        selected_counts=selected_counts,
+        results=results,
+        settled_card=settled_card,
+    )
+    row = dict(summary)
+    row["cap_profile"] = card_obj.get("cap_profile") or row.get("cap_profile")
+    row["source_kind"] = row.get("source_kind") or "canonical_daily_summary"
+    return row
+
+
 def _embedded_settlement_is_usable(summary: Optional[Dict[str, Any]]) -> bool:
     if not isinstance(summary, dict):
         return False
@@ -8908,6 +8945,16 @@ def _rebuild_season_betting_manifest_payload(
             continue
         day_payload = _load_static_season_betting_day_payload(int(season), date_str, profile_name)
         if not isinstance(day_payload, dict) or not day_payload.get("found"):
+            daily_row = _season_betting_manifest_day_row_from_daily_artifacts(int(season), date_str)
+        else:
+            daily_row = None
+        if isinstance(daily_row, dict):
+            day_row = {**day_row, **daily_row}
+            day_row.setdefault("month", date_str[:7])
+            corrected_days.append(day_row)
+            days_out.append(day_row)
+            continue
+        if not isinstance(day_payload, dict) or not day_payload.get("found"):
             day_payload = _season_betting_day_payload(int(season), date_str, profile_name)
         if not day_payload.get("found"):
             day_row["selected_counts"] = _betting_selected_counts_with_defaults(day_row.get("selected_counts") or {})
@@ -8943,11 +8990,15 @@ def _rebuild_season_betting_manifest_payload(
     ]
     for date_str in supplemental_dates:
         day_payload = _load_static_season_betting_day_payload(int(season), date_str, profile_name)
-        if not isinstance(day_payload, dict) or not day_payload.get("found"):
+        if isinstance(day_payload, dict) and day_payload.get("found"):
+            supplemental_day = _season_betting_manifest_day_row_from_payload(day_payload)
+        else:
+            supplemental_day = _season_betting_manifest_day_row_from_daily_artifacts(int(season), date_str)
+        if not isinstance(supplemental_day, dict):
             day_payload = _season_betting_day_payload(int(season), date_str, profile_name)
-        if not day_payload.get("found"):
-            continue
-        supplemental_day = _season_betting_manifest_day_row_from_payload(day_payload)
+            if not day_payload.get("found"):
+                continue
+            supplemental_day = _season_betting_manifest_day_row_from_payload(day_payload)
         corrected_days.append(supplemental_day)
         days_out.append(supplemental_day)
         manifest_dates.add(date_str)
