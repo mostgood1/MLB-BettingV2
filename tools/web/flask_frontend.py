@@ -9095,7 +9095,8 @@ def _season_betting_manifest_static_payload(
     # Season betting-card manifests are already published as frontend-ready JSON.
     # Keep this route on the artifact fast path instead of rehydrating season-day
     # state from daily files on every request.
-    payload = dict(manifest)
+    original_days = [row for row in (manifest.get("days") or []) if isinstance(row, dict)]
+    payload = _supplement_season_manifest_payload(int(season), dict(manifest))
     meta = dict(payload.get("meta") or {})
     sources = dict(meta.get("sources") or {})
     sources["manifest"] = _relative_path_str(manifest_path)
@@ -9103,7 +9104,11 @@ def _season_betting_manifest_static_payload(
     payload["meta"] = meta
     payload["profile"] = profile_name
     payload["available_profiles"] = list(available_profiles)
-    payload["source_kind"] = "season_manifest_static"
+    payload["source_kind"] = (
+        "season_manifest_static_supplemented"
+        if int(len(payload.get("days") or [])) > int(len(original_days))
+        else "season_manifest_static"
+    )
     payload["found"] = True
     return payload
 
