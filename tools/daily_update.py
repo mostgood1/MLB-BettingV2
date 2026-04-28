@@ -1253,6 +1253,71 @@ def _refresh_live_pitcher_corrections_stage(args: argparse.Namespace, *, max_dat
     return stage
 
 
+def _remove_path_if_exists(path: Path) -> bool:
+    try:
+        if not path.exists():
+            return False
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+        return True
+    except FileNotFoundError:
+        return False
+
+
+def _prepare_current_day_overwrite_stage(
+    *,
+    args: argparse.Namespace,
+    game_out: Path,
+    pitcher_out: Path,
+    hitter_out: Path,
+) -> Dict[str, Any]:
+    date_str = str(args.date)
+    token = str(date_str).replace("-", "_")
+    season = int(args.season)
+    profile_slug = str(getattr(args, "season_betting_profile", "retuned") or "retuned").strip().lower()
+    stage: Dict[str, Any] = {
+        "status": "skipped",
+        "date": date_str,
+        "removed": [],
+    }
+    if str(getattr(args, "overwrite_current_day_outputs", "on") or "on") != "on":
+        stage["reason"] = "overwrite_current_day_outputs=off"
+        return stage
+
+    candidate_paths: List[Path] = [
+        game_out / f"daily_summary_{token}.json",
+        game_out / f"daily_summary_{token}_profile_bundle.json",
+        game_out / f"daily_summary_{token}_locked_policy.json",
+        game_out / f"daily_summary_{token}_hr_targets.json",
+        game_out / "sims" / date_str,
+        game_out / "snapshots" / date_str,
+        game_out / "top_props" / f"daily_top_props_{token}.json",
+        game_out / "ladders" / f"daily_ladders_{token}.json",
+        game_out / "ladders" / f"daily_ladder_audit_{token}.json",
+        game_out / "season_frontend" / f"season_manifest_{season}_{token}.json",
+        game_out / "season_frontend" / f"season_day_{season}_{token}_{profile_slug}.json",
+        game_out / "season_frontend" / f"season_betting_day_{season}_{token}_{profile_slug}.json",
+        game_out / "season_frontend" / f"season_official_betting_day_{season}_{token}_{profile_slug}.json",
+        pitcher_out / f"daily_summary_{token}.json",
+        pitcher_out / "sims" / date_str,
+        pitcher_out / "snapshots" / date_str,
+        hitter_out / f"daily_summary_{token}.json",
+        hitter_out / "sims" / date_str,
+        hitter_out / "snapshots" / date_str,
+    ]
+
+    removed: List[str] = []
+    for candidate in candidate_paths:
+        if _remove_path_if_exists(candidate):
+            removed.append(_relative_path_str(candidate))
+    stage["removed"] = removed
+    stage["removed_count"] = int(len(removed))
+    stage["status"] = "ok"
+    return stage
+
+
 def _default_ui_profile_out_dirs(game_out: Path) -> Tuple[Path, Path]:
     default_game = (_DATA_DIR / "daily").resolve()
     try:
@@ -2563,6 +2628,14 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
             "reason": "refresh_current_oddsapi=off",
         }
     report["stages"]["current_day_oddsapi"] = odds_stage
+
+    current_day_overwrite_stage = _prepare_current_day_overwrite_stage(
+        args=args,
+        game_out=game_out,
+        pitcher_out=pitcher_out,
+        hitter_out=hitter_out,
+    )
+    report["stages"]["current_day_overwrite_prep"] = current_day_overwrite_stage
 
     print(f"[ui-daily] Building current-day multi-profile outputs for {args.date}...")
     passthrough_args = _strip_cli_args(
@@ -4075,6 +4148,12 @@ def main() -> int:
         choices=["on", "off"],
         default="on",
         help="If on, refresh the canonical current-day OddsAPI market snapshot before building --workflow ui-daily outputs.",
+    )
+    ap.add_argument(
+        "--overwrite-current-day-outputs",
+        choices=["on", "off"],
+        default="on",
+        help="If on, delete date-scoped current-day outputs before rebuilding during --workflow ui-daily so actual-day reruns overwrite any prior lookahead artifacts.",
     )
     ap.add_argument(
         "--current-oddsapi-overwrite",
