@@ -1,0 +1,111 @@
+{
+  "ok": true,
+  "model_type": "ridge_linear_error_correction",
+  "prop": "outs",
+  "source": "render-sync",
+  "rows": 80,
+  "date_window": {
+    "min_date": "2026-04-17",
+    "max_date": "2026-04-26"
+  },
+  "feature_names": [
+    "line_gap",
+    "model_gap",
+    "actual_so_far",
+    "inning",
+    "game_outs",
+    "progress_fraction",
+    "game_state_parsed_flag"
+  ],
+  "l2": 1.0,
+  "model": {
+    "intercept": -4.183387499999996,
+    "weights": {
+      "line_gap": -2.400645901495708,
+      "model_gap": -0.7717050432419327,
+      "actual_so_far": 2.436736989172166,
+      "inning": -1.96359644339308,
+      "game_outs": -0.7338917986651133,
+      "progress_fraction": 1.9774909944553276,
+      "game_state_parsed_flag": 0.0
+    },
+    "feature_centers": {
+      "line_gap": -2.4791125,
+      "model_gap": -1.7027875000000001,
+      "actual_so_far": 7.875,
+      "inning": 3.1125,
+      "game_outs": 1.2125,
+      "progress_fraction": 0.2849537037037038,
+      "game_state_parsed_flag": 1.0
+    },
+    "feature_scales": {
+      "line_gap": 2.320453786405528,
+      "model_gap": 1.904026671909758,
+      "actual_so_far": 4.648588495446763,
+      "inning": 1.6124030978635584,
+      "game_outs": 1.169334746768435,
+      "progress_fraction": 0.17226935212355668,
+      "game_state_parsed_flag": 1.0
+    }
+  },
+  "training_metrics": {
+    "baseline_mae": 4.947,
+    "baseline_rmse": 6.431,
+    "corrected_mae": 2.709,
+    "corrected_rmse": 3.329
+  },
+  "leave_one_out_metrics": {
+    "baseline_mae": 4.947,
+    "baseline_rmse": 6.431,
+    "corrected_mae": 2.931,
+    "corrected_rmse": 3.596
+  },
+  "sample_rows": [
+    {
+      "date": "2026-04-17",
+      "owner": "Kyle Leahy",
+      "live_projection": 16.681,
+      "final_actual": 9.0,
+      "projection_error": -7.681000000000001,
+      "game_state_parsed": true
+    },
+    {
+      "date": "2026-04-17",
+      "owner": "Davis Martin",
+      "live_projection": 20.072,
+      "final_actual": 3.0,
+      "projection_error": -17.072,
+      "game_state_parsed": true
+    },
+    {
+      "date": "2026-04-17",
+      "owner": "Michael Soroka",
+      "live_projection": 19.543,
+      "final_actual": 11.0,
+      "projection_error": -8.543,
+      "game_state_parsed": true
+    },
+    {
+      "date": "2026-04-17",
+      "owner": "Davis Martin",
+      "live_projection": 19.87,
+      "final_actual": 18.0,
+      "projection_error": -1.870000000000001,
+      "game_state_parsed": true
+    },
+    {
+      "date": "2026-04-18",
+      "owner": "Tarik Skubal",
+      "live_projection": 18.077,
+      "final_actual": 15.0,
+      "projection_error": -3.0770000000000017,
+      "game_state_parsed": true
+    }
+  ],
+  "renderSync": {
+    "startDate": "2026-03-25",
+    "endDate": "2026-04-26",
+    "archiveOkCount": 9,
+    "errorCount": 0
+  }
+}
