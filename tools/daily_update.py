@@ -1160,6 +1160,99 @@ def _prior_day_live_lens_stage(args: argparse.Namespace, date_str: str) -> Dict[
     return stage
 
 
+def _refresh_live_pitcher_corrections_stage(args: argparse.Namespace, *, max_date_str: str) -> Dict[str, Any]:
+    stage: Dict[str, Any] = {
+        "status": "skipped",
+        "max_date": str(max_date_str),
+        "artifacts": {},
+    }
+    if str(getattr(args, "refresh_live_pitcher_corrections", "on") or "on") != "on":
+        stage["reason"] = "refresh_live_pitcher_corrections=off"
+        return stage
+
+    base_url = str(getattr(args, "live_lens_base_url", "") or "").strip() or _infer_render_base_url()
+    token = str(getattr(args, "live_lens_cron_token", "") or "").strip() or _env_first(
+        "MLB_BETTING_CRON_TOKEN",
+        "MLB_CRON_TOKEN",
+        "CRON_TOKEN",
+    )
+    stage["render_base_url"] = str(base_url or "")
+
+    commands = {
+        "outs": [
+            sys.executable,
+            str((_ROOT_DIR / "tools" / "tune" / "fit_live_pitcher_outs_correction.py").resolve()),
+            "--source",
+            "render-sync",
+            "--max-date",
+            str(max_date_str),
+            "--render-timeout-seconds",
+            str(int(getattr(args, "live_lens_timeout_seconds", 45) or 45)),
+            "--out",
+            str((_DATA_DIR / "eval" / "live_pitcher_outs_correction.json").resolve()),
+        ],
+        "strikeouts": [
+            sys.executable,
+            str((_ROOT_DIR / "tools" / "tune" / "fit_live_pitcher_strikeouts_correction.py").resolve()),
+            "--source",
+            "render-sync",
+            "--max-date",
+            str(max_date_str),
+            "--render-timeout-seconds",
+            str(int(getattr(args, "live_lens_timeout_seconds", 45) or 45)),
+            "--out",
+            str((_DATA_DIR / "eval" / "live_pitcher_strikeouts_correction.json").resolve()),
+        ],
+    }
+    if base_url:
+        for cmd in commands.values():
+            cmd.extend(["--render-base-url", str(base_url)])
+    if token:
+        for cmd in commands.values():
+            cmd.extend(["--render-cron-token", str(token)])
+
+    if not base_url or not token:
+        stage["status"] = "warning"
+        stage["reason"] = "live pitcher correction refresh requested but Render base URL or cron token is unavailable"
+        return stage
+
+    artifact_errors: List[str] = []
+    for prop_key, cmd in commands.items():
+        result: Dict[str, Any] = {
+            "command": [str(part) for part in cmd],
+            "artifact_path": _relative_path_str(Path(cmd[-1])),
+        }
+        try:
+            proc = subprocess.run(cmd, check=False, capture_output=True, text=True)
+            result["exit_code"] = int(proc.returncode)
+            stdout_text = str(proc.stdout or "").strip()
+            stderr_text = str(proc.stderr or "").strip()
+            if stdout_text:
+                try:
+                    payload = json.loads(stdout_text)
+                    result["rows"] = payload.get("rows")
+                    result["date_window"] = payload.get("date_window")
+                    result["training_metrics"] = payload.get("training_metrics")
+                    result["leave_one_out_metrics"] = payload.get("leave_one_out_metrics")
+                except Exception:
+                    result["stdout_tail"] = stdout_text[-1000:]
+            if stderr_text:
+                result["stderr_tail"] = stderr_text[-1000:]
+            result["status"] = "ok" if int(proc.returncode) == 0 else "error"
+            if int(proc.returncode) != 0:
+                artifact_errors.append(f"{prop_key} fitter exited {proc.returncode}")
+        except Exception as exc:
+            result["status"] = "error"
+            result["error"] = f"{type(exc).__name__}: {exc}"
+            artifact_errors.append(f"{prop_key} fitter failed: {type(exc).__name__}: {exc}")
+        stage["artifacts"][prop_key] = result
+
+    stage["status"] = "ok" if not artifact_errors else "warning"
+    if artifact_errors:
+        stage["error"] = "; ".join(artifact_errors)
+    return stage
+
+
 def _default_ui_profile_out_dirs(game_out: Path) -> Tuple[Path, Path]:
     default_game = (_DATA_DIR / "daily").resolve()
     try:
@@ -2255,6 +2348,17 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
     if str(live_lens_stage.get("status") or "") == "warning":
         report["warnings"].append(
             f"prior-day live-lens sync/readout warning: {str(live_lens_stage.get('error') or live_lens_stage.get('reason') or 'unknown')}"
+        )
+
+    live_pitcher_corrections_stage = _refresh_live_pitcher_corrections_stage(
+        args,
+        max_date_str=str(prior_date),
+    )
+    report["stages"]["live_pitcher_corrections"] = live_pitcher_corrections_stage
+    if str(live_pitcher_corrections_stage.get("status") or "") == "warning":
+        report["warnings"].append(
+            "live pitcher correction refresh warning: "
+            + str(live_pitcher_corrections_stage.get("error") or live_pitcher_corrections_stage.get("reason") or "unknown")
         )
 
     prior_eval_stage: Dict[str, Any]
@@ -3959,6 +4063,12 @@ def main() -> int:
         "--live-lens-sync-out",
         default="",
         help="Optional local JSON snapshot path for the synced prior-day live-lens report payload during --workflow ui-daily.",
+    )
+    ap.add_argument(
+        "--refresh-live-pitcher-corrections",
+        choices=["on", "off"],
+        default="on",
+        help="If on, refit the Render-backed live pitcher outs/strikeouts correction artifacts for the settled prior-day window during --workflow ui-daily.",
     )
     ap.add_argument(
         "--refresh-current-oddsapi",

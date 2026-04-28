@@ -147,6 +147,66 @@ def _env_float(name: str, default: float, *, minimum: Optional[float] = None) ->
     return float(value)
 
 
+def _is_live_pitcher_outs_correction_enabled() -> bool:
+    return _env_bool("MLB_ENABLE_LIVE_PITCHER_OUTS_CORRECTION", default=False)
+
+
+def _is_live_pitcher_strikeouts_correction_enabled() -> bool:
+    return _env_bool("MLB_ENABLE_LIVE_PITCHER_STRIKEOUTS_CORRECTION", default=False)
+
+
+def _live_pitcher_outs_correction_path() -> Path:
+    raw = str(os.environ.get("MLB_LIVE_PITCHER_OUTS_CORRECTION_PATH") or "").strip()
+    if raw:
+        path = Path(raw)
+        return path if path.is_absolute() else (_ROOT_DIR / path).resolve()
+    return (_DATA_DIR / "eval" / "live_pitcher_outs_correction.json").resolve()
+
+
+def _live_pitcher_strikeouts_correction_path() -> Path:
+    raw = str(os.environ.get("MLB_LIVE_PITCHER_STRIKEOUTS_CORRECTION_PATH") or "").strip()
+    if raw:
+        path = Path(raw)
+        return path if path.is_absolute() else (_ROOT_DIR / path).resolve()
+    return (_DATA_DIR / "eval" / "live_pitcher_strikeouts_correction.json").resolve()
+
+
+_LIVE_PITCHER_OUTS_CORRECTION_CACHE: Dict[str, Any] = {"path": None, "mtime": None, "artifact": None}
+_LIVE_PITCHER_STRIKEOUTS_CORRECTION_CACHE: Dict[str, Any] = {"path": None, "mtime": None, "artifact": None}
+
+
+def _load_live_pitcher_outs_correction_artifact() -> Optional[Dict[str, Any]]:
+    path = _live_pitcher_outs_correction_path()
+    try:
+        mtime = path.stat().st_mtime if path.exists() and path.is_file() else None
+    except Exception:
+        mtime = None
+    cached_path = _LIVE_PITCHER_OUTS_CORRECTION_CACHE.get("path")
+    cached_mtime = _LIVE_PITCHER_OUTS_CORRECTION_CACHE.get("mtime")
+    if str(cached_path or "") == str(path) and cached_mtime == mtime:
+        artifact = _LIVE_PITCHER_OUTS_CORRECTION_CACHE.get("artifact")
+        return artifact if isinstance(artifact, dict) else None
+    artifact = _load_json_file(path)
+    _LIVE_PITCHER_OUTS_CORRECTION_CACHE.update({"path": str(path), "mtime": mtime, "artifact": artifact if isinstance(artifact, dict) else None})
+    return artifact if isinstance(artifact, dict) else None
+
+
+def _load_live_pitcher_strikeouts_correction_artifact() -> Optional[Dict[str, Any]]:
+    path = _live_pitcher_strikeouts_correction_path()
+    try:
+        mtime = path.stat().st_mtime if path.exists() and path.is_file() else None
+    except Exception:
+        mtime = None
+    cached_path = _LIVE_PITCHER_STRIKEOUTS_CORRECTION_CACHE.get("path")
+    cached_mtime = _LIVE_PITCHER_STRIKEOUTS_CORRECTION_CACHE.get("mtime")
+    if str(cached_path or "") == str(path) and cached_mtime == mtime:
+        artifact = _LIVE_PITCHER_STRIKEOUTS_CORRECTION_CACHE.get("artifact")
+        return artifact if isinstance(artifact, dict) else None
+    artifact = _load_json_file(path)
+    _LIVE_PITCHER_STRIKEOUTS_CORRECTION_CACHE.update({"path": str(path), "mtime": mtime, "artifact": artifact if isinstance(artifact, dict) else None})
+    return artifact if isinstance(artifact, dict) else None
+
+
 def _live_lens_optimization_regime(d: Any) -> Dict[str, Any]:
     date_str = str(d or "").strip()
     regime = {
@@ -12975,6 +13035,7 @@ def _current_live_prop_rows(
                     actual_value=actual_value,
                     model_mean=model_mean,
                     progress_fraction=progress_fraction,
+                    market_line=float(line_value),
                     actual_row=actual_row,
                     model_row=model_row,
                     pitcher_profile=pitcher_profile,
@@ -13552,6 +13613,61 @@ def _project_live_value(actual_value: Optional[float], model_mean: Optional[floa
     return round(actual + remaining, 3)
 
 
+def _apply_live_pitcher_prop_correction(
+    projection: float,
+    *,
+    prop_key: str,
+    actual_value: float,
+    model_mean: Optional[float],
+    market_line: Optional[float],
+    progress: Dict[str, Any],
+    game_state_parsed: bool,
+) -> float:
+    normalized_prop = str(prop_key or "").strip().lower()
+    if normalized_prop == "outs":
+        if not _is_live_pitcher_outs_correction_enabled():
+            return float(projection)
+        artifact = _load_live_pitcher_outs_correction_artifact()
+    elif normalized_prop == "strikeouts":
+        if not _is_live_pitcher_strikeouts_correction_enabled():
+            return float(projection)
+        artifact = _load_live_pitcher_strikeouts_correction_artifact()
+    else:
+        return float(projection)
+    if not isinstance(artifact, dict):
+        return float(projection)
+    model = artifact.get("model") if isinstance(artifact.get("model"), dict) else {}
+    feature_names = artifact.get("feature_names") if isinstance(artifact.get("feature_names"), list) else []
+    weights = model.get("weights") if isinstance(model.get("weights"), dict) else {}
+    centers = model.get("feature_centers") if isinstance(model.get("feature_centers"), dict) else {}
+    scales = model.get("feature_scales") if isinstance(model.get("feature_scales"), dict) else {}
+    if not feature_names:
+        return float(projection)
+
+    line_gap = float(projection) - float(market_line) if market_line is not None else 0.0
+    model_gap = float(projection) - float(_safe_float(model_mean) or float(projection))
+    feature_values = {
+        "line_gap": float(line_gap),
+        "model_gap": float(model_gap),
+        "actual_so_far": float(actual_value),
+        "inning": float(_safe_int(progress.get("inning")) or 0),
+        "game_outs": float(_safe_int(progress.get("outs")) or 0),
+        "progress_fraction": float(_safe_float(progress.get("fraction")) or 0.0),
+        "game_state_parsed_flag": 1.0 if bool(game_state_parsed) else 0.0,
+    }
+    corrected_error = float(_safe_float(model.get("intercept")) or 0.0)
+    for feature_name in feature_names:
+        raw = float(feature_values.get(str(feature_name), 0.0))
+        center = float(_safe_float(centers.get(str(feature_name))) or 0.0)
+        scale = float(_safe_float(scales.get(str(feature_name))) or 1.0)
+        if abs(scale) < 1e-9:
+            scale = 1.0
+        weight = float(_safe_float(weights.get(str(feature_name))) or 0.0)
+        corrected_error += ((raw - center) / scale) * weight
+    corrected_projection = float(projection) + float(corrected_error)
+    return float(max(float(actual_value), corrected_projection))
+
+
 def _current_batting_side(snapshot: Optional[Dict[str, Any]]) -> Optional[str]:
     half = str((((snapshot or {}).get("current") or {}).get("halfInning") or "")).strip().lower()
     if half == "top":
@@ -13685,6 +13801,7 @@ def _project_live_pitcher_value(
     actual_value: Optional[float],
     model_mean: Optional[float],
     progress_fraction: float,
+    market_line: Optional[float] = None,
     actual_row: Optional[Dict[str, Any]] = None,
     model_row: Optional[Dict[str, Any]] = None,
     pitcher_profile: Optional[Dict[str, Any]] = None,
@@ -13811,6 +13928,16 @@ def _project_live_pitcher_value(
         weight = min(0.55, max(0.12, float(actual_bf) / 36.0))
         per_bf_rate = ((1.0 - weight) * float(per_bf_rate)) + (weight * float(actual_k_rate))
     projection = float(actual) + max(0.0, float(remaining_bf)) * float(per_bf_rate)
+    if prop_key in {"outs", "strikeouts"}:
+        projection = _apply_live_pitcher_prop_correction(
+            float(projection),
+            prop_key=prop_key,
+            actual_value=float(actual),
+            model_mean=mean,
+            market_line=_safe_float(market_line),
+            progress=progress,
+            game_state_parsed=True,
+        )
     return round(max(float(actual), projection), 3)
 
 
@@ -14615,6 +14742,7 @@ def _prop_lens_rows(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], si
                 actual_value=actual_value,
                 model_mean=model_mean,
                 progress_fraction=progress_fraction,
+                market_line=market_line,
                 actual_row=actual_row,
                 model_row=sim_row,
                 pitcher_profile=pitcher_profile,
@@ -14729,6 +14857,7 @@ def _fallback_live_prop_rows_from_card(
                     actual_value=actual_value,
                     model_mean=model_mean,
                     progress_fraction=progress_fraction,
+                    market_line=market_line,
                     actual_row=actual_row,
                     model_row=reco,
                     pitcher_profile=None,
@@ -16625,6 +16754,7 @@ def _live_starter_ladder_badges_for_side(
             actual_value=actual_value,
             model_mean=model_mean,
             progress_fraction=progress_fraction,
+            market_line=float(base_line),
             actual_row=actual_row,
             model_row=model_row,
             pitcher_profile=pitcher_profile,
