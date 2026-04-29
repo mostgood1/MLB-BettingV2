@@ -2105,6 +2105,7 @@ def _build_next_day_ui_daily_command(args: argparse.Namespace, raw_argv: List[st
             "--live-lens-timeout-seconds",
             "--live-lens-sync-out",
             "--refresh-current-oddsapi",
+            "--reconcile-hr-target-history",
             "--current-oddsapi-overwrite",
             "--current-oddsapi-regions",
             "--current-oddsapi-bookmakers",
@@ -2135,6 +2136,8 @@ def _build_next_day_ui_daily_command(args: argparse.Namespace, raw_argv: List[st
         "--settle-prior-card",
         "off",
         "--refresh-season-manifests",
+        "off",
+        "--reconcile-hr-target-history",
         "off",
         "--git-push",
         "off",
@@ -2214,6 +2217,50 @@ def _validate_render_page_artifacts(
             "render artifact validation failed: missing current-day season frontend artifact(s): "
             + ", ".join(missing_frontend)
         )
+
+
+def _reconcile_hr_target_history_stage(args: argparse.Namespace, *, game_out: Path) -> Dict[str, Any]:
+    stage: Dict[str, Any] = {
+        "status": "skipped",
+        "season": int(args.season),
+    }
+    if str(getattr(args, "reconcile_hr_target_history", "on") or "on") != "on":
+        stage["reason"] = "reconcile_hr_target_history=off"
+        return stage
+
+    reconcile_py = (_ROOT_DIR / "tools" / "eval" / "reconcile_hr_target_artifacts.py").resolve()
+    report_path = game_out / "season_frontend" / f"hr_target_reconcile_{int(args.season)}.json"
+    cmd = [
+        sys.executable,
+        str(reconcile_py),
+        "--season",
+        str(int(args.season)),
+        "--write",
+        "on",
+        "--report-out",
+        str(report_path),
+    ]
+    stage["command"] = [str(part) for part in cmd]
+    stage["report_path"] = _relative_path_str(report_path)
+    try:
+        rc = subprocess.run(cmd, check=False).returncode
+        stage["exit_code"] = int(rc)
+        stage["report_exists"] = bool(report_path.exists())
+        if rc != 0:
+            stage["status"] = "error"
+            stage["error"] = f"reconcile_hr_target_artifacts exit {int(rc)}"
+            return stage
+        report_doc = json.loads(report_path.read_text(encoding="utf-8")) if report_path.exists() else {}
+        report_obj = report_doc if isinstance(report_doc, dict) else {}
+        changed_dates = [str(value) for value in (report_obj.get("changed_dates") or []) if str(value).strip()]
+        stage["status"] = "ok"
+        stage["dates_checked"] = int(report_obj.get("dates_checked") or 0)
+        stage["dates_changed"] = int(report_obj.get("dates_changed") or 0)
+        stage["changed_dates"] = list(changed_dates)
+    except Exception as exc:
+        stage["status"] = "error"
+        stage["error"] = f"{type(exc).__name__}: {exc}"
+    return stage
 
 
 def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> int:
@@ -2761,6 +2808,7 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
             "--live-lens-timeout-seconds",
             "--live-lens-sync-out",
             "--refresh-current-oddsapi",
+            "--reconcile-hr-target-history",
             "--current-oddsapi-overwrite",
             "--current-oddsapi-regions",
             "--current-oddsapi-bookmakers",
@@ -2885,6 +2933,18 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
         current_stage["error"] = f"{type(exc).__name__}: {exc}"
         report["errors"].append(f"current-day multi-profile build failed: {type(exc).__name__}: {exc}")
     report["stages"]["current_day_multi_profile"] = current_stage
+
+    hr_target_history_stage = _reconcile_hr_target_history_stage(args, game_out=game_out)
+    report["stages"]["hr_target_history_reconcile"] = hr_target_history_stage
+    if str(hr_target_history_stage.get("status") or "") == "error":
+        report["errors"].append(
+            "hr-target historical reconciliation failed: "
+            + str(hr_target_history_stage.get("error") or "unknown")
+        )
+    elif int(hr_target_history_stage.get("dates_changed") or 0) > 0:
+        report["warnings"].append(
+            f"hr-target historical reconciliation updated {int(hr_target_history_stage.get('dates_changed') or 0)} date artifact(s)"
+        )
 
     top_props_stage: Dict[str, Any]
     top_props_artifact_path = game_out / "top_props" / f"daily_top_props_{token}.json"
@@ -4251,6 +4311,12 @@ def main() -> int:
         choices=["on", "off"],
         default="on",
         help="If on, refresh the canonical current-day OddsAPI market snapshot before building --workflow ui-daily outputs.",
+    )
+    ap.add_argument(
+        "--reconcile-hr-target-history",
+        choices=["on", "off"],
+        default="on",
+        help="If on during --workflow ui-daily, audit and reconcile season-to-date HR target artifacts so hitter-props-backed lists win over stale fallback files.",
     )
     ap.add_argument(
         "--overwrite-current-day-outputs",

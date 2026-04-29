@@ -3149,13 +3149,29 @@ def _collect_daily_hr_targets(
     }
 
 
-def _hr_targets_doc_quality(doc: Optional[Dict[str, Any]]) -> Tuple[int, int, str]:
+def _hr_targets_doc_source_priority(doc: Optional[Dict[str, Any]]) -> int:
     if not isinstance(doc, dict):
-        return (-1, -1, "")
+        return -1
+    source_profile = str(doc.get("source_profile") or "").strip().lower()
+    source_sim_dir = str(doc.get("source_sim_dir") or "").replace("\\", "/").strip().lower()
+    if source_profile == "hitter_props_recos":
+        return 2
+    if "/daily_hitter_props/" in source_sim_dir or source_sim_dir.startswith("data/daily_hitter_props/"):
+        return 2
+    if source_profile == "game_recos":
+        return 1
+    if "/daily/" in source_sim_dir or source_sim_dir.startswith("data/daily/"):
+        return 1
+    return 0
+
+
+def _hr_targets_doc_quality(doc: Optional[Dict[str, Any]]) -> Tuple[int, int, int]:
+    if not isinstance(doc, dict):
+        return (-1, -1, -1)
     rows = len([row for row in (doc.get("rows") or []) if isinstance(row, dict)])
     games = _safe_int(((doc.get("counts") or {}).get("games"))) or 0
-    generated_at = str(doc.get("generated_at") or "")
-    return (int(rows), int(games), generated_at)
+    source_priority = _hr_targets_doc_source_priority(doc)
+    return (int(rows), int(games), int(source_priority))
 
 
 def _prefer_richer_hr_targets_doc(
@@ -5554,13 +5570,35 @@ def main() -> int:
         game_sim_dir = _path_from_maybe_relative(game_profile.get("sim_dir"))
         game_snapshot_dir = _path_from_maybe_relative(game_profile.get("snapshot_dir"))
 
-        existing_hr_targets_doc: Optional[Dict[str, Any]] = None
+        canonical_existing_hr_targets_doc: Optional[Dict[str, Any]] = None
         try:
             if hr_targets_path.exists() and hr_targets_path.is_file():
                 loaded_existing = _read_json(hr_targets_path)
-                existing_hr_targets_doc = loaded_existing if isinstance(loaded_existing, dict) else None
+                canonical_existing_hr_targets_doc = loaded_existing if isinstance(loaded_existing, dict) else None
         except Exception:
-            existing_hr_targets_doc = None
+            canonical_existing_hr_targets_doc = None
+
+        tracked_hr_targets_path: Optional[Path] = None
+        tracked_existing_hr_targets_doc: Optional[Dict[str, Any]] = None
+        try:
+            candidate_tracked_hr_targets_path = (_ROOT / "data" / "daily" / hr_targets_path.name).resolve()
+            same_existing_path = False
+            try:
+                same_existing_path = candidate_tracked_hr_targets_path == hr_targets_path.resolve()
+            except Exception:
+                same_existing_path = str(candidate_tracked_hr_targets_path) == str(hr_targets_path)
+            if not same_existing_path and candidate_tracked_hr_targets_path.exists() and candidate_tracked_hr_targets_path.is_file():
+                tracked_hr_targets_path = candidate_tracked_hr_targets_path
+                loaded_tracked_existing = _read_json(tracked_hr_targets_path)
+                tracked_existing_hr_targets_doc = loaded_tracked_existing if isinstance(loaded_tracked_existing, dict) else None
+        except Exception:
+            tracked_hr_targets_path = None
+            tracked_existing_hr_targets_doc = None
+
+        existing_hr_targets_doc = _prefer_richer_hr_targets_doc(
+            canonical_existing_hr_targets_doc,
+            tracked_existing_hr_targets_doc,
+        )
 
         candidate_docs: List[Dict[str, Any]] = []
         seen_sim_dirs: set[str] = set()
@@ -5589,7 +5627,7 @@ def main() -> int:
             for candidate_doc in candidate_docs:
                 selected_hr_targets_doc = _prefer_richer_hr_targets_doc(selected_hr_targets_doc, candidate_doc)
             hr_targets_doc = _prefer_richer_hr_targets_doc(existing_hr_targets_doc, selected_hr_targets_doc)
-            if hr_targets_doc is not existing_hr_targets_doc and isinstance(hr_targets_doc, dict):
+            if isinstance(hr_targets_doc, dict) and hr_targets_doc is not canonical_existing_hr_targets_doc:
                 _write_json(hr_targets_path, hr_targets_doc)
                 print(f"[multi-profile] Wrote HR targets artifact: {_rel(hr_targets_path)}")
             elif isinstance(hr_targets_doc, dict):

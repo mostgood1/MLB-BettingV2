@@ -2893,6 +2893,22 @@ def _prefer_newer_file(primary: Optional[Path], challenger: Optional[Path]) -> O
     return primary
 
 
+def _hr_targets_doc_source_priority(doc: Optional[Dict[str, Any]]) -> int:
+    if not isinstance(doc, dict):
+        return -1
+    source_profile = str(doc.get("source_profile") or "").strip().lower()
+    source_sim_dir = str(doc.get("source_sim_dir") or "").replace("\\", "/").strip().lower()
+    if source_profile == "hitter_props_recos":
+        return 2
+    if "/daily_hitter_props/" in source_sim_dir or source_sim_dir.startswith("data/daily_hitter_props/"):
+        return 2
+    if source_profile == "game_recos":
+        return 1
+    if "/daily/" in source_sim_dir or source_sim_dir.startswith("data/daily/"):
+        return 1
+    return 0
+
+
 def _prefer_newer_path(primary: Optional[Path], challenger: Optional[Path], *, pattern: str = "*.json") -> Optional[Path]:
     if challenger and challenger.exists():
         if not primary or not primary.exists():
@@ -2927,6 +2943,13 @@ def _prefer_richer_hr_targets_file(primary: Optional[Path], challenger: Optional
     if challenger_games > primary_games:
         return challenger
     if challenger_games < primary_games:
+        return primary
+
+    primary_source = _hr_targets_doc_source_priority(primary_doc)
+    challenger_source = _hr_targets_doc_source_priority(challenger_doc)
+    if challenger_source > primary_source:
+        return challenger
+    if challenger_source < primary_source:
         return primary
 
     return _prefer_newer_file(primary, challenger)

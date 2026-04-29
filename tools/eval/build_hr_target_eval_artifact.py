@@ -106,9 +106,10 @@ def _daily_subdir_candidates(subdir: str, date: str) -> List[Path]:
     candidates: List[Path] = []
     data_roots = [root for root in (DATA_ROOT, TRACKED_DATA_ROOT) if isinstance(root, Path)]
     for data_root in data_roots:
-        candidate = (data_root / "daily" / str(subdir) / str(date)).resolve()
-        if candidate.exists() and candidate.is_dir():
-            candidates.append(candidate)
+        for top_level in ("daily_hitter_props", "daily"):
+            candidate = (data_root / str(top_level) / str(subdir) / str(date)).resolve()
+            if candidate.exists() and candidate.is_dir():
+                candidates.append(candidate)
     seen = set()
     out: List[Path] = []
     for path in candidates:
@@ -143,7 +144,12 @@ def _rebuild_hr_targets_doc_if_needed(doc: Dict[str, Any], *, artifact_path: Pat
         return doc
     if not isinstance(rebuilt, dict):
         return doc
-    rebuilt["source_profile"] = doc.get("source_profile")
+    rebuilt_source = str(rebuilt.get("source_sim_dir") or "").replace("\\", "/").lower()
+    rebuilt["source_profile"] = (
+        "hitter_props_recos"
+        if "/daily_hitter_props/" in rebuilt_source or rebuilt_source.startswith("data/daily_hitter_props/")
+        else doc.get("source_profile")
+    )
     rebuilt["source_artifact"] = _relative_path_str(artifact_path)
     return rebuilt
 
