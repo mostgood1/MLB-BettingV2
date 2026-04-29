@@ -8433,7 +8433,11 @@ def _load_cards_archive_context(date_str: str) -> Dict[str, Any]:
     out["report_path"] = report_path
     out["report"] = _load_json_file(report_path)
 
-    profile_name, betting_manifest_path, betting_manifest, available_profiles = _load_season_betting_manifest(int(season), "")
+    profile_name, betting_manifest_path, betting_manifest, available_profiles = _load_season_betting_manifest(
+        int(season),
+        "",
+        allow_inline_refresh=False,
+    )
     out["profile"] = profile_name
     out["betting_manifest_path"] = betting_manifest_path
     out["available_profiles"] = available_profiles
@@ -8472,6 +8476,8 @@ def _available_season_betting_profiles(season: int) -> Dict[str, str]:
 def _load_season_betting_manifest(
     season: int,
     requested_profile: str,
+    *,
+    allow_inline_refresh: bool = True,
 ) -> Tuple[str, Optional[Path], Optional[Dict[str, Any]], Dict[str, str]]:
     requested = str(requested_profile or "").strip().lower()
     if requested in ("baseline", "retuned"):
@@ -8481,7 +8487,8 @@ def _load_season_betting_manifest(
     else:
         selected_profile = requested or "retuned"
 
-    _ensure_fresh_season_manifests(int(season), selected_profile)
+    if allow_inline_refresh:
+        _ensure_fresh_season_manifests(int(season), selected_profile)
     available = _available_season_betting_profiles(int(season))
     if requested in ("", "default", "current", "live"):
         selected_profile = "retuned" if "retuned" in available else "baseline"
@@ -10236,6 +10243,7 @@ def _season_betting_day_payload(season: int, date_str: str, requested_profile: s
     profile_name, manifest_path, manifest, available_profiles = _load_season_betting_manifest(
         int(season),
         requested_profile,
+        allow_inline_refresh=False,
     )
     payload: Dict[str, Any] = {
         "season": int(season),
@@ -17837,6 +17845,7 @@ def api_season_betting_cards(season: int) -> Response:
     profile_name, manifest_path, manifest, available_profiles = _load_season_betting_manifest(
         int(season),
         requested_profile,
+        allow_inline_refresh=False,
     )
     if not manifest_path or not isinstance(manifest, dict):
         return _jsonify_no_store(
@@ -17871,6 +17880,7 @@ def api_season_official_betting_card(season: int) -> Response:
     profile_name, manifest_path, manifest, available_profiles = _load_season_betting_manifest(
         int(season),
         requested_profile,
+        allow_inline_refresh=False,
     )
     if not manifest_path or not isinstance(manifest, dict):
         return _jsonify_no_store(
