@@ -91,7 +91,11 @@
     const reconciliation = row && row.reconciliation ? row.reconciliation : {};
     if (!reconciliation || !reconciliation.enabled) return "";
     const actualValue = Number(reconciliation.actual);
-    const actualText = Number.isFinite(actualValue) ? `${formatNumber(actualValue, 0)} HR` : "Final unavailable";
+    const actualText = Number.isFinite(actualValue)
+      ? `${formatNumber(actualValue, 0)} HR`
+      : String(reconciliation.status || "").toLowerCase() === "push"
+        ? "Void/DNP"
+        : "Final unavailable";
     return `
       <div class="hr-target-result-row">
         <span class="hr-target-result-badge ${historicalResultToneClass(reconciliation.status)}">${escapeHtml(String(reconciliation.label || reconciliation.status || "Unavailable"))}</span>
@@ -237,6 +241,7 @@
     const counts = payload && payload.counts ? payload.counts : {};
     const policy = payload && payload.policy ? payload.policy : {};
     const reconciliation = payload && payload.reconciliation ? payload.reconciliation : {};
+    const pushCount = (reconciliation.resultCounts || {}).push || 0;
     const reconciliationCards = reconciliation.enabled
       ? `
         <div class="hr-targets-summary-card">
@@ -245,7 +250,9 @@
         </div>
         <div class="hr-targets-summary-card">
           <span class="hr-targets-summary-label">Record</span>
-          <strong>${escapeHtml(`${(reconciliation.resultCounts || {}).win || 0}-${(reconciliation.resultCounts || {}).loss || 0}`)}</strong>
+          <strong>${escapeHtml(pushCount > 0
+            ? `${(reconciliation.resultCounts || {}).win || 0}-${(reconciliation.resultCounts || {}).loss || 0}-${pushCount}`
+            : `${(reconciliation.resultCounts || {}).win || 0}-${(reconciliation.resultCounts || {}).loss || 0}`)}</strong>
         </div>
       `
       : "";
@@ -289,7 +296,11 @@
         ? `${payload.counts.filteredRows || 0} visible HR targets across ${payload.counts.games || 0} games.`
         : "No HR targets found for this slate.";
       if (payload && payload.found && reconciliation.enabled) {
-        headerText += ` Settled: ${reconciliation.settledCount || 0}. Wins ${(reconciliation.resultCounts || {}).win || 0}, losses ${(reconciliation.resultCounts || {}).loss || 0}.`;
+        headerText += ` Settled: ${reconciliation.settledCount || 0}. Wins ${(reconciliation.resultCounts || {}).win || 0}, losses ${(reconciliation.resultCounts || {}).loss || 0}`;
+        if (((reconciliation.resultCounts || {}).push || 0) > 0) {
+          headerText += `, void ${(reconciliation.resultCounts || {}).push || 0}`;
+        }
+        headerText += ".";
       }
       root.headerMeta.textContent = headerText;
       if (root.sourceMeta) {

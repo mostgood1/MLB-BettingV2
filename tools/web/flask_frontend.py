@@ -4603,7 +4603,7 @@ def _reconcile_historical_hr_target_rows(rows: List[Dict[str, Any]], *, d: str) 
 
     feed_cache: Dict[int, Optional[Dict[str, Any]]] = {}
     stats_cache: Dict[Tuple[int, str, str, str], Optional[Dict[str, Any]]] = {}
-    result_counts: Dict[str, int] = {"win": 0, "loss": 0, "pending": 0, "unavailable": 0}
+    result_counts: Dict[str, int] = {"win": 0, "loss": 0, "push": 0, "pending": 0, "unavailable": 0}
     out_rows: List[Dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, dict):
@@ -4620,6 +4620,18 @@ def _reconcile_historical_hr_target_rows(rows: List[Dict[str, Any]], *, d: str) 
             stats_cache=stats_cache,
         )
         status = str((reconciliation or {}).get("status") or "unavailable")
+        label = str((reconciliation or {}).get("label") or "")
+        if status == "unavailable" and label == "DNP/scratched":
+            row_out["reconciliation"] = {
+                "enabled": True,
+                "status": "push",
+                "label": "Void",
+                "target": 1,
+                "reason": "dnp_scratched",
+            }
+            result_counts["push"] = int(result_counts.get("push", 0)) + 1
+            out_rows.append(row_out)
+            continue
         if status != "final":
             row_out["reconciliation"] = {"enabled": True, **dict(reconciliation or {})}
             result_counts[status] = int(result_counts.get(status, 0)) + 1
@@ -4643,7 +4655,7 @@ def _reconcile_historical_hr_target_rows(rows: List[Dict[str, Any]], *, d: str) 
     return out_rows, {
         "enabled": True,
         "resultCounts": dict(result_counts),
-        "settledCount": int(result_counts.get("win", 0) + result_counts.get("loss", 0)),
+        "settledCount": int(result_counts.get("win", 0) + result_counts.get("loss", 0) + result_counts.get("push", 0)),
     }
 
 
@@ -9274,15 +9286,18 @@ def _season_betting_manifest_static_payload(
     manifest: Dict[str, Any],
     available_profiles: Sequence[str],
 ) -> Dict[str, Any]:
-    # Season betting-card manifests are already published as frontend-ready JSON.
-    # Only fall back to the slower rebuild path when the tracked manifest is stale
-    # relative to newer daily artifacts or missing the current-day supplement.
-    if not _season_betting_manifest_needs_refresh(int(season), manifest):
+    # In artifact-only mode, never rebuild season manifests at request time.
+    # Render should serve the published manifest directly and rely on the
+    # daily frontend artifact supplement for the current day when available.
+    refresh_needed = _season_betting_manifest_needs_refresh(int(season), manifest)
+    if not _is_inline_season_manifest_rebuild_enabled() or not refresh_needed:
         payload = dict(manifest)
         meta = dict(payload.get("meta") or {})
         sources = dict(meta.get("sources") or {})
         sources["manifest"] = _relative_path_str(manifest_path)
         meta["sources"] = sources
+        meta["manifestRefreshNeeded"] = bool(refresh_needed)
+        meta["inlineManifestRebuildEnabled"] = bool(_is_inline_season_manifest_rebuild_enabled())
         payload["meta"] = meta
         payload["profile"] = profile_name
         payload["available_profiles"] = list(available_profiles)
