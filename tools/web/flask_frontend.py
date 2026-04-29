@@ -55,6 +55,7 @@ from tools.daily_update_multi_profile import (
     _hitter_pitch_mix_reason,
     _hitter_platoon_reason,
     _prefer_richer_hr_targets_doc,
+    _rfi_signal_from_first1_row,
     _hitter_statcast_quality_reason,
     _opponent_lineup_reason,
     _pitch_mix_reason,
@@ -3452,6 +3453,10 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
         fallback_sim_dir=hr_source_sim_dir,
         fallback_snapshot_dir=hr_source_snapshot_dir,
     )
+    rfi_targets_path, rfi_targets = _resolve_rfi_targets_artifact(
+        d,
+        profile_bundle=profile_bundle if isinstance(profile_bundle, dict) else None,
+    )
 
     pitcher_market_ctx = _load_pitcher_ladder_market_context(d)
     hitter_market_ctx = _load_hitter_ladder_market_context(d)
@@ -3537,6 +3542,8 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
         "profile_bundle": profile_bundle,
         "hr_targets_path": hr_targets_path,
         "hr_targets": hr_targets,
+        "rfi_targets_path": rfi_targets_path,
+        "rfi_targets": rfi_targets,
         "embedded_settlement_summary": embedded_settlement_summary,
         "settlement_path": settlement_path,
         "settlement": settlement,
@@ -7119,6 +7126,7 @@ def _cards_list_from_sources(
     schedule_games: List[Dict[str, Any]],
     outputs_by_game: Dict[int, Dict[str, Any]],
     recos_by_game: Dict[int, Dict[str, Any]],
+    first1_signals_by_game: Optional[Dict[int, Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     cards_by_game: Dict[int, Dict[str, Any]] = {}
     sim_segment_cache: Dict[int, Dict[str, Any]] = {}
@@ -7321,11 +7329,21 @@ def _cards_list_from_sources(
     cards = sorted(cards_by_game.values(), key=_card_sort_key)
     for card in cards:
         card.pop("sortOrder", None)
-        first1_signal = _cards_first1_bet_signal(card)
-        if isinstance(first1_signal, dict):
-            card["first1BetSignal"] = first1_signal
-        else:
+        artifact_first1_signal = None
+        if isinstance(first1_signals_by_game, dict):
+            game_pk = _safe_int(card.get("gamePk"))
+            if game_pk and int(game_pk) > 0:
+                artifact_first1_signal = first1_signals_by_game.get(int(game_pk))
+        if isinstance(artifact_first1_signal, dict):
+            card["first1BetSignal"] = dict(artifact_first1_signal)
+        elif isinstance(first1_signals_by_game, dict):
             card.pop("first1BetSignal", None)
+        else:
+            first1_signal = _cards_first1_bet_signal(card)
+            if isinstance(first1_signal, dict):
+                card["first1BetSignal"] = first1_signal
+            else:
+                card.pop("first1BetSignal", None)
         card["flags"] = {
             "hasAnyRecommendations": bool(
                 card["markets"].get("totals")
@@ -7375,66 +7393,51 @@ def _cards_first1_bet_signal(card: Optional[Dict[str, Any]]) -> Optional[Dict[st
         return None
     predictions = card.get("predictions") or {}
     first1 = predictions.get("first1") if isinstance(predictions.get("first1"), dict) else {}
-    if not isinstance(first1, dict) or not first1:
+    return _rfi_signal_from_first1_row(first1)
+
+
+def _resolve_rfi_targets_artifact(
+    d: str,
+    *,
+    profile_bundle: Optional[Dict[str, Any]] = None,
+) -> Tuple[Optional[Path], Optional[Dict[str, Any]]]:
+    slug = _date_slug(d)
+    canonical_daily_dir = _DATA_DIR / "daily"
+    tracked_daily_dir = _TRACKED_DATA_DIR / "daily"
+    canonical_rfi_targets_path = canonical_daily_dir / f"daily_summary_{slug}_rfi_targets.json"
+    tracked_rfi_targets_path = tracked_daily_dir / f"daily_summary_{slug}_rfi_targets.json"
+
+    rfi_targets_path = None
+    if isinstance(profile_bundle, dict):
+        rfi_targets_path = _path_from_maybe_relative(((profile_bundle.get("rfi_targets") or {}).get("artifact_path")))
+        rfi_targets_path = _prefer_newer_file(rfi_targets_path, canonical_rfi_targets_path)
+        rfi_targets_path = _prefer_newer_file(rfi_targets_path, tracked_rfi_targets_path)
+    if not rfi_targets_path:
+        rfi_targets_path = _find_preferred_file([
+            canonical_rfi_targets_path,
+            tracked_rfi_targets_path,
+        ])
+        rfi_targets_path = _prefer_newer_file(rfi_targets_path, tracked_rfi_targets_path)
+    rfi_targets = _load_json_file(rfi_targets_path)
+    return rfi_targets_path, rfi_targets
+
+
+def _rfi_targets_signal_index(doc: Optional[Dict[str, Any]]) -> Optional[Dict[int, Dict[str, Any]]]:
+    if not isinstance(doc, dict):
         return None
-
-    nrfi_prob = _cards_first1_zero_run_prob(first1)
-    if nrfi_prob is None:
+    rows = doc.get("signals")
+    if not isinstance(rows, list):
         return None
-    yrfi_prob = max(0.0, min(1.0, 1.0 - float(nrfi_prob)))
-    away_runs_mean = _safe_float(first1.get("away_runs_mean"))
-    home_runs_mean = _safe_float(first1.get("home_runs_mean"))
-    mean_total_runs = None
-    if away_runs_mean is not None or home_runs_mean is not None:
-        mean_total_runs = float(away_runs_mean or 0.0) + float(home_runs_mean or 0.0)
-    away_win_prob = _safe_float(first1.get("away_win_prob"))
-    home_win_prob = _safe_float(first1.get("home_win_prob"))
-    max_side_prob = max(float(away_win_prob or 0.0), float(home_win_prob or 0.0))
-
-    if mean_total_runs is None:
-        return None
-
-    label = None
-    tone = None
-    summary = None
-    detail = None
-
-    if float(nrfi_prob) >= _CARDS_F1_NRFI_MIN_PROB and float(mean_total_runs) <= _CARDS_F1_NRFI_MAX_MEAN_RUNS:
-        label = "F1 NRFI"
-        tone = "nrfi"
-        summary = f"0-run sim {float(nrfi_prob) * 100.0:.1f}% | F1 mean {float(mean_total_runs):.2f}"
-        detail = (
-            f"Season filter qualified: simulated scoreless first inning {float(nrfi_prob) * 100.0:.1f}% "
-            f"with only {float(mean_total_runs):.2f} expected runs in the opening frame."
-        )
-    elif (
-        float(nrfi_prob) <= _CARDS_F1_YRFI_MAX_NRFI_PROB
-        and float(mean_total_runs) >= _CARDS_F1_YRFI_MIN_MEAN_RUNS
-        and float(max_side_prob) >= _CARDS_F1_YRFI_MIN_SIDE_LEAD_PROB
-    ):
-        label = "F1 YRFI"
-        tone = "yrfi"
-        summary = (
-            f"F1 mean {float(mean_total_runs):.2f} | side lead {float(max_side_prob) * 100.0:.1f}%"
-        )
-        detail = (
-            f"Season filter qualified: only {float(nrfi_prob) * 100.0:.1f}% simulated NRFI, "
-            f"{float(mean_total_runs):.2f} expected first-inning runs, and one side reaches a "
-            f"{float(max_side_prob) * 100.0:.1f}% chance to be ahead after one."
-        )
-    else:
-        return None
-
-    return {
-        "label": label,
-        "tone": tone,
-        "summary": summary,
-        "detail": detail,
-        "nrfiProb": round(float(nrfi_prob), 4),
-        "yrfiProb": round(float(yrfi_prob), 4),
-        "meanTotalRuns": round(float(mean_total_runs), 3),
-        "maxSideLeadProb": round(float(max_side_prob), 4),
-    }
+    out: Dict[int, Dict[str, Any]] = {}
+    for raw_row in rows:
+        if not isinstance(raw_row, dict):
+            continue
+        game_pk = _safe_int(raw_row.get("game_pk"))
+        signal = raw_row.get("signal") if isinstance(raw_row.get("signal"), dict) else None
+        if not game_pk or int(game_pk) <= 0 or not isinstance(signal, dict):
+            continue
+        out[int(game_pk)] = dict(signal)
+    return out
 
 
 def _season_report_game(day_report: Optional[Dict[str, Any]], game_pk: int) -> Optional[Dict[str, Any]]:
@@ -8174,6 +8177,7 @@ def _season_day_fallback_payload(season: int, date_str: str, betting_profile: st
         schedule_games=schedule_games,
         outputs_by_game={},
         recos_by_game=recos_by_game,
+        first1_signals_by_game=_rfi_targets_signal_index(daily_artifacts.get("rfi_targets")),
     )
 
     games_out: List[Dict[str, Any]] = []
@@ -14580,6 +14584,7 @@ def _load_live_lens_cards(
         schedule_games=schedule_games,
         outputs_by_game=outputs_by_game,
         recos_by_game=recos_by_game,
+        first1_signals_by_game=_rfi_targets_signal_index(artifacts.get("rfi_targets")),
     )
 def _load_live_lens_snapshot(game_pk: int, d: str, *, feed: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     try:
@@ -16930,6 +16935,7 @@ def _build_cards_api_payload(
         schedule_games=schedule_games,
         outputs_by_game=outputs_by_game,
         recos_by_game=recos_by_game,
+        first1_signals_by_game=_rfi_targets_signal_index(artifacts.get("rfi_targets")),
     )
     _attach_cards_starter_ladder_badges(cards, artifacts.get("daily_ladders"))
     cards_requiring_feed = [
@@ -17707,6 +17713,7 @@ def api_cards() -> Response:
             schedule_games=schedule_games,
             outputs_by_game={},
             recos_by_game={},
+            first1_signals_by_game=_rfi_targets_signal_index(artifacts.get("rfi_targets")),
         )
         payload = _cards_api_payload(
             d,

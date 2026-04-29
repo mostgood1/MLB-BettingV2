@@ -2193,6 +2193,23 @@ def _validate_render_page_artifacts(
             + (f" ({hr_targets_error})" if hr_targets_error else "")
         )
 
+    rfi_targets_info = dict(bundle_doc.get("rfi_targets") or {})
+    rfi_targets_path = _resolve_path_arg(str(rfi_targets_info.get("artifact_path") or ""), default=(game_out / f"daily_summary_{token}_rfi_targets.json"))
+    rfi_targets_error = str(rfi_targets_info.get("error") or "").strip()
+    rfi_targets_rows = int(rfi_targets_info.get("rows") or 0)
+    current_stage["rfi_targets_artifact_path"] = _relative_path_str(rfi_targets_path)
+    current_stage["rfi_targets_artifact_exists"] = bool(rfi_targets_path.exists())
+    current_stage["rfi_targets_rows"] = int(rfi_targets_rows)
+    if rfi_targets_error or not rfi_targets_path.exists():
+        current_stage["status"] = "error"
+        current_stage["render_artifact_validation_error"] = (
+            rfi_targets_error or "rfi_targets_artifact_missing"
+        )
+        report["errors"].append(
+            "render artifact validation failed: rfi-targets artifact missing or errored"
+            + (f" ({rfi_targets_error})" if rfi_targets_error else "")
+        )
+
     frontend_artifacts = dict(season_frontend_stage.get("artifacts") or {})
     required_frontend = (
         "season_manifest",

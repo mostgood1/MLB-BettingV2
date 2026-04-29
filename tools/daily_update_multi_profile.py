@@ -62,6 +62,12 @@ _HR_TARGET_MAX_PER_GAME = 3
 _HR_TARGET_MAX_PER_TEAM = 2
 _HR_TARGET_SUPPORT_RANK_WEIGHT = 0.12
 
+_RFI_NRFI_MIN_PROB = 0.55
+_RFI_NRFI_MAX_MEAN_RUNS = 0.80
+_RFI_YRFI_MAX_NRFI_PROB = 0.56
+_RFI_YRFI_MIN_MEAN_RUNS = 0.95
+_RFI_YRFI_MIN_SIDE_LEAD_PROB = 0.268
+
 _DEFAULT_HR_TARGET_POLICY_PRESET = "default"
 _HR_TARGET_POLICY_PRESETS: Dict[str, Dict[str, float | int | str]] = {
     "default": {
@@ -718,6 +724,152 @@ def _safe_float(value: Any) -> Optional[float]:
         return float(value)
     except Exception:
         return None
+
+
+def _first1_zero_run_prob(row: Optional[Dict[str, Any]]) -> Optional[float]:
+    if not isinstance(row, dict):
+        return None
+    direct = _safe_float(row.get("nrfi_prob"))
+    if direct is not None:
+        return max(0.0, min(1.0, float(direct)))
+    dist = row.get("total_runs_dist") or {}
+    if not isinstance(dist, dict) or not dist:
+        return None
+    total_weight = 0.0
+    zero_weight = 0.0
+    for raw_key, raw_value in dist.items():
+        weight = _safe_float(raw_value)
+        if weight is None or weight < 0:
+            continue
+        total_weight += float(weight)
+        key_int = _safe_int(raw_key)
+        if key_int is not None and int(key_int) == 0:
+            zero_weight += float(weight)
+    if total_weight <= 0.0:
+        return None
+    return max(0.0, min(1.0, zero_weight / total_weight))
+
+
+def _rfi_signal_from_first1_row(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not isinstance(row, dict):
+        return None
+    nrfi_prob = _first1_zero_run_prob(row)
+    if nrfi_prob is None:
+        return None
+    yrfi_prob = max(0.0, min(1.0, 1.0 - float(nrfi_prob)))
+    away_runs_mean = _safe_float(row.get("away_runs_mean"))
+    home_runs_mean = _safe_float(row.get("home_runs_mean"))
+    mean_total_runs = None
+    if away_runs_mean is not None or home_runs_mean is not None:
+        mean_total_runs = float(away_runs_mean or 0.0) + float(home_runs_mean or 0.0)
+    away_win_prob = _safe_float(row.get("away_win_prob"))
+    home_win_prob = _safe_float(row.get("home_win_prob"))
+    max_side_prob = max(float(away_win_prob or 0.0), float(home_win_prob or 0.0))
+    if mean_total_runs is None:
+        return None
+
+    label = None
+    tone = None
+    summary = None
+    detail = None
+    if float(nrfi_prob) >= _RFI_NRFI_MIN_PROB and float(mean_total_runs) <= _RFI_NRFI_MAX_MEAN_RUNS:
+        label = "F1 NRFI"
+        tone = "nrfi"
+        summary = f"0-run sim {float(nrfi_prob) * 100.0:.1f}% | F1 mean {float(mean_total_runs):.2f}"
+        detail = (
+            f"Season filter qualified: simulated scoreless first inning {float(nrfi_prob) * 100.0:.1f}% "
+            f"with only {float(mean_total_runs):.2f} expected runs in the opening frame."
+        )
+    elif (
+        float(nrfi_prob) <= _RFI_YRFI_MAX_NRFI_PROB
+        and float(mean_total_runs) >= _RFI_YRFI_MIN_MEAN_RUNS
+        and float(max_side_prob) >= _RFI_YRFI_MIN_SIDE_LEAD_PROB
+    ):
+        label = "F1 YRFI"
+        tone = "yrfi"
+        summary = f"F1 mean {float(mean_total_runs):.2f} | side lead {float(max_side_prob) * 100.0:.1f}%"
+        detail = (
+            f"Season filter qualified: only {float(nrfi_prob) * 100.0:.1f}% simulated NRFI, "
+            f"{float(mean_total_runs):.2f} expected first-inning runs, and one side reaches a "
+            f"{float(max_side_prob) * 100.0:.1f}% chance to be ahead after one."
+        )
+    else:
+        return None
+
+    return {
+        "label": label,
+        "tone": tone,
+        "summary": summary,
+        "detail": detail,
+        "nrfiProb": round(float(nrfi_prob), 4),
+        "yrfiProb": round(float(yrfi_prob), 4),
+        "meanTotalRuns": round(float(mean_total_runs), 3),
+        "maxSideLeadProb": round(float(max_side_prob), 4),
+    }
+
+
+def _collect_daily_rfi_targets(
+    source_sim_dir: Path,
+    *,
+    date: str,
+    season: int,
+    source_profile: str,
+) -> Dict[str, Any]:
+    rows: List[Dict[str, Any]] = []
+    for sim_path in sorted(source_sim_dir.glob("sim_*_pk*_g*.json")):
+        loaded = _read_json(sim_path)
+        sim_obj = loaded if isinstance(loaded, dict) else {}
+        segments = (((sim_obj.get("sim") or {}).get("segments") or {})) if isinstance(sim_obj, dict) else {}
+        first1 = dict(segments.get("first1") or {}) if isinstance(segments.get("first1"), dict) else {}
+        signal = _rfi_signal_from_first1_row(first1)
+        if not isinstance(signal, dict):
+            continue
+        game_pk = _safe_int(sim_obj.get("game_pk"))
+        away = dict(sim_obj.get("away") or {}) if isinstance(sim_obj.get("away"), dict) else {}
+        home = dict(sim_obj.get("home") or {}) if isinstance(sim_obj.get("home"), dict) else {}
+        starters = dict(sim_obj.get("starter_names") or {}) if isinstance(sim_obj.get("starter_names"), dict) else {}
+        rows.append(
+            {
+                "game_pk": int(game_pk) if game_pk is not None else None,
+                "date": str(date),
+                "away": str(away.get("name") or ""),
+                "home": str(home.get("name") or ""),
+                "away_abbr": str(away.get("abbreviation") or ""),
+                "home_abbr": str(home.get("abbreviation") or ""),
+                "away_team_id": _safe_int(away.get("team_id")),
+                "home_team_id": _safe_int(home.get("team_id")),
+                "starter_names": {
+                    "away": str(starters.get("away") or ""),
+                    "home": str(starters.get("home") or ""),
+                },
+                "signal": signal,
+            }
+        )
+    return {
+        "date": str(date),
+        "season": int(season),
+        "generated_at": datetime.now().isoformat(),
+        "tool": "tools/daily_update_multi_profile.py",
+        "locked": True,
+        "source_profile": str(source_profile),
+        "source_sim_dir": _rel(source_sim_dir),
+        "thresholds": {
+            "nrfi_min_prob": float(_RFI_NRFI_MIN_PROB),
+            "nrfi_max_mean_runs": float(_RFI_NRFI_MAX_MEAN_RUNS),
+            "yrfi_max_nrfi_prob": float(_RFI_YRFI_MAX_NRFI_PROB),
+            "yrfi_min_mean_runs": float(_RFI_YRFI_MIN_MEAN_RUNS),
+            "yrfi_min_side_lead_prob": float(_RFI_YRFI_MIN_SIDE_LEAD_PROB),
+        },
+        "counts": {
+            "rows": int(len(rows)),
+            "games": int(len(rows)),
+        },
+        "signals": rows,
+    }
+
+
+def _is_locked_rfi_targets_doc(doc: Optional[Dict[str, Any]]) -> bool:
+    return isinstance(doc, dict) and bool(doc.get("locked")) and isinstance(doc.get("signals"), list)
 
 
 def _season_from_date_str(value: Any) -> Optional[int]:
@@ -5527,6 +5679,9 @@ def main() -> int:
     hr_targets_path = out_game / f"daily_summary_{token}_hr_targets.json"
     hr_targets_doc: Optional[Dict[str, Any]] = None
     hr_targets_error: Optional[str] = None
+    rfi_targets_path = out_game / f"daily_summary_{token}_rfi_targets.json"
+    rfi_targets_doc: Optional[Dict[str, Any]] = None
+    rfi_targets_error: Optional[str] = None
     try:
         if current_run_sims is not None and int(current_run_sims) < int(args.locked_policy_min_sims):
             locked_policy_error = (
@@ -5639,6 +5794,59 @@ def main() -> int:
         hr_targets_error = f"{type(e).__name__}: {e}"
         print(f"[multi-profile] HR targets build failed: {hr_targets_error}")
 
+    try:
+        game_profile = profile_info.get("game_recos") if isinstance(profile_info.get("game_recos"), dict) else {}
+        game_sim_dir = _path_from_maybe_relative(game_profile.get("sim_dir"))
+
+        canonical_existing_rfi_targets_doc: Optional[Dict[str, Any]] = None
+        try:
+            if rfi_targets_path.exists() and rfi_targets_path.is_file():
+                loaded_existing = _read_json(rfi_targets_path)
+                canonical_existing_rfi_targets_doc = loaded_existing if isinstance(loaded_existing, dict) else None
+        except Exception:
+            canonical_existing_rfi_targets_doc = None
+
+        tracked_existing_rfi_targets_doc: Optional[Dict[str, Any]] = None
+        try:
+            candidate_tracked_rfi_targets_path = (_ROOT / "data" / "daily" / rfi_targets_path.name).resolve()
+            same_existing_path = False
+            try:
+                same_existing_path = candidate_tracked_rfi_targets_path == rfi_targets_path.resolve()
+            except Exception:
+                same_existing_path = str(candidate_tracked_rfi_targets_path) == str(rfi_targets_path)
+            if not same_existing_path and candidate_tracked_rfi_targets_path.exists() and candidate_tracked_rfi_targets_path.is_file():
+                loaded_tracked_existing = _read_json(candidate_tracked_rfi_targets_path)
+                tracked_existing_rfi_targets_doc = loaded_tracked_existing if isinstance(loaded_tracked_existing, dict) else None
+        except Exception:
+            tracked_existing_rfi_targets_doc = None
+
+        existing_locked_rfi_targets_doc: Optional[Dict[str, Any]] = None
+        if _is_locked_rfi_targets_doc(canonical_existing_rfi_targets_doc):
+            existing_locked_rfi_targets_doc = canonical_existing_rfi_targets_doc
+        elif _is_locked_rfi_targets_doc(tracked_existing_rfi_targets_doc):
+            existing_locked_rfi_targets_doc = tracked_existing_rfi_targets_doc
+
+        if existing_locked_rfi_targets_doc is not None:
+            rfi_targets_doc = existing_locked_rfi_targets_doc
+            if rfi_targets_doc is not canonical_existing_rfi_targets_doc:
+                _write_json(rfi_targets_path, rfi_targets_doc)
+            print(f"[multi-profile] Kept locked existing RFI targets artifact: {_rel(rfi_targets_path)}")
+        elif isinstance(game_sim_dir, Path) and game_sim_dir.exists() and game_sim_dir.is_dir():
+            rfi_targets_doc = _collect_daily_rfi_targets(
+                game_sim_dir,
+                date=str(args.date),
+                season=int(args.season),
+                source_profile="game_recos",
+            )
+            _write_json(rfi_targets_path, rfi_targets_doc)
+            print(f"[multi-profile] Wrote RFI targets artifact: {_rel(rfi_targets_path)}")
+        else:
+            rfi_targets_error = "missing game sim_dir"
+            print(f"[multi-profile] RFI targets skipped: {rfi_targets_error}")
+    except Exception as e:
+        rfi_targets_error = f"{type(e).__name__}: {e}"
+        print(f"[multi-profile] RFI targets build failed: {rfi_targets_error}")
+
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
 
     manifest = {
@@ -5683,6 +5891,13 @@ def main() -> int:
             "policy_preset": str(((hr_targets_doc or {}).get("policy") or {}).get("preset") or args.hr_target_policy_preset),
             "error": hr_targets_error,
         },
+        "rfi_targets": {
+            "artifact_path": (_rel(rfi_targets_path) if rfi_targets_doc is not None else None),
+            "games": int(((rfi_targets_doc or {}).get("counts") or {}).get("games") or 0),
+            "rows": int(((rfi_targets_doc or {}).get("counts") or {}).get("rows") or 0),
+            "locked": bool((rfi_targets_doc or {}).get("locked")),
+            "error": rfi_targets_error,
+        },
         "timings": {
             "profiles": {
                 role_name: round(float((info or {}).get("duration_s") or 0.0), 3)
@@ -5705,6 +5920,10 @@ def main() -> int:
         print(f"[multi-profile] Wrote HR targets: {_rel(hr_targets_path)}")
     elif hr_targets_error:
         print(f"[multi-profile] HR targets error: {hr_targets_error}")
+    if rfi_targets_doc is not None:
+        print(f"[multi-profile] Wrote RFI targets: {_rel(rfi_targets_path)}")
+    elif rfi_targets_error:
+        print(f"[multi-profile] RFI targets error: {rfi_targets_error}")
     if locked_policy_card is not None:
         print(f"[multi-profile] Wrote locked-policy card: {_rel(locked_policy_path)}")
     elif locked_policy_error:
