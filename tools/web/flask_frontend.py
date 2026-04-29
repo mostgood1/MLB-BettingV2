@@ -9290,7 +9290,17 @@ def _season_betting_manifest_static_payload(
     # Render should serve the published manifest directly and rely on the
     # daily frontend artifact supplement for the current day when available.
     refresh_needed = _season_betting_manifest_needs_refresh(int(season), manifest)
-    if not _is_inline_season_manifest_rebuild_enabled() or not refresh_needed:
+    if not _is_inline_season_manifest_rebuild_enabled():
+        return _artifact_supplemented_season_betting_manifest_payload(
+            int(season),
+            profile_name,
+            manifest_path,
+            manifest,
+            available_profiles,
+            refresh_needed=bool(refresh_needed),
+        )
+
+    if not refresh_needed:
         payload = dict(manifest)
         meta = dict(payload.get("meta") or {})
         sources = dict(meta.get("sources") or {})
@@ -9336,6 +9346,142 @@ def _upsert_season_manifest_day_row(
         out.append(dict(supplemental_row))
     out.sort(key=lambda row: str(row.get("date") or ""))
     return out
+
+
+def _artifact_supplemented_season_betting_manifest_payload(
+    season: int,
+    profile_name: str,
+    manifest_path: Path,
+    manifest: Dict[str, Any],
+    available_profiles: Sequence[str],
+    *,
+    refresh_needed: bool,
+) -> Dict[str, Any]:
+    today_str = _today_iso()
+    manifest_dates: set[str] = set()
+    corrected_days: List[Dict[str, Any]] = []
+    days_out: List[Dict[str, Any]] = []
+    supplemental_count = 0
+
+    for raw_row in manifest.get("days") or []:
+        if not isinstance(raw_row, dict):
+            continue
+        day_row = dict(raw_row)
+        date_str = str(day_row.get("date") or "").strip()
+        if not date_str:
+            days_out.append(day_row)
+            continue
+
+        manifest_dates.add(date_str)
+        row_counts = _betting_selected_counts_with_defaults(day_row.get("selected_counts") or {})
+        should_refresh_row = bool(date_str == today_str or int(row_counts.get("combined") or 0) <= 0)
+        supplemental_row: Optional[Dict[str, Any]] = None
+        if should_refresh_row:
+            day_payload = _load_static_season_betting_day_payload(int(season), date_str, profile_name)
+            if isinstance(day_payload, dict) and day_payload.get("found"):
+                supplemental_row = _season_betting_manifest_day_row_from_payload(day_payload)
+            else:
+                supplemental_row = _season_betting_manifest_day_row_from_daily_artifacts(int(season), date_str)
+
+        if isinstance(supplemental_row, dict):
+            day_row = {**day_row, **supplemental_row}
+            supplemental_count += 1
+        else:
+            day_row["selected_counts"] = row_counts
+            day_row["results"] = _merge_settled_results_blocks([day_row.get("results") or {}])
+            combined = (day_row.get("results") or {}).get("combined") or _blank_settled_summary()
+            day_row["profit_u"] = round(float(combined.get("profit_u") or day_row.get("profit_u") or 0.0), 4)
+            day_row["roi"] = combined.get("roi")
+            day_row["settled_n"] = int(combined.get("n") or day_row.get("settled_n") or 0)
+            day_row["unresolved_n"] = int(day_row.get("unresolved_n") or 0)
+
+        day_row.setdefault("month", date_str[:7])
+        corrected_days.append(day_row)
+        days_out.append(day_row)
+
+    manifest_floor = min(manifest_dates) if manifest_dates else None
+    supplemental_dates = [
+        d for d in _available_daily_locked_card_dates(int(season))
+        if d not in manifest_dates and (not manifest_floor or d >= manifest_floor) and d <= today_str
+    ]
+    for date_str in supplemental_dates:
+        day_payload = _load_static_season_betting_day_payload(int(season), date_str, profile_name)
+        if isinstance(day_payload, dict) and day_payload.get("found"):
+            supplemental_row = _season_betting_manifest_day_row_from_payload(day_payload)
+        else:
+            supplemental_row = _season_betting_manifest_day_row_from_daily_artifacts(int(season), date_str)
+        if not isinstance(supplemental_row, dict):
+            continue
+        supplemental_row.setdefault("month", date_str[:7])
+        corrected_days.append(supplemental_row)
+        days_out.append(supplemental_row)
+        manifest_dates.add(date_str)
+        supplemental_count += 1
+
+    corrected_days.sort(key=lambda row: str(row.get("date") or ""))
+    days_out.sort(key=lambda row: str(row.get("date") or ""))
+
+    corrected_results = _merge_settled_results_blocks([row.get("results") or {} for row in corrected_days])
+    summary_selected_counts = _season_betting_aggregate_selected_counts(corrected_days)
+    summary_daily = _season_betting_daily_stats(corrected_days)
+
+    month_buckets: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for day_row in corrected_days:
+        month_buckets[str(day_row.get("month") or "")].append(day_row)
+
+    months_out: List[Dict[str, Any]] = []
+    for month_key in sorted(month_buckets):
+        month_days = list(month_buckets[month_key])
+        month_results = _merge_settled_results_blocks([row.get("results") or {} for row in month_days])
+        months_out.append(
+            {
+                "month": str(month_key),
+                "label": _season_betting_month_label(str(month_key)),
+                "selected_counts": _season_betting_aggregate_selected_counts(month_days),
+                "results": month_results,
+                "daily": _season_betting_daily_stats(month_days),
+            }
+        )
+
+    payload = dict(manifest)
+    meta = dict(payload.get("meta") or {})
+    meta["manifestRefreshNeeded"] = bool(refresh_needed)
+    meta["inlineManifestRebuildEnabled"] = bool(_is_inline_season_manifest_rebuild_enabled())
+    meta["artifactSupplemented"] = bool(supplemental_count > 0)
+    meta["artifactSupplementedDays"] = int(supplemental_count)
+    meta["available_reports"] = max(int(meta.get("available_reports") or 0), len(days_out))
+    meta["processed_reports"] = max(int(meta.get("processed_reports") or 0), len(days_out))
+    sources = dict(meta.get("sources") or {})
+    sources["manifest"] = _relative_path_str(manifest_path)
+    meta["sources"] = sources
+    payload["meta"] = meta
+    payload["summary"] = {
+        **dict(payload.get("summary") or {}),
+        "cards": int(len(corrected_days)),
+        "cards_processed": int(len(corrected_days)),
+        "selected_counts": summary_selected_counts,
+        "settled_recommendations": int((corrected_results.get("combined") or {}).get("n") or 0),
+        "unresolved_recommendations": int(sum(int(row.get("unresolved_n") or 0) for row in corrected_days)),
+        "results": corrected_results,
+        "daily": summary_daily,
+        "combined": corrected_results.get("combined") or _blank_settled_summary(),
+        "market_results": {
+            key: value
+            for key, value in corrected_results.items()
+            if key not in {"combined", "hitter_props"}
+        },
+    }
+    payload["months"] = months_out
+    payload["days"] = days_out
+    payload["profile"] = profile_name
+    payload["available_profiles"] = list(available_profiles)
+    payload["source_kind"] = (
+        "season_manifest_static_supplemented"
+        if supplemental_count > 0
+        else str(payload.get("source_kind") or "season_manifest_static")
+    )
+    payload["found"] = True
+    return payload
 
 
 def _official_betting_card_manifest_static_payload(
@@ -15656,6 +15802,74 @@ def _publish_season_manifests(
         cmd.extend(["--prefer-canonical-daily", "on"])
     betting_rc = subprocess.run(cmd, check=False, capture_output=True, text=True)
 
+    fallback_used = False
+    fallback_error = ""
+    if betting_rc.returncode != 0:
+        try:
+            existing_manifest = _load_json_file(betting_manifest_path)
+            if not isinstance(existing_manifest, dict):
+                existing_manifest = {
+                    "season": int(season),
+                    "days": [],
+                    "months": [],
+                    "summary": {},
+                    "meta": {
+                        "season": int(season),
+                        "generated_at": _local_timestamp_text(),
+                        "title": f"MLB {int(season)} Betting Card Recap",
+                        "batch_dir": _relative_path_str(batch_dir),
+                        "cards_dir": _relative_path_str(betting_cards_dir),
+                        "source_mode": "artifact_republish_fallback",
+                        "cap_profile": normalized_profile,
+                    },
+                }
+            else:
+                existing_meta = dict(existing_manifest.get("meta") or {})
+                existing_meta["generated_at"] = _local_timestamp_text()
+                existing_meta["batch_dir"] = _relative_path_str(batch_dir)
+                existing_meta["cards_dir"] = _relative_path_str(betting_cards_dir)
+                existing_meta["source_mode"] = str(existing_meta.get("source_mode") or "artifact_republish_fallback")
+                existing_manifest["meta"] = existing_meta
+
+            supplemented_manifest = _artifact_supplemented_season_betting_manifest_payload(
+                int(season),
+                normalized_profile,
+                betting_manifest_path,
+                existing_manifest,
+                [normalized_profile],
+                refresh_needed=True,
+            )
+            supplemented_meta = dict(supplemented_manifest.get("meta") or {})
+            supplemented_meta["generated_at"] = _local_timestamp_text()
+            supplemented_meta["batch_dir"] = _relative_path_str(batch_dir)
+            supplemented_meta["cards_dir"] = _relative_path_str(betting_cards_dir)
+            supplemented_meta["source_mode"] = "artifact_republish_fallback"
+            supplemented_manifest["meta"] = supplemented_meta
+
+            _write_json_file(betting_manifest_path, supplemented_manifest)
+            recap_lines = [
+                f"# MLB {int(season)} Betting Card Recap",
+                "",
+                "Artifact-backed republish fallback.",
+                "",
+                f"- Season: {int(season)}",
+                f"- Profile: {normalized_profile}",
+                f"- Generated: {_local_timestamp_text()}",
+                f"- Source kind: {supplemented_manifest.get('source_kind')}",
+                f"- Cards: {((supplemented_manifest.get('summary') or {}).get('cards') or 0)}",
+                f"- Settled recommendations: {((supplemented_manifest.get('summary') or {}).get('settled_recommendations') or 0)}",
+                f"- Unresolved recommendations: {((supplemented_manifest.get('summary') or {}).get('unresolved_recommendations') or 0)}",
+                "",
+                "This recap was generated by the web fallback path because the heavyweight season manifest builder failed.",
+                "",
+            ]
+            _ensure_dir(betting_recap_path.parent)
+            betting_recap_path.write_text("\n".join(recap_lines), encoding="utf-8")
+            fallback_used = True
+            betting_rc = subprocess.CompletedProcess(cmd, 0, betting_rc.stdout, betting_rc.stderr)
+        except Exception as exc:
+            fallback_error = f"{type(exc).__name__}: {exc}"
+
     return {
         "ok": betting_rc.returncode == 0,
         "season": int(season),
@@ -15675,6 +15889,8 @@ def _publish_season_manifests(
         "season_betting_stdout": str((betting_rc.stdout or "").strip()),
         "season_betting_stderr": str((betting_rc.stderr or "").strip()),
         "season_betting_manifest_exists": bool(betting_manifest_path.exists()),
+        "season_betting_fallback_used": bool(fallback_used),
+        "season_betting_fallback_error": str(fallback_error),
     }
 
 

@@ -86,6 +86,7 @@ from tools.eval.build_season_eval_manifest import write_manifest_artifacts as wr
 from tools.eval.settle_locked_policy_cards import _feed_is_final, _load_feed, _settle_card
 from tools.oddsapi.fetch_daily_oddsapi_markets import fetch_and_write_live_odds_for_date
 from tools.web.flask_frontend import (
+    _artifact_supplemented_season_betting_manifest_payload,
     write_current_day_season_frontend_artifacts,
     write_daily_ladder_audit_artifact,
     write_daily_ladders_artifact,
@@ -1875,7 +1876,66 @@ def _publish_live_season_manifests(
     ]
     if normalized_profile == "retuned":
         cmd.extend(["--prefer-canonical-daily", "on"])
-    betting_rc = subprocess.run(cmd, check=False).returncode
+    betting_run = subprocess.run(cmd, check=False, capture_output=True, text=True)
+
+    fallback_used = False
+    fallback_error = ""
+    if betting_run.returncode != 0:
+        try:
+            existing_manifest: Dict[str, Any] = {}
+            if betting_manifest_path.exists():
+                loaded_manifest = json.loads(betting_manifest_path.read_text(encoding="utf-8"))
+                if isinstance(loaded_manifest, dict):
+                    existing_manifest = loaded_manifest
+            if not existing_manifest:
+                existing_manifest = {
+                    "season": int(season),
+                    "days": [],
+                    "months": [],
+                    "summary": {},
+                    "meta": {
+                        "season": int(season),
+                        "title": f"MLB {int(season)} Betting Card Recap",
+                        "batch_dir": _relative_path_str(batch_dir),
+                        "cards_dir": _relative_path_str(betting_cards_dir),
+                        "source_mode": "artifact_republish_fallback",
+                        "cap_profile": normalized_profile,
+                    },
+                }
+
+            supplemented_manifest = _artifact_supplemented_season_betting_manifest_payload(
+                int(season),
+                normalized_profile,
+                betting_manifest_path,
+                existing_manifest,
+                [normalized_profile],
+                refresh_needed=True,
+            )
+            supplemented_meta = dict(supplemented_manifest.get("meta") or {})
+            supplemented_meta["batch_dir"] = _relative_path_str(batch_dir)
+            supplemented_meta["cards_dir"] = _relative_path_str(betting_cards_dir)
+            supplemented_meta["source_mode"] = "artifact_republish_fallback"
+            supplemented_manifest["meta"] = supplemented_meta
+            _ensure_dir(betting_manifest_path.parent)
+            betting_manifest_path.write_text(json.dumps(supplemented_manifest, indent=2, sort_keys=False), encoding="utf-8")
+            recap_lines = [
+                f"# MLB {int(season)} Betting Card Recap",
+                "",
+                "Artifact-backed publish fallback.",
+                "",
+                f"- Season: {int(season)}",
+                f"- Profile: {normalized_profile}",
+                f"- Batch: {_relative_path_str(batch_dir)}",
+                f"- Source kind: {supplemented_manifest.get('source_kind')}",
+                f"- Cards: {((supplemented_manifest.get('summary') or {}).get('cards') or 0)}",
+                "",
+            ]
+            _ensure_dir(betting_recap_path.parent)
+            betting_recap_path.write_text("\n".join(recap_lines), encoding="utf-8")
+            fallback_used = True
+            betting_run = subprocess.CompletedProcess(cmd, 0, betting_run.stdout, betting_run.stderr)
+        except Exception as exc:
+            fallback_error = f"{type(exc).__name__}: {exc}"
 
     return {
         "season_eval_manifest": _relative_path_str(season_manifest_path),
@@ -1888,8 +1948,10 @@ def _publish_live_season_manifests(
         "season_betting_recap": _relative_path_str(betting_recap_path),
         "season_betting_cards_dir": _relative_path_str(betting_cards_dir),
         "season_betting_day_payload_dir": _relative_path_str(betting_day_payload_dir),
-        "season_betting_exit_code": int(betting_rc),
+        "season_betting_exit_code": int(betting_run.returncode),
         "season_betting_manifest_exists": bool(betting_manifest_path.exists()),
+        "season_betting_fallback_used": bool(fallback_used),
+        "season_betting_fallback_error": str(fallback_error),
     }
 
 
