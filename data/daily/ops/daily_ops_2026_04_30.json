@@ -1,18 +1,18 @@
 {
   "tool": "tools/daily_update.py",
   "workflow": "ui-daily",
-  "generated_at": "2026-04-29T09:34:40.374264",
+  "generated_at": "2026-04-29T16:07:57.953125",
   "date": "2026-04-30",
   "season": 2026,
   "run_lock": {
     "status": "acquired",
-    "path": "data/runtime/locks/daily_update_ui-daily_2026_2026-04-30_3fa2a74e5f2b.lock",
-    "pid": 58124,
-    "created_at": "2026-04-29T09:34:40.374264"
+    "path": "data/runtime/locks/daily_update_ui-daily_2026_2026-04-30_bb9ef09c8579.lock",
+    "pid": 3447,
+    "created_at": "2026-04-29T16:07:57.952892"
   },
   "seed": {
-    "value": 1337,
-    "source": "default_fixed",
+    "value": 1896093756,
+    "source": "auto_future_date",
     "explicit_cli": false
   },
   "prior_day": {
@@ -21,10 +21,10 @@
     "eval_report_path": "data/eval/batches/season_2026_ui_daily_live/sim_vs_actual_2026-04-29.json",
     "top_props_artifact_path": "data/daily/top_props/daily_top_props_2026_04_29.json",
     "live_lens": {
-      "status": "warning",
-      "source": null,
+      "status": "ok",
+      "source": "render_api",
       "sync_out_path": "data/live_lens/render_sync/live_lens_reports_2026_04_29.json",
-      "headline": null
+      "headline": "No prior-day live-lens activity found for 2026-04-29."
     }
   },
   "current_day": {
@@ -57,21 +57,121 @@
       "reason": "settle_prior_card=off"
     },
     "prior_day_live_lens": {
-      "status": "warning",
+      "status": "ok",
       "date": "2026-04-29",
       "sync_requested": true,
       "sync_out_path": "data/live_lens/render_sync/live_lens_reports_2026_04_29.json",
       "local_report_path": "data/live_lens/live_lens_report_2026_04_29.json",
       "local_registry_path": "data/live_lens/prop_registry/live_prop_registry_2026_04_29.json",
       "render_base_url": "https://mlb-betting-v2.onrender.com",
-      "error": "live-lens sync requested but Render base URL or cron token is unavailable"
+      "source": "render_api",
+      "synced_report_path": "data/live_lens/render_sync/live_lens_reports_2026_04_29.json",
+      "registry_summary": {
+        "byProp": {},
+        "bySelection": {},
+        "date": "2026-04-29",
+        "resultCounts": {
+          "loss": 0,
+          "pending": 0,
+          "push": 0,
+          "win": 0
+        },
+        "settledEntries": 0,
+        "topEdges": [],
+        "topStable": [],
+        "totalEntries": 0,
+        "uniqueGames": 0,
+        "uniqueOwners": 0,
+        "updatedAt": null
+      },
+      "readout": {
+        "headline": "No prior-day live-lens activity found for 2026-04-29.",
+        "learnings": [],
+        "performance": []
+      }
     },
     "live_pitcher_corrections": {
-      "status": "warning",
+      "status": "ok",
       "max_date": "2026-04-29",
-      "artifacts": {},
-      "render_base_url": "https://mlb-betting-v2.onrender.com",
-      "reason": "live pitcher correction refresh requested but Render base URL or cron token is unavailable"
+      "artifacts": {
+        "outs": {
+          "command": [
+            "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python",
+            "/home/runner/work/MLB-BettingV2/MLB-BettingV2/tools/tune/fit_live_pitcher_outs_correction.py",
+            "--source",
+            "render-sync",
+            "--max-date",
+            "2026-04-29",
+            "--render-timeout-seconds",
+            "45",
+            "--out",
+            "/home/runner/work/MLB-BettingV2/MLB-BettingV2/data/eval/live_pitcher_outs_correction.json",
+            "--render-base-url",
+            "https://mlb-betting-v2.onrender.com",
+            "--render-cron-token",
+            "1234567890"
+          ],
+          "artifact_path": "1234567890",
+          "exit_code": 0,
+          "rows": 7,
+          "date_window": {
+            "min_date": "2026-04-28",
+            "max_date": "2026-04-28"
+          },
+          "training_metrics": {
+            "baseline_mae": 2.264,
+            "baseline_rmse": 3.544,
+            "corrected_mae": 1.461,
+            "corrected_rmse": 1.677
+          },
+          "leave_one_out_metrics": {
+            "baseline_mae": 2.264,
+            "baseline_rmse": 3.544,
+            "corrected_mae": 2.673,
+            "corrected_rmse": 3.108
+          },
+          "status": "ok"
+        },
+        "strikeouts": {
+          "command": [
+            "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python",
+            "/home/runner/work/MLB-BettingV2/MLB-BettingV2/tools/tune/fit_live_pitcher_strikeouts_correction.py",
+            "--source",
+            "render-sync",
+            "--max-date",
+            "2026-04-29",
+            "--render-timeout-seconds",
+            "45",
+            "--out",
+            "/home/runner/work/MLB-BettingV2/MLB-BettingV2/data/eval/live_pitcher_strikeouts_correction.json",
+            "--render-base-url",
+            "https://mlb-betting-v2.onrender.com",
+            "--render-cron-token",
+            "1234567890"
+          ],
+          "artifact_path": "1234567890",
+          "exit_code": 0,
+          "rows": 13,
+          "date_window": {
+            "min_date": "2026-04-28",
+            "max_date": "2026-04-28"
+          },
+          "training_metrics": {
+            "baseline_mae": 0.721,
+            "baseline_rmse": 1.038,
+            "corrected_mae": 0.571,
+            "corrected_rmse": 0.629
+          },
+          "leave_one_out_metrics": {
+            "baseline_mae": 0.721,
+            "baseline_rmse": 1.038,
+            "corrected_mae": 0.872,
+            "corrected_rmse": 0.957
+          },
+          "status": "ok"
+        }
+      },
+      "render_base_url": "https://mlb-betting-v2.onrender.com"
     },
     "prior_day_eval_report": {
       "status": "skipped",
@@ -92,14 +192,14 @@
       "group_summaries": {
         "pitcher": {
           "found": true,
-          "candidateCount": 110,
-          "displayedCount": 110,
+          "candidateCount": 121,
+          "displayedCount": 121,
           "sectionCount": 5
         },
         "hitter": {
           "found": true,
-          "candidateCount": 1967,
-          "displayedCount": 1967,
+          "candidateCount": 1978,
+          "displayedCount": 1978,
           "sectionCount": 7
         }
       }
@@ -108,10 +208,10 @@
       "status": "warning",
       "date": "2026-04-30",
       "mode": "live",
-      "out_dir": "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\data\\market\\oddsapi",
-      "game_lines_path": "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\data\\market\\oddsapi\\oddsapi_game_lines_2026_04_30.json",
-      "pitcher_props_path": "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\data\\market\\oddsapi\\oddsapi_pitcher_props_2026_04_30.json",
-      "hitter_props_path": "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\data\\market\\oddsapi\\oddsapi_hitter_props_2026_04_30.json",
+      "out_dir": "/home/runner/work/MLB-BettingV2/MLB-BettingV2/data/market/oddsapi",
+      "game_lines_path": "/home/runner/work/MLB-BettingV2/MLB-BettingV2/data/market/oddsapi/oddsapi_game_lines_2026_04_30.json",
+      "pitcher_props_path": "/home/runner/work/MLB-BettingV2/MLB-BettingV2/data/market/oddsapi/oddsapi_pitcher_props_2026_04_30.json",
+      "hitter_props_path": "/home/runner/work/MLB-BettingV2/MLB-BettingV2/data/market/oddsapi/oddsapi_hitter_props_2026_04_30.json",
       "counts": {
         "game_lines": {
           "events_matched": 0,
@@ -140,38 +240,62 @@
     "current_day_overwrite_prep": {
       "status": "ok",
       "date": "2026-04-30",
-      "removed": [],
-      "removed_count": 0
+      "removed": [
+        "data/daily/daily_summary_2026_04_30.json",
+        "data/daily/daily_summary_2026_04_30_profile_bundle.json",
+        "data/daily/daily_summary_2026_04_30_locked_policy.json",
+        "data/daily/daily_summary_2026_04_30_hr_targets.json",
+        "data/daily/sims/2026-04-30",
+        "data/daily/snapshots/2026-04-30",
+        "data/daily/top_props/daily_top_props_2026_04_30.json",
+        "data/daily/ladders/daily_ladders_2026_04_30.json",
+        "data/daily/ladders/daily_ladder_audit_2026_04_30.json",
+        "data/daily/season_frontend/season_manifest_2026_2026_04_30.json",
+        "data/daily/season_frontend/season_day_2026_2026_04_30_retuned.json",
+        "data/daily/season_frontend/season_betting_day_2026_2026_04_30_retuned.json",
+        "data/daily/season_frontend/season_official_betting_day_2026_2026_04_30_retuned.json",
+        "data/daily_pitcher_props/snapshots/2026-04-30",
+        "data/daily_hitter_props/snapshots/2026-04-30"
+      ],
+      "removed_count": 15
     },
     "current_day_multi_profile": {
       "status": "ok",
       "command": [
-        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\.venv_x64\\Scripts\\python.exe",
-        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\tools\\daily_update_multi_profile.py",
+        "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python",
+        "/home/runner/work/MLB-BettingV2/MLB-BettingV2/tools/daily_update_multi_profile.py",
         "--date",
         "2026-04-30",
         "--season",
         "2026",
         "--python-exe",
-        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\.venv_x64\\Scripts\\python.exe",
+        "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python3.11",
         "--out-game",
-        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\data\\daily",
+        "/home/runner/work/MLB-BettingV2/MLB-BettingV2/data/daily",
         "--out-pitcher",
-        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\data\\daily_pitcher_props",
+        "/home/runner/work/MLB-BettingV2/MLB-BettingV2/data/daily_pitcher_props",
         "--out-hitter",
-        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\data\\daily_hitter_props",
+        "/home/runner/work/MLB-BettingV2/MLB-BettingV2/data/daily_hitter_props",
         "--refresh-season-manifests",
         "off",
-        "--build-next-day",
+        "--sims",
+        "1000",
+        "--workers",
+        "4",
+        "--pbp",
         "off",
+        "--use-roster-artifacts",
+        "on",
+        "--write-roster-artifacts",
+        "on",
         "--seed",
-        "1337",
+        "1896093756",
         "--seed-source",
-        "default_fixed"
+        "auto_future_date"
       ],
       "seed": {
-        "value": 1337,
-        "source": "default_fixed",
+        "value": 1896093756,
+        "source": "auto_future_date",
         "explicit_cli": false
       },
       "summary_path": "data/daily/daily_summary_2026_04_30.json",
@@ -592,7 +716,7 @@
       },
       "hr_targets_artifact_path": "data/daily/daily_summary_2026_04_30_hr_targets.json",
       "hr_targets_artifact_exists": true,
-      "hr_targets_rows": 7
+      "hr_targets_rows": 4
     },
     "current_day_top_props_artifact": {
       "status": "ok",
@@ -763,9 +887,48 @@
       }
     },
     "next_day_forward_build": {
-      "status": "skipped",
+      "status": "ok",
       "date": "2026-05-01",
-      "reason": "build_next_day=off"
+      "season": 2026,
+      "command": [
+        "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python3.11",
+        "/home/runner/work/MLB-BettingV2/MLB-BettingV2/tools/daily_update.py",
+        "--workflow",
+        "ui-daily",
+        "--date",
+        "2026-05-01",
+        "--season",
+        "2026",
+        "--reconcile-date",
+        "2026-04-30",
+        "--refresh-prior-feed-live",
+        "off",
+        "--settle-prior-card",
+        "off",
+        "--refresh-season-manifests",
+        "off",
+        "--git-push",
+        "off",
+        "--build-next-day",
+        "off",
+        "--refresh-season-manifests",
+        "off",
+        "--sims",
+        "1000",
+        "--workers",
+        "4",
+        "--pbp",
+        "off",
+        "--use-roster-artifacts",
+        "on",
+        "--write-roster-artifacts",
+        "on",
+        "--seed",
+        "1896093756",
+        "--seed-source",
+        "auto_future_date"
+      ],
+      "exit_code": 0
     },
     "current_day_roster_snapshot": {
       "status": "ok",
@@ -803,8 +966,6 @@
     }
   },
   "warnings": [
-    "prior-day live-lens sync/readout warning: live-lens sync requested but Render base URL or cron token is unavailable",
-    "live pitcher correction refresh warning: live pitcher correction refresh requested but Render base URL or cron token is unavailable",
     "current-day OddsAPI ingest captured no game lines",
     "current-day OddsAPI ingest captured no pitcher props",
     "current-day OddsAPI ingest captured no hitter props",
@@ -813,7 +974,7 @@
   ],
   "errors": [],
   "next_day": {
-    "requested": false,
+    "requested": true,
     "date": "2026-05-01",
     "season": 2026
   },
