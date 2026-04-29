@@ -3337,7 +3337,12 @@ def _workflow_summary(ops_report_path: Optional[Path], ops_report_doc: Optional[
     }
 
 
-def _load_cards_artifacts(d: str) -> Dict[str, Any]:
+def _load_cards_artifacts(
+    d: str,
+    *,
+    include_market_availability: bool = True,
+    allow_request_daily_ladders_refresh: Optional[bool] = None,
+) -> Dict[str, Any]:
     slug = _date_slug(d)
     data_dir = _DATA_DIR
     canonical_daily_dir = data_dir / "daily"
@@ -3458,8 +3463,14 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
         profile_bundle=profile_bundle if isinstance(profile_bundle, dict) else None,
     )
 
-    pitcher_market_ctx = _load_pitcher_ladder_market_context(d)
-    hitter_market_ctx = _load_hitter_ladder_market_context(d)
+    if allow_request_daily_ladders_refresh is None:
+        allow_request_daily_ladders_refresh = not _is_current_local_date(str(d))
+
+    pitcher_market_ctx: Dict[str, Any] = {}
+    hitter_market_ctx: Dict[str, Any] = {}
+    if allow_request_daily_ladders_refresh:
+        pitcher_market_ctx = _load_pitcher_ladder_market_context(d)
+        hitter_market_ctx = _load_hitter_ladder_market_context(d)
 
     preferred_ops_paths: List[Path] = []
     preferred_ops_paths.append(canonical_daily_dir / "ops" / f"daily_ops_{slug}.json")
@@ -3510,9 +3521,8 @@ def _load_cards_artifacts(d: str) -> Dict[str, Any]:
 
     lineups_path = (snapshot_dir / "lineups.json") if snapshot_dir else None
     lineups = _load_json_file(lineups_path)
-    market_availability = _load_market_availability(d)
+    market_availability = _load_market_availability(d) if include_market_availability else {}
     daily_ladders_path, daily_ladders = _load_daily_ladders_artifact(str(d))
-    allow_request_daily_ladders_refresh = not _is_current_local_date(str(d))
     if (
         allow_request_daily_ladders_refresh
         and
@@ -16848,7 +16858,11 @@ def _cards_payload_context(d: str) -> Tuple[Dict[str, Any], Dict[str, Any], Dict
 
 
 def _build_cards_payload_context(d: str) -> Dict[str, Any]:
-    artifacts = _load_cards_artifacts(d)
+    artifacts = _load_cards_artifacts(
+        d,
+        include_market_availability=False,
+        allow_request_daily_ladders_refresh=False,
+    )
     archive = _load_cards_archive_context(d) if _should_load_cards_archive_context(d, artifacts) else {}
     game_line_index = _load_game_line_market_index(d)
     signature = _cards_payload_signature(d, artifacts, archive, game_line_index)
@@ -16911,7 +16925,11 @@ def _build_cards_api_payload(
     archive: Optional[Dict[str, Any]] = None,
     game_line_index: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    artifacts = artifacts if isinstance(artifacts, dict) else _load_cards_artifacts(d)
+    artifacts = artifacts if isinstance(artifacts, dict) else _load_cards_artifacts(
+        d,
+        include_market_availability=False,
+        allow_request_daily_ladders_refresh=False,
+    )
     archive = archive if isinstance(archive, dict) else (_load_cards_archive_context(d) if _should_load_cards_archive_context(d, artifacts) else {})
     game_line_index = game_line_index if isinstance(game_line_index, dict) else _load_game_line_market_index(d)
 
