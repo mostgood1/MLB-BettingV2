@@ -5,8 +5,8 @@
     selectedDate: String(bootstrap.date || ""),
     profile: String(bootstrap.profile || "retuned"),
     monthFilter: "all",
-    manifest: null,
-    day: null,
+    manifest: bootstrap.manifest && typeof bootstrap.manifest === "object" ? bootstrap.manifest : null,
+    day: bootstrap.initialDay && typeof bootstrap.initialDay === "object" ? bootstrap.initialDay : null,
   };
 
   const BETTING_MARKET_LABELS = {
@@ -925,6 +925,14 @@
     if (root.dayPicks) root.dayPicks.innerHTML = '<div class="cards-loading-state">Loading official picks...</div>';
     if (root.games) root.games.innerHTML = '<div class="cards-loading-state">Loading official card games...</div>';
     try {
+      if (
+        state.day
+        && String(state.day?.date || "") === state.selectedDate
+        && String(state.day?.profile || state.profile || "retuned") === state.profile
+      ) {
+        renderDay();
+        return;
+      }
       const dayUrl = new URL(`/api/season/${encodeURIComponent(state.season)}/betting-card/day/${encodeURIComponent(state.selectedDate)}`, window.location.origin);
       dayUrl.searchParams.set("profile", state.profile);
       dayUrl.searchParams.set("dailyBudget", String(dailyBudgetDollars()));
@@ -942,7 +950,9 @@
   async function loadManifest() {
     if (root.summary) root.summary.innerHTML = '<div class="cards-loading-state">Loading official betting-card recap...</div>';
     try {
-      state.manifest = await fetchJson(`/api/season/${encodeURIComponent(state.season)}/betting-card?profile=${encodeURIComponent(state.profile)}`);
+      if (!state.manifest || String(state.manifest?.profile || state.profile || "retuned") !== state.profile) {
+        state.manifest = await fetchJson(`/api/season/${encodeURIComponent(state.season)}/betting-card?profile=${encodeURIComponent(state.profile)}`);
+      }
       state.profile = String(state.manifest?.profile || state.profile || "retuned");
       renderHeader();
       renderProfiles();
@@ -978,6 +988,8 @@
       if (!button || !root.profiles.contains(button)) return;
       event.preventDefault();
       state.profile = String(button.getAttribute("data-betting-card-profile") || state.profile);
+      state.manifest = null;
+      state.day = null;
       await loadManifest();
     });
   }

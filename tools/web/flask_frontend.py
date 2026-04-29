@@ -16509,7 +16509,59 @@ def season_view(season: int) -> str:
 def season_betting_card_view(season: int) -> str:
     d = str(request.args.get("date") or "").strip()
     profile = str(request.args.get("profile") or "retuned").strip().lower() or "retuned"
-    return render_template("betting_card.html", season=int(season), date=d, profile=profile)
+    initial_manifest: Optional[Dict[str, Any]] = None
+    initial_day: Optional[Dict[str, Any]] = None
+
+    try:
+        profile_name, manifest_path, manifest, available_profiles = _load_season_betting_manifest(
+            int(season),
+            profile,
+            allow_inline_refresh=False,
+        )
+        if manifest_path and isinstance(manifest, dict):
+            initial_manifest = _official_betting_card_manifest_response_payload(
+                int(season),
+                profile_name,
+                manifest_path,
+                manifest,
+                available_profiles,
+            )
+            profile = str((initial_manifest or {}).get("profile") or profile_name or profile)
+
+            effective_date = d
+            manifest_days = [row for row in (initial_manifest or {}).get("days") or [] if isinstance(row, dict)]
+            if not effective_date and manifest_days:
+                today_str = _today_iso()
+                today_row = next((row for row in manifest_days if str(row.get("date") or "") == today_str), None)
+                if isinstance(today_row, dict):
+                    effective_date = str(today_row.get("date") or "").strip()
+                if not effective_date:
+                    settled_rows = [row for row in manifest_days if int(_safe_int(((row.get("results") or {}).get("combined") or {}).get("n")) or 0) > 0]
+                    source_rows = settled_rows or manifest_days
+                    effective_date = str((source_rows[-1] or {}).get("date") or "").strip()
+
+            if effective_date:
+                daily_budget_dollars = _daily_budget_dollars_from_request(500.0)
+                prebuilt_payload = _prebuilt_official_betting_card_day_payload(int(season), effective_date, profile)
+                if isinstance(prebuilt_payload, dict) and prebuilt_payload.get("found"):
+                    initial_day = _annotate_betting_payload_dollars(prebuilt_payload, daily_budget_dollars)
+                else:
+                    day_payload = _official_betting_card_day_payload_cached(int(season), effective_date, profile)
+                    if isinstance(day_payload, dict) and day_payload.get("found"):
+                        initial_day = _annotate_betting_payload_dollars(day_payload, daily_budget_dollars)
+                if initial_day:
+                    d = effective_date
+    except Exception:
+        app.logger.exception("failed to preload betting-card bootstrap for season=%s profile=%s date=%s", season, profile, d)
+
+    return render_template(
+        "betting_card.html",
+        season=int(season),
+        date=d,
+        profile=profile,
+        initial_manifest=initial_manifest,
+        initial_day=initial_day,
+    )
 
 
 def _cards_api_payload(
