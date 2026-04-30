@@ -13439,7 +13439,6 @@ def _current_live_prop_rows(
                     current_profile=current_profile,
                     bullpen_profiles=bullpen_profiles,
                     snapshot=snapshot,
-                    use_simple_progression=True,
                 )
                 side_pick = _select_live_prop_side(
                     model_prob_over=model_prob_over,
@@ -14206,13 +14205,10 @@ def _project_live_pitcher_value(
     current_profile: Optional[Dict[str, Any]] = None,
     bullpen_profiles: Optional[List[Dict[str, Any]]] = None,
     snapshot: Optional[Dict[str, Any]] = None,
-    use_simple_progression: bool = False,
 ) -> Optional[float]:
     prop_key = str(prop or "").strip().lower()
     mean = _safe_float(model_mean)
     if mean is None or prop_key not in {"outs", "strikeouts", "hits_allowed", "walks_allowed"}:
-        return _project_live_value(actual_value, model_mean, progress_fraction)
-    if use_simple_progression:
         return _project_live_value(actual_value, model_mean, progress_fraction)
 
     actual = float(_safe_float(actual_value) or 0.0)
@@ -15162,7 +15158,6 @@ def _prop_lens_rows(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], si
                 current_profile=current_profile,
                 bullpen_profiles=bullpen_profiles,
                 snapshot=snapshot,
-                use_simple_progression=True,
             ) if is_pitcher else _project_live_hitter_value(
                 prop=str(reco.get("prop") or ""),
                 player_name=owner_name,
@@ -15277,7 +15272,6 @@ def _fallback_live_prop_rows_from_card(
                     current_profile=None,
                     bullpen_profiles=[],
                     snapshot=snapshot,
-                    use_simple_progression=True,
                 )
                 if is_pitcher
                 else _project_live_hitter_value(
@@ -17306,7 +17300,6 @@ def _live_starter_ladder_badges_for_side(
             current_profile=current_profile,
             bullpen_profiles=bullpen_profiles,
             snapshot=snapshot,
-            use_simple_progression=True,
         )
 
         supported_totals: List[int] = []
