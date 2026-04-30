@@ -14362,7 +14362,7 @@ def _segment_projection(
     if away_mean is None or home_mean is None:
         return {"away": None, "home": None, "total": None, "homeMargin": None, "closed": False}
     target_fraction = max(0.0, min(1.0, float(target_innings) / 9.0))
-    if progress_fraction > target_fraction + 1e-9:
+    if progress_fraction >= target_fraction - 1e-9:
         return {"away": None, "home": None, "total": None, "homeMargin": None, "closed": True}
     away_target = float(away_mean) * target_fraction
     home_target = float(home_mean) * target_fraction
