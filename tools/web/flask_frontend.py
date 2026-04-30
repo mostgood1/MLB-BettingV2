@@ -14325,9 +14325,11 @@ def _project_live_pitcher_value(
         weight = min(0.55, max(0.12, float(actual_bf) / 36.0))
         per_bf_rate = ((1.0 - weight) * float(per_bf_rate)) + (weight * float(actual_k_rate))
     projection = float(actual) + max(0.0, float(remaining_bf)) * float(per_bf_rate)
+    starter_removed = bool(_starter_removed_from_snapshot(snapshot, team_side)) if team_side in {"away", "home"} else False
     if prop_key in {"outs", "strikeouts"}:
-        projection = _apply_live_pitcher_prop_correction(
-            float(projection),
+        raw_projection = float(projection)
+        corrected_projection = _apply_live_pitcher_prop_correction(
+            raw_projection,
             prop_key=prop_key,
             actual_value=float(actual),
             model_mean=mean,
@@ -14335,6 +14337,14 @@ def _project_live_pitcher_value(
             progress=progress,
             game_state_parsed=True,
         )
+        if (
+            not starter_removed
+            and float(raw_projection) > float(actual)
+            and float(corrected_projection) <= float(actual) + 1e-6
+        ):
+            projection = float(raw_projection)
+        else:
+            projection = float(corrected_projection)
     return round(max(float(actual), projection), 3)
 
 
