@@ -15127,6 +15127,7 @@ def _prop_lens_rows(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], si
                     break
             actual_value = _live_stat_value(actual_row, reco)
             model_mean = _prop_model_mean_value(reco, sim_row)
+            market_line = _safe_float(reco.get("market_line"))
             pitcher_profile = None
             if is_pitcher:
                 pitcher_ctx = _live_pitcher_matchup_context({"team_side": side}, snapshot, sim_context)
@@ -15158,7 +15159,6 @@ def _prop_lens_rows(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], si
                 model_row=sim_row,
                 snapshot=snapshot,
             )
-            market_line = _safe_float(reco.get("market_line"))
             selection = str(reco.get("selection") or "").strip().lower()
             rows.append(
                 {
