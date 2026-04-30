@@ -13896,11 +13896,14 @@ def _game_lens_total_market(
     selected_odds = total_over_odds if selected_side == "over" else total_under_odds
     current_total = float(_safe_float(actual_home) or 0.0) + float(_safe_float(actual_away) or 0.0)
     remaining_outs = _game_lens_remaining_outs(progress)
+    if selected_side == "over" and current_total > float(live_total_line):
+        out["reason"] = " ".join(piece for piece in [segment_text, "The game had already cleared the posted total, so the over was no longer actionable as a live bet."] if piece).strip() or None
+        return out
     if not _market_price_allowed(selected_odds, max_favorite_odds=-200):
         out["reason"] = " ".join(piece for piece in [segment_text, "The total still leaned that direction, but the current price was already beyond a sensible live-bet threshold."] if piece).strip() or None
         return out
-    if selected_side == "under" and current_total > float(live_total_line) and remaining_outs <= 9:
-        out["reason"] = " ".join(piece for piece in [segment_text, "The game had already run past the posted total too late for the under path to remain actionable."] if piece).strip() or None
+    if selected_side == "under" and current_total > float(live_total_line):
+        out["reason"] = " ".join(piece for piece in [segment_text, "The game had already run past the posted total, so the under path was no longer actionable."] if piece).strip() or None
         return out
 
     out["pick"] = selected_side
