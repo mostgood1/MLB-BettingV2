@@ -14663,6 +14663,20 @@ def _prop_model_mean_value(reco: Dict[str, Any], sim_row: Optional[Dict[str, Any
     if value is not None:
         return value
     if str(reco.get("market") or "") == "pitcher_props":
+        prop_key = str(reco.get("prop") or "").strip().lower()
+        cfg = _PITCHER_LADDER_PROPS.get(prop_key) if prop_key else None
+        if isinstance(sim_row, dict) and isinstance(cfg, dict):
+            mean_key = str(cfg.get("mean_key") or "").strip()
+            if mean_key:
+                value = _safe_float(sim_row.get(mean_key))
+                if value is not None:
+                    return value
+        if isinstance(cfg, dict):
+            mean_key = str(cfg.get("mean_key") or "").strip()
+            if mean_key:
+                value = _safe_float(reco.get(mean_key))
+                if value is not None:
+                    return value
         return _safe_float(reco.get("outs_mean"))
     return None
 
@@ -15101,6 +15115,7 @@ def _prop_lens_rows(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], si
     progress_fraction = float((_live_game_progress(snapshot, card).get("fraction") or 0.0))
     rows: List[Dict[str, Any]] = []
     actual_teams = ((snapshot or {}).get("teams") or {})
+    pitcher_models = _sim_prop_models(sim_context, "pitchers")
     for key, tier in (("pitcherProps", "official"), ("extraPitcherProps", "playable")):
         for reco in card.get("markets", {}).get(key) or []:
             if not isinstance(reco, dict):
@@ -15135,8 +15150,14 @@ def _prop_lens_rows(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], si
                 sim_row = _lookup_boxscore_row(row_set, owner_name)
                 if sim_row:
                     break
+            model_row = sim_row
+            if is_pitcher and side in {"away", "home"}:
+                model_entry = _live_pitcher_model_entry(pitcher_models, team_side=str(side), starter_name=owner_name)
+                candidate_model = model_entry.get("model") if isinstance(model_entry, dict) and isinstance(model_entry.get("model"), dict) else None
+                if isinstance(candidate_model, dict):
+                    model_row = candidate_model
             actual_value = _live_stat_value(actual_row, reco)
-            model_mean = _prop_model_mean_value(reco, sim_row)
+            model_mean = _prop_model_mean_value(reco, model_row)
             market_line = _safe_float(reco.get("market_line"))
             pitcher_profile = None
             if is_pitcher:
@@ -15153,7 +15174,7 @@ def _prop_lens_rows(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], si
                 progress_fraction=progress_fraction,
                 market_line=market_line,
                 actual_row=actual_row,
-                model_row=sim_row,
+                model_row=model_row,
                 pitcher_profile=pitcher_profile,
                 current_profile=current_profile,
                 bullpen_profiles=bullpen_profiles,
