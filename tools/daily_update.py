@@ -22,6 +22,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, get_type_hints
+from functools import lru_cache
 
 
 # On Windows, ensure ProcessPoolExecutor workers use this interpreter (venv).
@@ -85,13 +86,124 @@ from tools.eval.build_season_eval_manifest import build_manifest as build_season
 from tools.eval.build_season_eval_manifest import write_manifest_artifacts as write_season_eval_manifest_artifacts
 from tools.eval.settle_locked_policy_cards import _feed_is_final, _load_feed, _settle_card
 from tools.oddsapi.fetch_daily_oddsapi_markets import fetch_and_write_live_odds_for_date
-from tools.web.flask_frontend import (
-    _artifact_supplemented_season_betting_manifest_payload,
-    write_current_day_season_frontend_artifacts,
-    write_daily_ladder_audit_artifact,
-    write_daily_ladders_artifact,
-    write_daily_top_props_artifact,
-)
+try:
+    from tools.web.flask_frontend import (
+        _artifact_supplemented_season_betting_manifest_payload,
+        write_current_day_season_frontend_artifacts,
+        write_daily_ladder_audit_artifact,
+        write_daily_ladders_artifact,
+        write_daily_top_props_artifact,
+    )
+    _WEB_HELPERS_IMPORT_ERROR: Optional[ModuleNotFoundError] = None
+except ModuleNotFoundError as exc:
+    if str(getattr(exc, "name", "")) != "flask":
+        raise
+    _WEB_HELPERS_IMPORT_ERROR = exc
+
+
+def _jsonify_web_helper_value(value: Any) -> Any:
+    if isinstance(value, Path):
+        return {"__type__": "path", "value": str(value)}
+    if isinstance(value, dict):
+        return {str(key): _jsonify_web_helper_value(val) for key, val in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonify_web_helper_value(item) for item in value]
+    return value
+
+
+def _dejsonify_web_helper_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        if str(value.get("__type__") or "") == "path":
+            return Path(str(value.get("value") or ""))
+        return {str(key): _dejsonify_web_helper_value(val) for key, val in value.items()}
+    if isinstance(value, list):
+        return [_dejsonify_web_helper_value(item) for item in value]
+    return value
+
+
+@lru_cache(maxsize=1)
+def _web_helper_python_fallback() -> Optional[Path]:
+    current_python = Path(sys.executable).resolve()
+    candidate = (_ROOT_DIR / ".venv_x64" / "Scripts" / "python.exe").resolve()
+    if candidate.exists() and candidate != current_python:
+        return candidate
+    return None
+
+
+def _call_web_helper_via_subprocess(helper_name: str, *args: Any, **kwargs: Any) -> Any:
+    fallback_python = _web_helper_python_fallback()
+    if fallback_python is None:
+        raise RuntimeError(
+            "Flask-backed web helper imports are unavailable in this environment and no .venv_x64 fallback interpreter was found. "
+            "Install requirements into the active environment or run with .venv_x64."
+        ) from _WEB_HELPERS_IMPORT_ERROR
+    payload = {
+        "helper": str(helper_name),
+        "root": str(_ROOT_DIR),
+        "args": _jsonify_web_helper_value(list(args)),
+        "kwargs": _jsonify_web_helper_value(dict(kwargs)),
+    }
+    inline = (
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        "payload = json.loads(sys.argv[1])\n"
+        "root = str(payload.get('root') or '')\n"
+        "if root and root not in sys.path:\n"
+        "    sys.path.insert(0, root)\n"
+        "from tools.web import flask_frontend as frontend\n"
+        "def decode(value):\n"
+        "    if isinstance(value, dict):\n"
+        "        if str(value.get('__type__') or '') == 'path':\n"
+        "            return Path(str(value.get('value') or ''))\n"
+        "        return {str(k): decode(v) for k, v in value.items()}\n"
+        "    if isinstance(value, list):\n"
+        "        return [decode(item) for item in value]\n"
+        "    return value\n"
+        "def encode(value):\n"
+        "    if isinstance(value, Path):\n"
+        "        return {'__type__': 'path', 'value': str(value)}\n"
+        "    if isinstance(value, dict):\n"
+        "        return {str(k): encode(v) for k, v in value.items()}\n"
+        "    if isinstance(value, (list, tuple)):\n"
+        "        return [encode(item) for item in value]\n"
+        "    return value\n"
+        "helper = getattr(frontend, str(payload.get('helper') or ''))\n"
+        "result = helper(*decode(payload.get('args') or []), **decode(payload.get('kwargs') or {}))\n"
+        "print(json.dumps(encode(result)))\n"
+    )
+    completed = subprocess.run(
+        [str(fallback_python), "-c", inline, json.dumps(payload)],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=str(_ROOT_DIR),
+    )
+    if int(completed.returncode or 0) != 0:
+        stderr = str(completed.stderr or "").strip()
+        raise RuntimeError(
+            f"Web helper subprocess failed for {helper_name}: exit {completed.returncode}. {stderr}"
+        ) from _WEB_HELPERS_IMPORT_ERROR
+    stdout = str(completed.stdout or "").strip()
+    if not stdout:
+        return None
+    return _dejsonify_web_helper_value(json.loads(stdout))
+
+
+if _WEB_HELPERS_IMPORT_ERROR is not None:
+    def _artifact_supplemented_season_betting_manifest_payload(*args: Any, **kwargs: Any) -> Dict[str, Any]:
+        return dict(_call_web_helper_via_subprocess("_artifact_supplemented_season_betting_manifest_payload", *args, **kwargs) or {})
+
+    def write_current_day_season_frontend_artifacts(*args: Any, **kwargs: Any) -> Dict[str, Any]:
+        return dict(_call_web_helper_via_subprocess("write_current_day_season_frontend_artifacts", *args, **kwargs) or {})
+
+    def write_daily_ladder_audit_artifact(*args: Any, **kwargs: Any) -> Dict[str, Any]:
+        return dict(_call_web_helper_via_subprocess("write_daily_ladder_audit_artifact", *args, **kwargs) or {})
+
+    def write_daily_ladders_artifact(*args: Any, **kwargs: Any) -> Dict[str, Any]:
+        return dict(_call_web_helper_via_subprocess("write_daily_ladders_artifact", *args, **kwargs) or {})
+
+    def write_daily_top_props_artifact(*args: Any, **kwargs: Any) -> Dict[str, Any]:
+        return dict(_call_web_helper_via_subprocess("write_daily_top_props_artifact", *args, **kwargs) or {})
 
 
 # --- multiprocessing helpers (must be top-level for Windows spawn pickling) ---
