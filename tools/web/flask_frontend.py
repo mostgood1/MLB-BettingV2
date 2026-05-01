@@ -2956,6 +2956,33 @@ def _prefer_richer_hr_targets_file(primary: Optional[Path], challenger: Optional
     return _prefer_newer_file(primary, challenger)
 
 
+def _sync_hr_targets_artifact_to_data_root(preferred: Optional[Path], canonical: Optional[Path]) -> Optional[Path]:
+    if not isinstance(preferred, Path) or not preferred.exists() or not preferred.is_file():
+        return preferred
+    if not isinstance(canonical, Path):
+        return preferred
+    try:
+        if preferred.resolve() == canonical.resolve():
+            return preferred
+    except Exception:
+        if str(preferred) == str(canonical):
+            return preferred
+
+    selected = _prefer_richer_hr_targets_file(canonical, preferred)
+    if selected != preferred:
+        return preferred
+
+    preferred_doc = _load_json_file(preferred)
+    if not isinstance(preferred_doc, dict):
+        return preferred
+
+    try:
+        _write_json_file(canonical, preferred_doc)
+        return canonical
+    except Exception:
+        return preferred
+
+
 def _resolve_hr_targets_artifact(
     d: str,
     *,
@@ -2986,6 +3013,7 @@ def _resolve_hr_targets_artifact(
         hr_targets_path = _prefer_newer_file(hr_targets_path, tracked_hr_targets_path)
     hr_targets_path = _prefer_richer_hr_targets_file(hr_targets_path, canonical_hr_targets_path)
     hr_targets_path = _prefer_richer_hr_targets_file(hr_targets_path, tracked_hr_targets_path)
+    hr_targets_path = _sync_hr_targets_artifact_to_data_root(hr_targets_path, canonical_hr_targets_path)
     hr_targets = _load_json_file(hr_targets_path)
 
     hr_source_sim_dir: Optional[Path] = None
