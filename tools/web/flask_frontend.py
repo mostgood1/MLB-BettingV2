@@ -17109,6 +17109,13 @@ def _build_cards_api_payload(
     else:
         recos_by_game = {}
 
+    season = _season_from_date_str(d)
+    if season:
+        betting_payload = _season_betting_day_payload(int(season), str(d), "")
+        if betting_payload.get("found"):
+            betting_games = betting_payload.get("games") if isinstance(betting_payload.get("games"), dict) else {}
+            recos_by_game = _supplement_recos_by_game_with_betting_games(recos_by_game, betting_games)
+
     if isinstance(artifacts.get("game_summary"), dict):
         outputs_by_game = _game_outputs_by_game(artifacts.get("game_summary"))
     elif isinstance(archive.get("report"), dict):
