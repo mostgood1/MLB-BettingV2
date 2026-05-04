@@ -9954,6 +9954,87 @@ def write_current_day_season_frontend_artifacts(
     }
 
 
+def _purge_current_day_season_frontend_artifacts(
+    season: int,
+    date_str: str,
+    *,
+    betting_profile: str = "retuned",
+) -> Dict[str, Any]:
+    profile_slug = _season_frontend_profile_slug(betting_profile)
+    target_paths = [
+        daily_season_manifest_artifact_path(int(season), str(date_str)),
+        daily_season_day_artifact_path(int(season), str(date_str), profile=profile_slug),
+        daily_season_betting_day_artifact_path(int(season), str(date_str), profile=profile_slug),
+        daily_official_betting_card_day_artifact_path(int(season), str(date_str), profile=profile_slug),
+    ]
+
+    deleted: List[str] = []
+    missing: List[str] = []
+    for path in target_paths:
+        resolved = path.resolve()
+        rel = _relative_path_str(resolved) or str(resolved)
+        if resolved.exists() and resolved.is_file():
+            resolved.unlink(missing_ok=True)
+            deleted.append(rel)
+        else:
+            missing.append(rel)
+
+    return {
+        "season": int(season),
+        "date": str(date_str),
+        "profile": profile_slug,
+        "deleted": deleted,
+        "missing": missing,
+    }
+
+
+def _refresh_current_day_market_backed_artifacts(
+    date_str: str,
+    *,
+    season: Optional[int] = None,
+    betting_profile: str = "retuned",
+) -> Dict[str, Any]:
+    effective_date = str(date_str or "").strip() or _today_iso()
+    effective_season = int(season or _season_from_date_str(effective_date) or _local_today().year)
+    normalized_profile = str(betting_profile or "retuned").strip().lower() or "retuned"
+
+    republish: Optional[Dict[str, Any]] = None
+    republish_error: Optional[str] = None
+    batch_dir = _DATA_DIR / "eval" / "batches" / f"season_{int(effective_season)}_ui_daily_live"
+    season_dir = _DATA_DIR / "eval" / "seasons" / str(int(effective_season))
+    try:
+        republish = _publish_season_manifests(
+            season=int(effective_season),
+            batch_dir=batch_dir,
+            betting_profile=normalized_profile,
+            season_dir=season_dir,
+        )
+    except Exception as exc:
+        republish_error = f"{type(exc).__name__}: {exc}"
+
+    purged = _purge_current_day_season_frontend_artifacts(
+        int(effective_season),
+        effective_date,
+        betting_profile=normalized_profile,
+    )
+    frontend = write_current_day_season_frontend_artifacts(
+        int(effective_season),
+        effective_date,
+        betting_profile=normalized_profile,
+    )
+    _PAYLOAD_CACHE.clear()
+
+    return {
+        "season": int(effective_season),
+        "date": effective_date,
+        "profile": normalized_profile,
+        "republish": republish,
+        "republish_error": republish_error,
+        "purged_frontend": purged,
+        "frontend": frontend,
+    }
+
+
 def _settlement_player_key(value: Any) -> str:
     return str(value or "").strip().lower()
 
@@ -16350,8 +16431,18 @@ def api_cron_refresh_oddsapi_markets() -> Response:
         return auth_error
     d = str(request.args.get("date") or "").strip() or _today_iso()
     overwrite = str(request.args.get("overwrite") or "on").strip().lower() != "off"
+    republish = str(request.args.get("republish") or "on").strip().lower() != "off"
+    profile = str(request.args.get("profile") or "retuned").strip().lower() or "retuned"
+    season = _safe_int(request.args.get("season")) or _season_from_date_str(d) or _local_today().year
     try:
-        return jsonify(_refresh_oddsapi_markets(d, overwrite=overwrite))
+        payload = _refresh_oddsapi_markets(d, overwrite=overwrite)
+        if republish and str(d) == str(_today_iso()):
+            payload["currentDayArtifacts"] = _refresh_current_day_market_backed_artifacts(
+                d,
+                season=int(season),
+                betting_profile=profile,
+            )
+        return jsonify(payload)
     except Exception as exc:
         return jsonify({"ok": False, "date": d, "error": f"{type(exc).__name__}: {exc}"}), 500
 

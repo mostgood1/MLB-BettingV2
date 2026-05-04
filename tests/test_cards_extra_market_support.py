@@ -269,6 +269,34 @@ class CardsExtraMarketSupportTests(unittest.TestCase):
 
         self.assertNotEqual(before, after)
 
+    def test_refresh_current_day_market_backed_artifacts_republishes_and_rewrites_frontend(self) -> None:
+        republish_result = {"ok": True, "manifest": "updated"}
+        purge_result = {"deleted": ["data/daily/season_frontend/season_betting_day_2026_2026_05_04_retuned.json"]}
+        frontend_result = {"artifacts": {"season_betting_day": {"found": True}}}
+
+        with patch.object(flask_frontend, "_publish_season_manifests", return_value=republish_result) as publish_mock, patch.object(
+            flask_frontend,
+            "_purge_current_day_season_frontend_artifacts",
+            return_value=purge_result,
+        ) as purge_mock, patch.object(
+            flask_frontend,
+            "write_current_day_season_frontend_artifacts",
+            return_value=frontend_result,
+        ) as frontend_mock:
+            result = flask_frontend._refresh_current_day_market_backed_artifacts(
+                "2026-05-04",
+                season=2026,
+                betting_profile="retuned",
+            )
+
+        publish_mock.assert_called_once()
+        purge_mock.assert_called_once_with(2026, "2026-05-04", betting_profile="retuned")
+        frontend_mock.assert_called_once_with(2026, "2026-05-04", betting_profile="retuned")
+        self.assertEqual(result["republish"], republish_result)
+        self.assertIsNone(result["republish_error"])
+        self.assertEqual(result["purged_frontend"], purge_result)
+        self.assertEqual(result["frontend"], frontend_result)
+
 
 if __name__ == "__main__":
     unittest.main()
