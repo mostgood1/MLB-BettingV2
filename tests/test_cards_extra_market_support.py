@@ -8,6 +8,7 @@ from tools.web.flask_frontend import (
     _cards_payload_signature,
     _cards_list_from_sources,
     _payload_cache_get_or_build,
+    _season_betting_day_payload,
     _should_load_cards_archive_context,
     _supplement_recos_by_game_with_betting_games,
 )
@@ -173,6 +174,78 @@ class CardsExtraMarketSupportTests(unittest.TestCase):
             return_value=self._season_betting_path,
         ):
             self.assertTrue(_should_load_cards_archive_context("2026-05-04", artifacts))
+
+    def test_season_betting_day_payload_prefers_manifest_card_for_current_day(self) -> None:
+        legacy_card = {"markets": {}}
+        manifest_card = {
+            "markets": {
+                "hitter_props": {
+                    "recommendations": [
+                        {
+                            "game_pk": 824039,
+                            "player_name": "Sample Hitter",
+                            "odds": "+140",
+                        }
+                    ]
+                }
+            }
+        }
+        legacy_card_path = Path("data/daily/daily_summary_2026_05_04_locked_policy.json")
+        manifest_card_path = Path("data/eval/seasons/2026/season_betting_cards/2026-05-04.json")
+        settled_stub = {
+            "selected_counts": {"combined": 1},
+            "results": {},
+            "playable_results": {},
+            "all_results": {},
+            "_settled_rows": [],
+            "_playable_settled_rows": [],
+            "_all_settled_rows": [],
+            "unresolved_recommendations": [],
+            "playable_unresolved_recommendations": [],
+        }
+
+        with patch.object(
+            flask_frontend,
+            "_load_cards_artifacts",
+            return_value={
+                "locked_policy_path": legacy_card_path,
+                "locked_policy": legacy_card,
+                "settlement_path": None,
+                "settlement": None,
+                "embedded_settlement_summary": None,
+            },
+        ), patch.object(
+            flask_frontend,
+            "_load_season_betting_manifest",
+            return_value=(
+                "retuned",
+                Path("data/eval/seasons/2026/season_betting_cards_retuned_manifest.json"),
+                {"days": [{"date": "2026-05-04", "card_path": str(manifest_card_path)}]},
+                {"retuned": "x"},
+            ),
+        ), patch.object(
+            flask_frontend,
+            "_resolve_season_betting_day_payload_path",
+            return_value=None,
+        ), patch.object(
+            flask_frontend,
+            "_resolve_season_betting_day_card_path",
+            return_value=manifest_card_path,
+        ), patch.object(
+            flask_frontend,
+            "_load_json_file",
+            side_effect=lambda path: manifest_card if path == manifest_card_path else None,
+        ), patch.object(
+            flask_frontend,
+            "_pending_settlement_from_card",
+            return_value=settled_stub,
+        ):
+            payload = _season_betting_day_payload(2026, "2026-05-04", "")
+
+        self.assertTrue(payload["found"])
+        self.assertEqual(payload["card_source"], str(manifest_card_path).replace("\\", "/"))
+        self.assertIn(824039, payload["games"])
+        self.assertEqual(payload["source_kind"], "season_manifest")
 
     def test_cards_payload_signature_tracks_season_betting_day_artifact(self) -> None:
         artifacts = {

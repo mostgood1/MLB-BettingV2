@@ -10548,13 +10548,6 @@ def _season_betting_day_payload(season: int, date_str: str, requested_profile: s
         )
         return payload
 
-    if not _is_historical_date(str(date_str)) and canonical_card_path and isinstance(canonical_card_obj, dict):
-        return _finalize_from_card(
-            card_path=canonical_card_path,
-            card_obj=canonical_card_obj,
-            source_kind="canonical_daily",
-        )
-
     if not manifest_path or not isinstance(manifest, dict):
         if canonical_card_path and isinstance(canonical_card_obj, dict):
             return _finalize_from_card(
