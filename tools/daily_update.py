@@ -1547,6 +1547,15 @@ def _path_is_within_roots(path: str, roots: Tuple[str, ...]) -> bool:
     return False
 
 
+def _daily_update_rebase_conflict_is_auto_resolvable(path: str, owned_paths: set[str]) -> bool:
+    normalized_path = _normalize_git_path(path)
+    if not normalized_path:
+        return False
+    if normalized_path in owned_paths:
+        return True
+    return _path_is_within_roots(normalized_path, _UI_DAILY_MANAGED_GIT_ROOTS)
+
+
 def _resolve_skip_started_games(args: argparse.Namespace, raw_argv: List[str]) -> str:
     requested = str(getattr(args, "skip_started_games", "auto") or "auto").strip().lower()
     if requested in {"on", "off"}:
@@ -1663,7 +1672,9 @@ def _rebase_daily_update_commit(
         if not unmerged_paths:
             raise RuntimeError((rebase_result.stderr or rebase_result.stdout or "git rebase failed").strip())
 
-        unexpected_paths = [path for path in unmerged_paths if _normalize_git_path(path) not in owned_path_set]
+        unexpected_paths = [
+            path for path in unmerged_paths if not _daily_update_rebase_conflict_is_auto_resolvable(path, owned_path_set)
+        ]
         if unexpected_paths:
             raise RuntimeError(
                 "git rebase produced conflicts outside managed daily-update artifacts: "
