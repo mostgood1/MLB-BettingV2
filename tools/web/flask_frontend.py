@@ -8523,7 +8523,23 @@ def _should_load_cards_archive_context(date_str: str, artifacts: Optional[Dict[s
     if _is_historical_date(str(date_str or "")):
         return True
     artifact_map = artifacts if isinstance(artifacts, dict) else _load_cards_artifacts(str(date_str or ""))
-    return not bool(artifact_map.get("locked_policy") or artifact_map.get("game_summary"))
+    if not bool(artifact_map.get("locked_policy") or artifact_map.get("game_summary")):
+        return True
+
+    season = _season_from_date_str(str(date_str or ""))
+    if not season:
+        return False
+
+    _, betting_manifest_path, betting_manifest, _available_profiles = _load_season_betting_manifest(
+        int(season),
+        "",
+        allow_inline_refresh=False,
+    )
+    if not betting_manifest_path or not isinstance(betting_manifest, dict):
+        return False
+
+    card_path = _resolve_season_betting_day_card_path(betting_manifest, str(date_str or ""))
+    return bool(card_path and card_path.exists() and card_path.is_file())
 
 
 def _season_betting_manifest_candidates(season: int) -> Dict[str, List[Path]]:
@@ -17115,10 +17131,10 @@ def _build_cards_api_payload(
     archive = archive if isinstance(archive, dict) else (_load_cards_archive_context(d) if _should_load_cards_archive_context(d, artifacts) else {})
     game_line_index = game_line_index if isinstance(game_line_index, dict) else _load_game_line_market_index(d)
 
-    if isinstance(artifacts.get("locked_policy"), dict):
-        recos_by_game = _recommendations_by_game(artifacts.get("locked_policy"))
-    elif isinstance(archive.get("card"), dict):
+    if isinstance(archive.get("card"), dict):
         recos_by_game = _recommendations_by_game(archive.get("card"))
+    elif isinstance(artifacts.get("locked_policy"), dict):
+        recos_by_game = _recommendations_by_game(artifacts.get("locked_policy"))
     else:
         recos_by_game = {}
 

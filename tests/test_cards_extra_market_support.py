@@ -8,6 +8,7 @@ from tools.web.flask_frontend import (
     _cards_payload_signature,
     _cards_list_from_sources,
     _payload_cache_get_or_build,
+    _should_load_cards_archive_context,
     _supplement_recos_by_game_with_betting_games,
 )
 
@@ -156,6 +157,22 @@ class CardsExtraMarketSupportTests(unittest.TestCase):
         self.assertTrue(cards[0]["flags"]["hasHitterProps"])
         self.assertEqual(len(cards[0]["markets"]["extraPitcherProps"]), 1)
         self.assertEqual(len(cards[0]["markets"]["extraHitterProps"]), 1)
+
+    def test_current_day_cards_still_load_archive_context_when_season_card_exists(self) -> None:
+        artifacts = {"locked_policy": {"games": []}, "game_summary": {"games": []}}
+        self._season_betting_path.parent.mkdir(parents=True, exist_ok=True)
+        self._season_betting_path.write_text("{}", encoding="utf-8")
+
+        with patch.object(
+            flask_frontend,
+            "_load_season_betting_manifest",
+            return_value=("retuned", Path("data/eval/seasons/2026/season_betting_cards_retuned_manifest.json"), {"days": []}, {"retuned": "x"}),
+        ), patch.object(
+            flask_frontend,
+            "_resolve_season_betting_day_card_path",
+            return_value=self._season_betting_path,
+        ):
+            self.assertTrue(_should_load_cards_archive_context("2026-05-04", artifacts))
 
     def test_cards_payload_signature_tracks_season_betting_day_artifact(self) -> None:
         artifacts = {
