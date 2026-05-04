@@ -6939,6 +6939,57 @@ def _recommendations_by_game(locked_policy: Optional[Dict[str, Any]]) -> Dict[in
     return dict(grouped)
 
 
+def _reco_bucket_from_betting_markets(markets: Any) -> Dict[str, Any]:
+    market_map = markets if isinstance(markets, dict) else {}
+    return {
+        "totals": dict(market_map.get("totals") or {}) if isinstance(market_map.get("totals"), dict) else None,
+        "ml": dict(market_map.get("ml") or {}) if isinstance(market_map.get("ml"), dict) else None,
+        "pitcher_props": [dict(row) for row in (market_map.get("pitcherProps") or []) if isinstance(row, dict)],
+        "hitter_props": [dict(row) for row in (market_map.get("hitterProps") or []) if isinstance(row, dict)],
+        "extra_pitcher_props": [dict(row) for row in (market_map.get("extraPitcherProps") or []) if isinstance(row, dict)],
+        "extra_hitter_props": [dict(row) for row in (market_map.get("extraHitterProps") or []) if isinstance(row, dict)],
+    }
+
+
+def _supplement_recos_by_game_with_betting_games(
+    recos_by_game: Dict[int, Dict[str, Any]],
+    betting_games: Any,
+) -> Dict[int, Dict[str, Any]]:
+    merged: Dict[int, Dict[str, Any]] = {
+        int(game_pk): {
+            "totals": bucket.get("totals"),
+            "ml": bucket.get("ml"),
+            "pitcher_props": [dict(row) for row in (bucket.get("pitcher_props") or []) if isinstance(row, dict)],
+            "hitter_props": [dict(row) for row in (bucket.get("hitter_props") or []) if isinstance(row, dict)],
+            "extra_pitcher_props": [dict(row) for row in (bucket.get("extra_pitcher_props") or []) if isinstance(row, dict)],
+            "extra_hitter_props": [dict(row) for row in (bucket.get("extra_hitter_props") or []) if isinstance(row, dict)],
+        }
+        for game_pk, bucket in (recos_by_game or {}).items()
+        if _safe_int(game_pk) is not None and isinstance(bucket, dict)
+    }
+    if not isinstance(betting_games, dict):
+        return merged
+
+    for raw_game_pk, raw_game_betting in betting_games.items():
+        game_pk = _safe_int(raw_game_pk)
+        game_betting = raw_game_betting if isinstance(raw_game_betting, dict) else {}
+        markets = game_betting.get("markets") if isinstance(game_betting.get("markets"), dict) else {}
+        if not game_pk or int(game_pk) <= 0:
+            continue
+        supplemental = _reco_bucket_from_betting_markets(markets)
+        existing = merged.get(int(game_pk))
+        if not isinstance(existing, dict):
+            merged[int(game_pk)] = supplemental
+            continue
+        for key in ("totals", "ml"):
+            if existing.get(key) is None and supplemental.get(key) is not None:
+                existing[key] = supplemental.get(key)
+        for key in ("pitcher_props", "hitter_props", "extra_pitcher_props", "extra_hitter_props"):
+            if not existing.get(key) and supplemental.get(key):
+                existing[key] = supplemental.get(key)
+    return merged
+
+
 def _game_outputs_by_game(game_summary: Optional[Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
     if not isinstance(game_summary, dict):
         return {}
@@ -7382,15 +7433,17 @@ def _cards_list_from_sources(
                 card["first1BetSignal"] = first1_signal
             else:
                 card.pop("first1BetSignal", None)
+        has_pitcher_props = bool(card["markets"].get("pitcherProps") or card["markets"].get("extraPitcherProps"))
+        has_hitter_props = bool(card["markets"].get("hitterProps") or card["markets"].get("extraHitterProps"))
         card["flags"] = {
             "hasAnyRecommendations": bool(
                 card["markets"].get("totals")
                 or card["markets"].get("ml")
-                or card["markets"].get("pitcherProps")
-                or card["markets"].get("hitterProps")
+                or has_pitcher_props
+                or has_hitter_props
             ),
-            "hasPitcherProps": bool(card["markets"].get("pitcherProps")),
-            "hasHitterProps": bool(card["markets"].get("hitterProps")),
+            "hasPitcherProps": has_pitcher_props,
+            "hasHitterProps": has_hitter_props,
         }
     return cards
 
@@ -8196,20 +8249,7 @@ def _season_day_fallback_payload(season: int, date_str: str, betting_profile: st
         schedule_games = []
     recos_by_game = _recommendations_by_game(daily_artifacts.get("locked_policy") or {})
     if betting_payload.get("found"):
-        for raw_game_pk, raw_game_betting in betting_games.items():
-            game_pk = _safe_int(raw_game_pk)
-            game_betting = raw_game_betting if isinstance(raw_game_betting, dict) else {}
-            markets = game_betting.get("markets") if isinstance(game_betting.get("markets"), dict) else {}
-            if not game_pk or int(game_pk) <= 0 or int(game_pk) in recos_by_game:
-                continue
-            recos_by_game[int(game_pk)] = {
-                "totals": dict(markets.get("totals") or {}) if isinstance(markets.get("totals"), dict) else None,
-                "ml": dict(markets.get("ml") or {}) if isinstance(markets.get("ml"), dict) else None,
-                "pitcher_props": [dict(row) for row in (markets.get("pitcherProps") or []) if isinstance(row, dict)],
-                "hitter_props": [dict(row) for row in (markets.get("hitterProps") or []) if isinstance(row, dict)],
-                "extra_pitcher_props": [dict(row) for row in (markets.get("extraPitcherProps") or []) if isinstance(row, dict)],
-                "extra_hitter_props": [dict(row) for row in (markets.get("extraHitterProps") or []) if isinstance(row, dict)],
-            }
+        recos_by_game = _supplement_recos_by_game_with_betting_games(recos_by_game, betting_games)
     cards = _cards_list_from_sources(
         d=str(date_str),
         schedule_games=schedule_games,
@@ -14627,6 +14667,13 @@ def _load_live_lens_cards(
         recos_by_game = _recommendations_by_game(archive.get("card"))
     else:
         recos_by_game = {}
+
+    season = _season_from_date_str(d)
+    if season:
+        betting_payload = _season_betting_day_payload(int(season), str(d), "")
+        if betting_payload.get("found"):
+            betting_games = betting_payload.get("games") if isinstance(betting_payload.get("games"), dict) else {}
+            recos_by_game = _supplement_recos_by_game_with_betting_games(recos_by_game, betting_games)
 
     if isinstance(artifacts.get("game_summary"), dict):
         outputs_by_game = _game_outputs_by_game(artifacts.get("game_summary"))
