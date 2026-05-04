@@ -17069,6 +17069,15 @@ def _warm_cards_api_cache(d: str) -> Dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _cards_betting_payload_signature(d: str) -> Tuple[Any, ...]:
+    season = _season_from_date_str(d)
+    if not season:
+        return ()
+    frontend_dir = daily_season_frontend_dir()
+    pattern = f"season_betting_day_{int(season)}_{_date_slug(d)}_*.json"
+    return _dir_signature(frontend_dir, pattern)
+
+
 def _cards_payload_signature(d: str, artifacts: Dict[str, Any], archive: Dict[str, Any], game_line_index: Dict[str, Any]) -> Tuple[Any, ...]:
     return (
         str(d),
@@ -17084,6 +17093,7 @@ def _cards_payload_signature(d: str, artifacts: Dict[str, Any], archive: Dict[st
         _path_signature(archive.get("report_path") if isinstance(archive.get("report_path"), Path) else None),
         _path_signature(archive.get("card_path") if isinstance(archive.get("card_path"), Path) else None),
         _path_signature(game_line_index.get("path") if isinstance(game_line_index.get("path"), Path) else None),
+        _cards_betting_payload_signature(d),
     )
 
 

@@ -1,15 +1,28 @@
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from tools.web import flask_frontend
 from tools.web.flask_frontend import (
     _build_cards_api_payload,
+    _cards_payload_signature,
     _cards_list_from_sources,
     _supplement_recos_by_game_with_betting_games,
 )
 
 
 class CardsExtraMarketSupportTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._season_betting_path = Path("data/daily/season_frontend/season_betting_day_2026_2026_05_04_retuned.json")
+        self._season_betting_original = self._season_betting_path.read_text(encoding="utf-8") if self._season_betting_path.exists() else None
+
+    def tearDown(self) -> None:
+        if self._season_betting_original is None:
+            self._season_betting_path.unlink(missing_ok=True)
+            return
+        self._season_betting_path.parent.mkdir(parents=True, exist_ok=True)
+        self._season_betting_path.write_text(self._season_betting_original, encoding="utf-8")
+
     def test_supplement_recos_adds_missing_extra_markets_for_existing_game(self) -> None:
         recos_by_game = {
             824039: {
@@ -122,6 +135,28 @@ class CardsExtraMarketSupportTests(unittest.TestCase):
         self.assertTrue(cards[0]["flags"]["hasHitterProps"])
         self.assertEqual(len(cards[0]["markets"]["extraPitcherProps"]), 1)
         self.assertEqual(len(cards[0]["markets"]["extraHitterProps"]), 1)
+
+    def test_cards_payload_signature_tracks_season_betting_day_artifact(self) -> None:
+        artifacts = {
+            "profile_bundle_path": None,
+            "hr_targets_path": None,
+            "locked_policy_path": None,
+            "game_summary_path": None,
+            "daily_ladders_path": None,
+            "settlement_path": None,
+            "ops_report_path": None,
+            "lineups_path": None,
+            "sim_dir": None,
+        }
+        archive = {"report_path": None, "card_path": None}
+        game_line_index = {"path": None}
+
+        before = _cards_payload_signature("2026-05-04", artifacts, archive, game_line_index)
+        self._season_betting_path.parent.mkdir(parents=True, exist_ok=True)
+        self._season_betting_path.write_text('{"found": true, "games": {}}', encoding="utf-8")
+        after = _cards_payload_signature("2026-05-04", artifacts, archive, game_line_index)
+
+        self.assertNotEqual(before, after)
 
 
 if __name__ == "__main__":
