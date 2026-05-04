@@ -7,6 +7,7 @@ from tools.web.flask_frontend import (
     _build_cards_api_payload,
     _cards_payload_signature,
     _cards_list_from_sources,
+    _payload_cache_get_or_build,
     _supplement_recos_by_game_with_betting_games,
 )
 
@@ -17,11 +18,31 @@ class CardsExtraMarketSupportTests(unittest.TestCase):
         self._season_betting_original = self._season_betting_path.read_text(encoding="utf-8") if self._season_betting_path.exists() else None
 
     def tearDown(self) -> None:
+        flask_frontend._PAYLOAD_CACHE.clear()
         if self._season_betting_original is None:
             self._season_betting_path.unlink(missing_ok=True)
             return
         self._season_betting_path.parent.mkdir(parents=True, exist_ok=True)
         self._season_betting_path.write_text(self._season_betting_original, encoding="utf-8")
+
+    def test_payload_cache_rebuilds_when_signature_changes_within_ttl(self) -> None:
+        first = _payload_cache_get_or_build(
+            "cards_api_context",
+            "2026-05-04-test",
+            signature=("before",),
+            max_age_seconds=60.0,
+            builder=lambda: {"value": "before"},
+        )
+        second = _payload_cache_get_or_build(
+            "cards_api_context",
+            "2026-05-04-test",
+            signature=("after",),
+            max_age_seconds=60.0,
+            builder=lambda: {"value": "after"},
+        )
+
+        self.assertEqual(first["value"], "before")
+        self.assertEqual(second["value"], "after")
 
     def test_supplement_recos_adds_missing_extra_markets_for_existing_game(self) -> None:
         recos_by_game = {
