@@ -10022,6 +10022,7 @@ def _refresh_current_day_market_backed_artifacts(
         effective_date,
         betting_profile=normalized_profile,
     )
+    ladders = write_daily_ladders_artifact(effective_date)
     _PAYLOAD_CACHE.clear()
 
     return {
@@ -10032,6 +10033,7 @@ def _refresh_current_day_market_backed_artifacts(
         "republish_error": republish_error,
         "purged_frontend": purged,
         "frontend": frontend,
+        "daily_ladders": ladders,
     }
 
 

@@ -273,6 +273,7 @@ class CardsExtraMarketSupportTests(unittest.TestCase):
         republish_result = {"ok": True, "manifest": "updated"}
         purge_result = {"deleted": ["data/daily/season_frontend/season_betting_day_2026_2026_05_04_retuned.json"]}
         frontend_result = {"artifacts": {"season_betting_day": {"found": True}}}
+        ladders_result = {"generatedAt": "2026-05-04T12:00:00", "groups": {"pitcher": {}}}
 
         with patch.object(flask_frontend, "_publish_season_manifests", return_value=republish_result) as publish_mock, patch.object(
             flask_frontend,
@@ -282,7 +283,11 @@ class CardsExtraMarketSupportTests(unittest.TestCase):
             flask_frontend,
             "write_current_day_season_frontend_artifacts",
             return_value=frontend_result,
-        ) as frontend_mock:
+        ) as frontend_mock, patch.object(
+            flask_frontend,
+            "write_daily_ladders_artifact",
+            return_value=ladders_result,
+        ) as ladders_mock:
             result = flask_frontend._refresh_current_day_market_backed_artifacts(
                 "2026-05-04",
                 season=2026,
@@ -292,10 +297,12 @@ class CardsExtraMarketSupportTests(unittest.TestCase):
         publish_mock.assert_called_once()
         purge_mock.assert_called_once_with(2026, "2026-05-04", betting_profile="retuned")
         frontend_mock.assert_called_once_with(2026, "2026-05-04", betting_profile="retuned")
+        ladders_mock.assert_called_once_with("2026-05-04")
         self.assertEqual(result["republish"], republish_result)
         self.assertIsNone(result["republish_error"])
         self.assertEqual(result["purged_frontend"], purge_result)
         self.assertEqual(result["frontend"], frontend_result)
+        self.assertEqual(result["daily_ladders"], ladders_result)
 
 
 if __name__ == "__main__":
