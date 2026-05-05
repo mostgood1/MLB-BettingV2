@@ -13,6 +13,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import threading
 import unicodedata
 import urllib.error
 import urllib.parse
@@ -187,6 +188,60 @@ def _call_web_helper_via_subprocess(helper_name: str, *args: Any, **kwargs: Any)
     if not stdout:
         return None
     return _dejsonify_web_helper_value(json.loads(stdout))
+
+
+def _run_logged_subprocess(
+    cmd: List[str],
+    *,
+    cwd: Optional[Path] = None,
+) -> subprocess.CompletedProcess:
+    printable_cmd = " ".join(str(part) for part in cmd)
+    if cwd is not None:
+        print(f"[subprocess] Running in {cwd}: {printable_cmd}")
+    else:
+        print(f"[subprocess] Running: {printable_cmd}")
+
+    proc = subprocess.Popen(
+        [str(part) for part in cmd],
+        cwd=(str(cwd) if cwd is not None else None),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+
+    stdout_chunks: List[str] = []
+    stderr_chunks: List[str] = []
+
+    def _drain_stream(stream: Any, sink: Any, chunks: List[str]) -> None:
+        try:
+            for line in iter(stream.readline, ""):
+                chunks.append(line)
+                sink.write(line)
+                sink.flush()
+        finally:
+            try:
+                stream.close()
+            except Exception:
+                pass
+
+    threads = [
+        threading.Thread(target=_drain_stream, args=(proc.stdout, sys.stdout, stdout_chunks), daemon=True),
+        threading.Thread(target=_drain_stream, args=(proc.stderr, sys.stderr, stderr_chunks), daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+
+    returncode = int(proc.wait())
+    for thread in threads:
+        thread.join()
+
+    return subprocess.CompletedProcess(
+        [str(part) for part in cmd],
+        returncode,
+        stdout="".join(stdout_chunks),
+        stderr="".join(stderr_chunks),
+    )
 
 
 if _WEB_HELPERS_IMPORT_ERROR is not None:
@@ -1337,7 +1392,7 @@ def _refresh_live_pitcher_corrections_stage(args: argparse.Namespace, *, max_dat
             "artifact_path": _relative_path_str(Path(cmd[-1])),
         }
         try:
-            proc = subprocess.run(cmd, check=False, capture_output=True, text=True)
+            proc = _run_logged_subprocess(cmd, cwd=_ROOT_DIR)
             result["exit_code"] = int(proc.returncode)
             stdout_text = str(proc.stdout or "").strip()
             stderr_text = str(proc.stderr or "").strip()
@@ -1999,7 +2054,7 @@ def _publish_live_season_manifests(
     ]
     if normalized_profile == "retuned":
         cmd.extend(["--prefer-canonical-daily", "on"])
-    betting_run = subprocess.run(cmd, check=False, capture_output=True, text=True)
+    betting_run = _run_logged_subprocess(cmd, cwd=_ROOT_DIR)
 
     fallback_used = False
     fallback_error = ""
@@ -2276,6 +2331,26 @@ def _build_next_day_ui_daily_command(args: argparse.Namespace, raw_argv: List[st
             str(getattr(args, "seed_source", "default_fixed") or "default_fixed"),
         ])
     return cmd
+
+
+def _mark_ui_daily_prior_eval_failure_nonfatal(
+    *,
+    report: Dict[str, Any],
+    prior_eval_stage: Dict[str, Any],
+    prior_date: str,
+    reason: str,
+    season_batch_dir: Path,
+) -> Dict[str, Any]:
+    prior_eval_stage["status"] = "warning"
+    report["warnings"].append(
+        f"prior-day eval report refresh failed for {prior_date}: {reason}; continuing without season manifest publish"
+    )
+    return {
+        "status": "skipped",
+        "season": int(report.get("season") or 0),
+        "batch_dir": _relative_path_str(season_batch_dir),
+        "reason": "prior-day eval report refresh failed",
+    }
 
 
 def _validate_render_page_artifacts(
@@ -2768,16 +2843,18 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
                 prior_eval_stage["exit_code"] = int(eval_rc)
                 prior_eval_stage["report_exists"] = bool(prior_report_path.exists())
                 if eval_rc != 0 or not prior_report_path.exists():
-                    prior_eval_stage["status"] = "error"
-                    report["errors"].append(
-                        f"prior-day eval report refresh failed for {prior_date}"
+                    failure_reason = (
+                        f"exit {int(eval_rc)}"
+                        if int(eval_rc) != 0
+                        else "report not written"
                     )
-                    publish_stage = {
-                        "status": "skipped",
-                        "season": int(args.season),
-                        "batch_dir": _relative_path_str(season_batch_dir),
-                        "reason": "prior-day eval report refresh failed",
-                    }
+                    publish_stage = _mark_ui_daily_prior_eval_failure_nonfatal(
+                        report=report,
+                        prior_eval_stage=prior_eval_stage,
+                        prior_date=str(prior_date),
+                        reason=failure_reason,
+                        season_batch_dir=season_batch_dir,
+                    )
                 else:
                     print(f"[ui-daily] Publishing rolling season manifests for {args.season}...")
                     publish_stage = {
@@ -2803,15 +2880,14 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
                         publish_stage["error"] = f"{type(exc).__name__}: {exc}"
                         report["errors"].append(f"season manifest publish failed: {type(exc).__name__}: {exc}")
             except Exception as exc:
-                prior_eval_stage["status"] = "error"
                 prior_eval_stage["error"] = f"{type(exc).__name__}: {exc}"
-                report["errors"].append(f"prior-day eval report refresh failed: {type(exc).__name__}: {exc}")
-                publish_stage = {
-                    "status": "skipped",
-                    "season": int(args.season),
-                    "batch_dir": _relative_path_str(season_batch_dir),
-                    "reason": "prior-day eval report refresh failed",
-                }
+                publish_stage = _mark_ui_daily_prior_eval_failure_nonfatal(
+                    report=report,
+                    prior_eval_stage=prior_eval_stage,
+                    prior_date=str(prior_date),
+                    reason=f"{type(exc).__name__}: {exc}",
+                    season_batch_dir=season_batch_dir,
+                )
     else:
         prior_eval_stage = {
             "status": "skipped",

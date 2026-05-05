@@ -751,6 +751,10 @@ def main() -> int:
         except Exception as exc:
             failures.append({"game_pk": int(game_pk), "path": str(sim_path), "error": f"feed_live_load_failed: {type(exc).__name__}: {exc}"})
             continue
+        if not isinstance(feed, dict) or not feed:
+            skipped_games += 1
+            failures.append({"game_pk": int(game_pk), "path": str(sim_path), "error": "feed_live_missing"})
+            continue
         row = _build_game_row(
             sim_obj=sim_obj,
             feed=feed,
