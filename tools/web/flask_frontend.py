@@ -14417,9 +14417,6 @@ def _project_live_pitcher_value(
             if remaining_bf is not None and pace_ratio > 1.05:
                 remaining_bf = max(0.0, float(remaining_bf) / min(float(pace_ratio), 1.35))
 
-    if actual_bf is not None and float(actual_bf) >= 21.0 and remaining_bf is not None:
-        remaining_bf = min(float(remaining_bf), 3.5)
-
     if remaining_bf is None:
         return _project_live_value(actual_value, model_mean, progress_fraction)
 
@@ -14429,12 +14426,10 @@ def _project_live_pitcher_value(
         if usage_ratio >= 0.75:
             hook_factor *= max(0.35, 1.0 - ((usage_ratio - 0.75) * 1.45))
     if actual_bf is not None:
-        if float(actual_bf) >= 18.0:
-            hook_factor *= 0.92
         if float(actual_bf) >= 21.0:
-            hook_factor *= 0.78
+            hook_factor *= 0.95
         if float(actual_bf) >= 24.0:
-            hook_factor *= 0.72
+            hook_factor *= 0.88
 
     progress = _live_game_progress(snapshot)
     inning = _safe_int(progress.get("inning")) or 0
@@ -14472,7 +14467,7 @@ def _project_live_pitcher_value(
     if bullpen_availability:
         avg_avail = sum(bullpen_availability) / float(len(bullpen_availability))
         avg_lev = sum(bullpen_leverage) / float(len(bullpen_leverage)) if bullpen_leverage else 0.5
-        if avg_avail >= 0.92 and avg_lev >= 0.58 and inning >= 6:
+        if avg_avail >= 0.92 and avg_lev >= 0.58 and inning >= 7:
             hook_factor *= 0.9
         elif avg_avail <= 0.78:
             hook_factor *= 1.06
@@ -14488,7 +14483,7 @@ def _project_live_pitcher_value(
     per_bf_rate = float(mean) / float(max(model_bf, 1e-6))
     if prop_key in {"strikeouts", "hits_allowed", "walks_allowed"} and actual_bf is not None and float(actual_bf) >= 3.0:
         actual_k_rate = float(actual) / float(max(float(actual_bf), 1e-6))
-        weight = min(0.55, max(0.12, float(actual_bf) / 36.0))
+        weight = min(0.3, max(0.08, float(actual_bf) / 60.0))
         per_bf_rate = ((1.0 - weight) * float(per_bf_rate)) + (weight * float(actual_k_rate))
     projection = float(actual) + max(0.0, float(remaining_bf)) * float(per_bf_rate)
     starter_removed = bool(_starter_removed_from_snapshot(snapshot, team_side)) if team_side in {"away", "home"} else False

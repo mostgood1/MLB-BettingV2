@@ -4,13 +4,14 @@ from unittest.mock import patch
 
 from tools.web import flask_frontend
 from tools.web.flask_frontend import (
+    _attach_cards_starter_ladder_badges,
     _build_cards_api_payload,
     _cards_payload_signature,
     _cards_list_from_sources,
     _payload_cache_get_or_build,
+    _project_live_pitcher_value,
     _season_betting_day_payload,
     _should_load_cards_archive_context,
-    _attach_cards_starter_ladder_badges,
     _supplement_recos_by_game_with_betting_games,
 )
 
@@ -358,6 +359,31 @@ class CardsExtraMarketSupportTests(unittest.TestCase):
         self.assertEqual(home_probable["id"], 669302)
         self.assertEqual(home_probable["fullName"], "Logan Gilbert")
         self.assertGreaterEqual(len(home_probable.get("ladderBadges") or []), 1)
+
+    def test_project_live_pitcher_value_keeps_meaningful_remaining_runway_midgame(self) -> None:
+        projection = _project_live_pitcher_value(
+            prop="strikeouts",
+            team_side="away",
+            actual_value=4,
+            model_mean=6.5,
+            progress_fraction=0.48,
+            market_line=5.5,
+            actual_row={"BF": 21, "P": 76, "SO": 4, "OUTS": 15},
+            model_row={"batters_faced_mean": 26, "pitches_mean": 97},
+            pitcher_profile={"id": 1, "stamina_pitches": 98},
+            current_profile={"id": 1},
+            bullpen_profiles=[{"availability_mult": 0.95, "leverage_skill": 0.62}],
+            snapshot={
+                "current": {"inning": 6, "halfInning": "top", "count": {"outs": 0}},
+                "teams": {
+                    "away": {"totals": {"R": 2}},
+                    "home": {"totals": {"R": 1}},
+                },
+            },
+        )
+
+        self.assertIsNotNone(projection)
+        self.assertGreater(float(projection), 5.0)
 
 
 if __name__ == "__main__":
