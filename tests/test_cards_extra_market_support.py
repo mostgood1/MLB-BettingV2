@@ -11,6 +11,7 @@ from tools.web.flask_frontend import (
     _load_game_line_market_context,
     _load_hitter_ladder_market_context,
     _load_pitcher_ladder_market_context,
+    _prebuilt_pitcher_ladders_payload,
     _payload_cache_get_or_build,
     _project_live_pitcher_value,
     _season_betting_day_payload,
@@ -537,6 +538,61 @@ class CardsExtraMarketSupportTests(unittest.TestCase):
         event_ids = {str(row.get("event_id") or "") for row in (context.get("currentRows") or [])}
         self.assertEqual(event_ids, {"1", "2"})
         self.assertIn("2026_05_05", str(context.get("displaySource") or ""))
+
+    def test_prebuilt_pitcher_ladders_payload_backfills_stale_market_fields_from_live_context(self) -> None:
+        artifact_doc = {
+            "groups": {
+                "pitcher": {
+                    "strikeouts": {
+                        "rows": [
+                            {
+                                "gamePk": 824039,
+                                "pitcherId": 663999,
+                                "pitcherName": "José Soriano",
+                                "side": "home",
+                                "simCount": 1000,
+                                "marketLine": None,
+                                "marketLinesByStat": [],
+                                "ladder": [
+                                    {"total": 6, "exactCount": 207, "hitProb": 0.207},
+                                    {"total": 7, "exactCount": 120, "hitProb": 0.12},
+                                ],
+                            }
+                        ],
+                        "summary": {"games": 1},
+                    }
+                }
+            },
+            "generatedAt": "2026-05-04T23:59:00Z",
+        }
+        market_ctx = {
+            "currentMode": "live",
+            "displayLines": {
+                flask_frontend.normalize_pitcher_name("José Soriano"): {
+                    "strikeouts": {"line": 6.5, "over_odds": -110, "under_odds": -120},
+                    "outs": {"line": 17.5, "over_odds": -150, "under_odds": 105},
+                }
+            },
+            "currentLines": {
+                flask_frontend.normalize_pitcher_name("José Soriano"): {
+                    "strikeouts": {"line": 6.5, "over_odds": -110, "under_odds": -120},
+                    "outs": {"line": 17.5, "over_odds": -150, "under_odds": 105},
+                }
+            },
+            "pregameLines": {},
+        }
+
+        with (
+            patch.object(flask_frontend, "_load_daily_ladders_artifact", return_value=(Path("data/daily/ladders/daily_ladders_2026_05_04.json"), artifact_doc)),
+            patch.object(flask_frontend, "_load_pitcher_ladder_market_context", return_value=market_ctx),
+        ):
+            payload = _prebuilt_pitcher_ladders_payload("2026-05-04", "strikeouts", "edge", selected_game_value="824039")
+
+        self.assertIsInstance(payload, dict)
+        rows = payload.get("rows") or []
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].get("marketLine"), 6.5)
+        self.assertGreaterEqual(len(rows[0].get("marketLinesByStat") or []), 2)
 
 
 if __name__ == "__main__":

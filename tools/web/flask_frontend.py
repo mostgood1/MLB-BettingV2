@@ -6051,7 +6051,46 @@ def _prebuilt_pitcher_ladders_payload(
     if not isinstance(base_payload, dict):
         return None
 
-    rows_all = [dict(row) for row in (base_payload.get("rows") or []) if isinstance(row, dict)]
+    market_ctx = _load_pitcher_ladder_market_context(d)
+    current_mode = str(market_ctx.get("currentMode") or "")
+    current_lines = market_ctx.get("currentLines") if isinstance(market_ctx.get("currentLines"), dict) else {}
+    pregame_lines = market_ctx.get("pregameLines") if isinstance(market_ctx.get("pregameLines"), dict) else {}
+    display_lines = market_ctx.get("displayLines") if isinstance(market_ctx.get("displayLines"), dict) else {}
+
+    def _patch_row_market_fields(row: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(row, dict):
+            return row
+        pitcher_name = _first_text(row.get("pitcherName"))
+        if not pitcher_name:
+            return row
+        player_display_markets = _market_lines_for_name(display_lines, pitcher_name)
+        if not isinstance(player_display_markets, dict) or not player_display_markets:
+            return dict(row)
+        player_current_markets = _market_lines_for_name(current_lines, pitcher_name)
+        player_pregame_markets = _market_lines_for_name(pregame_lines, pitcher_name)
+        patched = dict(row)
+        patched["marketLinesByStat"] = _pitcher_market_lines_by_stat(
+            player_display_markets,
+            pregame_markets=player_pregame_markets,
+            live_markets=player_current_markets if current_mode == "live" else None,
+            current_mode=current_mode,
+        )
+        market_entry = _top_props_market_line_for_stat(patched.get("marketLinesByStat"), prop)
+        market_line = _safe_float(market_entry.get("line"))
+        if market_line is not None:
+            patched["marketLine"] = float(market_line)
+            ladder_rows = [entry for entry in (patched.get("ladder") or []) if isinstance(entry, dict)]
+            sim_count = int(_safe_int(patched.get("simCount")) or 0)
+            if ladder_rows and sim_count > 0:
+                over_line_count = int(sum(int(_safe_int(entry.get("exactCount")) or 0) for entry in ladder_rows if float(_safe_float(entry.get("total")) or 0.0) > float(market_line)))
+                patched["overLineCount"] = over_line_count
+                patched["overLineProb"] = float(over_line_count) / float(max(1, sim_count))
+        pregame_line = _safe_float((player_pregame_markets.get(prop) or {}).get("line")) if isinstance(player_pregame_markets, dict) else None
+        if pregame_line is not None:
+            patched["pregameMarketLine"] = float(pregame_line)
+        return patched
+
+    rows_all = [_patch_row_market_fields(dict(row)) for row in (base_payload.get("rows") or []) if isinstance(row, dict)]
     payload = copy.deepcopy(base_payload)
     payload["date"] = str(d)
     payload["prop"] = prop
