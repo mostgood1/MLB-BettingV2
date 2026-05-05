@@ -10,6 +10,7 @@ from tools.web.flask_frontend import (
     _payload_cache_get_or_build,
     _season_betting_day_payload,
     _should_load_cards_archive_context,
+    _attach_cards_starter_ladder_badges,
     _supplement_recos_by_game_with_betting_games,
 )
 
@@ -303,6 +304,60 @@ class CardsExtraMarketSupportTests(unittest.TestCase):
         self.assertEqual(result["purged_frontend"], purge_result)
         self.assertEqual(result["frontend"], frontend_result)
         self.assertEqual(result["daily_ladders"], ladders_result)
+
+    def test_attach_cards_starter_ladder_badges_can_seed_missing_probables_from_ladders(self) -> None:
+        cards = [
+            {
+                "gamePk": 823143,
+                "probable": {"away": None, "home": None},
+            }
+        ]
+        daily_ladders = {
+            "groups": {
+                "pitcher": {
+                    "strikeouts": {
+                        "rows": [
+                            {
+                                "gamePk": 823143,
+                                "side": "home",
+                                "pitcherId": 669302,
+                                "pitcherName": "Logan Gilbert",
+                                "marketLine": 6.5,
+                                "overLineProb": 0.345,
+                                "ladder": [
+                                    {"total": 7, "hitProb": 0.32},
+                                    {"total": 8, "hitProb": 0.21},
+                                ],
+                            }
+                        ]
+                    },
+                    "outs": {
+                        "rows": [
+                            {
+                                "gamePk": 823143,
+                                "side": "home",
+                                "pitcherId": 669302,
+                                "pitcherName": "Logan Gilbert",
+                                "marketLine": 17.5,
+                                "overLineProb": 0.51,
+                                "ladder": [
+                                    {"total": 18, "hitProb": 0.51},
+                                    {"total": 21, "hitProb": 0.23},
+                                ],
+                            }
+                        ]
+                    },
+                }
+            }
+        }
+
+        _attach_cards_starter_ladder_badges(cards, daily_ladders)
+
+        home_probable = cards[0]["probable"]["home"]
+        self.assertIsInstance(home_probable, dict)
+        self.assertEqual(home_probable["id"], 669302)
+        self.assertEqual(home_probable["fullName"], "Logan Gilbert")
+        self.assertGreaterEqual(len(home_probable.get("ladderBadges") or []), 1)
 
 
 if __name__ == "__main__":

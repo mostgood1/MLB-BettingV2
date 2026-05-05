@@ -17831,6 +17831,36 @@ def _starter_ladder_badges_for_pitcher(
     return badges
 
 
+def _starter_ladder_entry_from_groups(
+    game_groups: Optional[Dict[str, Any]],
+    *,
+    game_pk: Optional[int],
+    side: str,
+) -> Optional[Dict[str, Any]]:
+    if not isinstance(game_groups, dict) or game_pk is None or int(game_pk) <= 0:
+        return None
+    if str(side or "").strip().lower() not in {"away", "home"}:
+        return None
+
+    for group in game_groups.values():
+        rows = (group or {}).get("rows") if isinstance(group, dict) else None
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            row_game_pk = _safe_int(row.get("gamePk"))
+            row_side = str(row.get("side") or "").strip().lower()
+            if row_game_pk is None or int(row_game_pk) != int(game_pk) or row_side != str(side):
+                continue
+            pitcher_name = _first_text(row.get("pitcherName"))
+            pitcher_id = _safe_int(row.get("pitcherId"))
+            if not pitcher_name and pitcher_id is None:
+                continue
+            return _normalized_probable_entry({"id": pitcher_id, "fullName": pitcher_name})
+    return None
+
+
 def daily_ladder_audit_artifact_path(d: str, *, data_root: Optional[Path] = None) -> Path:
     root = data_root.resolve() if isinstance(data_root, Path) else _DATA_DIR
     return root / "daily" / "ladders" / f"daily_ladder_audit_{_date_slug(d)}.json"
@@ -17971,7 +18001,14 @@ def _attach_cards_starter_ladder_badges(cards: Any, daily_ladders: Any) -> None:
         for side in ("away", "home"):
             entry = probable.get(side)
             if not isinstance(entry, dict):
-                continue
+                entry = _starter_ladder_entry_from_groups(
+                    pitcher_groups,
+                    game_pk=int(game_pk),
+                    side=side,
+                )
+                if not isinstance(entry, dict):
+                    continue
+                probable[side] = entry
             starter_name = _first_text(entry.get("fullName"), entry.get("name"))
             starter_id = _safe_int(entry.get("id"))
             badges = _starter_ladder_badges_for_pitcher(
