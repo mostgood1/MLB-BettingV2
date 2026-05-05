@@ -489,6 +489,36 @@ class CardsExtraMarketSupportTests(unittest.TestCase):
         self.assertIsNotNone(projection)
         self.assertGreater(float(projection), 12.0)
 
+    def test_api_cron_refresh_oddsapi_markets_serializes_nested_paths(self) -> None:
+        with (
+            flask_frontend.app.test_client() as client,
+            patch.object(flask_frontend, "_require_cron_auth", return_value=None),
+            patch.object(flask_frontend, "_today_iso", return_value="2026-05-05"),
+            patch.object(
+                flask_frontend,
+                "_refresh_oddsapi_markets",
+                return_value={
+                    "ok": True,
+                    "result": {"snapshot_dir": Path("data/daily/snapshots/2026-05-05")},
+                },
+            ),
+            patch.object(
+                flask_frontend,
+                "_refresh_current_day_market_backed_artifacts",
+                return_value={
+                    "frontend": {"path": Path("data/daily/season_frontend/example.json")},
+                    "daily_ladders": {"path": Path("data/daily/ladders/daily_ladders_2026_05_05.json")},
+                },
+            ),
+        ):
+            response = client.get("/api/cron/refresh-oddsapi-markets?date=2026-05-05")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["result"]["snapshot_dir"], "data/daily/snapshots/2026-05-05")
+        self.assertEqual(payload["currentDayArtifacts"]["frontend"]["path"], "data/daily/season_frontend/example.json")
+        self.assertEqual(payload["currentDayArtifacts"]["daily_ladders"]["path"], "data/daily/ladders/daily_ladders_2026_05_05.json")
+
     def test_pitcher_ladder_market_context_merges_next_day_live_rollover_lines(self) -> None:
         current_path = Path("data/market/oddsapi/oddsapi_pitcher_props_2026_05_04.json")
         rollover_path = Path("data/market/oddsapi/oddsapi_pitcher_props_2026_05_05.json")

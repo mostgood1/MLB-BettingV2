@@ -2262,6 +2262,18 @@ def _relative_path_str(path: Optional[Path]) -> Optional[str]:
         return str(path).replace("\\", "/")
 
 
+def _json_safe_value(value: Any) -> Any:
+    if isinstance(value, Path):
+        return _relative_path_str(value) or str(value)
+    if isinstance(value, dict):
+        return {key: _json_safe_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_safe_value(item) for item in value]
+    return value
+
+
 def _detect_app_build_info() -> Dict[str, Any]:
     commit = (
         str(
@@ -16593,7 +16605,7 @@ def api_cron_refresh_oddsapi_markets() -> Response:
                 season=int(season),
                 betting_profile=profile,
             )
-        return jsonify(payload)
+        return jsonify(_json_safe_value(payload))
     except Exception as exc:
         return jsonify({"ok": False, "date": d, "error": f"{type(exc).__name__}: {exc}"}), 500
 
