@@ -1241,6 +1241,15 @@ def _infer_render_base_url() -> str:
     return ""
 
 
+def _normalize_render_base_url(value: str) -> str:
+    base_url = str(value or "").strip()
+    if not base_url:
+        return ""
+    if "://" not in base_url:
+        return f"https://{base_url}"
+    return base_url
+
+
 def _prior_day_live_lens_stage(args: argparse.Namespace, date_str: str) -> Dict[str, Any]:
     slug = str(date_str).strip().replace("-", "_")
     default_sync_path = (_DATA_DIR / "live_lens" / "render_sync" / f"live_lens_reports_{slug}.json").resolve()
@@ -1260,7 +1269,9 @@ def _prior_day_live_lens_stage(args: argparse.Namespace, date_str: str) -> Dict[
 
     payload: Dict[str, Any] = {}
     if stage["sync_requested"]:
-        base_url = str(getattr(args, "live_lens_base_url", "") or "").strip() or _infer_render_base_url()
+        base_url = _normalize_render_base_url(
+            str(getattr(args, "live_lens_base_url", "") or "").strip() or _infer_render_base_url()
+        )
         token = str(getattr(args, "live_lens_cron_token", "") or "").strip() or _env_first(
             "MLB_BETTING_CRON_TOKEN",
             "MLB_CRON_TOKEN",
@@ -1287,8 +1298,13 @@ def _prior_day_live_lens_stage(args: argparse.Namespace, date_str: str) -> Dict[
                 stage["status"] = "warning"
                 stage["error"] = f"{type(exc).__name__}: {exc}"
         else:
-            stage["status"] = "warning"
-            stage["error"] = "live-lens sync requested but Render base URL or cron token is unavailable"
+            stage["status"] = "skipped"
+            stage["reason"] = "live-lens sync requested but Render base URL or cron token is unavailable"
+            stage["missing_credentials"] = [
+                name
+                for name, present in (("live_lens_base_url", bool(base_url)), ("live_lens_cron_token", bool(token)))
+                if not present
+            ]
     else:
         stage["reason"] = "sync_live_lens=off"
 
@@ -1323,7 +1339,7 @@ def _prior_day_live_lens_stage(args: argparse.Namespace, date_str: str) -> Dict[
             registry_summary=registry_summary,
             source=source_label,
         )
-    elif str(stage.get("status") or "") == "skipped":
+    elif str(stage.get("status") or "") == "skipped" and not stage.get("reason"):
         stage["reason"] = "no prior-day live-lens report or registry data found"
 
     return stage
@@ -1339,7 +1355,9 @@ def _refresh_live_pitcher_corrections_stage(args: argparse.Namespace, *, max_dat
         stage["reason"] = "refresh_live_pitcher_corrections=off"
         return stage
 
-    base_url = str(getattr(args, "live_lens_base_url", "") or "").strip() or _infer_render_base_url()
+    base_url = _normalize_render_base_url(
+        str(getattr(args, "live_lens_base_url", "") or "").strip() or _infer_render_base_url()
+    )
     token = str(getattr(args, "live_lens_cron_token", "") or "").strip() or _env_first(
         "MLB_BETTING_CRON_TOKEN",
         "MLB_CRON_TOKEN",
@@ -1381,8 +1399,13 @@ def _refresh_live_pitcher_corrections_stage(args: argparse.Namespace, *, max_dat
             cmd.extend(["--render-cron-token", str(token)])
 
     if not base_url or not token:
-        stage["status"] = "warning"
+        stage["status"] = "skipped"
         stage["reason"] = "live pitcher correction refresh requested but Render base URL or cron token is unavailable"
+        stage["missing_credentials"] = [
+            name
+            for name, present in (("live_lens_base_url", bool(base_url)), ("live_lens_cron_token", bool(token)))
+            if not present
+        ]
         return stage
 
     artifact_errors: List[str] = []
@@ -1423,6 +1446,15 @@ def _refresh_live_pitcher_corrections_stage(args: argparse.Namespace, *, max_dat
 
 
 def _remove_path_if_exists(path: Path) -> Tuple[bool, Optional[str]]:
+    def _has_remaining_files(tree_path: Path) -> bool:
+        try:
+            for candidate in tree_path.rglob("*"):
+                if candidate.is_file() or candidate.is_symlink():
+                    return True
+        except Exception:
+            return True
+        return False
+
     def _force_unlink(file_path: Path) -> None:
         try:
             file_path.unlink()
@@ -1448,6 +1480,13 @@ def _remove_path_if_exists(path: Path) -> Tuple[bool, Optional[str]]:
             except FileNotFoundError:
                 continue
             except Exception as exc:
+                if isinstance(exc, PermissionError) and child.is_dir() and not child.is_symlink():
+                    try:
+                        if not any(child.iterdir()):
+                            removed_any = True
+                            continue
+                    except Exception:
+                        pass
                 warnings.append(f"{_relative_path_str(child)} -> {type(exc).__name__}: {exc}")
         try:
             path.rmdir()
@@ -1456,9 +1495,11 @@ def _remove_path_if_exists(path: Path) -> Tuple[bool, Optional[str]]:
             removed_any = True
         except OSError:
             if any(path.iterdir()):
+                if not _has_remaining_files(path):
+                    removed_any = True
+                    return removed_any, ("; ".join(warnings) if warnings else None)
                 warnings.append(f"{_relative_path_str(path)} still contains locked entries after cleanup")
             else:
-                warnings.append(f"{_relative_path_str(path)} was emptied but Windows kept the root directory in place")
                 removed_any = True
         return removed_any, ("; ".join(warnings) if warnings else None)
     except FileNotFoundError:
@@ -2578,6 +2619,7 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
             "season_official_betting_day_artifact_path": _relative_path_str(game_out / "season_frontend" / f"season_official_betting_day_{int(args.season)}_{token}_{str(getattr(args, 'season_betting_profile', 'retuned') or 'retuned').strip().lower()}.json"),
         },
         "stages": {},
+        "notes": [],
         "warnings": [],
         "errors": [],
     }
@@ -3121,7 +3163,7 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
                         sparse_support_n = int(explanation_diagnostics.get("sparse_support_n") or 0)
                         selected_rows_n = int(explanation_diagnostics.get("selected_rows_n") or 0)
                         if sparse_support_n > 0:
-                            report["warnings"].append(
+                            report["notes"].append(
                                 f"official locked card has {sparse_support_n} sparse-support selected recommendation(s) out of {selected_rows_n}"
                             )
                     selected_policy = (audit_track or {}).get("selected_support_policy") if isinstance(audit_track, dict) else None
@@ -3130,18 +3172,18 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
                         replacement_n = int(selected_policy.get("replacement_added_n") or 0)
                         shortfall_n = int(selected_policy.get("selection_shortfall_n") or 0)
                         if removed_n > 0:
-                            report["warnings"].append(
+                            report["notes"].append(
                                 f"official locked card removed {removed_n} sparse-support selected recommendation(s) before publish and added {replacement_n} replacement(s)"
                             )
                         if shortfall_n > 0:
-                            report["warnings"].append(
+                            report["notes"].append(
                                 f"official locked card still has {shortfall_n} unfilled slot(s) because no support-qualified replacement was available"
                             )
                     playable_policy = (audit_track or {}).get("playable_support_policy") if isinstance(audit_track, dict) else None
                     if isinstance(playable_policy, dict):
                         removed_n = int(playable_policy.get("removed_sparse_support_n") or 0)
                         if removed_n > 0:
-                            report["warnings"].append(
+                            report["notes"].append(
                                 f"official locked card removed {removed_n} sparse-support playable candidate(s)"
                             )
     except Exception as exc:
@@ -3158,7 +3200,7 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
             + str(hr_target_history_stage.get("error") or "unknown")
         )
     elif int(hr_target_history_stage.get("dates_changed") or 0) > 0:
-        report["warnings"].append(
+        report["notes"].append(
             f"hr-target historical reconciliation updated {int(hr_target_history_stage.get('dates_changed') or 0)} date artifact(s)"
         )
 
@@ -3378,7 +3420,7 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
     report["stages"]["current_day_probable_pitchers"] = current_inputs["probable_pitchers"]
     lineup_stage = current_inputs["batting_lineups"]
     if int(lineup_stage.get("adjusted_teams") or 0) > 0:
-        report["warnings"].append(
+        report["notes"].append(
             f"current-day lineup validation adjusted projected lineups for {int(lineup_stage.get('adjusted_teams') or 0)} team(s)"
         )
     if int(lineup_stage.get("partial_teams") or 0) > 0:
