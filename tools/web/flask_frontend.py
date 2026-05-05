@@ -3229,6 +3229,55 @@ def _extract_game_line_rows(doc: Any) -> List[Dict[str, Any]]:
     return [row for row in rows if isinstance(row, dict)]
 
 
+def _merge_game_line_rows(base_rows: List[Dict[str, Any]], override_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    merged_by_key: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    ordered_keys: List[Tuple[str, str]] = []
+
+    def _row_key(row: Dict[str, Any]) -> Tuple[str, str]:
+        event_id = str(row.get("event_id") or "").strip()
+        if event_id:
+            return ("event", event_id)
+        away_key = _normalize_team_key(row.get("away_team"))
+        home_key = _normalize_team_key(row.get("home_team"))
+        return ("matchup", f"{away_key}|{home_key}")
+
+    for source in (base_rows, override_rows):
+        if not isinstance(source, list):
+            continue
+        for row in source:
+            if not isinstance(row, dict):
+                continue
+            key = _row_key(row)
+            if key not in merged_by_key:
+                ordered_keys.append(key)
+            merged_by_key[key] = dict(row)
+    return [merged_by_key[key] for key in ordered_keys]
+
+
+def _load_rollover_live_oddsapi_doc(
+    d: str,
+    *,
+    prefix: str,
+    current_path: Optional[Path],
+    current_mode: str,
+    effective_mode: str,
+) -> Tuple[Optional[Path], Optional[Dict[str, Any]]]:
+    if current_mode != "live" or effective_mode != "live" or not _is_current_local_date(d):
+        return None, None
+    try:
+        rollover_date = (datetime.strptime(str(d), "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+    except Exception:
+        return None, None
+    rollover_path = _resolve_oddsapi_market_file(rollover_date, prefix)
+    if not rollover_path or str(rollover_path) == str(current_path):
+        return None, None
+    rollover_doc = _load_json_file(rollover_path)
+    rollover_mode = str((rollover_doc or {}).get("mode") or "").strip().lower()
+    if rollover_mode != "live":
+        return rollover_path, None
+    return rollover_path, rollover_doc if isinstance(rollover_doc, dict) else None
+
+
 def _load_game_line_market_context(d: str) -> Dict[str, Any]:
     current_path = _resolve_oddsapi_market_file(d, "oddsapi_game_lines")
     current_doc = _load_json_file(current_path)
@@ -3254,17 +3303,38 @@ def _load_game_line_market_context(d: str) -> Dict[str, Any]:
     if current_mode == "live" and bool(schedule_counts.get("known")) and int(schedule_counts.get("live") or 0) <= 0:
         effective_mode = "pregame"
 
+    rollover_path, rollover_doc = _load_rollover_live_oddsapi_doc(
+        d,
+        prefix="oddsapi_game_lines",
+        current_path=current_path,
+        current_mode=current_mode,
+        effective_mode=effective_mode,
+    )
+    rollover_rows = _extract_game_line_rows(rollover_doc)
+    if rollover_rows:
+        current_rows = _merge_game_line_rows(current_rows, rollover_rows)
+
     use_pregame = bool(pregame_rows) and (effective_mode != "live" or not current_rows)
     display_doc = pregame_doc if use_pregame else current_doc
     display_path = pregame_path if use_pregame else current_path
     display_rows = pregame_rows if use_pregame else current_rows
-    display_source = pregame_source if use_pregame else _relative_path_str(current_path)
+    if use_pregame:
+        display_source = pregame_source
+    else:
+        display_source = " + ".join(
+            part
+            for part in (_relative_path_str(current_path), _relative_path_str(rollover_path) if rollover_rows else None)
+            if str(part or "").strip()
+        )
 
     return {
         "currentPath": current_path,
         "currentDoc": current_doc,
         "currentMode": current_mode,
         "currentRows": current_rows,
+        "rolloverPath": rollover_path,
+        "rolloverDoc": rollover_doc,
+        "rolloverRows": rollover_rows,
         "effectiveMode": effective_mode,
         "displayDoc": display_doc,
         "displayPath": display_path,
@@ -4041,21 +4111,14 @@ def _load_pitcher_ladder_market_context(d: str) -> Dict[str, Any]:
     if current_mode == "live" and bool(schedule_counts.get("known")) and int(schedule_counts.get("live") or 0) <= 0:
         effective_mode = "pregame"
 
-    rollover_path = None
-    rollover_doc = None
-    rollover_lines: Dict[str, Dict[str, Any]] = {}
-    if current_mode == "live" and effective_mode == "live" and _is_current_local_date(d):
-        try:
-            rollover_date = (datetime.strptime(str(d), "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
-        except Exception:
-            rollover_date = ""
-        if rollover_date:
-            rollover_path = _resolve_oddsapi_market_file(rollover_date, "oddsapi_pitcher_props")
-            if rollover_path and str(rollover_path) != str(current_path):
-                rollover_doc = _load_json_file(rollover_path)
-                rollover_mode = str((rollover_doc or {}).get("mode") or "").strip().lower()
-                if rollover_mode == "live":
-                    rollover_lines = _extract_pitcher_prop_market_lines(rollover_doc)
+    rollover_path, rollover_doc = _load_rollover_live_oddsapi_doc(
+        d,
+        prefix="oddsapi_pitcher_props",
+        current_path=current_path,
+        current_mode=current_mode,
+        effective_mode=effective_mode,
+    )
+    rollover_lines: Dict[str, Dict[str, Any]] = _extract_pitcher_prop_market_lines(rollover_doc)
     if rollover_lines:
         current_lines = _merge_market_line_maps(current_lines, rollover_lines)
 
@@ -4128,9 +4191,26 @@ def _load_hitter_ladder_market_context(d: str) -> Dict[str, Any]:
     schedule_counts = _schedule_status_counts(d) if current_mode == "live" else {"known": False, "live": 0}
     if current_mode == "live" and bool(schedule_counts.get("known")) and int(schedule_counts.get("live") or 0) <= 0:
         effective_mode = "pregame"
+    rollover_path, rollover_doc = _load_rollover_live_oddsapi_doc(
+        d,
+        prefix="oddsapi_hitter_props",
+        current_path=current_path,
+        current_mode=current_mode,
+        effective_mode=effective_mode,
+    )
+    rollover_lines = _extract_hitter_prop_market_lines(rollover_doc) if isinstance(rollover_doc, dict) else {}
+    if rollover_lines:
+        current_lines = _merge_market_line_maps(current_lines, rollover_lines)
     use_pregame = bool(pregame_lines) and (effective_mode != "live" or not current_lines)
     display_lines = pregame_lines if use_pregame else current_lines
-    display_source = pregame_source if use_pregame else _relative_path_str(current_path)
+    if use_pregame:
+        display_source = pregame_source
+    else:
+        display_source = " + ".join(
+            part
+            for part in (_relative_path_str(current_path), _relative_path_str(rollover_path) if rollover_lines else None)
+            if str(part or "").strip()
+        )
     display_doc = pregame_doc if use_pregame else current_doc
     display_path = pregame_path if use_pregame else current_path
 
@@ -4140,6 +4220,9 @@ def _load_hitter_ladder_market_context(d: str) -> Dict[str, Any]:
         "currentMode": current_mode,
         "effectiveMode": effective_mode,
         "currentLines": current_lines,
+        "rolloverPath": rollover_path,
+        "rolloverDoc": rollover_doc,
+        "rolloverLines": rollover_lines,
         "displayLines": display_lines,
         "displayDoc": display_doc,
         "displayPath": display_path,
