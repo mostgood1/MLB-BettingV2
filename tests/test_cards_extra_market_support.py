@@ -450,6 +450,45 @@ class CardsExtraMarketSupportTests(unittest.TestCase):
         self.assertIsNotNone(projection)
         self.assertGreater(float(projection), 5.0)
 
+    def test_project_live_pitcher_outs_skips_correction_too_early(self) -> None:
+        correction_artifact = {
+            "feature_names": ["line_gap", "model_gap", "actual_so_far", "inning", "game_outs", "progress_fraction", "game_state_parsed_flag"],
+            "model": {
+                "intercept": -8.0,
+                "weights": {},
+                "feature_centers": {},
+                "feature_scales": {},
+            },
+        }
+
+        with (
+            patch.object(flask_frontend, "_is_live_pitcher_outs_correction_enabled", return_value=True),
+            patch.object(flask_frontend, "_load_live_pitcher_outs_correction_artifact", return_value=correction_artifact),
+        ):
+            projection = _project_live_pitcher_value(
+                prop="outs",
+                team_side="home",
+                actual_value=2,
+                model_mean=15.351,
+                progress_fraction=2.0 / 54.0,
+                market_line=16.5,
+                actual_row={"BF": 4, "P": 16, "OUTS": 2},
+                model_row={"batters_faced_mean": 24.0, "pitches_mean": 92.0},
+                pitcher_profile={"id": 1, "stamina_pitches": 95},
+                current_profile={"id": 1},
+                bullpen_profiles=[{"availability_mult": 0.95, "leverage_skill": 0.62}],
+                snapshot={
+                    "current": {"inning": 1, "halfInning": "top", "count": {"outs": 2}},
+                    "teams": {
+                        "away": {"totals": {"R": 0}},
+                        "home": {"totals": {"R": 0}},
+                    },
+                },
+            )
+
+        self.assertIsNotNone(projection)
+        self.assertGreater(float(projection), 12.0)
+
     def test_pitcher_ladder_market_context_merges_next_day_live_rollover_lines(self) -> None:
         current_path = Path("data/market/oddsapi/oddsapi_pitcher_props_2026_05_04.json")
         rollover_path = Path("data/market/oddsapi/oddsapi_pitcher_props_2026_05_05.json")

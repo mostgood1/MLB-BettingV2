@@ -14337,8 +14337,12 @@ def _apply_live_pitcher_prop_correction(
     game_state_parsed: bool,
 ) -> float:
     normalized_prop = str(prop_key or "").strip().lower()
+    progress_fraction = float(_safe_float(progress.get("fraction")) or 0.0)
+    total_game_outs = int(max(0, round(progress_fraction * 54.0)))
     if normalized_prop == "outs":
         if not _is_live_pitcher_outs_correction_enabled():
+            return float(projection)
+        if total_game_outs < 9:
             return float(projection)
         artifact = _load_live_pitcher_outs_correction_artifact()
     elif normalized_prop == "strikeouts":
@@ -14365,7 +14369,7 @@ def _apply_live_pitcher_prop_correction(
         "actual_so_far": float(actual_value),
         "inning": float(_safe_int(progress.get("inning")) or 0),
         "game_outs": float(_safe_int(progress.get("outs")) or 0),
-        "progress_fraction": float(_safe_float(progress.get("fraction")) or 0.0),
+        "progress_fraction": progress_fraction,
         "game_state_parsed_flag": 1.0 if bool(game_state_parsed) else 0.0,
     }
     corrected_error = float(_safe_float(model.get("intercept")) or 0.0)
