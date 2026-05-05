@@ -4041,13 +4041,31 @@ def _load_pitcher_ladder_market_context(d: str) -> Dict[str, Any]:
     if current_mode == "live" and bool(schedule_counts.get("known")) and int(schedule_counts.get("live") or 0) <= 0:
         effective_mode = "pregame"
 
+    rollover_path = None
+    rollover_doc = None
+    rollover_lines: Dict[str, Dict[str, Any]] = {}
+    if current_mode == "live" and effective_mode == "live" and _is_current_local_date(d):
+        try:
+            rollover_date = (datetime.strptime(str(d), "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+        except Exception:
+            rollover_date = ""
+        if rollover_date:
+            rollover_path = _resolve_oddsapi_market_file(rollover_date, "oddsapi_pitcher_props")
+            if rollover_path and str(rollover_path) != str(current_path):
+                rollover_doc = _load_json_file(rollover_path)
+                rollover_mode = str((rollover_doc or {}).get("mode") or "").strip().lower()
+                if rollover_mode == "live":
+                    rollover_lines = _extract_pitcher_prop_market_lines(rollover_doc)
+    if rollover_lines:
+        current_lines = _merge_market_line_maps(current_lines, rollover_lines)
+
     use_merged_live = bool(pregame_lines) and bool(current_lines) and effective_mode == "live"
     use_pregame = bool(pregame_lines) and (effective_mode != "live" or not current_lines)
     if use_merged_live:
         display_lines = _merge_market_line_maps(pregame_lines, current_lines)
         display_source = " + ".join(
             part
-            for part in (pregame_source, _relative_path_str(current_path))
+            for part in (pregame_source, _relative_path_str(current_path), _relative_path_str(rollover_path) if rollover_lines else None)
             if str(part or "").strip()
         )
         display_doc = {
@@ -4057,7 +4075,14 @@ def _load_pitcher_ladder_market_context(d: str) -> Dict[str, Any]:
         display_path = current_path if current_path else pregame_path
     else:
         display_lines = pregame_lines if use_pregame else current_lines
-        display_source = pregame_source if use_pregame else _relative_path_str(current_path)
+        if use_pregame:
+            display_source = pregame_source
+        else:
+            display_source = " + ".join(
+                part
+                for part in (_relative_path_str(current_path), _relative_path_str(rollover_path) if rollover_lines else None)
+                if str(part or "").strip()
+            )
         display_doc = pregame_doc if use_pregame else current_doc
         display_path = pregame_path if use_pregame else current_path
 
@@ -4067,6 +4092,9 @@ def _load_pitcher_ladder_market_context(d: str) -> Dict[str, Any]:
         "currentMode": current_mode,
         "effectiveMode": effective_mode,
         "currentLines": current_lines,
+        "rolloverPath": rollover_path,
+        "rolloverDoc": rollover_doc,
+        "rolloverLines": rollover_lines,
         "displayLines": display_lines,
         "displayDoc": display_doc,
         "displayPath": display_path,
@@ -17234,6 +17262,7 @@ def _build_cards_api_payload(
         outputs_by_game = {}
 
     schedule_games = _schedule_games_for_date(d)
+    pitcher_market_ctx = _load_pitcher_ladder_market_context(d)
     cards = _cards_list_from_sources(
         d=d,
         schedule_games=schedule_games,
@@ -17241,12 +17270,13 @@ def _build_cards_api_payload(
         recos_by_game=recos_by_game,
         first1_signals_by_game=_rfi_targets_signal_index(artifacts.get("rfi_targets")),
     )
-    _attach_cards_starter_ladder_badges(cards, artifacts.get("daily_ladders"))
+    _attach_cards_starter_ladder_badges(cards, artifacts.get("daily_ladders"), pitcher_market_ctx)
     cards_requiring_feed = [
         card for card in cards
         if isinstance(card, dict) and (_status_is_live(card.get("status")) or _status_is_final(card.get("status")))
     ]
-    pitcher_market_ctx = _load_pitcher_ladder_market_context(d) if cards_requiring_feed else {}
+    if not cards_requiring_feed:
+        pitcher_market_ctx = {}
     feed_cache: Dict[int, Optional[Dict[str, Any]]] = {}
     for card in cards:
         if not isinstance(card, dict):
@@ -17356,6 +17386,34 @@ def _starter_ladder_badge_from_row(
         "tone": tone,
         "detail": " ".join(detail_parts).strip(),
     }
+
+
+def _starter_ladder_row_with_market_fallback(
+    row: Optional[Dict[str, Any]],
+    *,
+    stat_key: str,
+    pitcher_name: str,
+    pitcher_market_lines: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    if not isinstance(row, dict):
+        return None
+    if _safe_float(row.get("marketLine")) is not None:
+        return row
+    if not isinstance(pitcher_market_lines, dict):
+        return row
+
+    pitcher_entry = pitcher_market_lines.get(normalize_pitcher_name(pitcher_name)) if pitcher_name else None
+    if not isinstance(pitcher_entry, dict):
+        return row
+    market_key = str(((_PITCHER_LADDER_PROPS.get(str(stat_key)) or {}).get("market_key") or "")).strip()
+    market = pitcher_entry.get(market_key) if market_key else None
+    market_line = _safe_float(market.get("line")) if isinstance(market, dict) else None
+    if market_line is None:
+        return row
+
+    patched = dict(row)
+    patched["marketLine"] = float(market_line)
+    return patched
 
 
 def _starter_ladder_badge_from_supported_totals(
@@ -17780,6 +17838,7 @@ def _starter_ladder_badges_for_pitcher(
     game_pk: Optional[int],
     pitcher_id: Optional[int],
     pitcher_name: str,
+    pitcher_market_lines: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     if not isinstance(game_groups, dict) or game_pk is None or int(game_pk) <= 0:
         return []
@@ -17805,7 +17864,12 @@ def _starter_ladder_badges_for_pitcher(
 
     badges: List[Dict[str, Any]] = []
     strikeout_badge = _starter_ladder_badge_from_row(
-        _resolve_row("strikeouts"),
+        _starter_ladder_row_with_market_fallback(
+            _resolve_row("strikeouts"),
+            stat_key="strikeouts",
+            pitcher_name=pitcher_name,
+            pitcher_market_lines=pitcher_market_lines,
+        ),
         stat_key="strikeouts",
         short_label="K",
         min_hit_prob=float(_safe_float((_PITCHER_LADDER_PROPS.get("strikeouts") or {}).get("ladder_min_hit_prob")) or 0.2),
@@ -17814,7 +17878,12 @@ def _starter_ladder_badges_for_pitcher(
     if isinstance(strikeout_badge, dict):
         badges.append(strikeout_badge)
     outs_badge = _starter_ladder_badge_from_row(
-        _resolve_row("outs"),
+        _starter_ladder_row_with_market_fallback(
+            _resolve_row("outs"),
+            stat_key="outs",
+            pitcher_name=pitcher_name,
+            pitcher_market_lines=pitcher_market_lines,
+        ),
         stat_key="outs",
         short_label="O",
         min_hit_prob=float(_safe_float((_PITCHER_LADDER_PROPS.get("outs") or {}).get("ladder_min_hit_prob")) or 0.2),
@@ -17978,13 +18047,18 @@ def write_daily_ladder_audit_artifact(d: str, *, out_path: Optional[Path] = None
     }
 
 
-def _attach_cards_starter_ladder_badges(cards: Any, daily_ladders: Any) -> None:
+def _attach_cards_starter_ladder_badges(cards: Any, daily_ladders: Any, pitcher_market_ctx: Any = None) -> None:
     if not isinstance(cards, list) or not isinstance(daily_ladders, dict):
         return
     groups = daily_ladders.get("groups") if isinstance(daily_ladders.get("groups"), dict) else {}
     pitcher_groups = groups.get("pitcher") if isinstance(groups.get("pitcher"), dict) else None
     if not isinstance(pitcher_groups, dict):
         return
+    pitcher_market_lines = (
+        pitcher_market_ctx.get("displayLines")
+        if isinstance(pitcher_market_ctx, dict) and isinstance(pitcher_market_ctx.get("displayLines"), dict)
+        else None
+    )
 
     for card in cards:
         if not isinstance(card, dict):
@@ -18011,6 +18085,7 @@ def _attach_cards_starter_ladder_badges(cards: Any, daily_ladders: Any) -> None:
                 game_pk=int(game_pk),
                 pitcher_id=starter_id,
                 pitcher_name=starter_name,
+                pitcher_market_lines=pitcher_market_lines,
             )
             if badges:
                 entry["ladderBadges"] = badges

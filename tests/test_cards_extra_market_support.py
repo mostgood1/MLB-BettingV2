@@ -8,6 +8,7 @@ from tools.web.flask_frontend import (
     _build_cards_api_payload,
     _cards_payload_signature,
     _cards_list_from_sources,
+    _load_pitcher_ladder_market_context,
     _payload_cache_get_or_build,
     _project_live_pitcher_value,
     _season_betting_day_payload,
@@ -360,6 +361,67 @@ class CardsExtraMarketSupportTests(unittest.TestCase):
         self.assertEqual(home_probable["fullName"], "Logan Gilbert")
         self.assertGreaterEqual(len(home_probable.get("ladderBadges") or []), 1)
 
+    def test_attach_cards_starter_ladder_badges_can_fill_missing_market_line_from_live_context(self) -> None:
+        cards = [
+            {
+                "gamePk": 824039,
+                "probable": {
+                    "home": {"id": 663999, "fullName": "José Soriano"},
+                },
+            }
+        ]
+        daily_ladders = {
+            "groups": {
+                "pitcher": {
+                    "strikeouts": {
+                        "rows": [
+                            {
+                                "gamePk": 824039,
+                                "side": "home",
+                                "pitcherId": 663999,
+                                "pitcherName": "José Soriano",
+                                "marketLine": None,
+                                "ladder": [
+                                    {"total": 6, "hitProb": 0.41},
+                                    {"total": 7, "hitProb": 0.28},
+                                ],
+                            }
+                        ]
+                    },
+                    "outs": {
+                        "rows": [
+                            {
+                                "gamePk": 824039,
+                                "side": "home",
+                                "pitcherId": 663999,
+                                "pitcherName": "José Soriano",
+                                "marketLine": None,
+                                "ladder": [
+                                    {"total": 18, "hitProb": 0.26},
+                                    {"total": 19, "hitProb": 0.18},
+                                ],
+                            }
+                        ]
+                    },
+                }
+            }
+        }
+        pitcher_market_ctx = {
+            "displayLines": {
+                flask_frontend.normalize_pitcher_name("José Soriano"): {
+                    "strikeouts": {"line": 6.5},
+                    "outs": {"line": 17.5},
+                }
+            }
+        }
+
+        _attach_cards_starter_ladder_badges(cards, daily_ladders, pitcher_market_ctx)
+
+        home_probable = cards[0]["probable"]["home"]
+        badges = home_probable.get("ladderBadges") or []
+        self.assertEqual([badge.get("stat") for badge in badges], ["strikeouts"])
+        self.assertEqual(badges[0].get("label"), "K up to 7")
+
     def test_project_live_pitcher_value_keeps_meaningful_remaining_runway_midgame(self) -> None:
         projection = _project_live_pitcher_value(
             prop="strikeouts",
@@ -384,6 +446,33 @@ class CardsExtraMarketSupportTests(unittest.TestCase):
 
         self.assertIsNotNone(projection)
         self.assertGreater(float(projection), 5.0)
+
+    def test_pitcher_ladder_market_context_merges_next_day_live_rollover_lines(self) -> None:
+        current_path = Path("data/market/oddsapi/oddsapi_pitcher_props_2026_05_04.json")
+        rollover_path = Path("data/market/oddsapi/oddsapi_pitcher_props_2026_05_05.json")
+
+        def fake_load_json(path: Path):
+            path_str = str(path).replace("\\", "/")
+            if path_str.endswith("2026_05_04.json"):
+                return {"mode": "live", "pitcher_props": {"davis martin": {"outs": {"line": 17.5}}}}
+            if path_str.endswith("2026_05_05.json"):
+                return {"mode": "live", "pitcher_props": {"jose soriano": {"outs": {"line": 17.5}, "strikeouts": {"line": 6.5}}}}
+            return None
+
+        with (
+            patch.object(flask_frontend, "_resolve_oddsapi_market_file", side_effect=[current_path, rollover_path]),
+            patch.object(flask_frontend, "_load_json_file", side_effect=fake_load_json),
+            patch.object(flask_frontend, "_resolve_pregame_oddsapi_market_file", return_value=None),
+            patch.object(flask_frontend, "_resolve_earliest_archived_oddsapi_market_file", return_value=None),
+            patch.object(flask_frontend, "_first_seen_pitcher_market_lines_from_registry", return_value={}),
+            patch.object(flask_frontend, "_schedule_status_counts", return_value={"known": True, "live": 3}),
+            patch.object(flask_frontend, "_is_current_local_date", return_value=True),
+        ):
+            context = _load_pitcher_ladder_market_context("2026-05-04")
+
+        self.assertIn("jose soriano", context["currentLines"])
+        self.assertIn("jose soriano", context["displayLines"])
+        self.assertEqual(context["currentLines"]["jose soriano"]["outs"]["line"], 17.5)
 
 
 if __name__ == "__main__":
