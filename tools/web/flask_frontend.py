@@ -2675,33 +2675,6 @@ def _load_live_lens_feed(game_pk: int, d: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _minimal_live_lens_snapshot_from_card(card: Dict[str, Any]) -> Dict[str, Any]:
-    status = (card.get("status") or {}) if isinstance(card.get("status"), dict) else {}
-    return {
-        "status": {
-            "abstractGameState": str(status.get("abstract") or ""),
-            "detailedState": str(status.get("detailed") or ""),
-        },
-        "current": {},
-        "offense": {},
-        "linescore": {},
-        "teams": {
-            "away": {
-                "starter": {"id": None, "name": ""},
-                "lineup": [],
-                "totals": {},
-                "boxscore": {"batting": [], "pitching": []},
-            },
-            "home": {
-                "starter": {"id": None, "name": ""},
-                "lineup": [],
-                "totals": {},
-                "boxscore": {"batting": [], "pitching": []},
-            },
-        },
-    }
-
-
 def _find_candidate_file(*, preferred: List[Path], recursive_pattern: str) -> Optional[Path]:
     seen: set[str] = set()
     for p in preferred:
@@ -14961,7 +14934,6 @@ def _load_sim_context_for_game(
     artifacts: Optional[Dict[str, Any]] = None,
     archive: Optional[Dict[str, Any]] = None,
     feed: Optional[Dict[str, Any]] = None,
-    allow_feed_fetch: bool = True,
 ) -> Dict[str, Any]:
     artifacts = artifacts or _load_cards_artifacts(d)
     sim_dir = artifacts.get("sim_dir")
@@ -15008,7 +14980,7 @@ def _load_sim_context_for_game(
 
     name_lookup: Dict[int, str] = {}
     try:
-        game_feed = feed if isinstance(feed, dict) and feed else (_load_live_lens_feed(int(game_pk), d) if allow_feed_fetch else None)
+        game_feed = feed if isinstance(feed, dict) and feed else _load_live_lens_feed(int(game_pk), d)
         if isinstance(game_feed, dict) and game_feed:
             feed = game_feed
         if isinstance(feed, dict) and feed:
@@ -15994,37 +15966,19 @@ def _live_lens_payload(d: str, *, persist: bool = False, refresh_markets: bool =
     sim_context_ms_total = 0.0
     prop_eval_ms_total = 0.0
     game_lens_ms_total = 0.0
-    feed_load_ms_total = 0.0
     for card in cards:
         game_pk = _safe_int(card.get("gamePk"))
         if not game_pk:
             continue
-        card_status = (card.get("status") or {}) if isinstance(card.get("status"), dict) else {}
-        card_status_payload = {
-            "abstract": str(card_status.get("abstract") or ""),
-            "detailed": str(card_status.get("detailed") or ""),
-        }
-        requires_live_feed = _status_is_live(card_status_payload) or _status_is_final(card_status_payload)
-        game_feed = None
-        if requires_live_feed:
-            game_feed = feed_cache.get(int(game_pk))
-            if int(game_pk) not in feed_cache:
-                feed_started_at = time.perf_counter()
-                game_feed = _load_live_lens_feed(int(game_pk), d)
-                feed_load_ms_total += (time.perf_counter() - feed_started_at) * 1000.0
-                feed_cache[int(game_pk)] = game_feed
+        game_feed = feed_cache.get(int(game_pk))
+        if int(game_pk) not in feed_cache:
+            game_feed = _load_live_lens_feed(int(game_pk), d)
+            feed_cache[int(game_pk)] = game_feed
         snapshot_started_at = time.perf_counter()
-        snapshot = _load_live_lens_snapshot(int(game_pk), d, feed=game_feed) if requires_live_feed else _minimal_live_lens_snapshot_from_card(card)
+        snapshot = _load_live_lens_snapshot(int(game_pk), d, feed=game_feed)
         snapshot_ms_total += (time.perf_counter() - snapshot_started_at) * 1000.0
         sim_context_started_at = time.perf_counter()
-        sim_context = _load_sim_context_for_game(
-            int(game_pk),
-            d,
-            artifacts=artifacts,
-            archive=archive,
-            feed=game_feed,
-            allow_feed_fetch=requires_live_feed,
-        )
+        sim_context = _load_sim_context_for_game(int(game_pk), d, artifacts=artifacts, archive=archive, feed=game_feed)
         sim_context_ms_total += (time.perf_counter() - sim_context_started_at) * 1000.0
         status = ((snapshot or {}).get("status") or {})
         status_detailed = str(status.get("detailedState") or ((card.get("status") or {}).get("detailed") or ""))
@@ -16107,7 +16061,6 @@ def _live_lens_payload(d: str, *, persist: bool = False, refresh_markets: bool =
             "marketsRefreshed": bool(markets_refreshed),
             "marketRefreshMs": market_refresh_ms,
             "totalMs": round((time.perf_counter() - started_at) * 1000.0, 1),
-            "feedLoadMs": round(feed_load_ms_total, 1),
             "snapshotLoadMs": round(snapshot_ms_total, 1),
             "simContextLoadMs": round(sim_context_ms_total, 1),
             "propEvalMs": round(prop_eval_ms_total, 1),
