@@ -5,7 +5,7 @@ services:
     plan: starter
     autoDeploy: true
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn wsgi:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120 --max-requests 100 --max-requests-jitter 15
+    startCommand: gunicorn wsgi:app --bind 0.0.0.0:$PORT --workers 1 --worker-class gthread --threads 2 --timeout 120 --max-requests 200 --max-requests-jitter 25
     disk:
       name: mlb-betting-v2-data
       mountPath: /opt/render/project/data
@@ -34,21 +34,21 @@ services:
       - key: MLB_LIVE_PITCHER_STRIKEOUTS_CORRECTION_PATH
         value: /opt/render/project/data/eval/live_pitcher_strikeouts_correction.json
       - key: MLB_PERSON_CACHE_MAXSIZE
-        value: "64"
+        value: "256"
       - key: MLB_PERSON_GAMELOG_CACHE_MAXSIZE
-        value: "64"
+        value: "128"
       - key: MLB_PERSON_SEASON_CACHE_MAXSIZE
-        value: "64"
+        value: "256"
       - key: MLB_JSON_FILE_CACHE_MAXSIZE
-        value: "32"
+        value: "64"
       - key: MLB_JSON_FILE_CACHE_MAX_BYTES
-        value: "131072"
+        value: "393216"
       - key: MLB_PAYLOAD_CACHE_MAX_ENTRIES
-        value: "8"
+        value: "16"
       - key: MLB_PAYLOAD_CACHE_MAX_BYTES
-        value: "2097152"
+        value: "8388608"
       - key: MLB_PAYLOAD_CACHE_MAX_ITEM_BYTES
-        value: "524288"
+        value: "1048576"
       - key: MLB_CARDS_CACHE_TTL_SECONDS
         value: "60"
       - key: MLB_CARDS_CONTEXT_CACHE_TTL_SECONDS
