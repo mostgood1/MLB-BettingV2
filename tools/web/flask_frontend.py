@@ -1501,6 +1501,10 @@ def _is_live_lens_background_report_enabled() -> bool:
     return _env_bool("MLB_ENABLE_LIVE_LENS_BACKGROUND_REPORTS", default=True)
 
 
+def _is_background_cards_cache_warm_enabled() -> bool:
+    return _env_bool("MLB_ENABLE_BACKGROUND_CARDS_CACHE_WARM", default=True)
+
+
 def _is_inline_season_manifest_rebuild_enabled() -> bool:
     return _env_bool("MLB_ENABLE_INLINE_SEASON_MANIFEST_REBUILD", default=False)
 
@@ -16271,7 +16275,9 @@ def _live_lens_background_loop() -> None:
                 markets_refreshed = bool((result.get("report") or {}).get("marketsRefreshed"))
             elif refresh_markets:
                 markets_refreshed = bool(_maybe_refresh_live_oddsapi_markets(_today_iso()))
-            cards_payload = _warm_cards_api_cache(_today_iso())
+            cards_payload: Dict[str, Any] = {}
+            if _is_background_cards_cache_warm_enabled():
+                cards_payload = _warm_cards_api_cache(_today_iso())
             if refresh_markets:
                 next_oddsapi_refresh_at = float(started_at) + float(oddsapi_refresh_interval_seconds)
             latest_tick = _load_json_file(_cron_meta_dir() / "latest_live_lens_tick.json") or {}
@@ -16287,6 +16293,7 @@ def _live_lens_background_loop() -> None:
                     "reportRefreshTriggered": bool(refresh_report),
                     "marketsRefreshTriggered": bool(refresh_markets),
                     "marketsRefreshed": bool(markets_refreshed),
+                    "backgroundCardsCacheWarmEnabled": bool(_is_background_cards_cache_warm_enabled()),
                     "date": result.get("date") or latest_tick.get("date"),
                     "counts": result.get("counts") or latest_tick.get("counts"),
                     "cardsCacheDate": str(cards_payload.get("date") or ""),
@@ -16309,6 +16316,7 @@ def _live_lens_background_loop() -> None:
                     "reportRefreshIntervalSeconds": int(report_refresh_interval_seconds),
                     "reportRefreshTriggered": bool(refresh_report),
                     "marketsRefreshTriggered": bool(refresh_markets),
+                    "backgroundCardsCacheWarmEnabled": bool(_is_background_cards_cache_warm_enabled()),
                     "error": f"{type(exc).__name__}: {exc}",
                 },
             )
