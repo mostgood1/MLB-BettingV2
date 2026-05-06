@@ -16355,7 +16355,29 @@ def _season_live_lens_payload(season: int, d: str) -> Dict[str, Any]:
         payload["detail"] = f"Date {date_str} belongs to season {date_season}, not {int(season)}"
         return payload
 
-    live_payload = _live_lens_payload(date_str, persist=False, refresh_markets=False)
+    report_path = _live_lens_report_path(date_str)
+    report_age_seconds = _path_age_seconds(report_path)
+    serve_report_max_age_seconds = float(_LIVE_ROUTE_CACHE_TTL_SECONDS)
+    if not _is_historical_date(date_str) and _is_live_lens_loop_enabled():
+        serve_report_max_age_seconds = float(_live_lens_report_max_age_seconds())
+
+    live_payload: Optional[Dict[str, Any]] = None
+    if (
+        report_age_seconds is not None
+        and report_age_seconds <= float(serve_report_max_age_seconds)
+    ):
+        report_payload = _load_json_file(report_path)
+        if isinstance(report_payload, dict) and report_payload:
+            live_payload = dict(report_payload)
+
+    if live_payload is None:
+        live_payload = _payload_cache_get_or_build(
+            "season_live_lens_api",
+            f"{int(season)}:{date_str}",
+            max_age_seconds=_LIVE_ROUTE_CACHE_TTL_SECONDS,
+            builder=lambda: _live_lens_payload(date_str, persist=False, refresh_markets=False),
+        )
+
     counts = dict(live_payload.get("counts") or {})
     live_payload.update(
         {
