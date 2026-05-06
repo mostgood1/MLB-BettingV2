@@ -16673,18 +16673,7 @@ def live_lens_view() -> str:
 
 @app.get("/season/<int:season>/live-lens")
 def season_live_lens_view(season: int) -> str:
-    d = str(request.args.get("date") or "").strip() or _default_cards_date()
-    return render_template(
-        "live_lens.html",
-        date=d,
-        season=int(season),
-        api_path=f"/api/season/{int(season)}/live-lens",
-        form_action=f"/season/{int(season)}/live-lens",
-        back_href=f"/season/{int(season)}?date={d}",
-        back_label=f"Back to season {int(season)}",
-        page_title=f"MLB {int(season)} Live Lens - {d}",
-        page_heading=f"MLB {int(season)} Live Lens - {d}",
-    )
+    abort(404)
 
 
 @app.get("/api/live-lens")
@@ -16716,13 +16705,7 @@ def api_live_lens() -> Response:
 
 @app.get("/api/season/<int:season>/live-lens")
 def api_season_live_lens(season: int) -> Response:
-    _ensure_live_lens_background_loop_running()
-    d = str(request.args.get("date") or "").strip() or _default_cards_date()
-    payload = _season_live_lens_payload(int(season), d)
-    status_code = 400 if payload.get("error") == "season_live_lens_date_mismatch" else 404
-    if payload.get("found"):
-        status_code = 200
-    return _jsonify_app_build(payload, status_code=status_code, no_store=True)
+    abort(404)
 
 
 @app.get("/api/cron/ping")
