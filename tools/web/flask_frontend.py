@@ -13,6 +13,7 @@ import math
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -2387,6 +2388,8 @@ def _json_safe_value(value: Any) -> Any:
 
 
 def _detect_app_build_info() -> Dict[str, Any]:
+    commit_source = None
+    branch_source = None
     commit = (
         str(
             os.environ.get("RENDER_GIT_COMMIT")
@@ -2396,6 +2399,13 @@ def _detect_app_build_info() -> Dict[str, Any]:
         ).strip()
         or None
     )
+    if commit is not None:
+        if os.environ.get("RENDER_GIT_COMMIT"):
+            commit_source = "RENDER_GIT_COMMIT"
+        elif os.environ.get("GIT_COMMIT"):
+            commit_source = "GIT_COMMIT"
+        elif os.environ.get("COMMIT_SHA"):
+            commit_source = "COMMIT_SHA"
     branch = (
         str(
             os.environ.get("RENDER_GIT_BRANCH")
@@ -2405,6 +2415,13 @@ def _detect_app_build_info() -> Dict[str, Any]:
         ).strip()
         or None
     )
+    if branch is not None:
+        if os.environ.get("RENDER_GIT_BRANCH"):
+            branch_source = "RENDER_GIT_BRANCH"
+        elif os.environ.get("GIT_BRANCH"):
+            branch_source = "GIT_BRANCH"
+        elif os.environ.get("BRANCH"):
+            branch_source = "BRANCH"
 
     if commit is None:
         git_dir = _ROOT_DIR / ".git"
@@ -2416,6 +2433,8 @@ def _detect_app_build_info() -> Dict[str, Any]:
                     stderr=subprocess.DEVNULL,
                     text=True,
                 ).strip() or None
+                if commit is not None:
+                    commit_source = "git"
             except Exception:
                 commit = None
     if branch is None:
@@ -2428,24 +2447,44 @@ def _detect_app_build_info() -> Dict[str, Any]:
                     stderr=subprocess.DEVNULL,
                     text=True,
                 ).strip() or None
+                if branch is not None:
+                    branch_source = "git"
             except Exception:
                 branch = None
 
     return {
         "service": str(os.environ.get("RENDER_SERVICE_NAME") or "mlb-betting-v2").strip() or "mlb-betting-v2",
         "commit": commit,
+        "commitSource": commit_source,
         "branch": branch,
+        "branchSource": branch_source,
         "root": _relative_path_str(_ROOT_DIR),
         "dataRoot": _relative_path_str(_DATA_DIR),
     }
 
 
 _APP_BUILD_INFO = _detect_app_build_info()
+_PROCESS_BOOTED_AT_UTC = f"{datetime.utcnow().isoformat()}Z"
+_PROCESS_HOSTNAME = socket.gethostname()
+_PROCESS_PID = os.getpid()
+
+
+def _current_app_build_info() -> Dict[str, Any]:
+    app_info = dict(_APP_BUILD_INFO)
+    runtime = {
+        "hostname": _PROCESS_HOSTNAME,
+        "pid": _PROCESS_PID,
+        "bootedAt": _PROCESS_BOOTED_AT_UTC,
+        "pythonVersion": sys.version.split()[0],
+    }
+    app_info["runtime"] = runtime
+    app_info["instanceId"] = f"{_PROCESS_HOSTNAME}:{_PROCESS_PID}:{_PROCESS_BOOTED_AT_UTC}"
+    return app_info
 
 
 def _with_app_build(payload: Dict[str, Any]) -> Dict[str, Any]:
     merged = dict(payload)
-    app_info = dict(_APP_BUILD_INFO)
+    app_info = _current_app_build_info()
     live_pitcher_corrections = _live_pitcher_corrections_status_payload()
     app_info["livePitcherCorrections"] = live_pitcher_corrections
     merged["app"] = app_info
@@ -2464,6 +2503,31 @@ def _jsonify_no_store(payload: Any, status_code: int = 200) -> Response:
     response.headers["Cache-Control"] = "no-store, no-cache, max-age=0, must-revalidate"
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
+    if isinstance(payload, dict):
+        app_info = payload.get("app") if isinstance(payload.get("app"), dict) else None
+        if isinstance(app_info, dict):
+            commit = str(app_info.get("commit") or "").strip()
+            branch = str(app_info.get("branch") or "").strip()
+            instance_id = str(app_info.get("instanceId") or "").strip()
+            runtime = app_info.get("runtime") if isinstance(app_info.get("runtime"), dict) else {}
+            booted_at = str(runtime.get("bootedAt") or "").strip()
+            if commit:
+                response.headers["X-App-Commit"] = commit
+            if branch:
+                response.headers["X-App-Branch"] = branch
+            if instance_id:
+                response.headers["X-App-Instance"] = instance_id
+            if booted_at:
+                response.headers["X-App-Booted-At"] = booted_at
+    return response
+
+
+def _jsonify_app_build(payload: Dict[str, Any], status_code: int = 200, no_store: bool = False) -> Response:
+    built_payload = _with_app_build(payload)
+    if no_store:
+        return _jsonify_no_store(built_payload, status_code=status_code)
+    response = jsonify(built_payload)
+    response.status_code = int(status_code)
     return response
 
 
@@ -16618,14 +16682,14 @@ def api_live_lens() -> Response:
     ):
         report_payload = _load_json_file(report_path)
         if isinstance(report_payload, dict) and report_payload:
-            return jsonify(_with_app_build(report_payload))
+            return _jsonify_app_build(report_payload, no_store=True)
     payload = _payload_cache_get_or_build(
         "live_lens_api",
         str(d),
         max_age_seconds=_LIVE_ROUTE_CACHE_TTL_SECONDS,
         builder=lambda: _live_lens_payload(d, persist=persist, refresh_markets=not _is_historical_date(d)),
     )
-    return jsonify(_with_app_build(payload))
+    return _jsonify_app_build(payload, no_store=True)
 
 
 @app.get("/api/season/<int:season>/live-lens")
@@ -16633,10 +16697,10 @@ def api_season_live_lens(season: int) -> Response:
     _ensure_live_lens_background_loop_running()
     d = str(request.args.get("date") or "").strip() or _default_cards_date()
     payload = _season_live_lens_payload(int(season), d)
-    if payload.get("found"):
-        return jsonify(payload)
     status_code = 400 if payload.get("error") == "season_live_lens_date_mismatch" else 404
-    return jsonify(payload), status_code
+    if payload.get("found"):
+        status_code = 200
+    return _jsonify_app_build(payload, status_code=status_code, no_store=True)
 
 
 @app.get("/api/cron/ping")
@@ -18429,7 +18493,7 @@ def api_cards() -> Response:
                 game_line_index=game_line_index,
             ),
         )
-        return jsonify(payload)
+        return _jsonify_app_build(payload, no_store=True)
     except Exception as exc:
         app.logger.exception("cards api failed for %s", d)
         try:
@@ -18450,7 +18514,7 @@ def api_cards() -> Response:
             cards=fallback_cards,
             fallback_error=f"cards_api_fallback: {type(exc).__name__}: {exc}",
         )
-        return jsonify(payload)
+        return _jsonify_app_build(payload, status_code=500, no_store=True)
 
 
 @app.get("/api/pitcher-ladders")
