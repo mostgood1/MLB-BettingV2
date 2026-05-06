@@ -1591,49 +1591,6 @@ def _ensure_live_lens_background_loop_running() -> Dict[str, Any]:
     return out
 
 
-def _timestamp_text_age_seconds(value: Any) -> Optional[float]:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    try:
-        parsed = datetime.fromisoformat(text)
-    except Exception:
-        return None
-    if parsed.tzinfo is None:
-        now = datetime.now()
-    else:
-        now = datetime.now(parsed.tzinfo)
-    return max(0.0, float((now - parsed).total_seconds()))
-
-
-def _live_lens_report_fast_path_allowed(loop_status: Dict[str, Any], *, date_str: str) -> bool:
-    if not isinstance(loop_status, dict):
-        return False
-    if not bool(loop_status.get("threadAlive")):
-        return False
-    status = loop_status.get("status") if isinstance(loop_status.get("status"), dict) else {}
-    latest_tick = loop_status.get("latestTick") if isinstance(loop_status.get("latestTick"), dict) else {}
-    if status and not bool(status.get("ok", True)):
-        return False
-    tick_date = str(latest_tick.get("date") or "").strip()
-    if tick_date and tick_date != str(date_str):
-        return False
-
-    freshness_budget_seconds = float(
-        max(
-            int(_live_lens_report_max_age_seconds()),
-            int(_live_lens_report_refresh_interval_seconds()) + int(_live_lens_loop_interval_seconds()) + 15,
-        )
-    )
-    tick_age_seconds = _timestamp_text_age_seconds(latest_tick.get("recordedAt"))
-    if tick_age_seconds is not None and tick_age_seconds > freshness_budget_seconds:
-        return False
-    status_age_seconds = _timestamp_text_age_seconds(status.get("recordedAt"))
-    if status_age_seconds is not None and status_age_seconds > freshness_budget_seconds:
-        return False
-    return True
-
-
 def _live_lens_log_path(d: str) -> Path:
     return _LIVE_LENS_DIR / f"live_lens_{_date_slug(d)}.jsonl"
 
@@ -16718,7 +16675,7 @@ def season_live_lens_view(season: int) -> str:
 
 @app.get("/api/live-lens")
 def api_live_lens() -> Response:
-    loop_status = _ensure_live_lens_background_loop_running()
+    _ensure_live_lens_background_loop_running()
     d = str(request.args.get("date") or "").strip() or _default_cards_date()
     persist = str(request.args.get("persist") or "off").strip().lower() == "on"
     report_path = _live_lens_report_path(d)
@@ -16730,11 +16687,6 @@ def api_live_lens() -> Response:
         not persist
         and report_age_seconds is not None
         and report_age_seconds <= float(serve_report_max_age_seconds)
-        and (
-            _is_historical_date(d)
-            or not _is_live_lens_loop_enabled()
-            or _live_lens_report_fast_path_allowed(loop_status, date_str=d)
-        )
     ):
         report_payload = _load_json_file(report_path)
         if isinstance(report_payload, dict) and report_payload:
