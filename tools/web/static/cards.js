@@ -16,8 +16,8 @@
   const AUTO_REFRESH_MS = 30000;
   const CARDS_REQUEST_TIMEOUT_MS = 25000;
   const DETAIL_REQUEST_TIMEOUT_MS = 15000;
-  const HYDRATE_CARD_CONCURRENCY = 1;
-  const INITIAL_LIVE_PRIORITY_CARD_LIMIT = 1;
+  const HYDRATE_CARD_CONCURRENCY = 2;
+  const INITIAL_LIVE_PRIORITY_CARD_LIMIT = 2;
 
   const root = {
     headerMeta: document.getElementById("cardsHeaderMeta"),
@@ -484,7 +484,6 @@
       state.details.set(gamePk, {
         snapshot: null,
         sim: null,
-        error: null,
         activeTab: "overview",
         selectedPropKey: initialProp ? propKey(initialProp) : null,
         propFilters: { board: "auto", side: "all", type: "all" },
@@ -1627,8 +1626,8 @@
 
       <div class="cards-score-ribbon">
         <div class="cards-score-meta">
-          <div class="cards-live-line" data-role="live-line">Live box unavailable</div>
-          <div class="cards-sim-line" data-role="sim-line">Sim detail unavailable</div>
+          <div class="cards-live-line" data-role="live-line">Loading live box...</div>
+          <div class="cards-sim-line" data-role="sim-line">Loading sim box...</div>
           <div class="cards-mini-copy">Probables: ${escapeHtml(starterText(card))}</div>
         </div>
       </div>
@@ -1681,7 +1680,7 @@
               <span class="cards-overview-badge" data-role="actual-badge">${escapeHtml(card.status?.abstract || "Scheduled")}</span>
             </div>
             <div class="cards-box-totals" data-role="actual-totals">
-              <div class="cards-empty-copy">Live or final box is unavailable.</div>
+              <div class="cards-empty-copy">Loading live box...</div>
             </div>
             <div data-role="actual-box"></div>
           </div>
@@ -1692,7 +1691,7 @@
               <span class="cards-chip" data-role="sim-badge">Loading</span>
             </div>
             <div class="cards-box-totals" data-role="sim-totals">
-              <div class="cards-empty-copy">Sim detail is unavailable.</div>
+              <div class="cards-empty-copy">Loading sim box...</div>
             </div>
             <div data-role="sim-box"></div>
           </div>
@@ -1829,10 +1828,8 @@
     if (!totalsNode || !boxNode || !badgeNode) return;
 
     if (!snapshot || !snapshot.teams) {
-      const emptyText = detail.error ? 'Live or final box is temporarily unavailable.' : 'Live or final box is unavailable.';
-      const boxText = detail.error ? 'Live box tables could not be loaded right now.' : 'No live box tables loaded yet.';
-      totalsNode.innerHTML = `<div class="cards-empty-copy">${escapeHtml(emptyText)}</div>`;
-      boxNode.innerHTML = `<div class="cards-empty-copy">${escapeHtml(boxText)}</div>`;
+      totalsNode.innerHTML = '<div class="cards-empty-copy">Live or final box is unavailable.</div>';
+      boxNode.innerHTML = '<div class="cards-empty-copy">No live box tables loaded yet.</div>';
       return;
     }
 
@@ -1869,9 +1866,9 @@
     if (!totalsNode || !boxNode || !badgeNode) return;
 
     if (!sim || sim.found === false) {
-      badgeNode.textContent = detail.error ? "Unavailable" : "No sim";
-      totalsNode.innerHTML = `<div class="cards-empty-copy">${escapeHtml(detail.error ? 'Sim detail is temporarily unavailable.' : 'No sim output found for this game.')}</div>`;
-      boxNode.innerHTML = `<div class="cards-empty-copy">${escapeHtml(detail.error ? 'Sim box tables could not be loaded right now.' : 'Sim box tables unavailable.')}</div>`;
+      badgeNode.textContent = "No sim";
+      totalsNode.innerHTML = '<div class="cards-empty-copy">No sim output found for this game.</div>';
+      boxNode.innerHTML = '<div class="cards-empty-copy">Sim box tables unavailable.</div>';
       return;
     }
 
@@ -3035,10 +3032,8 @@
       );
       detail.snapshot = payload?.snapshot || null;
       detail.sim = payload?.sim || { found: false };
-      detail.error = null;
       syncCard(card);
-    } catch (error) {
-      detail.error = error && error.message ? error.message : "Detail unavailable";
+    } catch (_error) {
       detail.sim = detail.sim || { found: false };
       if (!isRefresh) syncCard(card);
     }
