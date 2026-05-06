@@ -355,6 +355,9 @@ _TOP_PROPS_CACHE_TTL_SECONDS = float(_env_int("MLB_TOP_PROPS_CACHE_TTL_SECONDS",
 _CARDS_CACHE_TTL_SECONDS = float(_env_int("MLB_CARDS_CACHE_TTL_SECONDS", 60, minimum=1))
 _CARDS_CONTEXT_CACHE_TTL_SECONDS = float(_env_int("MLB_CARDS_CONTEXT_CACHE_TTL_SECONDS", 60, minimum=1))
 _LIVE_ROUTE_CACHE_TTL_SECONDS = float(_env_int("MLB_LIVE_ROUTE_CACHE_TTL_SECONDS", 5, minimum=1))
+_PAYLOAD_CACHE_MAX_ENTRIES = _env_int("MLB_PAYLOAD_CACHE_MAX_ENTRIES", 32, minimum=1)
+_PAYLOAD_CACHE_MAX_BYTES = _env_int("MLB_PAYLOAD_CACHE_MAX_BYTES", 16777216, minimum=0)
+_PAYLOAD_CACHE_MAX_ITEM_BYTES = _env_int("MLB_PAYLOAD_CACHE_MAX_ITEM_BYTES", 2097152, minimum=0)
 _LIVE_LENS_LOOP_DEFAULT_INTERVAL_SECONDS = 30
 _LIVE_LENS_LOOP_MIN_INTERVAL_SECONDS = 5
 _LIVE_ODDSAPI_REFRESH_MIN_INTERVAL_SECONDS = 15
@@ -2757,11 +2760,13 @@ def _payload_cache_get_or_build(
                 if has_signature_check:
                     signature_matches = signature is None or cached_signature == signature
                     if age_matches and signature_matches:
+                        entry["accessedAt"] = now
                         return entry["payload"]
                     if signature_matches:
-                        entry["createdAt"] = now
+                        entry["accessedAt"] = now
                         return entry["payload"]
                 elif age_matches:
+                    entry["accessedAt"] = now
                     return entry["payload"]
 
     payload = builder()
@@ -2770,20 +2775,63 @@ def _payload_cache_get_or_build(
             signature = signature_factory()
         except Exception:
             signature = None
+    payload_size_bytes = _estimate_payload_cache_size_bytes(payload)
+    if (
+        (_PAYLOAD_CACHE_MAX_ITEM_BYTES > 0 and payload_size_bytes > _PAYLOAD_CACHE_MAX_ITEM_BYTES)
+        or (_PAYLOAD_CACHE_MAX_BYTES > 0 and payload_size_bytes > _PAYLOAD_CACHE_MAX_BYTES)
+    ):
+        return payload
     with _PAYLOAD_CACHE_LOCK:
         _PAYLOAD_CACHE[full_key] = {
             "signature": signature,
             "createdAt": now,
+            "accessedAt": now,
+            "sizeBytes": payload_size_bytes,
             "payload": payload,
         }
-        if len(_PAYLOAD_CACHE) > 128:
-            oldest_key = min(
-                _PAYLOAD_CACHE,
-                key=lambda key: float((_PAYLOAD_CACHE.get(key) or {}).get("createdAt") or 0.0),
-            )
-            if oldest_key != full_key:
-                _PAYLOAD_CACHE.pop(oldest_key, None)
+        _trim_payload_cache_locked(exclude_key=full_key)
     return payload
+
+
+def _estimate_payload_cache_size_bytes(payload: Any) -> int:
+    try:
+        encoded = json.dumps(_json_safe_value(payload), separators=(",", ":")).encode("utf-8")
+        return int(len(encoded))
+    except Exception:
+        try:
+            return int(len(str(payload).encode("utf-8")))
+        except Exception:
+            return 0
+
+
+def _payload_cache_total_size_bytes_locked() -> int:
+    total = 0
+    for entry in _PAYLOAD_CACHE.values():
+        try:
+            total += int((entry or {}).get("sizeBytes") or 0)
+        except Exception:
+            continue
+    return int(total)
+
+
+def _trim_payload_cache_locked(*, exclude_key: Optional[Tuple[str, str]] = None) -> None:
+    while True:
+        too_many_entries = len(_PAYLOAD_CACHE) > int(_PAYLOAD_CACHE_MAX_ENTRIES)
+        too_many_bytes = _PAYLOAD_CACHE_MAX_BYTES > 0 and _payload_cache_total_size_bytes_locked() > int(_PAYLOAD_CACHE_MAX_BYTES)
+        if not too_many_entries and not too_many_bytes:
+            return
+        candidates = [key for key in _PAYLOAD_CACHE if key != exclude_key]
+        if not candidates:
+            return
+        oldest_key = min(
+            candidates,
+            key=lambda key: float(
+                ((_PAYLOAD_CACHE.get(key) or {}).get("accessedAt"))
+                or ((_PAYLOAD_CACHE.get(key) or {}).get("createdAt"))
+                or 0.0
+            ),
+        )
+        _PAYLOAD_CACHE.pop(oldest_key, None)
 
 
 def _path_age_seconds(path: Optional[Path]) -> Optional[float]:

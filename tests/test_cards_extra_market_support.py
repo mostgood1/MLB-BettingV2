@@ -52,6 +52,58 @@ class CardsExtraMarketSupportTests(unittest.TestCase):
         self.assertEqual(first["value"], "before")
         self.assertEqual(second["value"], "after")
 
+    def test_payload_cache_skips_oversized_payloads(self) -> None:
+        build_counter = {"count": 0}
+
+        def build_payload() -> dict:
+            build_counter["count"] += 1
+            return {"value": "x" * 200}
+
+        with patch.object(flask_frontend, "_PAYLOAD_CACHE_MAX_ITEM_BYTES", 32):
+            first = _payload_cache_get_or_build(
+                "cards_api_context",
+                "oversized-test",
+                max_age_seconds=60.0,
+                builder=build_payload,
+            )
+            second = _payload_cache_get_or_build(
+                "cards_api_context",
+                "oversized-test",
+                max_age_seconds=60.0,
+                builder=build_payload,
+            )
+
+        self.assertEqual("x" * 200, first["value"])
+        self.assertEqual("x" * 200, second["value"])
+        self.assertEqual(2, build_counter["count"])
+        self.assertNotIn(("cards_api_context", "oversized-test"), flask_frontend._PAYLOAD_CACHE)
+
+    def test_payload_cache_evicts_old_entries_when_byte_budget_is_exceeded(self) -> None:
+        first_payload = {"value": "a" * 120}
+        second_payload = {"value": "b" * 120}
+        size_budget = flask_frontend._estimate_payload_cache_size_bytes(first_payload) + flask_frontend._estimate_payload_cache_size_bytes(second_payload) - 1
+
+        with patch.object(flask_frontend, "_PAYLOAD_CACHE_MAX_ENTRIES", 8), patch.object(
+            flask_frontend,
+            "_PAYLOAD_CACHE_MAX_BYTES",
+            size_budget,
+        ), patch.object(flask_frontend, "_PAYLOAD_CACHE_MAX_ITEM_BYTES", 4096):
+            _payload_cache_get_or_build(
+                "cards_api_context",
+                "byte-budget-first",
+                max_age_seconds=60.0,
+                builder=lambda: first_payload,
+            )
+            _payload_cache_get_or_build(
+                "cards_api_context",
+                "byte-budget-second",
+                max_age_seconds=60.0,
+                builder=lambda: second_payload,
+            )
+
+        self.assertNotIn(("cards_api_context", "byte-budget-first"), flask_frontend._PAYLOAD_CACHE)
+        self.assertIn(("cards_api_context", "byte-budget-second"), flask_frontend._PAYLOAD_CACHE)
+
     def test_supplement_recos_adds_missing_extra_markets_for_existing_game(self) -> None:
         recos_by_game = {
             824039: {
