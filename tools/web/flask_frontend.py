@@ -433,6 +433,13 @@ _PITCHER_LADDER_PROPS: Dict[str, Dict[str, Any]] = {
     },
 }
 
+_CARDS_STARTER_BADGE_PROPS: Tuple[str, ...] = (
+    "strikeouts",
+    "outs",
+    "hits_allowed",
+    "walks_allowed",
+)
+
 _HITTER_LADDER_PROPS: Dict[str, Dict[str, Any]] = {
     "hits": {
         "label": "Hits",
@@ -17841,8 +17848,9 @@ def _live_starter_ladder_badges_for_side(
     live_projection_slack = 1.0
 
     badges: List[Dict[str, Any]] = []
-    for prop_key, short_label in (("strikeouts", "K"), ("outs", "O")):
+    for prop_key in _CARDS_STARTER_BADGE_PROPS:
         cfg = _PITCHER_LADDER_PROPS.get(prop_key) or {}
+        short_label = _starter_ladder_badge_short_label(prop_key)
         market_key = str(cfg.get("market_key") or "").strip()
         dist_key = str(cfg.get("dist_key") or "").strip()
         mean_key = str(cfg.get("mean_key") or "").strip()
@@ -17890,7 +17898,7 @@ def _live_starter_ladder_badges_for_side(
             supported_totals.append(int(target_total))
             last_supported_prob = float(model_prob_over)
 
-        if short_label == "O":
+        if prop_key == "outs":
             higher_alts = [int(total) for total in supported_totals if int(total) > int(base_over_total)]
             if higher_alts:
                 supported_totals = higher_alts
@@ -17970,7 +17978,26 @@ def _starter_ladder_badge_stat_key(badge: Optional[Dict[str, Any]]) -> Optional[
         return "strikeouts"
     if label.startswith("O"):
         return "outs"
+    if label.startswith("BB"):
+        return "walks_allowed"
+    if label.startswith("H"):
+        return "hits_allowed"
     return None
+
+
+def _starter_ladder_badge_short_label(stat_key: str) -> str:
+    normalized = str(stat_key or "").strip().lower()
+    if normalized == "strikeouts":
+        return "K"
+    if normalized == "outs":
+        return "O"
+    if normalized == "hits_allowed":
+        return "H"
+    if normalized == "walks_allowed":
+        return "BB"
+    if normalized == "earned_runs":
+        return "ER"
+    return normalized[:3].upper() or "L"
 
 
 def _final_starter_ladder_badges_for_side(
@@ -18021,7 +18048,7 @@ def _final_starter_ladder_badges_for_side(
 
         wins = sum(1 for total in targets if float(actual_value) + 1e-9 >= float(total))
         losses = max(0, len(targets) - int(wins))
-        short_label = "K" if stat_key == "strikeouts" else "O" if stat_key == "outs" else str(badge.get("label") or "").split(" ", 1)[0]
+        short_label = _starter_ladder_badge_short_label(str(stat_key or ""))
         stat_label = str((_PITCHER_LADDER_PROPS.get(str(stat_key or "")) or {}).get("label") or short_label).strip()
         supported_label = "/".join(str(int(total)) for total in targets)
         entry = grouped_badges.setdefault(
@@ -18160,35 +18187,23 @@ def _starter_ladder_badges_for_pitcher(
         return None
 
     badges: List[Dict[str, Any]] = []
-    strikeout_badge = _starter_ladder_badge_from_row(
-        _starter_ladder_row_with_market_fallback(
-            _resolve_row("strikeouts"),
-            stat_key="strikeouts",
-            pitcher_name=pitcher_name,
-            pitcher_market_lines=pitcher_market_lines,
-        ),
-        stat_key="strikeouts",
-        short_label="K",
-        min_hit_prob=float(_safe_float((_PITCHER_LADDER_PROPS.get("strikeouts") or {}).get("ladder_min_hit_prob")) or 0.2),
-        max_rungs=_safe_int((_PITCHER_LADDER_PROPS.get("strikeouts") or {}).get("ladder_max_rungs")),
-    )
-    if isinstance(strikeout_badge, dict):
-        badges.append(strikeout_badge)
-    outs_badge = _starter_ladder_badge_from_row(
-        _starter_ladder_row_with_market_fallback(
-            _resolve_row("outs"),
-            stat_key="outs",
-            pitcher_name=pitcher_name,
-            pitcher_market_lines=pitcher_market_lines,
-        ),
-        stat_key="outs",
-        short_label="O",
-        min_hit_prob=float(_safe_float((_PITCHER_LADDER_PROPS.get("outs") or {}).get("ladder_min_hit_prob")) or 0.2),
-        include_base_over=False,
-        max_rungs=_safe_int((_PITCHER_LADDER_PROPS.get("outs") or {}).get("ladder_max_rungs")),
-    )
-    if isinstance(outs_badge, dict):
-        badges.append(outs_badge)
+    for stat_key in _CARDS_STARTER_BADGE_PROPS:
+        cfg = _PITCHER_LADDER_PROPS.get(stat_key) or {}
+        badge = _starter_ladder_badge_from_row(
+            _starter_ladder_row_with_market_fallback(
+                _resolve_row(stat_key),
+                stat_key=stat_key,
+                pitcher_name=pitcher_name,
+                pitcher_market_lines=pitcher_market_lines,
+            ),
+            stat_key=stat_key,
+            short_label=_starter_ladder_badge_short_label(stat_key),
+            min_hit_prob=float(_safe_float(cfg.get("ladder_min_hit_prob")) or 0.2),
+            include_base_over=stat_key != "outs",
+            max_rungs=_safe_int(cfg.get("ladder_max_rungs")),
+        )
+        if isinstance(badge, dict):
+            badges.append(badge)
     return badges
 
 

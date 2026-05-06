@@ -458,6 +458,36 @@ class CardsExtraMarketSupportTests(unittest.TestCase):
                             }
                         ]
                     },
+                    "hits_allowed": {
+                        "rows": [
+                            {
+                                "gamePk": 824039,
+                                "side": "home",
+                                "pitcherId": 663999,
+                                "pitcherName": "José Soriano",
+                                "marketLine": None,
+                                "ladder": [
+                                    {"total": 6, "hitProb": 0.44},
+                                    {"total": 7, "hitProb": 0.31},
+                                ],
+                            }
+                        ]
+                    },
+                    "walks_allowed": {
+                        "rows": [
+                            {
+                                "gamePk": 824039,
+                                "side": "home",
+                                "pitcherId": 663999,
+                                "pitcherName": "José Soriano",
+                                "marketLine": None,
+                                "ladder": [
+                                    {"total": 3, "hitProb": 0.33},
+                                    {"total": 4, "hitProb": 0.22},
+                                ],
+                            }
+                        ]
+                    },
                 }
             }
         }
@@ -466,6 +496,8 @@ class CardsExtraMarketSupportTests(unittest.TestCase):
                 flask_frontend.normalize_pitcher_name("José Soriano"): {
                     "strikeouts": {"line": 6.5},
                     "outs": {"line": 17.5},
+                    "hits_allowed": {"line": 5.5},
+                    "walks_allowed": {"line": 2.5},
                 }
             }
         }
@@ -474,8 +506,14 @@ class CardsExtraMarketSupportTests(unittest.TestCase):
 
         home_probable = cards[0]["probable"]["home"]
         badges = home_probable.get("ladderBadges") or []
-        self.assertEqual([badge.get("stat") for badge in badges], ["strikeouts"])
-        self.assertEqual(badges[0].get("label"), "K up to 7")
+        self.assertEqual(
+            [badge.get("stat") for badge in badges],
+            ["strikeouts", "hits_allowed", "walks_allowed"],
+        )
+        self.assertEqual(
+            [badge.get("label") for badge in badges],
+            ["K up to 7", "H up to 7", "BB up to 4"],
+        )
 
     def test_project_live_pitcher_value_keeps_meaningful_remaining_runway_midgame(self) -> None:
         projection = _project_live_pitcher_value(
@@ -540,6 +578,46 @@ class CardsExtraMarketSupportTests(unittest.TestCase):
 
         self.assertIsNotNone(projection)
         self.assertGreater(float(projection), 12.0)
+
+    def test_project_live_pitcher_hits_and_walks_support_live_edge(self) -> None:
+        common_kwargs = {
+            "team_side": "away",
+            "progress_fraction": 0.45,
+            "actual_row": {"BF": 12, "P": 48, "H": 3, "BB": 1, "OUTS": 9},
+            "model_row": {"batters_faced_mean": 24.0, "pitches_mean": 92.0},
+            "pitcher_profile": {"id": 1, "stamina_pitches": 96},
+            "current_profile": {"id": 1},
+            "bullpen_profiles": [{"availability_mult": 0.95, "leverage_skill": 0.62}],
+            "snapshot": {
+                "current": {"inning": 4, "halfInning": "bottom", "count": {"outs": 0}},
+                "teams": {
+                    "away": {"totals": {"R": 2}},
+                    "home": {"totals": {"R": 1}},
+                },
+            },
+        }
+
+        hits_projection = _project_live_pitcher_value(
+            prop="hits_allowed",
+            actual_value=3,
+            model_mean=6.4,
+            market_line=5.5,
+            **common_kwargs,
+        )
+        walks_projection = _project_live_pitcher_value(
+            prop="walks_allowed",
+            actual_value=1,
+            model_mean=3.4,
+            market_line=2.5,
+            **common_kwargs,
+        )
+
+        self.assertIsNotNone(hits_projection)
+        self.assertIsNotNone(walks_projection)
+        self.assertGreater(float(hits_projection), 5.5)
+        self.assertGreater(float(walks_projection), 2.5)
+        self.assertGreater(flask_frontend._selection_live_edge("over", hits_projection, 5.5), 0.0)
+        self.assertGreater(flask_frontend._selection_live_edge("over", walks_projection, 2.5), 0.0)
 
     def test_api_cron_refresh_oddsapi_markets_serializes_nested_paths(self) -> None:
         with (

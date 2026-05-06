@@ -654,9 +654,17 @@
   }
 
   function propModelMean(reco, simRow) {
+    const recoMean = toNumber(reco?.model_mean);
+    if (recoMean != null) return recoMean;
     const rowValue = statValue(simRow, reco);
     if (rowValue != null) return rowValue;
     return toNumber(reco?.outs_mean);
+  }
+
+  function propModelSummary(reco) {
+    const modelMean = propModelMean(reco, null);
+    if (modelMean != null) return `${formatLine(modelMean)} ${metricLabel(reco)} mean`;
+    return `${formatPercent(reco?.model_prob_over, 1)} over`;
   }
 
   function buildGameLensRows(card, detail) {
@@ -1332,8 +1340,8 @@
           badge: propCountBadge(pitcherRows.length, pitcherExtraRows.length),
           main: `${escapeHtml(pitcherTop.pitcher_name || "Pitcher")} ${marketLabelLong(pitcherTop)}`,
           sub: pitcherRows.length
-            ? `${pitcherExtraRows.length ? `${pitcherExtraRows.length} more playable | ` : ""}Mean ${formatLine(pitcherTop.outs_mean)} | Edge ${formatPropEdge(pitcherTop)}`
-            : `Playable only | Mean ${formatLine(pitcherTop.outs_mean)} | Edge ${formatPropEdge(pitcherTop)}`,
+            ? `${pitcherExtraRows.length ? `${pitcherExtraRows.length} more playable | ` : ""}Mean ${formatLine(propModelMean(pitcherTop, null))} | Edge ${formatPropEdge(pitcherTop)}`
+            : `Playable only | Mean ${formatLine(propModelMean(pitcherTop, null))} | Edge ${formatPropEdge(pitcherTop)}`,
           tabTarget: "props",
         })
       : tileMarkup({ label: "Pitcher Props", main: "No locked pitcher prop", sub: "Off card", tabTarget: "props" });
@@ -2318,9 +2326,7 @@
         { label: "Edge", value: formatPropEdge(selected) },
         {
           label: "Model",
-          value: selected?.outs_mean != null
-            ? `${formatLine(selected.outs_mean)} outs mean`
-            : `${formatPercent(selected?.model_prob_over, 1)} over`,
+          value: propModelSummary(selected),
         },
       ];
 
@@ -2497,9 +2503,7 @@
       { label: "Edge", value: formatPropEdge(selected) },
       {
         label: "Model",
-        value: selected?.outs_mean != null
-          ? `${formatLine(selected.outs_mean)} outs mean`
-          : `${formatPercent(selected?.model_prob_over, 1)} over`,
+        value: propModelSummary(selected),
       },
     ];
 
