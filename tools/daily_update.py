@@ -1408,11 +1408,17 @@ def _refresh_live_pitcher_corrections_stage(args: argparse.Namespace, *, max_dat
         ]
         return stage
 
+    no_history_message = "no archived observation rows were found"
     artifact_errors: List[str] = []
+    artifact_skips: List[str] = []
     for prop_key, cmd in commands.items():
+        artifact_out_path = next(
+            (Path(cmd[index + 1]) for index, part in enumerate(cmd[:-1]) if str(part) == "--out"),
+            None,
+        )
         result: Dict[str, Any] = {
             "command": [str(part) for part in cmd],
-            "artifact_path": _relative_path_str(Path(cmd[-1])),
+            "artifact_path": _relative_path_str(artifact_out_path) if artifact_out_path is not None else "",
         }
         try:
             proc = _run_logged_subprocess(cmd, cwd=_ROOT_DIR)
@@ -1430,8 +1436,14 @@ def _refresh_live_pitcher_corrections_stage(args: argparse.Namespace, *, max_dat
                     result["stdout_tail"] = stdout_text[-1000:]
             if stderr_text:
                 result["stderr_tail"] = stderr_text[-1000:]
-            result["status"] = "ok" if int(proc.returncode) == 0 else "error"
-            if int(proc.returncode) != 0:
+            if int(proc.returncode) == 0:
+                result["status"] = "ok"
+            elif no_history_message in stderr_text.lower():
+                result["status"] = "skipped"
+                result["reason"] = "no archived live-lens observation rows available for correction fitting window"
+                artifact_skips.append(str(prop_key))
+            else:
+                result["status"] = "error"
                 artifact_errors.append(f"{prop_key} fitter exited {proc.returncode}")
         except Exception as exc:
             result["status"] = "error"
@@ -1439,7 +1451,13 @@ def _refresh_live_pitcher_corrections_stage(args: argparse.Namespace, *, max_dat
             artifact_errors.append(f"{prop_key} fitter failed: {type(exc).__name__}: {exc}")
         stage["artifacts"][prop_key] = result
 
-    stage["status"] = "ok" if not artifact_errors else "warning"
+    if artifact_errors:
+        stage["status"] = "warning"
+    elif artifact_skips and len(artifact_skips) == len(commands):
+        stage["status"] = "skipped"
+        stage["reason"] = "no archived live-lens observation rows available for correction fitting window"
+    else:
+        stage["status"] = "ok"
     if artifact_errors:
         stage["error"] = "; ".join(artifact_errors)
     return stage
@@ -3333,6 +3351,7 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
                 },
             }
             soft_artifact_warnings = []
+            soft_artifact_notes = []
             odds_stage = dict((report.get("stages") or {}).get("current_day_oddsapi") or {})
             odds_counts = dict(odds_stage.get("counts") or {})
             game_line_counts = dict(odds_counts.get("game_lines") or {})
@@ -3340,7 +3359,7 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
             for name, info in dict(season_frontend_stage.get("artifacts") or {}).items():
                 error_code = str(info.get("error") or "")
                 if name == "season_official_betting_day" and error_code == "official_betting_card_day_missing":
-                    soft_artifact_warnings.append(
+                    soft_artifact_notes.append(
                         "current-day official betting card day artifact has no selected rows yet"
                     )
                     info["error"] = None
@@ -3369,6 +3388,9 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
             elif soft_artifact_warnings:
                 season_frontend_stage["status"] = "partial"
                 report["warnings"].extend(soft_artifact_warnings)
+            elif soft_artifact_notes:
+                season_frontend_stage["status"] = "ok"
+                report["notes"].extend(soft_artifact_notes)
         except Exception as exc:
             season_frontend_stage = {
                 "status": "error",

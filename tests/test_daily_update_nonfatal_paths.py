@@ -43,6 +43,35 @@ class DailyUpdateNonfatalPathTests(unittest.TestCase):
         self.assertIn("Render base URL or cron token is unavailable", stage["reason"])
         self.assertEqual(["live_lens_base_url", "live_lens_cron_token"], stage["missing_credentials"])
 
+    def test_refresh_live_pitcher_corrections_no_archived_rows_is_skipped(self) -> None:
+        args = argparse.Namespace(
+            refresh_live_pitcher_corrections="on",
+            live_lens_base_url="https://mlb-betting-v2.onrender.com",
+            live_lens_cron_token="token",
+            live_lens_timeout_seconds=45,
+        )
+
+        proc = mock.Mock(
+            returncode=1,
+            stdout="",
+            stderr=(
+                "RuntimeError: render live-lens sync completed but no archived observation rows were found "
+                "between 2026-03-25 and 2026-03-26"
+            ),
+        )
+
+        with mock.patch.object(daily_update, "_run_logged_subprocess", return_value=proc):
+            stage = daily_update._refresh_live_pitcher_corrections_stage(args, max_date_str="2026-03-26")
+
+        self.assertEqual("skipped", stage["status"])
+        self.assertIn("no archived live-lens observation rows", stage["reason"])
+        self.assertEqual("skipped", stage["artifacts"]["outs"]["status"])
+        self.assertEqual("skipped", stage["artifacts"]["strikeouts"]["status"])
+        self.assertEqual(
+            "data/eval/live_pitcher_outs_correction.json",
+            stage["artifacts"]["outs"]["artifact_path"],
+        )
+
     def test_remove_path_if_exists_ignores_empty_locked_directories(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir) / "snapshots"
