@@ -571,6 +571,34 @@ class CardsExtraMarketSupportTests(unittest.TestCase):
         self.assertEqual(payload["currentDayArtifacts"]["frontend"]["path"], "data/daily/season_frontend/example.json")
         self.assertEqual(payload["currentDayArtifacts"]["daily_ladders"]["path"], "data/daily/ladders/daily_ladders_2026_05_05.json")
 
+    def test_api_cron_cache_usage_reports_payload_cache_bytes(self) -> None:
+        with flask_frontend._PAYLOAD_CACHE_LOCK:
+            flask_frontend._PAYLOAD_CACHE.clear()
+            flask_frontend._PAYLOAD_CACHE[("cards_api", "2026-05-06")] = {
+                "signature": None,
+                "createdAt": 100.0,
+                "accessedAt": 120.0,
+                "sizeBytes": 321,
+                "payload": {"ok": True},
+            }
+
+        try:
+            with (
+                flask_frontend.app.test_client() as client,
+                patch.object(flask_frontend, "_require_cron_auth", return_value=None),
+            ):
+                response = client.get("/api/cron/cache-usage")
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertEqual(1, payload["payload_cache"]["entries"])
+            self.assertEqual(321, payload["payload_cache"]["total_bytes"])
+            self.assertEqual("cards_api", payload["payload_cache"]["entries_by_cache"][0]["cache"])
+            self.assertEqual(321, payload["payload_cache"]["largest_entries"][0]["size_bytes"])
+        finally:
+            with flask_frontend._PAYLOAD_CACHE_LOCK:
+                flask_frontend._PAYLOAD_CACHE.clear()
+
     def test_pitcher_ladder_market_context_merges_next_day_live_rollover_lines(self) -> None:
         current_path = Path("data/market/oddsapi/oddsapi_pitcher_props_2026_05_04.json")
         rollover_path = Path("data/market/oddsapi/oddsapi_pitcher_props_2026_05_05.json")

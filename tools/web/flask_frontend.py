@@ -916,6 +916,108 @@ def _data_disk_report(*, largest_file_limit: int = 20) -> Dict[str, Any]:
     }
 
 
+def _lru_cache_info_payload(cache_func: Any, *, label: str) -> Dict[str, Any]:
+    info_func = getattr(cache_func, "cache_info", None)
+    if not callable(info_func):
+        return {
+            "label": str(label),
+            "available": False,
+        }
+    try:
+        info = info_func()
+    except Exception as exc:
+        return {
+            "label": str(label),
+            "available": False,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    return {
+        "label": str(label),
+        "available": True,
+        "hits": int(getattr(info, "hits", 0) or 0),
+        "misses": int(getattr(info, "misses", 0) or 0),
+        "maxsize": int(getattr(info, "maxsize", 0) or 0),
+        "currsize": int(getattr(info, "currsize", 0) or 0),
+    }
+
+
+def _payload_cache_summary() -> Dict[str, Any]:
+    with _PAYLOAD_CACHE_LOCK:
+        entries = list(_PAYLOAD_CACHE.items())
+        total_bytes = _payload_cache_total_size_bytes_locked()
+    cache_names: Dict[str, int] = defaultdict(int)
+    largest_entries: List[Dict[str, Any]] = []
+    oldest_age_seconds: Optional[float] = None
+    newest_age_seconds: Optional[float] = None
+    now = time.time()
+    for (cache_name, cache_key), entry in entries:
+        cache_names[str(cache_name)] += 1
+        size_bytes = int((entry or {}).get("sizeBytes") or 0)
+        created_at = float((entry or {}).get("createdAt") or 0.0)
+        accessed_at = float((entry or {}).get("accessedAt") or 0.0)
+        created_age_seconds = max(0.0, now - created_at) if created_at > 0 else None
+        if created_age_seconds is not None:
+            oldest_age_seconds = created_age_seconds if oldest_age_seconds is None else max(oldest_age_seconds, created_age_seconds)
+            newest_age_seconds = created_age_seconds if newest_age_seconds is None else min(newest_age_seconds, created_age_seconds)
+        largest_entries.append(
+            {
+                "cache": str(cache_name),
+                "key": str(cache_key),
+                "size_bytes": size_bytes,
+                "size_text": _format_bytes(size_bytes),
+                "created_age_seconds": round(created_age_seconds, 3) if created_age_seconds is not None else None,
+                "last_access_age_seconds": round(max(0.0, now - accessed_at), 3) if accessed_at > 0 else None,
+            }
+        )
+    largest_entries.sort(key=lambda item: (-int(item.get("size_bytes") or 0), str(item.get("cache") or ""), str(item.get("key") or "")))
+    return {
+        "entries": int(len(entries)),
+        "total_bytes": int(total_bytes),
+        "total_text": _format_bytes(total_bytes),
+        "max_entries": int(_PAYLOAD_CACHE_MAX_ENTRIES),
+        "max_bytes": int(_PAYLOAD_CACHE_MAX_BYTES),
+        "max_bytes_text": _format_bytes(_PAYLOAD_CACHE_MAX_BYTES),
+        "max_item_bytes": int(_PAYLOAD_CACHE_MAX_ITEM_BYTES),
+        "max_item_bytes_text": _format_bytes(_PAYLOAD_CACHE_MAX_ITEM_BYTES),
+        "oldest_entry_age_seconds": round(oldest_age_seconds, 3) if oldest_age_seconds is not None else None,
+        "newest_entry_age_seconds": round(newest_age_seconds, 3) if newest_age_seconds is not None else None,
+        "entries_by_cache": [
+            {"cache": cache_name, "entries": int(count)}
+            for cache_name, count in sorted(cache_names.items(), key=lambda item: (-int(item[1]), str(item[0])))
+        ],
+        "largest_entries": largest_entries[:10],
+    }
+
+
+def _live_feed_cache_summary() -> Dict[str, Any]:
+    with _LIVE_FEED_CACHE_LOCK:
+        entries = list(_LIVE_FEED_CACHE.items())
+    now = time.time()
+    ages = [max(0.0, now - float(ts or 0.0)) for _, (ts, _) in entries if float(ts or 0.0) > 0]
+    return {
+        "entries": int(len(entries)),
+        "ttl_seconds": float(_LIVE_FEED_CACHE_TTL_SECONDS),
+        "oldest_entry_age_seconds": round(max(ages), 3) if ages else None,
+        "newest_entry_age_seconds": round(min(ages), 3) if ages else None,
+    }
+
+
+def _cache_usage_report() -> Dict[str, Any]:
+    return {
+        "ok": True,
+        "time": _local_timestamp_text(),
+        "payload_cache": _payload_cache_summary(),
+        "live_feed_cache": _live_feed_cache_summary(),
+        "lru_caches": {
+            "statsapi_client": _lru_cache_info_payload(_statsapi_client_cached, label="statsapi_client"),
+            "person": _lru_cache_info_payload(_fetch_person_cached, label="person"),
+            "person_gamelog": _lru_cache_info_payload(_fetch_person_gamelog_cached, label="person_gamelog"),
+            "person_season": _lru_cache_info_payload(_fetch_person_season_cached, label="person_season"),
+            "json_file": _lru_cache_info_payload(_load_json_file_cached, label="json_file"),
+        },
+    }
+
+
 _EVAL_TEMP_FILE_PREFIXES: Tuple[str, ...] = (
     "_tmp_",
     "_compare_",
@@ -16565,6 +16667,7 @@ def api_cron_config() -> Response:
                 "liveLensDir": _relative_path_str(_LIVE_LENS_DIR),
                 "liveLensLoop": loop_status,
                 "diskUsageEndpoint": "/api/cron/disk-usage",
+                "cacheUsageEndpoint": "/api/cron/cache-usage",
                 "cleanupEndpoint": "/api/cron/cleanup-data?target=live-lens&retentionDays=3&apply=off",
                 "compactLiveLensEndpoint": "/api/cron/compact-live-lens?retentionDays=3&apply=off",
                 "seasonRebuildEndpoint": "/api/cron/rebuild-season-report?season=YYYY&date=YYYY-MM-DD",
@@ -16581,6 +16684,14 @@ def api_cron_disk_usage() -> Response:
         return auth_error
     largest_file_limit = max(1, int(_safe_int(request.args.get("largest")) or 20))
     return jsonify(_with_app_build(_data_disk_report(largest_file_limit=largest_file_limit)))
+
+
+@app.get("/api/cron/cache-usage")
+def api_cron_cache_usage() -> Response:
+    auth_error = _require_cron_auth()
+    if auth_error is not None:
+        return auth_error
+    return jsonify(_with_app_build(_cache_usage_report()))
 
 
 @app.get("/api/cron/cleanup-data")
