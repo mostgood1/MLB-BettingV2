@@ -1463,6 +1463,106 @@ def _refresh_live_pitcher_corrections_stage(args: argparse.Namespace, *, max_dat
     return stage
 
 
+def _run_render_frontend_validation_stage(
+    args: argparse.Namespace,
+    *,
+    date_str: str,
+    season: int,
+    expected_commit: str = "",
+) -> Dict[str, Any]:
+    stage: Dict[str, Any] = {
+        "status": "skipped",
+        "date": str(date_str),
+        "season": int(season),
+    }
+    if str(getattr(args, "validate_render_frontend", "on") or "on") != "on":
+        stage["reason"] = "validate_render_frontend=off"
+        return stage
+
+    base_url = _normalize_render_base_url(
+        str(getattr(args, "render_validation_base_url", "") or "").strip()
+        or str(getattr(args, "live_lens_base_url", "") or "").strip()
+        or _infer_render_base_url()
+    )
+    cron_token = (
+        str(getattr(args, "render_validation_cron_token", "") or "").strip()
+        or str(getattr(args, "live_lens_cron_token", "") or "").strip()
+        or _env_first("MLB_BETTING_CRON_TOKEN", "MLB_CRON_TOKEN", "CRON_TOKEN")
+    )
+    if not base_url:
+        stage["reason"] = "render validation requested but Render base URL is unavailable"
+        return stage
+
+    smoke_py = (_ROOT_DIR / "tools" / "smoke" / "smoke_render_frontend.py").resolve()
+    cmd = [
+        sys.executable,
+        str(smoke_py),
+        "--base-url",
+        str(base_url),
+        "--date",
+        str(date_str),
+        "--season",
+        str(int(season)),
+        "--timeout-seconds",
+        str(int(getattr(args, "render_validation_timeout_seconds", 45) or 45)),
+    ]
+    if cron_token:
+        cmd.extend(["--cron-token", str(cron_token)])
+    if str(expected_commit or "").strip():
+        cmd.extend(["--expected-commit", str(expected_commit).strip()])
+
+    stage["command"] = [str(part) for part in cmd]
+    stage["base_url"] = str(base_url)
+    stage["expected_commit"] = str(expected_commit or "").strip()
+    try:
+        completed = subprocess.run(cmd, check=False, capture_output=True, text=True, cwd=str(_ROOT_DIR))
+        stage["exit_code"] = int(completed.returncode or 0)
+        stdout = str(completed.stdout or "").strip()
+        stderr = str(completed.stderr or "").strip()
+        if stderr:
+            stage["stderr"] = stderr
+        if stdout:
+            try:
+                report_doc = json.loads(stdout)
+            except Exception:
+                stage["stdout"] = stdout
+                stage["status"] = "error"
+                stage["error"] = "render smoke output was not valid JSON"
+                return stage
+            if isinstance(report_doc, dict):
+                stage["report"] = report_doc
+                failures = [
+                    str(item)
+                    for item in (report_doc.get("failures") or [])
+                    if str(item).strip()
+                ]
+                stage["failures"] = failures
+                live_lens = report_doc.get("liveLens") if isinstance(report_doc.get("liveLens"), dict) else {}
+                cards = report_doc.get("cards") if isinstance(report_doc.get("cards"), dict) else {}
+                if live_lens:
+                    stage["live_lens"] = {
+                        "has_hits_allowed": bool(live_lens.get("hasHitsAllowed")),
+                        "has_walks_allowed": bool(live_lens.get("hasWalksAllowed")),
+                        "market_labels": list(live_lens.get("marketLabels") or []),
+                    }
+                if cards:
+                    stage["cards"] = {
+                        "badge_stats": list(cards.get("badgeStats") or []),
+                        "required_badge_stats": list(cards.get("requiredBadgeStats") or []),
+                    }
+            else:
+                stage["stdout"] = stdout
+        if int(completed.returncode or 0) != 0:
+            stage["status"] = "error"
+            stage["error"] = f"smoke_render_frontend exit {int(completed.returncode or 0)}"
+            return stage
+        stage["status"] = "ok"
+    except Exception as exc:
+        stage["status"] = "error"
+        stage["error"] = f"{type(exc).__name__}: {exc}"
+    return stage
+
+
 def _remove_path_if_exists(path: Path) -> Tuple[bool, Optional[str]]:
     def _has_remaining_files(tree_path: Path) -> bool:
         try:
@@ -3500,6 +3600,27 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
             _release_daily_update_run_lock(run_lock_path)
             return 1
 
+    render_validation_stage = _run_render_frontend_validation_stage(
+        args,
+        date_str=str(args.date),
+        season=int(args.season),
+        expected_commit=str((report.get("git_push") or {}).get("commit_sha") or ""),
+    )
+    report["stages"]["render_frontend_validation"] = render_validation_stage
+    if str(render_validation_stage.get("status") or "") == "error":
+        error_bits = list(render_validation_stage.get("failures") or [])
+        stage_error = str(render_validation_stage.get("error") or "").strip()
+        if stage_error:
+            error_bits.append(stage_error)
+        report["errors"].append(
+            "render frontend validation failed"
+            + (f": {'; '.join(str(bit) for bit in error_bits if str(bit).strip())}" if error_bits else "")
+        )
+        report["status"] = "error"
+        _write_json(ops_report_path, report)
+        _release_daily_update_run_lock(run_lock_path)
+        return 1
+
     if str(report.get("status") or "") == "error":
         _release_daily_update_run_lock(run_lock_path)
         return int((report.get("stages") or {}).get("current_day_multi_profile", {}).get("exit_code") or 1)
@@ -4645,6 +4766,28 @@ def main() -> int:
         "--git-commit-message",
         default="Daily update {date}",
         help="Commit message template used when --git-push on. Supports {date}, {next_date}, and {workflow} placeholders.",
+    )
+    ap.add_argument(
+        "--validate-render-frontend",
+        choices=["on", "off"],
+        default="on",
+        help="If on during --workflow ui-daily, run the Render frontend smoke after a successful build/push and fail the workflow if deployed cards/live endpoints do not validate.",
+    )
+    ap.add_argument(
+        "--render-validation-base-url",
+        default="",
+        help="Optional Render base URL override for the post-push frontend smoke (defaults to --live-lens-base-url, MLB_BETTING_BASE_URL, BASE_URL, RENDER_URL, or RENDER_EXTERNAL_URL).",
+    )
+    ap.add_argument(
+        "--render-validation-cron-token",
+        default="",
+        help="Optional cron token override for the post-push frontend smoke (defaults to --live-lens-cron-token, MLB_BETTING_CRON_TOKEN, MLB_CRON_TOKEN, or CRON_TOKEN).",
+    )
+    ap.add_argument(
+        "--render-validation-timeout-seconds",
+        type=int,
+        default=45,
+        help="HTTP timeout used by the post-push Render frontend smoke during --workflow ui-daily.",
     )
     ap.add_argument(
         "--build-next-day",
