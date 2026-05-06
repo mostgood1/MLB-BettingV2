@@ -18,8 +18,6 @@
   const DETAIL_REQUEST_TIMEOUT_MS = 15000;
   const HYDRATE_CARD_CONCURRENCY = 2;
   const INITIAL_LIVE_PRIORITY_CARD_LIMIT = 2;
-  const INITIAL_CARDS_RETRY_LIMIT = 2;
-  const INITIAL_CARDS_RETRY_DELAY_MS = 1500;
 
   const root = {
     headerMeta: document.getElementById("cardsHeaderMeta"),
@@ -3025,48 +3023,6 @@
     return await response.json();
   }
 
-  function isTransientCardsLoadError(error) {
-    const message = String(error?.message || "").toLowerCase();
-    if (!message) return false;
-    return (
-      message.includes("timeout")
-      || message.includes("failed to fetch")
-      || message.includes("networkerror")
-      || message.includes("load failed")
-      || message.includes("http 502")
-      || message.includes("http 503")
-      || message.includes("http 504")
-    );
-  }
-
-  function delay(ms) {
-    return new Promise((resolve) => window.setTimeout(resolve, Math.max(0, Number(ms) || 0)));
-  }
-
-  async function fetchCardsPayloadWithRetry() {
-    let attempt = 0;
-    let lastError = null;
-    while (attempt <= INITIAL_CARDS_RETRY_LIMIT) {
-      try {
-        if (attempt > 0 && root.headerMeta) {
-          root.headerMeta.textContent = `Retrying slate load (${attempt}/${INITIAL_CARDS_RETRY_LIMIT})…`;
-        }
-        return await fetchJson(
-          `/api/cards?date=${encodeURIComponent(state.date)}`,
-          { timeoutMs: CARDS_REQUEST_TIMEOUT_MS }
-        );
-      } catch (error) {
-        lastError = error;
-        if (attempt >= INITIAL_CARDS_RETRY_LIMIT || !isTransientCardsLoadError(error)) {
-          throw error;
-        }
-        attempt += 1;
-        await delay(INITIAL_CARDS_RETRY_DELAY_MS * attempt);
-      }
-    }
-    throw lastError || new Error("Cards load failed");
-  }
-
   async function loadCardDetail(card, isRefresh) {
     const detail = ensureDetail(card);
     try {
@@ -3301,7 +3257,10 @@
     }
 
     try {
-      const payload = await fetchCardsPayloadWithRetry();
+      const payload = await fetchJson(
+        `/api/cards?date=${encodeURIComponent(state.date)}`,
+        { timeoutMs: CARDS_REQUEST_TIMEOUT_MS }
+      );
       const nextPayload = payload || {};
       const nextDate = String(nextPayload?.date || state.date || "");
       const nextCards = sortCardsForStrip(Array.isArray(nextPayload?.cards) ? nextPayload.cards : []);
