@@ -16656,7 +16656,7 @@ def api_cron_config() -> Response:
     if auth_error is not None:
         return auth_error
     loop_status = _ensure_live_lens_background_loop_running()
-    return jsonify(
+    return _jsonify_no_store(
         _with_app_build(
             {
                 "ok": True,
@@ -18501,19 +18501,20 @@ def api_hitter_top_props() -> Response:
 def api_season_manifest(season: int) -> Response:
     prebuilt_payload = _prebuilt_season_manifest_payload(int(season))
     if isinstance(prebuilt_payload, dict):
-        return jsonify(_with_app_build(prebuilt_payload))
+        return _jsonify_no_store(_with_app_build(prebuilt_payload))
 
     manifest_path, manifest = _load_season_manifest(int(season))
     if not manifest_path or not isinstance(manifest, dict):
-        return jsonify(
+        return _jsonify_no_store(
             _with_app_build(
                 {
                     "season": int(season),
                     "found": False,
                     "error": "season_manifest_missing",
                 }
-            )
-        ), 404
+            ),
+            404,
+        )
 
     payload = _supplement_season_manifest_payload(int(season), dict(manifest))
     meta = dict(payload.get("meta") or {})
@@ -18523,7 +18524,7 @@ def api_season_manifest(season: int) -> Response:
     meta["app"] = dict(_APP_BUILD_INFO)
     payload["meta"] = meta
     payload["found"] = True
-    return jsonify(_with_app_build(payload))
+    return _jsonify_no_store(_with_app_build(payload))
 
 
 @app.get("/api/season/<int:season>/betting-cards")

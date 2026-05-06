@@ -599,6 +599,27 @@ class CardsExtraMarketSupportTests(unittest.TestCase):
             with flask_frontend._PAYLOAD_CACHE_LOCK:
                 flask_frontend._PAYLOAD_CACHE.clear()
 
+    def test_api_config_and_season_manifest_disable_http_caching(self) -> None:
+        season_payload = {"season": 2026, "found": True, "days": []}
+
+        with (
+            flask_frontend.app.test_client() as client,
+            patch.object(flask_frontend, "_require_cron_auth", return_value=None),
+            patch.object(flask_frontend, "_prebuilt_season_manifest_payload", return_value=season_payload),
+        ):
+            config_response = client.get("/api/cron/config")
+            season_response = client.get("/api/season/2026")
+
+        self.assertEqual(200, config_response.status_code)
+        self.assertEqual("no-store, no-cache, max-age=0, must-revalidate", config_response.headers.get("Cache-Control"))
+        self.assertEqual("no-cache", config_response.headers.get("Pragma"))
+        self.assertEqual("0", config_response.headers.get("Expires"))
+
+        self.assertEqual(200, season_response.status_code)
+        self.assertEqual("no-store, no-cache, max-age=0, must-revalidate", season_response.headers.get("Cache-Control"))
+        self.assertEqual("no-cache", season_response.headers.get("Pragma"))
+        self.assertEqual("0", season_response.headers.get("Expires"))
+
     def test_pitcher_ladder_market_context_merges_next_day_live_rollover_lines(self) -> None:
         current_path = Path("data/market/oddsapi/oddsapi_pitcher_props_2026_05_04.json")
         rollover_path = Path("data/market/oddsapi/oddsapi_pitcher_props_2026_05_05.json")
