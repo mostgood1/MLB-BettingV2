@@ -1,39 +1,27 @@
 {
   "date": "2026-05-08",
   "season": 2026,
-  "generated_at": "2026-05-06T16:15:13.980417",
+  "generated_at": "2026-05-07T11:54:25.480668",
   "tool": "tools/daily_update_multi_profile.py",
-  "daily_update_tool": "tools/daily_update.py",
-  "python_exe": "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python3.11",
+  "daily_update_tool": "tools\\daily_update.py",
+  "python_exe": ".venv\\Scripts\\python.exe",
   "passthrough_args": [
     "--refresh-season-manifests",
     "off",
     "--build-next-day",
     "off",
-    "--refresh-season-manifests",
-    "off",
-    "--sims",
-    "1000",
-    "--workers",
-    "4",
-    "--pbp",
-    "off",
-    "--use-roster-artifacts",
-    "on",
-    "--write-roster-artifacts",
-    "on",
     "--seed",
-    "258414048",
+    "1337",
     "--seed-source",
-    "auto_future_date"
+    "default_fixed"
   ],
   "profiles": {
     "game_recos": {
       "profile": "game_roi",
-      "out_dir": "data/daily",
-      "summary_path": "data/daily/daily_summary_2026_05_08.json",
-      "sim_dir": "data/daily/sims/2026-05-08",
-      "snapshot_dir": "data/daily/snapshots/2026-05-08",
+      "out_dir": "data\\daily",
+      "summary_path": "data\\daily\\daily_summary_2026_05_08.json",
+      "sim_dir": "data\\daily\\sims\\2026-05-08",
+      "snapshot_dir": "data\\daily\\snapshots\\2026-05-08",
       "extra_args": [
         "--write-derived-artifacts",
         "off",
@@ -41,26 +29,26 @@
         "data/tuning/pitch_model_overrides/_tmp_hr_bbhbp1p04_starterbbhbp1p04.json"
       ],
       "exit_code": 0,
-      "duration_s": 120.584,
+      "duration_s": 1308.464,
       "skipped": false
     },
     "pitcher_props_recos": {
       "profile": "pitcher_props",
-      "out_dir": "data/daily_pitcher_props",
-      "summary_path": "data/daily_pitcher_props/daily_summary_2026_05_08.json",
-      "sim_dir": "data/daily_pitcher_props/sims/2026-05-08",
-      "snapshot_dir": "data/daily_pitcher_props/snapshots/2026-05-08",
+      "out_dir": "data\\daily_pitcher_props",
+      "summary_path": "data\\daily_pitcher_props\\daily_summary_2026_05_08.json",
+      "sim_dir": "data\\daily_pitcher_props\\sims\\2026-05-08",
+      "snapshot_dir": "data\\daily_pitcher_props\\snapshots\\2026-05-08",
       "extra_args": [],
       "exit_code": 0,
-      "skipped": true,
-      "skip_reason": "no pitcher prop market entries in data/market/oddsapi/oddsapi_pitcher_props_2026_05_08.json"
+      "duration_s": 1097.397,
+      "skipped": false
     },
     "hitter_props_recos": {
       "profile": "hitter_props",
-      "out_dir": "data/daily_hitter_props",
-      "summary_path": "data/daily_hitter_props/daily_summary_2026_05_08.json",
-      "sim_dir": "data/daily_hitter_props/sims/2026-05-08",
-      "snapshot_dir": "data/daily_hitter_props/snapshots/2026-05-08",
+      "out_dir": "data\\daily_hitter_props",
+      "summary_path": "data\\daily_hitter_props\\daily_summary_2026_05_08.json",
+      "sim_dir": "data\\daily_hitter_props\\sims\\2026-05-08",
+      "snapshot_dir": "data\\daily_hitter_props\\snapshots\\2026-05-08",
       "extra_args": [
         "--bip-roe-rate",
         "0.015",
@@ -72,14 +60,224 @@
         "24"
       ],
       "exit_code": 0,
-      "skipped": true,
-      "skip_reason": "no hitter prop market entries in data/market/oddsapi/oddsapi_hitter_props_2026_05_08.json"
+      "duration_s": 634.107,
+      "skipped": false
     }
   },
   "selection_source": "_tmp_best_set_selection_holdout13.json",
-  "best_selection": null,
+  "best_selection": {
+    "policy": {
+      "totals_side": "over",
+      "totals_diff_min": 0.4,
+      "ml_side": "home",
+      "ml_edge_min": 0.01,
+      "hitter_edge_min": 0.0,
+      "pitcher_market": "outs",
+      "pitcher_side": "over",
+      "pitcher_edge_min": 0.01
+    },
+    "scores": {
+      "baseline_default": {
+        "totals": {
+          "n": 24,
+          "wins": 13,
+          "losses": 11,
+          "profit_u": 0.575,
+          "roi": 0.024
+        },
+        "ml": {
+          "n": 28,
+          "wins": 15,
+          "losses": 13,
+          "profit_u": 4.397,
+          "roi": 0.157
+        },
+        "game_combo_units": 4.972,
+        "game_combo_bets": 52,
+        "hitter_props": {
+          "n": 537,
+          "wins": 321,
+          "losses": 216,
+          "profit_u": 135.281,
+          "roi": 0.2519
+        },
+        "pitcher_props": {
+          "n": 58,
+          "wins": 30,
+          "losses": 28,
+          "profit_u": 3.666,
+          "roi": 0.0632
+        }
+      },
+      "hr_106_104": {
+        "totals": {
+          "n": 24,
+          "wins": 13,
+          "losses": 11,
+          "profit_u": 0.575,
+          "roi": 0.024
+        },
+        "ml": {
+          "n": 28,
+          "wins": 15,
+          "losses": 13,
+          "profit_u": 4.397,
+          "roi": 0.157
+        },
+        "game_combo_units": 4.972,
+        "game_combo_bets": 52,
+        "hitter_props": {
+          "n": 537,
+          "wins": 322,
+          "losses": 215,
+          "profit_u": 137.917,
+          "roi": 0.2568
+        },
+        "pitcher_props": {
+          "n": 58,
+          "wins": 30,
+          "losses": 28,
+          "profit_u": 3.666,
+          "roi": 0.0632
+        }
+      },
+      "hr_105_103": {
+        "totals": {
+          "n": 24,
+          "wins": 13,
+          "losses": 11,
+          "profit_u": 0.575,
+          "roi": 0.024
+        },
+        "ml": {
+          "n": 28,
+          "wins": 15,
+          "losses": 13,
+          "profit_u": 4.397,
+          "roi": 0.157
+        },
+        "game_combo_units": 4.972,
+        "game_combo_bets": 52,
+        "hitter_props": {
+          "n": 537,
+          "wins": 322,
+          "losses": 215,
+          "profit_u": 137.887,
+          "roi": 0.2568
+        },
+        "pitcher_props": {
+          "n": 58,
+          "wins": 30,
+          "losses": 28,
+          "profit_u": 3.666,
+          "roi": 0.0632
+        }
+      },
+      "hr_104_104": {
+        "totals": {
+          "n": 24,
+          "wins": 13,
+          "losses": 11,
+          "profit_u": 0.575,
+          "roi": 0.024
+        },
+        "ml": {
+          "n": 27,
+          "wins": 15,
+          "losses": 12,
+          "profit_u": 5.397,
+          "roi": 0.1999
+        },
+        "game_combo_units": 5.972,
+        "game_combo_bets": 51,
+        "hitter_props": {
+          "n": 537,
+          "wins": 323,
+          "losses": 214,
+          "profit_u": 139.917,
+          "roi": 0.2606
+        },
+        "pitcher_props": {
+          "n": 58,
+          "wins": 30,
+          "losses": 28,
+          "profit_u": 3.666,
+          "roi": 0.0632
+        }
+      },
+      "roe_fc_combo": {
+        "totals": {
+          "n": 27,
+          "wins": 13,
+          "losses": 14,
+          "profit_u": -2.425,
+          "roi": -0.0898
+        },
+        "ml": {
+          "n": 28,
+          "wins": 15,
+          "losses": 13,
+          "profit_u": 4.397,
+          "roi": 0.157
+        },
+        "game_combo_units": 1.972,
+        "game_combo_bets": 55,
+        "hitter_props": {
+          "n": 537,
+          "wins": 323,
+          "losses": 214,
+          "profit_u": 140.37,
+          "roi": 0.2614
+        },
+        "pitcher_props": {
+          "n": 58,
+          "wins": 30,
+          "losses": 28,
+          "profit_u": 3.666,
+          "roi": 0.0632
+        }
+      },
+      "roe_fc_guardrail": {
+        "totals": {
+          "n": 24,
+          "wins": 13,
+          "losses": 11,
+          "profit_u": 0.575,
+          "roi": 0.024
+        },
+        "ml": {
+          "n": 28,
+          "wins": 15,
+          "losses": 13,
+          "profit_u": 4.397,
+          "roi": 0.157
+        },
+        "game_combo_units": 4.972,
+        "game_combo_bets": 52,
+        "hitter_props": {
+          "n": 537,
+          "wins": 321,
+          "losses": 216,
+          "profit_u": 134.735,
+          "roi": 0.2509
+        },
+        "pitcher_props": {
+          "n": 58,
+          "wins": 30,
+          "losses": 28,
+          "profit_u": 3.666,
+          "roi": 0.0632
+        }
+      }
+    },
+    "best": {
+      "game_roi_set": "hr_104_104",
+      "pitcher_props_set": "baseline_default",
+      "hitter_props_set": "roe_fc_combo"
+    }
+  },
   "official_locked_policy": {
-    "card_path": "data/daily/daily_summary_2026_05_08_locked_policy.json",
+    "card_path": "data\\daily\\daily_summary_2026_05_08_locked_policy.json",
     "cap_profile": "nototals_p1_tbheavy11_r1_nohr",
     "caps": {
       "totals": 0,
@@ -103,14 +301,14 @@
     },
     "selected_counts": {
       "totals": 0,
-      "ml": 0,
+      "ml": 1,
       "pitcher_props": 0,
-      "hitter_props": 0,
+      "hitter_props": 3,
       "hitter_home_runs": 0,
-      "hitter_hits": 0,
+      "hitter_hits": 2,
       "hitter_hits_runs_rbis": 0,
       "hitter_total_bases": 0,
-      "hitter_runs": 0,
+      "hitter_runs": 1,
       "hitter_rbis": 0
     },
     "shadow_counts": {
@@ -141,19 +339,16 @@
       }
     },
     "warnings": [
-      "No game lines entries found in data/market/oddsapi/oddsapi_game_lines_2026_05_08.json",
-      "No pitcher lines entries found in data/market/oddsapi/oddsapi_pitcher_props_2026_05_08.json",
-      "No hitter lines entries found in data/market/oddsapi/oddsapi_hitter_props_2026_05_08.json",
       "No support-qualified hitter strikeout shadow candidates were published; current hitter sim artifacts may not include strikeout distributions yet."
     ],
     "explanation_diagnostics": {
-      "selected_rows_n": 0,
+      "selected_rows_n": 4,
       "sparse_support_n": 0,
       "sparse_support_rate": 0.0,
       "support_min_reasons": 2,
       "status_counts": {
-        "strong": 0,
-        "supported": 0,
+        "strong": 2,
+        "supported": 2,
         "thin": 0,
         "none": 0
       },
@@ -170,11 +365,11 @@
           "examples": []
         },
         "ml": {
-          "selected_n": 0,
+          "selected_n": 1,
           "sparse_support_n": 0,
           "status_counts": {
             "strong": 0,
-            "supported": 0,
+            "supported": 1,
             "thin": 0,
             "none": 0
           },
@@ -203,11 +398,11 @@
           "examples": []
         },
         "hitter_hits": {
-          "selected_n": 0,
+          "selected_n": 2,
           "sparse_support_n": 0,
           "status_counts": {
-            "strong": 0,
-            "supported": 0,
+            "strong": 1,
+            "supported": 1,
             "thin": 0,
             "none": 0
           },
@@ -236,10 +431,10 @@
           "examples": []
         },
         "hitter_runs": {
-          "selected_n": 0,
+          "selected_n": 1,
           "sparse_support_n": 0,
           "status_counts": {
-            "strong": 0,
+            "strong": 1,
             "supported": 0,
             "thin": 0,
             "none": 0
@@ -262,13 +457,13 @@
     },
     "audit_track": {
       "official_card_explanation_support": {
-        "selected_rows_n": 0,
+        "selected_rows_n": 4,
         "sparse_support_n": 0,
         "sparse_support_rate": 0.0,
         "support_min_reasons": 2,
         "status_counts": {
-          "strong": 0,
-          "supported": 0,
+          "strong": 2,
+          "supported": 2,
           "thin": 0,
           "none": 0
         },
@@ -285,11 +480,11 @@
             "examples": []
           },
           "ml": {
-            "selected_n": 0,
+            "selected_n": 1,
             "sparse_support_n": 0,
             "status_counts": {
               "strong": 0,
-              "supported": 0,
+              "supported": 1,
               "thin": 0,
               "none": 0
             },
@@ -318,11 +513,11 @@
             "examples": []
           },
           "hitter_hits": {
-            "selected_n": 0,
+            "selected_n": 2,
             "sparse_support_n": 0,
             "status_counts": {
-              "strong": 0,
-              "supported": 0,
+              "strong": 1,
+              "supported": 1,
               "thin": 0,
               "none": 0
             },
@@ -351,10 +546,10 @@
             "examples": []
           },
           "hitter_runs": {
-            "selected_n": 0,
+            "selected_n": 1,
             "sparse_support_n": 0,
             "status_counts": {
-              "strong": 0,
+              "strong": 1,
               "supported": 0,
               "thin": 0,
               "none": 0
@@ -394,8 +589,8 @@
           "ml": {
             "market": "ml",
             "support_min_reasons": 2,
-            "baseline_selected_n": 0,
-            "final_selected_n": 0,
+            "baseline_selected_n": 1,
+            "final_selected_n": 1,
             "removed_sparse_support_n": 0,
             "replacement_added_n": 0,
             "selection_shortfall_n": 0,
@@ -414,8 +609,8 @@
           "hitter_props": {
             "market": "hitter_props",
             "support_min_reasons": 2,
-            "baseline_selected_n": 0,
-            "final_selected_n": 0,
+            "baseline_selected_n": 3,
+            "final_selected_n": 3,
             "removed_sparse_support_n": 0,
             "replacement_added_n": 0,
             "selection_shortfall_n": 0,
@@ -434,8 +629,8 @@
           "hitter_hits": {
             "market": "hitter_hits",
             "support_min_reasons": 2,
-            "baseline_selected_n": 0,
-            "final_selected_n": 0,
+            "baseline_selected_n": 2,
+            "final_selected_n": 2,
             "removed_sparse_support_n": 0,
             "replacement_added_n": 0,
             "selection_shortfall_n": 0,
@@ -464,8 +659,8 @@
           "hitter_runs": {
             "market": "hitter_runs",
             "support_min_reasons": 2,
-            "baseline_selected_n": 0,
-            "final_selected_n": 0,
+            "baseline_selected_n": 1,
+            "final_selected_n": 1,
             "removed_sparse_support_n": 0,
             "replacement_added_n": 0,
             "selection_shortfall_n": 0,
@@ -531,8 +726,8 @@
           },
           "hitter_rbis": {
             "market": "hitter_rbis",
-            "evaluated_n": 0,
-            "kept_n": 0,
+            "evaluated_n": 1,
+            "kept_n": 1,
             "removed_sparse_support_n": 0,
             "removed_examples": []
           }
@@ -558,14 +753,14 @@
     "error": null
   },
   "hr_targets": {
-    "artifact_path": "data/daily/daily_summary_2026_05_08_hr_targets.json",
-    "games": 4,
-    "rows": 6,
+    "artifact_path": "data\\daily\\daily_summary_2026_05_08_hr_targets.json",
+    "games": 15,
+    "rows": 27,
     "policy_preset": "default",
     "error": null
   },
   "rfi_targets": {
-    "artifact_path": "data/daily/daily_summary_2026_05_08_rfi_targets.json",
+    "artifact_path": "data\\daily\\daily_summary_2026_05_08_rfi_targets.json",
     "games": 2,
     "rows": 2,
     "locked": true,
@@ -573,10 +768,12 @@
   },
   "timings": {
     "profiles": {
-      "game_recos": 120.584
+      "game_recos": 1308.464,
+      "pitcher_props_recos": 1097.397,
+      "hitter_props_recos": 634.107
     },
-    "locked_policy_s": 0.18,
-    "total_s": 120.783
+    "locked_policy_s": 10.841,
+    "total_s": 3051.286
   },
   "failures": [],
   "failures_n": 0
