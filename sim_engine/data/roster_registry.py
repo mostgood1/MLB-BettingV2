@@ -142,6 +142,156 @@ def _prev_date_for_roster_type(snapshots: Dict[str, Any], date_str: str, roster_
         return None
 
 
+def build_latest_registry_team_by_player(
+    *,
+    as_of_date: Optional[str] = None,
+    registry_dir: Optional[Path] = None,
+    roster_types: Tuple[str, ...] = ("active", "40Man", "nonRosterInvitees"),
+) -> Dict[int, Dict[str, Any]]:
+    """Return each player's latest known team from registry snapshots before `as_of_date`."""
+
+    registry_dir = registry_dir or default_registry_dir()
+    cutoff = str(as_of_date or "").strip()
+    latest_by_player: Dict[int, Dict[str, Any]] = {}
+
+    try:
+        paths = sorted(Path(registry_dir).glob("team_*.json"))
+    except Exception:
+        paths = []
+
+    for path in paths:
+        doc = _load_json(path)
+        if not doc:
+            continue
+        team_id = _safe_int(doc.get("team_id"), 0)
+        if team_id <= 0:
+            continue
+        team_abbr = str(doc.get("team_abbr") or "").strip().upper()
+        snapshots = doc.get("snapshots") or {}
+        if not isinstance(snapshots, dict):
+            continue
+
+        for snap_date in sorted(snapshots.keys()):
+            snap_date_s = str(snap_date)
+            if cutoff and snap_date_s >= cutoff:
+                continue
+            by_rt = snapshots.get(snap_date_s) or {}
+            if not isinstance(by_rt, dict):
+                continue
+
+            for roster_type in roster_types:
+                roster_snapshot = by_rt.get(str(roster_type)) or {}
+                if not isinstance(roster_snapshot, dict):
+                    continue
+                players = roster_snapshot.get("players") or []
+                if not isinstance(players, list):
+                    continue
+
+                for player in players:
+                    if not isinstance(player, dict):
+                        continue
+                    pid = _safe_int(player.get("player_id"), 0)
+                    if pid <= 0:
+                        continue
+                    prev = latest_by_player.get(pid) or {}
+                    prev_date = str(prev.get("date") or "")
+                    if prev_date and prev_date > snap_date_s:
+                        continue
+                    latest_by_player[pid] = {
+                        "team_id": int(team_id),
+                        "team_abbr": team_abbr,
+                        "date": snap_date_s,
+                    }
+
+    return latest_by_player
+
+
+def sanitize_rosters_by_latest_registry_team(
+    *,
+    team_id: int,
+    team_abbr: str,
+    rosters_by_type: Dict[str, List[Dict[str, Any]]],
+    latest_team_by_player: Dict[int, Dict[str, Any]],
+    min_conflicts: int = 4,
+    min_conflict_ratio: float = 0.15,
+    activation_roster_type: str = "active",
+    sanitize_roster_types: Tuple[str, ...] = ("active", "40Man", "nonRosterInvitees"),
+) -> Tuple[Dict[str, List[Dict[str, Any]]], Dict[str, Any]]:
+    """Filter clearly contaminated team rosters using prior registry ownership.
+
+    The filter is activated only when the fetched roster has several players whose latest
+    known team is a different club, which protects normal same-day moves while guarding
+    against source payload corruption.
+    """
+
+    team_id = int(team_id)
+    team_abbr = str(team_abbr or "").strip().upper()
+    sanitized: Dict[str, List[Dict[str, Any]]] = {
+        str(rt): list(entries or []) for rt, entries in (rosters_by_type or {}).items()
+    }
+
+    report: Dict[str, Any] = {
+        "team_id": int(team_id),
+        "team_abbr": team_abbr,
+        "applied": False,
+        "activation_roster_type": str(activation_roster_type),
+        "conflict_count": 0,
+        "activation_player_count": 0,
+        "conflict_ratio": 0.0,
+        "removed_players": [],
+    }
+
+    activation_entries = sanitized.get(str(activation_roster_type)) or []
+    conflicting_ids: set[int] = set()
+    removed_players: List[Dict[str, Any]] = []
+
+    for entry in activation_entries:
+        if not isinstance(entry, dict):
+            continue
+        pid, full_name = _person_obj(entry)
+        if pid <= 0:
+            continue
+        latest = latest_team_by_player.get(pid) or {}
+        latest_team_id = _safe_int(latest.get("team_id"), 0)
+        if latest_team_id <= 0 or latest_team_id == team_id:
+            continue
+        conflicting_ids.add(pid)
+        removed_players.append(
+            {
+                "player_id": int(pid),
+                "full_name": full_name,
+                "latest_team_id": int(latest_team_id),
+                "latest_team_abbr": str(latest.get("team_abbr") or ""),
+                "latest_date": str(latest.get("date") or ""),
+            }
+        )
+
+    activation_player_count = len({_person_obj(entry)[0] for entry in activation_entries if isinstance(entry, dict) and _person_obj(entry)[0] > 0})
+    conflict_count = len(conflicting_ids)
+    conflict_ratio = (float(conflict_count) / float(activation_player_count)) if activation_player_count > 0 else 0.0
+    report["conflict_count"] = int(conflict_count)
+    report["activation_player_count"] = int(activation_player_count)
+    report["conflict_ratio"] = float(conflict_ratio)
+
+    if conflict_count < int(min_conflicts) or conflict_ratio < float(min_conflict_ratio):
+        return sanitized, report
+
+    report["applied"] = True
+    report["removed_players"] = sorted(removed_players, key=lambda item: (str(item.get("full_name") or ""), int(item.get("player_id") or 0)))
+
+    for roster_type in sanitize_roster_types:
+        entries = sanitized.get(str(roster_type))
+        if not isinstance(entries, list):
+            continue
+        sanitized[str(roster_type)] = [
+            entry
+            for entry in entries
+            if _person_obj(entry)[0] <= 0 or _person_obj(entry)[0] not in conflicting_ids
+        ]
+
+    return sanitized, report
+
+
 def build_roster_events_for_date(
     *,
     date_str: str,

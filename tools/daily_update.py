@@ -75,7 +75,12 @@ from sim_engine.simulate import simulate_game
 from sim_engine.pitch_model import PitchModelConfig
 from sim_engine.prob_calibration import apply_prop_prob_calibration
 from sim_engine.data.roster_artifact import read_game_roster_artifact, write_game_roster_artifact
-from sim_engine.data.roster_registry import build_roster_events_for_date, update_team_roster_registry
+from sim_engine.data.roster_registry import (
+    build_latest_registry_team_by_player,
+    build_roster_events_for_date,
+    sanitize_rosters_by_latest_registry_team,
+    update_team_roster_registry,
+)
 from sim_engine.forward_tuning import (
     FORWARD_BVP_MATCHUP_MODE,
     FORWARD_BVP_MIN_PA,
@@ -5526,6 +5531,7 @@ def main() -> int:
             "teams": {},
             "players": [],
         }
+        latest_registry_team_by_player = build_latest_registry_team_by_player(as_of_date=str(args.date))
 
         for tid, tinfo in sorted(teams_by_id.items(), key=lambda kv: kv[0]):
             team_obj: Dict[str, Any] = {"team": tinfo, "rosters": {}}
@@ -5566,6 +5572,50 @@ def main() -> int:
                             "error": f"{type(e).__name__}: {e}",
                         }
                     )
+
+            sanitized_rosters, sanitization_report = sanitize_rosters_by_latest_registry_team(
+                team_id=int(tid),
+                team_abbr=str(tinfo.get("abbreviation") or ""),
+                rosters_by_type=team_obj.get("rosters") or {},
+                latest_team_by_player=latest_registry_team_by_player,
+            )
+            team_obj["rosters"] = sanitized_rosters
+            if sanitization_report.get("applied"):
+                team_obj["registry_sanitization"] = sanitization_report
+                roster_artifacts.setdefault("warnings", []).append(
+                    {
+                        "team_id": int(tid),
+                        "warning": "sanitized_contaminated_roster",
+                        "details": sanitization_report,
+                    }
+                )
+
+                injured_ids.clear()
+                injured_players = []
+                for rt in roster_types:
+                    entries = (team_obj.get("rosters") or {}).get(str(rt)) or []
+                    for e in entries:
+                        if not isinstance(e, dict):
+                            continue
+                        person = (e.get("person") or {})
+                        try:
+                            pid = int(person.get("id") or 0)
+                        except Exception:
+                            pid = 0
+                        if pid <= 0:
+                            continue
+                        status = e.get("status") or {}
+                        if _status_is_injured(status):
+                            injured_ids.add(int(pid))
+                            injured_players.append(
+                                {
+                                    "player_id": int(pid),
+                                    "full_name": person.get("fullName"),
+                                    "status": status,
+                                    "position": e.get("position"),
+                                    "roster_type_source": str(rt),
+                                }
+                            )
 
             # Persist a per-team roster history file for longitudinal tracking.
             try:
