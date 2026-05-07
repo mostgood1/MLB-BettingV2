@@ -2453,6 +2453,10 @@ def _build_next_day_ui_daily_command(args: argparse.Namespace, raw_argv: List[st
             "--git-commit-message",
             "--build-next-day",
             "--next-date",
+            "--validate-render-frontend",
+            "--render-validation-base-url",
+            "--render-validation-cron-token",
+            "--render-validation-timeout-seconds",
         ),
         flags_no_values=(),
     )
@@ -2479,6 +2483,8 @@ def _build_next_day_ui_daily_command(args: argparse.Namespace, raw_argv: List[st
         "--git-push",
         "off",
         "--build-next-day",
+        "off",
+        "--validate-render-frontend",
         "off",
     ]
     cmd.extend(passthrough_args)
@@ -2765,6 +2771,7 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
         "requested": bool(git_push_enabled),
         "remote": str(getattr(args, "git_push_remote", "origin") or "origin"),
         "branch": str(getattr(args, "git_push_branch", "") or ""),
+        "phases": [],
     }
     preexisting_changes: Optional[set[str]] = None
     if git_push_enabled:
@@ -2778,6 +2785,85 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
             report["warnings"].append(f"git push disabled: {type(exc).__name__}: {exc}")
             git_push_enabled = False
     report["git_push"] = git_push_stage
+
+    def _refresh_git_push_stage_status() -> None:
+        phase_entries = [
+            entry
+            for entry in list(report.get("git_push", {}).get("phases") or [])
+            if isinstance(entry, dict)
+        ]
+        statuses = [str(entry.get("status") or "").strip().lower() for entry in phase_entries if str(entry.get("status") or "").strip()]
+        if any(status == "error" for status in statuses):
+            report["git_push"]["status"] = "error"
+        elif any(status == "ok" for status in statuses):
+            report["git_push"]["status"] = "ok"
+        elif any(status == "warning" for status in statuses):
+            report["git_push"]["status"] = "warning"
+        elif statuses:
+            report["git_push"]["status"] = "skipped"
+
+    def _run_ui_daily_git_push_phase(
+        *,
+        phase_name: str,
+        phase_label: str,
+        baseline_changes: Optional[set[str]],
+        commit_message_suffix: str,
+        next_date_for_commit: str = "",
+    ) -> Optional[set[str]]:
+        phase_entry: Dict[str, Any] = {
+            "phase": str(phase_name),
+            "label": str(phase_label),
+            "requested": bool(git_push_enabled),
+        }
+        report["git_push"].setdefault("phases", []).append(phase_entry)
+        if not git_push_enabled:
+            phase_entry.update({
+                "status": "skipped",
+                "reason": "git_push=off",
+            })
+            _refresh_git_push_stage_status()
+            return baseline_changes
+
+        try:
+            before = set(baseline_changes if baseline_changes is not None else _git_current_change_set(_ROOT_DIR))
+            phase_entry["preexisting_change_count"] = int(len(before))
+            _ensure_dir(ops_report_path.parent)
+            _write_json(ops_report_path, report)
+            print(f"[ui-daily] Committing and pushing {phase_label} for {args.date}...")
+            base_commit_message = str(getattr(args, "git_commit_message", "Daily update {date}") or "Daily update {date}")
+            git_push_result = _maybe_git_push_daily_update(
+                repo_ROOT_DIR=_ROOT_DIR,
+                date_str=str(args.date),
+                workflow="ui-daily",
+                preexisting_changes=before,
+                enabled=True,
+                remote=str(getattr(args, "git_push_remote", "origin") or "origin"),
+                branch=str(getattr(args, "git_push_branch", "") or ""),
+                commit_message=f"{base_commit_message} [{commit_message_suffix}]",
+                next_date=str(next_date_for_commit or ""),
+            )
+            phase_entry.update(git_push_result)
+            if git_push_result.get("commit_sha"):
+                report["git_push"]["last_commit_sha"] = str(git_push_result.get("commit_sha") or "")
+                report["git_push"]["last_phase"] = str(phase_name)
+            _refresh_git_push_stage_status()
+            print(
+                f"[ui-daily] Git push phase {phase_name}: {str(git_push_result.get('status') or 'unknown')}"
+                + (f" ({git_push_result.get('commit_sha')})" if git_push_result.get("commit_sha") else "")
+            )
+            return None
+        except Exception as exc:
+            phase_entry.update({
+                "status": "error",
+                "error": f"{type(exc).__name__}: {exc}",
+            })
+            report["errors"].append(f"git push ({phase_name}) failed: {type(exc).__name__}: {exc}")
+            report["status"] = "error"
+            _refresh_git_push_stage_status()
+            _ensure_dir(ops_report_path.parent)
+            _write_json(ops_report_path, report)
+            _release_daily_update_run_lock(run_lock_path)
+            return False  # type: ignore[return-value]
 
     def _prior_day_settlement_diagnostics(settled_card: Dict[str, Any], date_str: str) -> Dict[str, Any]:
         unresolved_rows = [
@@ -3102,6 +3188,15 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
             }
             report["errors"].append(f"prior-day top-props artifact build failed: {type(exc).__name__}: {exc}")
     report["stages"]["prior_day_top_props_artifact"] = prior_top_props_stage
+
+    preexisting_changes = _run_ui_daily_git_push_phase(
+        phase_name="prior_day",
+        phase_label=f"prior-day reconciliation outputs for {prior_date}",
+        baseline_changes=preexisting_changes,
+        commit_message_suffix=f"prior-day reconcile {prior_date}",
+    )
+    if preexisting_changes is False:
+        return 1
 
     odds_stage: Dict[str, Any]
     if str(getattr(args, "refresh_current_oddsapi", "on") or "on") == "on":
@@ -3508,6 +3603,15 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
         report=report,
     )
 
+    preexisting_changes = _run_ui_daily_git_push_phase(
+        phase_name="current_day",
+        phase_label=f"current-day artifacts for {args.date}",
+        baseline_changes=preexisting_changes,
+        commit_message_suffix=f"current-day build {args.date}",
+    )
+    if preexisting_changes is False:
+        return 1
+
     next_day_stage: Dict[str, Any]
     if build_next_day_enabled:
         print(f"[ui-daily] Building next-day forward outputs for {next_date_value}...")
@@ -3535,6 +3639,16 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
             "reason": "build_next_day=off",
         }
     report["stages"]["next_day_forward_build"] = next_day_stage
+
+    preexisting_changes = _run_ui_daily_git_push_phase(
+        phase_name="next_day",
+        phase_label=f"next-day forward outputs for {next_date_value}",
+        baseline_changes=preexisting_changes,
+        commit_message_suffix=f"next-day build {next_date_value}",
+        next_date_for_commit=str(next_date_value),
+    )
+    if preexisting_changes is False:
+        return 1
 
     current_inputs = _current_day_inputs_stage(game_out=game_out, date_str=str(args.date))
     report["stages"]["current_day_roster_snapshot"] = current_inputs["roster_snapshot"]
@@ -3569,36 +3683,6 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
     _ensure_dir(ops_report_path.parent)
     _write_json(ops_report_path, report)
     print(f"[ui-daily] Wrote ops report: {ops_report_path}")
-
-    if git_push_enabled and str(report.get("status") or "") != "error":
-        print(f"[ui-daily] Committing and pushing workflow outputs for {args.date}...")
-        try:
-            git_push_result = _maybe_git_push_daily_update(
-                repo_ROOT_DIR=_ROOT_DIR,
-                date_str=str(args.date),
-                workflow="ui-daily",
-                preexisting_changes=preexisting_changes,
-                enabled=True,
-                remote=str(getattr(args, "git_push_remote", "origin") or "origin"),
-                branch=str(getattr(args, "git_push_branch", "") or ""),
-                commit_message=str(getattr(args, "git_commit_message", "Daily update {date}") or "Daily update {date}"),
-                next_date=(str(next_date_value) if build_next_day_enabled else ""),
-            )
-            report["git_push"].update(git_push_result)
-            print(
-                f"[ui-daily] Git push status: {str(git_push_result.get('status') or 'unknown')}"
-                + (f" ({git_push_result.get('commit_sha')})" if git_push_result.get("commit_sha") else "")
-            )
-        except Exception as exc:
-            report["git_push"].update({
-                "status": "error",
-                "error": f"{type(exc).__name__}: {exc}",
-            })
-            report["errors"].append(f"git push failed: {type(exc).__name__}: {exc}")
-            report["status"] = "error"
-            _write_json(ops_report_path, report)
-            _release_daily_update_run_lock(run_lock_path)
-            return 1
 
     render_validation_stage = _run_render_frontend_validation_stage(
         args,
