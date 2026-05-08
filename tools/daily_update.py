@@ -3706,8 +3706,15 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
             + (f": {'; '.join(str(bit) for bit in error_bits if str(bit).strip())}" if error_bits else "")
         )
         report["status"] = "error"
-        _write_json(ops_report_path, report)
-        _release_daily_update_run_lock(run_lock_path)
+    _write_json(ops_report_path, report)
+
+    preexisting_changes = _run_ui_daily_git_push_phase(
+        phase_name="final_report",
+        phase_label=f"final ops/report state for {args.date}",
+        baseline_changes=preexisting_changes,
+        commit_message_suffix=f"final report {args.date}",
+    )
+    if preexisting_changes is False:
         return 1
 
     if str(report.get("status") or "") == "error":
