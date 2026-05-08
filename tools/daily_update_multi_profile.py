@@ -2074,7 +2074,7 @@ def _pitcher_workload_reason(
 
     if choice == "over":
         if stamina is not None and int(stamina) >= 90:
-            return f"His starter leash still looks solid at roughly {int(stamina)} pitches, which keeps the volume path available."
+            return f"His modeled workload cap still reaches roughly {int(stamina)} pitches, so the deeper-start path is still available if the outing stays efficient."
         if availability is not None and availability >= 1.03:
             return "The availability and usage profile still point to a full starter workload."
     elif choice == "under":
