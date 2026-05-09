@@ -434,8 +434,8 @@
     return `${awayStarter} vs ${homeStarter}`;
   }
 
-  function starterLadderBadgesMarkup(probable) {
-    const badges = Array.isArray(probable?.ladderBadges) ? probable.ladderBadges : [];
+  function starterLadderBadgesMarkup(probable, badgeKey = "ladderBadges") {
+    const badges = Array.isArray(probable?.[badgeKey]) ? probable[badgeKey] : [];
     if (!badges.length) return "";
     return `<div class="cards-starter-ladder-badges">${badges.map((badge) => {
       const label = String(badge?.label || "").trim();
@@ -456,18 +456,19 @@
       <div class="cards-mini-metric">
         <span class="cards-section-label">${escapeHtml(label)}</span>
         <strong>${escapeHtml(probable?.fullName || "TBD")}</strong>
-        ${starterLadderBadgesMarkup(probable)}
+        ${starterLadderBadgesMarkup(probable, "ladderBadges")}
       </div>`;
   }
 
   function starterLadderStripMarkup(card) {
     const renderRow = (prefix, probable) => {
-      const badges = Array.isArray(probable?.ladderBadges) ? probable.ladderBadges : [];
+      const badgeKey = Array.isArray(probable?.miniLadderBadges) ? "miniLadderBadges" : "ladderBadges";
+      const badges = Array.isArray(probable?.[badgeKey]) ? probable[badgeKey] : [];
       if (!badges.length) return "";
       return `
         <div class="cards-strip-starter-line">
           <span class="cards-strip-starter-name">${escapeHtml(prefix)} ${escapeHtml(probable?.fullName || "Starter")}</span>
-          ${starterLadderBadgesMarkup(probable)}
+          ${starterLadderBadgesMarkup(probable, badgeKey)}
         </div>`;
     };
 

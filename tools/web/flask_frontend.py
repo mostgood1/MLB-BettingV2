@@ -18137,9 +18137,9 @@ def _attach_cards_live_starter_ladder_badges(
             pitcher_market_ctx=pitcher_market_ctx,
         )
         if live_badges:
-            entry["ladderBadges"] = live_badges
+            entry["miniLadderBadges"] = live_badges
         else:
-            entry.pop("ladderBadges", None)
+            entry.pop("miniLadderBadges", None)
 
 
 def _starter_ladder_badge_stat_key(badge: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -18316,7 +18316,7 @@ def _attach_cards_final_starter_ladder_badges(
         if not isinstance(entry, dict):
             continue
         if not isinstance(settlement_feed, dict):
-            entry.pop("ladderBadges", None)
+            entry.pop("miniLadderBadges", None)
             continue
         settled_badges = _final_starter_ladder_badges_for_side(
             side=side,
@@ -18326,9 +18326,9 @@ def _attach_cards_final_starter_ladder_badges(
             game_pk=int(game_pk),
         )
         if settled_badges:
-            entry["ladderBadges"] = settled_badges
+            entry["miniLadderBadges"] = settled_badges
         else:
-            entry.pop("ladderBadges", None)
+            entry.pop("miniLadderBadges", None)
 
 
 def _starter_ladder_badges_for_pitcher(
