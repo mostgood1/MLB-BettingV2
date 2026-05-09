@@ -1201,13 +1201,154 @@
         "default_fixed"
       ],
       "exit_code": 0
+    },
+    "current_day_roster_snapshot": {
+      "status": "ok",
+      "snapshot_dir": "data/daily/snapshots/2026-05-09",
+      "team_rosters_raw": "data/daily/snapshots/2026-05-09/team_rosters_raw.json",
+      "injuries_raw": "data/daily/snapshots/2026-05-09/injuries_raw.json",
+      "roster_events": "data/daily/snapshots/2026-05-09/roster_events.json",
+      "lineups_last_known": "data/daily/lineups_last_known_by_team.json"
+    },
+    "current_day_batting_lineups": {
+      "status": "ok",
+      "path": "data/daily/snapshots/2026-05-09/lineups.json",
+      "games": 15,
+      "summary": {
+        "games": 15,
+        "projected_teams": 30,
+        "adjusted_teams": 0,
+        "partial_teams": 0,
+        "fallback_pool_teams": 0,
+        "confirmed_teams": 0,
+        "projected_only_teams": 30,
+        "confirmed_only_teams": 0,
+        "comparable_teams": 0,
+        "exact_match_teams": 0,
+        "true_mismatch_teams": 0
+      },
+      "adjusted_teams": 0,
+      "partial_teams": 0,
+      "fallback_pool_teams": 0
+    },
+    "current_day_probable_pitchers": {
+      "status": "ok",
+      "path": "data/daily/snapshots/2026-05-09/probables.json",
+      "games": 15
+    },
+    "render_frontend_validation": {
+      "status": "error",
+      "date": "2026-05-09",
+      "season": 2026,
+      "command": [
+        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\.venv\\Scripts\\python.exe",
+        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\tools\\smoke\\smoke_render_frontend.py",
+        "--base-url",
+        "https://mlb-betting-v2.onrender.com",
+        "--date",
+        "2026-05-09",
+        "--season",
+        "2026",
+        "--timeout-seconds",
+        "45"
+      ],
+      "base_url": "https://mlb-betting-v2.onrender.com",
+      "expected_commit": "",
+      "exit_code": 1,
+      "report": {
+        "baseUrl": "https://mlb-betting-v2.onrender.com",
+        "cards": {
+          "badgeStats": [
+            "hits_allowed",
+            "outs",
+            "strikeouts"
+          ],
+          "requiredBadgeStats": [
+            "hits_allowed",
+            "walks_allowed"
+          ]
+        },
+        "date": "2026-05-09",
+        "endpoints": {
+          "cards": {
+            "booted_at": "2026-05-09T14:53:46.506266Z",
+            "branch_source": "RENDER_GIT_BRANCH",
+            "cache_control": "no-store, no-cache, max-age=0, must-revalidate",
+            "commit": "7890f59d404ba778f6f8e8708151a6ba3613d9df",
+            "commit_source": "RENDER_GIT_COMMIT",
+            "header_commit": "7890f59d404ba778f6f8e8708151a6ba3613d9df",
+            "header_instance": "srv-d701hc4r85hc73efoib0-848d8c74d9-vw6qw:60:2026-05-09T14:53:46.506266Z",
+            "instance_id": "srv-d701hc4r85hc73efoib0-848d8c74d9-vw6qw:60:2026-05-09T14:53:46.506266Z"
+          },
+          "live_lens": {
+            "booted_at": "2026-05-09T14:53:46.506266Z",
+            "branch_source": "RENDER_GIT_BRANCH",
+            "cache_control": "no-store, no-cache, max-age=0, must-revalidate",
+            "commit": "7890f59d404ba778f6f8e8708151a6ba3613d9df",
+            "commit_source": "RENDER_GIT_COMMIT",
+            "header_commit": "7890f59d404ba778f6f8e8708151a6ba3613d9df",
+            "header_instance": "srv-d701hc4r85hc73efoib0-848d8c74d9-vw6qw:60:2026-05-09T14:53:46.506266Z",
+            "instance_id": "srv-d701hc4r85hc73efoib0-848d8c74d9-vw6qw:60:2026-05-09T14:53:46.506266Z"
+          },
+          "season": {
+            "booted_at": "2026-05-09T14:53:46.506266Z",
+            "branch_source": "RENDER_GIT_BRANCH",
+            "cache_control": "no-store, no-cache, max-age=0, must-revalidate",
+            "commit": "7890f59d404ba778f6f8e8708151a6ba3613d9df",
+            "commit_source": "RENDER_GIT_COMMIT",
+            "header_commit": "7890f59d404ba778f6f8e8708151a6ba3613d9df",
+            "header_instance": "srv-d701hc4r85hc73efoib0-848d8c74d9-vw6qw:60:2026-05-09T14:53:46.506266Z",
+            "instance_id": "srv-d701hc4r85hc73efoib0-848d8c74d9-vw6qw:60:2026-05-09T14:53:46.506266Z"
+          }
+        },
+        "expectedCommit": null,
+        "failures": [
+          "season_live_lens: request failed: HTTPError: 404 Client Error: Not Found for url: https://mlb-betting-v2.onrender.com/api/season/2026/live-lens?date=2026-05-09",
+          "cards: missing required badge stats: walks_allowed"
+        ],
+        "liveLens": {
+          "hasHitsAllowed": false,
+          "hasWalksAllowed": false,
+          "marketLabels": [
+            "outs",
+            "strikeouts"
+          ]
+        },
+        "season": 2026
+      },
+      "failures": [
+        "season_live_lens: request failed: HTTPError: 404 Client Error: Not Found for url: https://mlb-betting-v2.onrender.com/api/season/2026/live-lens?date=2026-05-09",
+        "cards: missing required badge stats: walks_allowed"
+      ],
+      "live_lens": {
+        "has_hits_allowed": false,
+        "has_walks_allowed": false,
+        "market_labels": [
+          "outs",
+          "strikeouts"
+        ]
+      },
+      "cards": {
+        "badge_stats": [
+          "hits_allowed",
+          "outs",
+          "strikeouts"
+        ],
+        "required_badge_stats": [
+          "hits_allowed",
+          "walks_allowed"
+        ]
+      },
+      "error": "smoke_render_frontend exit 1"
     }
   },
   "notes": [
     "official locked card removed 4 sparse-support selected recommendation(s) before publish and added 4 replacement(s)"
   ],
   "warnings": [],
-  "errors": [],
+  "errors": [
+    "render frontend validation failed: season_live_lens: request failed: HTTPError: 404 Client Error: Not Found for url: https://mlb-betting-v2.onrender.com/api/season/2026/live-lens?date=2026-05-09; cards: missing required badge stats: walks_allowed; smoke_render_frontend exit 1"
+  ],
   "next_day": {
     "requested": true,
     "date": "2026-05-10",
@@ -1291,12 +1432,61 @@
         "phase": "next_day",
         "label": "next-day forward outputs for 2026-05-10",
         "requested": true,
-        "preexisting_change_count": 29
+        "preexisting_change_count": 29,
+        "status": "ok",
+        "remote": "origin",
+        "branch": "main",
+        "commit_message": "Daily update 2026-05-09 [next-day build 2026-05-10]",
+        "commit_sha": "62a8d9bea112baa3dac06ebc66aac0983d211ea6",
+        "committed_paths": [
+          "data/daily/daily_summary_2026_05_10.json",
+          "data/daily/daily_summary_2026_05_10_hr_targets.json",
+          "data/daily/daily_summary_2026_05_10_locked_policy.json",
+          "data/daily/daily_summary_2026_05_10_profile_bundle.json",
+          "data/daily/daily_summary_2026_05_10_rfi_targets.json",
+          "data/daily/ladders/daily_ladder_audit_2026_05_10.json",
+          "data/daily/ladders/daily_ladders_2026_05_10.json",
+          "data/daily/ops/daily_ops_2026_05_09.json",
+          "data/daily/ops/daily_ops_2026_05_10.json",
+          "data/daily/season_frontend/season_betting_day_2026_2026_05_10_retuned.json",
+          "data/daily/season_frontend/season_day_2026_2026_05_10_retuned.json",
+          "data/daily/season_frontend/season_manifest_2026_2026_05_10.json",
+          "data/daily/season_frontend/season_official_betting_day_2026_2026_05_10_retuned.json",
+          "data/daily/sims/2026-05-10/sim_0_WSH_at_MIA_pk823868_g1.json",
+          "data/daily/sims/2026-05-10/sim_10_PIT_at_SF_pk823221_g1.json",
+          "data/daily/sims/2026-05-10/sim_11_NYM_at_AZ_pk825085_g1.json",
+          "data/daily/sims/2026-05-10/sim_12_STL_at_SD_pk823305_g1.json",
+          "data/daily/sims/2026-05-10/sim_13_ATL_at_LAD_pk823954_g1.json",
+          "data/daily/sims/2026-05-10/sim_14_DET_at_KC_pk824113_g1.json",
+          "data/daily/sims/2026-05-10/sim_1_ATH_at_BAL_pk824845_g1.json",
+          "data/daily/sims/2026-05-10/sim_2_TB_at_BOS_pk824765_g1.json",
+          "data/daily/sims/2026-05-10/sim_3_COL_at_PHI_pk823463_g1.json",
+          "data/daily/sims/2026-05-10/sim_4_LAA_at_TOR_pk822819_g1.json",
+          "data/daily/sims/2026-05-10/sim_5_HOU_at_CIN_pk824520_g1.json",
+          "data/daily/sims/2026-05-10/sim_6_MIN_at_CLE_pk824440_g1.json",
+          "data/daily/sims/2026-05-10/sim_7_SEA_at_CWS_pk824605_g1.json",
+          "data/daily/sims/2026-05-10/sim_8_NYY_at_MIL_pk823793_g1.json",
+          "data/daily/sims/2026-05-10/sim_9_CHC_at_TEX_pk822902_g1.json",
+          "data/daily/top_props/daily_top_props_2026_05_09.json",
+          "data/daily/top_props/daily_top_props_2026_05_10.json"
+        ],
+        "preexisting_managed_change_count": 29,
+        "rebase": {
+          "remote_ref": "origin/main",
+          "auto_resolved_conflicts": 0
+        }
+      },
+      {
+        "phase": "final_report",
+        "label": "final ops/report state for 2026-05-09",
+        "requested": true,
+        "preexisting_change_count": 1
       }
     ],
     "preexisting_change_count": 0,
-    "last_commit_sha": "7890f59d404ba778f6f8e8708151a6ba3613d9df",
-    "last_phase": "current_day",
+    "last_commit_sha": "62a8d9bea112baa3dac06ebc66aac0983d211ea6",
+    "last_phase": "next_day",
     "status": "ok"
-  }
+  },
+  "status": "error"
 }
