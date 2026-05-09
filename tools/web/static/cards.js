@@ -451,12 +451,19 @@
     }).join("")}</div>`;
   }
 
-  function starterMetricMarkup(label, probable) {
+  function starterMetricBadgeKey(card) {
+    const status = String(card?.status?.abstract || "").trim().toLowerCase();
+    if (status === "live" || status === "final") return "miniLadderBadges";
+    return "ladderBadges";
+  }
+
+  function starterMetricMarkup(label, probable, card) {
+    const badgeKey = starterMetricBadgeKey(card);
     return `
       <div class="cards-mini-metric">
         <span class="cards-section-label">${escapeHtml(label)}</span>
         <strong>${escapeHtml(probable?.fullName || "TBD")}</strong>
-        ${starterLadderBadgesMarkup(probable, "ladderBadges")}
+        ${starterLadderBadgesMarkup(probable, badgeKey)}
       </div>`;
   }
 
@@ -1644,8 +1651,8 @@
           <button class="cards-tab" type="button" data-tab-target="props">Props</button>
         </div>
         <div class="cards-mini-metrics cards-mini-metrics--rail">
-          ${starterMetricMarkup("Away starter", card?.probable?.away)}
-          ${starterMetricMarkup("Home starter", card?.probable?.home)}
+          ${starterMetricMarkup("Away starter", card?.probable?.away, card)}
+          ${starterMetricMarkup("Home starter", card?.probable?.home, card)}
         </div>
       </div>
 
@@ -3136,8 +3143,8 @@
     if (probableCopy) probableCopy.textContent = `Probables: ${starterText(card)}`;
     if (starterRail) {
       starterRail.innerHTML = `
-          ${starterMetricMarkup("Away starter", card?.probable?.away)}
-          ${starterMetricMarkup("Home starter", card?.probable?.home)}`;
+          ${starterMetricMarkup("Away starter", card?.probable?.away, card)}
+          ${starterMetricMarkup("Home starter", card?.probable?.home, card)}`;
     }
     if (stripNode) {
       const metaNode = stripNode.querySelector('.cards-strip-meta');

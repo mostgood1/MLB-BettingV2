@@ -2750,6 +2750,7 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
         "stages": {},
         "notes": [],
         "warnings": [],
+        "validation_errors": [],
         "errors": [],
     }
     build_next_day_enabled = str(getattr(args, "build_next_day", "off") or "off") == "on"
@@ -3701,7 +3702,7 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
         stage_error = str(render_validation_stage.get("error") or "").strip()
         if stage_error:
             error_bits.append(stage_error)
-        report["errors"].append(
+        report["validation_errors"].append(
             "render frontend validation failed"
             + (f": {'; '.join(str(bit) for bit in error_bits if str(bit).strip())}" if error_bits else "")
         )

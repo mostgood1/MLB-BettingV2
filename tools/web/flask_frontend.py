@@ -3647,7 +3647,17 @@ def _lineup_health_summary(lineups_path: Optional[Path], lineups_doc: Optional[D
 
 def _workflow_summary(ops_report_path: Optional[Path], ops_report_doc: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     warnings = list((ops_report_doc or {}).get("warnings") or []) if isinstance(ops_report_doc, dict) else []
-    errors = list((ops_report_doc or {}).get("errors") or []) if isinstance(ops_report_doc, dict) else []
+    raw_errors = list((ops_report_doc or {}).get("errors") or []) if isinstance(ops_report_doc, dict) else []
+    validation_errors = [
+        str(msg)
+        for msg in raw_errors
+        if str(msg).strip().lower().startswith("render frontend validation failed:")
+    ]
+    errors = [
+        str(msg)
+        for msg in raw_errors
+        if not str(msg).strip().lower().startswith("render frontend validation failed:")
+    ]
     sims_per_game = None
     stages = (ops_report_doc or {}).get("stages") if isinstance(ops_report_doc, dict) else None
     if isinstance(stages, dict):
@@ -3672,7 +3682,11 @@ def _workflow_summary(ops_report_path: Optional[Path], ops_report_doc: Optional[
         "warningCount": int(len(warnings)),
         "errorCount": int(len(errors)),
         "warnings": [str(msg) for msg in warnings[:6]],
-        "errors": [str(msg) for msg in errors[:6]],
+        "errors": errors[:6],
+        "rawErrorCount": int(len(raw_errors)),
+        "rawErrors": [str(msg) for msg in raw_errors[:6]],
+        "validationErrorCount": int(len(validation_errors)),
+        "validationErrors": validation_errors[:6],
     }
 
 
@@ -17634,7 +17648,7 @@ def _cards_payload_context(d: str) -> Tuple[Dict[str, Any], Dict[str, Any], Dict
 def _build_cards_payload_context(d: str) -> Dict[str, Any]:
     artifacts = _load_cards_artifacts(
         d,
-        include_market_availability=False,
+        include_market_availability=True,
         allow_request_daily_ladders_refresh=False,
     )
     archive = _load_cards_archive_context(d) if _should_load_cards_archive_context(d, artifacts) else {}
@@ -17711,7 +17725,7 @@ def _build_cards_api_payload(
 ) -> Dict[str, Any]:
     artifacts = artifacts if isinstance(artifacts, dict) else _load_cards_artifacts(
         d,
-        include_market_availability=False,
+        include_market_availability=True,
         allow_request_daily_ladders_refresh=False,
     )
     archive = archive if isinstance(archive, dict) else (_load_cards_archive_context(d) if _should_load_cards_archive_context(d, artifacts) else {})
