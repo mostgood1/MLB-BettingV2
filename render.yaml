@@ -71,3 +71,30 @@ services:
         sync: false
       - key: ODDS_API_KEY
         sync: false
+  - type: cron
+    name: mlb-betting-v2-live-lens-refresh
+    runtime: python
+    plan: starter
+    schedule: "*/5 * * * *"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python tools/render_live_lens_refresh.py
+    envVars:
+      - key: MLB_WEB_INTERNAL_HOST
+        fromService:
+          name: mlb-betting-v2
+          type: web
+          property: host
+      - key: MLB_WEB_INTERNAL_PORT
+        fromService:
+          name: mlb-betting-v2
+          type: web
+          property: port
+      - key: MLB_CRON_TOKEN
+        fromService:
+          name: mlb-betting-v2
+          type: web
+          envVarKey: MLB_CRON_TOKEN
+      - key: MLB_LIVE_LENS_MARKET_REFRESH_INTERVAL_MINUTES
+        value: "15"
+      - key: MLB_CRON_REQUEST_TIMEOUT_SECONDS
+        value: "180"

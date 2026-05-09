@@ -16904,8 +16904,9 @@ def api_cron_live_lens_tick() -> Response:
     if auth_error is not None:
         return auth_error
     d = str(request.args.get("date") or "").strip() or _today_iso()
+    refresh_markets = str(request.args.get("refreshMarkets") or "on").strip().lower() != "off"
     try:
-        return jsonify(_persist_live_lens_tick(d, trigger="api"))
+        return jsonify(_persist_live_lens_tick(d, trigger="api", refresh_markets=refresh_markets))
     except Exception as exc:
         return jsonify({"ok": False, "date": d, "error": f"{type(exc).__name__}: {exc}"}), 500
 
