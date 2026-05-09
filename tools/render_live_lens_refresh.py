@@ -74,6 +74,14 @@ def main() -> int:
         params={"refreshMarkets": "off"},
     )
 
+    results["warmCardsCache"] = _request(
+        session,
+        "GET",
+        f"{base_url}/api/cron/warm-cards-cache",
+        token=token,
+        timeout=timeout,
+    )
+
     print(json.dumps({
         "ok": True,
         "baseUrl": base_url,

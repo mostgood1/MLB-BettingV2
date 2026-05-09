@@ -16823,6 +16823,29 @@ def api_cron_cache_usage() -> Response:
     return jsonify(_with_app_build(_cache_usage_report()))
 
 
+@app.get("/api/cron/warm-cards-cache")
+def api_cron_warm_cards_cache() -> Response:
+    auth_error = _require_cron_auth()
+    if auth_error is not None:
+        return auth_error
+    d = str(request.args.get("date") or "").strip() or _today_iso()
+    try:
+        payload = _warm_cards_api_cache(d)
+        return jsonify(
+            _with_app_build(
+                {
+                    "ok": True,
+                    "date": str(d),
+                    "cardCount": int(len(payload.get("cards") or [])) if isinstance(payload, dict) else 0,
+                    "view": payload.get("view") if isinstance(payload, dict) else None,
+                    "workflow": payload.get("workflow") if isinstance(payload, dict) else None,
+                }
+            )
+        )
+    except Exception as exc:
+        return jsonify({"ok": False, "date": d, "error": f"{type(exc).__name__}: {exc}"}), 500
+
+
 @app.get("/api/cron/cleanup-data")
 def api_cron_cleanup_data() -> Response:
     auth_error = _require_cron_auth()
