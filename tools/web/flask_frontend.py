@@ -341,6 +341,7 @@ _LIVE_PROP_MARKET_MAX_AGE_SECONDS = 90
 _LIVE_FEED_CACHE_TTL_SECONDS = float(_env_int("MLB_LIVE_FEED_CACHE_TTL_SECONDS", 5, minimum=1))
 _LIVE_GAME_MC_SIMS = _env_int("MLB_LIVE_GAME_MC_SIMS", 120, minimum=20)
 _LIVE_HITTER_PROP_MIN_MARKET_EDGE = 0.05
+_LIVE_PITCHER_PROP_MAX_FAVORITE_ODDS = -300
 _LIVE_PROP_RANKING_CONFIG_PATH = Path(
     str(os.environ.get("MLB_LIVE_PROP_RANKING_CONFIG") or (_ROOT_DIR / "data" / "tuning" / "live_prop_ranking" / "default.json")).strip()
 ).resolve()
@@ -12887,6 +12888,7 @@ def _select_live_prop_side(
     over_odds: Any,
     under_odds: Any,
     min_market_edge: float = 0.0,
+    max_favorite_odds: int = -200,
 ) -> Optional[Dict[str, Any]]:
     candidates: List[Dict[str, Any]] = []
     line_value = _safe_float(line)
@@ -12897,7 +12899,7 @@ def _select_live_prop_side(
     for selection, odds in (("over", over_odds), ("under", under_odds)):
         if _safe_int(odds) is None:
             continue
-        if not _prop_price_allowed(odds, max_favorite_odds=-200):
+        if not _prop_price_allowed(odds, max_favorite_odds=max_favorite_odds):
             continue
         live_edge = _selection_live_edge(selection, live_projection, line_value)
         if live_edge is None or float(live_edge) <= 0.0:
@@ -13996,6 +13998,7 @@ def _current_live_prop_rows(
                     line=float(line_value),
                     over_odds=market.get("over_odds"),
                     under_odds=market.get("under_odds"),
+                    max_favorite_odds=_LIVE_PITCHER_PROP_MAX_FAVORITE_ODDS,
                 )
                 if side_pick is None:
                     continue
