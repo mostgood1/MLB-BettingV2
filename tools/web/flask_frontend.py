@@ -16683,7 +16683,6 @@ def season_live_lens_view(season: int) -> str:
 
 @app.get("/api/live-lens")
 def api_live_lens() -> Response:
-    _ensure_live_lens_background_loop_running()
     d = str(request.args.get("date") or "").strip() or _default_cards_date()
     persist = str(request.args.get("persist") or "off").strip().lower() == "on"
     report_path = _live_lens_report_path(d)
@@ -16736,7 +16735,7 @@ def api_cron_config() -> Response:
     auth_error = _require_cron_auth()
     if auth_error is not None:
         return auth_error
-    loop_status = _ensure_live_lens_background_loop_running()
+    loop_status = _live_lens_loop_status_payload()
     return _jsonify_no_store(
         _with_app_build(
             {
@@ -16855,7 +16854,6 @@ def api_cron_live_lens_tick() -> Response:
     auth_error = _require_cron_auth()
     if auth_error is not None:
         return auth_error
-    _ensure_live_lens_background_loop_running()
     d = str(request.args.get("date") or "").strip() or _today_iso()
     try:
         return jsonify(_persist_live_lens_tick(d, trigger="api"))
@@ -16868,7 +16866,6 @@ def api_cron_live_lens_reports() -> Response:
     auth_error = _require_cron_auth()
     if auth_error is not None:
         return auth_error
-    _ensure_live_lens_background_loop_running()
     d = str(request.args.get("date") or "").strip() or _today_iso()
     include_archive = str(request.args.get("includeArchive") or "off").strip().lower() == "on"
     return jsonify(_live_lens_reports_payload(d, include_archive=include_archive))
@@ -16879,7 +16876,7 @@ def api_cron_live_lens_loop_status() -> Response:
     auth_error = _require_cron_auth()
     if auth_error is not None:
         return auth_error
-    return jsonify(_with_app_build({"ok": True, "liveLensLoop": _ensure_live_lens_background_loop_running()}))
+    return jsonify(_with_app_build({"ok": True, "liveLensLoop": _live_lens_loop_status_payload()}))
 
 
 @app.get("/api/cron/republish-season")
