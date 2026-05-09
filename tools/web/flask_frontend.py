@@ -16401,18 +16401,30 @@ def _season_live_lens_payload(season: int, d: str) -> Dict[str, Any]:
 
     report_path = _live_lens_report_path(date_str)
     report_age_seconds = _path_age_seconds(report_path)
+    report_payload = _load_json_file(report_path) if report_path.exists() else None
+    loop_enabled = _is_live_lens_loop_enabled()
     serve_report_max_age_seconds = float(_LIVE_ROUTE_CACHE_TTL_SECONDS)
-    if not _is_historical_date(date_str) and _is_live_lens_loop_enabled():
+    if not _is_historical_date(date_str) and loop_enabled:
         serve_report_max_age_seconds = float(_live_lens_report_max_age_seconds())
 
     live_payload: Optional[Dict[str, Any]] = None
+    if not loop_enabled and isinstance(report_payload, dict) and report_payload:
+        live_payload = dict(report_payload)
     if (
+        live_payload is None
+        and
         report_age_seconds is not None
         and report_age_seconds <= float(serve_report_max_age_seconds)
     ):
-        report_payload = _load_json_file(report_path)
         if isinstance(report_payload, dict) and report_payload:
             live_payload = dict(report_payload)
+
+    if live_payload is None and not loop_enabled:
+        live_payload = _live_lens_unavailable_payload(
+            date_str,
+            error="season_live_lens_background_disabled",
+            detail="Season live-lens on-demand rebuilds are disabled on this service instance.",
+        )
 
     if live_payload is None:
         live_payload = _payload_cache_get_or_build(
@@ -16717,7 +16729,18 @@ def live_lens_view() -> str:
 
 @app.get("/season/<int:season>/live-lens")
 def season_live_lens_view(season: int) -> str:
-    abort(404)
+    d = str(request.args.get("date") or "").strip() or _default_cards_date()
+    return render_template(
+        "live_lens.html",
+        date=d,
+        season=int(season),
+        api_path=f"/api/season/{int(season)}/live-lens",
+        form_action=f"/season/{int(season)}/live-lens",
+        back_href=f"/season/{int(season)}?date={d}",
+        back_label="Back to season",
+        page_title=f"MLB {int(season)} Live Lens - {d}",
+        page_heading=f"MLB {int(season)} Live Lens - {d}",
+    )
 
 
 @app.get("/api/live-lens")
@@ -16758,7 +16781,10 @@ def api_live_lens() -> Response:
 
 @app.get("/api/season/<int:season>/live-lens")
 def api_season_live_lens(season: int) -> Response:
-    abort(404)
+    d = str(request.args.get("date") or "").strip() or _default_cards_date()
+    payload = _season_live_lens_payload(int(season), d)
+    status_code = 200 if payload.get("found") or payload.get("error") != "season_live_lens_date_mismatch" else 404
+    return _jsonify_app_build(payload, status_code=status_code, no_store=True)
 
 
 @app.get("/api/cron/ping")
