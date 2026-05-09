@@ -14554,7 +14554,11 @@ def _project_live_value(actual_value: Optional[float], model_mean: Optional[floa
         return None
     actual = float(_safe_float(actual_value) or 0.0)
     progress = max(0.0, min(1.0, float(progress_fraction or 0.0)))
-    expected_to_date = float(mean) * progress
+    # When richer per-player opportunity fields are unavailable, do not let
+    # full-game outs collapse a player prop projection too quickly toward the
+    # current actual. Individual opportunity usually lags raw game progress.
+    effective_progress = float(progress) * (0.5 + (0.5 * float(progress)))
+    expected_to_date = float(mean) * effective_progress
     remaining = max(float(mean) - expected_to_date, 0.0)
     return round(actual + remaining, 3)
 
