@@ -14815,7 +14815,7 @@ def _project_live_pitcher_value(
     workload_limit = float(model_pitches) if model_pitches is not None else None
     stamina = _safe_float((pitcher_profile or {}).get("stamina_pitches")) if isinstance(pitcher_profile, dict) else None
     if stamina is not None:
-        workload_limit = float(stamina) if workload_limit is None else min(float(workload_limit), float(stamina))
+        workload_limit = float(stamina)
 
     if pitches_per_bf is not None and actual_pitches is not None:
         if workload_limit is not None:
