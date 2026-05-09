@@ -14577,11 +14577,12 @@ def _apply_live_pitcher_prop_correction(
     progress_fraction = float(_safe_float(progress.get("fraction")) or 0.0)
     total_game_outs = int(max(0, round(progress_fraction * 54.0)))
     if normalized_prop == "outs":
-        if not _is_live_pitcher_outs_correction_enabled():
-            return float(projection)
-        if total_game_outs < 9:
-            return float(projection)
-        artifact = _load_live_pitcher_outs_correction_artifact()
+        # The native live pitcher outs projection already uses pitch count,
+        # batters faced, workload limits, inning, score, and bullpen context.
+        # A second-stage linear correction trained on a tiny sample can drag
+        # sane projections too close to the current actual, so keep outs on
+        # the native path until this correction is retrained and revalidated.
+        return float(projection)
     elif normalized_prop == "strikeouts":
         if not _is_live_pitcher_strikeouts_correction_enabled():
             return float(projection)
