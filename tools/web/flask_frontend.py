@@ -18199,7 +18199,15 @@ def _final_starter_ladder_badges_for_side(
 ) -> List[Dict[str, Any]]:
     if side not in {"away", "home"} or not isinstance(entry, dict) or not isinstance(feed, dict):
         return []
-    ladder_badges = [badge for badge in (entry.get("ladderBadges") or []) if isinstance(badge, dict)]
+    pregame_badges = entry.get("pregameLadderBadges")
+    ladder_badges = [
+        badge for badge in (
+            pregame_badges
+            if isinstance(pregame_badges, list)
+            else (entry.get("ladderBadges") or [])
+        )
+        if isinstance(badge, dict)
+    ]
     if not ladder_badges:
         return []
 
@@ -18220,7 +18228,7 @@ def _final_starter_ladder_badges_for_side(
     grouped_badges: Dict[str, Dict[str, Any]] = {}
     for badge in ladder_badges:
         stat_key = _starter_ladder_badge_stat_key(badge)
-        actual_key = _TOP_PROPS_PITCHER_ACTUAL_KEYS.get(str(stat_key or ""))
+        actual_key = _HISTORICAL_PITCHER_ACTUAL_KEYS.get(str(stat_key or ""))
         if not actual_key:
             continue
         actual_value = _safe_float(stats.get(actual_key))
@@ -18590,6 +18598,7 @@ def _attach_cards_starter_ladder_badges(cards: Any, daily_ladders: Any, pitcher_
             )
             if badges:
                 entry["ladderBadges"] = badges
+                entry["pregameLadderBadges"] = [dict(badge) for badge in badges if isinstance(badge, dict)]
 
 
 @app.get("/api/cards")
