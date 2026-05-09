@@ -1501,6 +1501,10 @@ def _is_live_lens_background_report_enabled() -> bool:
     return _env_bool("MLB_ENABLE_LIVE_LENS_BACKGROUND_REPORTS", default=True)
 
 
+def _is_cards_live_feed_enrichment_enabled() -> bool:
+    return _env_bool("MLB_ENABLE_CARDS_LIVE_FEED_ENRICHMENT", default=True)
+
+
 def _is_inline_season_manifest_rebuild_enabled() -> bool:
     return _env_bool("MLB_ENABLE_INLINE_SEASON_MANIFEST_REBUILD", default=False)
 
@@ -16107,6 +16111,41 @@ def _live_lens_payload(d: str, *, persist: bool = False, refresh_markets: bool =
     return payload
 
 
+def _live_lens_unavailable_payload(d: str, *, error: str, detail: Optional[str] = None) -> Dict[str, Any]:
+    return {
+        "date": str(d),
+        "generatedAt": _local_timestamp_text(),
+        "dataRoot": _relative_path_str(_DATA_DIR),
+        "liveLensDir": _relative_path_str(_LIVE_LENS_DIR),
+        "optimizationRegime": _live_lens_optimization_regime(d),
+        "counts": {
+            "games": 0,
+            "live": 0,
+            "final": 0,
+            "pregame": 0,
+            "props": 0,
+            "archivedLiveProps": 0,
+        },
+        "performance": {
+            "marketsRefreshed": False,
+            "marketRefreshMs": 0.0,
+            "totalMs": 0.0,
+            "snapshotLoadMs": 0.0,
+            "simContextLoadMs": 0.0,
+            "propEvalMs": 0.0,
+            "gameLensMs": 0.0,
+            "gameCount": 0,
+            "liveGameCount": 0,
+            "feedFetchCount": 0,
+            "degraded": True,
+        },
+        "games": [],
+        "found": False,
+        "error": str(error),
+        "detail": str(detail) if detail else None,
+    }
+
+
 def _refresh_oddsapi_markets(d: str, *, overwrite: bool = True) -> Dict[str, Any]:
     recorded_at = _local_now()
     frozen_pregame = _freeze_oddsapi_pregame_markets(d)
@@ -16687,17 +16726,27 @@ def api_live_lens() -> Response:
     persist = str(request.args.get("persist") or "off").strip().lower() == "on"
     report_path = _live_lens_report_path(d)
     report_age_seconds = _path_age_seconds(report_path)
+    report_payload = _load_json_file(report_path) if report_path.exists() else None
+    loop_enabled = _is_live_lens_loop_enabled()
     serve_report_max_age_seconds = float(_LIVE_ROUTE_CACHE_TTL_SECONDS)
-    if not _is_historical_date(d) and _is_live_lens_loop_enabled():
+    if not _is_historical_date(d) and loop_enabled:
         serve_report_max_age_seconds = float(_live_lens_report_max_age_seconds())
+    if not loop_enabled and isinstance(report_payload, dict) and report_payload:
+        return _jsonify_app_build(report_payload, no_store=True)
     if (
         not persist
         and report_age_seconds is not None
         and report_age_seconds <= float(serve_report_max_age_seconds)
     ):
-        report_payload = _load_json_file(report_path)
         if isinstance(report_payload, dict) and report_payload:
             return _jsonify_app_build(report_payload, no_store=True)
+    if not loop_enabled:
+        payload = _live_lens_unavailable_payload(
+            d,
+            error="live_lens_background_disabled",
+            detail="Live-lens on-demand rebuilds are disabled on this service instance.",
+        )
+        return _jsonify_app_build(payload, no_store=True)
     payload = _payload_cache_get_or_build(
         "live_lens_api",
         str(d),
@@ -17638,6 +17687,7 @@ def _build_cards_api_payload(
 
     schedule_games = _schedule_games_for_date(d)
     pitcher_market_ctx = _load_pitcher_ladder_market_context(d)
+    live_feed_enrichment_enabled = _is_cards_live_feed_enrichment_enabled()
     cards = _cards_list_from_sources(
         d=d,
         schedule_games=schedule_games,
@@ -17648,7 +17698,7 @@ def _build_cards_api_payload(
     _attach_cards_starter_ladder_badges(cards, artifacts.get("daily_ladders"), pitcher_market_ctx)
     cards_requiring_feed = [
         card for card in cards
-        if isinstance(card, dict) and (_status_is_live(card.get("status")) or _status_is_final(card.get("status")))
+        if live_feed_enrichment_enabled and isinstance(card, dict) and (_status_is_live(card.get("status")) or _status_is_final(card.get("status")))
     ]
     if not cards_requiring_feed:
         pitcher_market_ctx = {}
@@ -17657,7 +17707,7 @@ def _build_cards_api_payload(
         if not isinstance(card, dict):
             continue
         game_pk = _safe_int(card.get("gamePk"))
-        needs_feed = _status_is_live(card.get("status")) or _status_is_final(card.get("status"))
+        needs_feed = live_feed_enrichment_enabled and (_status_is_live(card.get("status")) or _status_is_final(card.get("status")))
         if game_pk and needs_feed:
             feed = feed_cache.get(int(game_pk))
             if int(game_pk) not in feed_cache:
