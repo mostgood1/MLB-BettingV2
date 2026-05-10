@@ -68,6 +68,59 @@ class LivePropProjectionShapeTests(unittest.TestCase):
         self.assertEqual("improved", row["shape_result"])
         self.assertEqual("down", row["projection_move_direction"])
 
+    def test_build_shape_row_captures_pitcher_workload_fields(self) -> None:
+        row = _build_shape_row(
+            date_str="2026-05-09",
+            key="sample-pitcher-row",
+            entry={
+                "gamePk": 456,
+                "owner": "Sample Pitcher",
+                "market": "pitcher_props",
+                "prop": "outs",
+                "selection": "under",
+                "marketLine": 17.5,
+            },
+            first_snapshot={
+                "liveProjection": 14.8,
+                "actualSoFar": 6.0,
+                "actual": 6.0,
+                "pitchCount": 31,
+                "battersFaced": 11,
+                "outsRecorded": 6,
+                "pitchesPerBatter": 2.8,
+                "expectedPitchesPerBatter": 3.1,
+                "strikeRate": 0.62,
+                "strikeoutRate": 0.18,
+                "timesThroughOrder": 1.2,
+            },
+            last_snapshot={
+                "liveProjection": 16.1,
+                "actualSoFar": 9.0,
+                "actual": 12.0,
+                "pitchCount": 52,
+                "battersFaced": 18,
+                "outsRecorded": 9,
+                "pitchesPerBatter": 2.9,
+                "expectedPitchesPerBatter": 3.1,
+                "strikeRate": 0.59,
+                "strikeoutRate": 0.17,
+                "timesThroughOrder": 2.0,
+            },
+            game_state={"progressFraction": 0.4, "inning": 4, "halfInning": "top", "outs": 0, "score": {"away": 1, "home": 0}},
+            team_side="home",
+            source_name="render_truth_registry",
+        )
+
+        assert row is not None
+        self.assertEqual(31, row["first_pitch_count"])
+        self.assertEqual(52, row["last_pitch_count"])
+        self.assertEqual(11, row["first_batters_faced"])
+        self.assertEqual(18, row["last_batters_faced"])
+        self.assertEqual(6, row["first_outs_recorded"])
+        self.assertEqual(9, row["last_outs_recorded"])
+        self.assertAlmostEqual(0.62, row["first_strike_rate"])
+        self.assertAlmostEqual(0.17, row["last_strikeout_rate"])
+
 
 if __name__ == "__main__":
     unittest.main()

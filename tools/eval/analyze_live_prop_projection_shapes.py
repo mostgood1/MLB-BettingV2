@@ -55,6 +55,13 @@ def _slug_to_date(token: str) -> str:
     return str(token or "").strip().replace("_", "-")
 
 
+def _local_source_name(live_lens_dir: Path) -> str:
+    parts = {part.lower() for part in live_lens_dir.parts}
+    if "render_truth" in parts:
+        return "render_truth_registry"
+    return "local_registry"
+
+
 def _load_first_observations(path: Path) -> Dict[str, Dict[str, Any]]:
     out: Dict[str, Dict[str, Any]] = {}
     if not path.exists() or not path.is_file():
@@ -214,6 +221,22 @@ def _build_shape_row(
         "first_inning": _safe_int(game_state.get("inning")),
         "first_half_inning": game_state.get("halfInning"),
         "first_outs": _safe_int(game_state.get("outs")),
+        "first_pitch_count": _safe_int(first_snapshot.get("pitchCount")),
+        "last_pitch_count": _safe_int(last_snapshot.get("pitchCount") if last_snapshot.get("pitchCount") is not None else first_snapshot.get("pitchCount")),
+        "first_batters_faced": _safe_int(first_snapshot.get("battersFaced")),
+        "last_batters_faced": _safe_int(last_snapshot.get("battersFaced") if last_snapshot.get("battersFaced") is not None else first_snapshot.get("battersFaced")),
+        "first_outs_recorded": _safe_int(first_snapshot.get("outsRecorded")),
+        "last_outs_recorded": _safe_int(last_snapshot.get("outsRecorded") if last_snapshot.get("outsRecorded") is not None else first_snapshot.get("outsRecorded")),
+        "first_pitches_per_batter": _safe_float(first_snapshot.get("pitchesPerBatter")),
+        "last_pitches_per_batter": _safe_float(last_snapshot.get("pitchesPerBatter") if last_snapshot.get("pitchesPerBatter") is not None else first_snapshot.get("pitchesPerBatter")),
+        "first_expected_pitches_per_batter": _safe_float(first_snapshot.get("expectedPitchesPerBatter")),
+        "last_expected_pitches_per_batter": _safe_float(last_snapshot.get("expectedPitchesPerBatter") if last_snapshot.get("expectedPitchesPerBatter") is not None else first_snapshot.get("expectedPitchesPerBatter")),
+        "first_strike_rate": _safe_float(first_snapshot.get("strikeRate")),
+        "last_strike_rate": _safe_float(last_snapshot.get("strikeRate") if last_snapshot.get("strikeRate") is not None else first_snapshot.get("strikeRate")),
+        "first_strikeout_rate": _safe_float(first_snapshot.get("strikeoutRate")),
+        "last_strikeout_rate": _safe_float(last_snapshot.get("strikeoutRate") if last_snapshot.get("strikeoutRate") is not None else first_snapshot.get("strikeoutRate")),
+        "first_times_through_order": _safe_float(first_snapshot.get("timesThroughOrder")),
+        "last_times_through_order": _safe_float(last_snapshot.get("timesThroughOrder") if last_snapshot.get("timesThroughOrder") is not None else first_snapshot.get("timesThroughOrder")),
         "score_away": _safe_int(score.get("away")),
         "score_home": _safe_int(score.get("home")),
         "team_side": team_side,
@@ -272,6 +295,7 @@ def _iter_local_shape_rows(live_lens_dir: Path, *, include_pregame: bool) -> Ite
     registry_dir = live_lens_dir / "prop_registry"
     if not registry_dir.exists():
         return
+    source_name = _local_source_name(live_lens_dir)
     for registry_path in sorted(registry_dir.glob("live_prop_registry_*.json")):
         try:
             doc = _read_json(registry_path)
@@ -303,7 +327,7 @@ def _iter_local_shape_rows(live_lens_dir: Path, *, include_pregame: bool) -> Ite
                 last_snapshot=last_snapshot,
                 game_state=game_state,
                 team_side=observation.get("teamSide"),
-                source_name="local_registry",
+                source_name=source_name,
             )
             if row:
                 yield row
