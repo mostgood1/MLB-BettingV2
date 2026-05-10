@@ -3710,6 +3710,7 @@ def _load_cards_artifacts(
     d: str,
     *,
     include_market_availability: bool = True,
+    include_daily_ladders: bool = True,
     allow_request_daily_ladders_refresh: Optional[bool] = None,
 ) -> Dict[str, Any]:
     slug = _date_slug(d)
@@ -3891,30 +3892,33 @@ def _load_cards_artifacts(
     lineups_path = (snapshot_dir / "lineups.json") if snapshot_dir else None
     lineups = _load_json_file(lineups_path)
     market_availability = _load_market_availability(d) if include_market_availability else {}
-    daily_ladders_path, daily_ladders = _load_daily_ladders_artifact(str(d))
-    if (
-        allow_request_daily_ladders_refresh
-        and
-        isinstance(sim_dir, Path)
-        and sim_dir.exists()
-        and sim_dir.is_dir()
-        and not _derived_artifact_refresh_in_progress("daily_ladders", str(d))
-        and _artifact_is_stale(
-            daily_ladders_path,
-            dependency_paths=_market_context_dependency_paths(pitcher_market_ctx, hitter_market_ctx),
-            dependency_dirs=[sim_dir],
-        )
-    ):
-        if _begin_derived_artifact_refresh("daily_ladders", str(d)):
-            try:
-                ladders_destination = daily_ladders_path or daily_ladders_artifact_path(str(d))
-                write_daily_ladders_artifact(str(d), out_path=ladders_destination)
-                daily_ladders_path = ladders_destination
-                daily_ladders = _load_json_file(daily_ladders_path)
-            except Exception:
-                app.logger.exception("failed to refresh stale daily ladders artifact for %s", d)
-            finally:
-                _end_derived_artifact_refresh("daily_ladders", str(d))
+    daily_ladders_path: Optional[Path] = None
+    daily_ladders: Optional[Dict[str, Any]] = None
+    if include_daily_ladders:
+        daily_ladders_path, daily_ladders = _load_daily_ladders_artifact(str(d))
+        if (
+            allow_request_daily_ladders_refresh
+            and
+            isinstance(sim_dir, Path)
+            and sim_dir.exists()
+            and sim_dir.is_dir()
+            and not _derived_artifact_refresh_in_progress("daily_ladders", str(d))
+            and _artifact_is_stale(
+                daily_ladders_path,
+                dependency_paths=_market_context_dependency_paths(pitcher_market_ctx, hitter_market_ctx),
+                dependency_dirs=[sim_dir],
+            )
+        ):
+            if _begin_derived_artifact_refresh("daily_ladders", str(d)):
+                try:
+                    ladders_destination = daily_ladders_path or daily_ladders_artifact_path(str(d))
+                    write_daily_ladders_artifact(str(d), out_path=ladders_destination)
+                    daily_ladders_path = ladders_destination
+                    daily_ladders = _load_json_file(daily_ladders_path)
+                except Exception:
+                    app.logger.exception("failed to refresh stale daily ladders artifact for %s", d)
+                finally:
+                    _end_derived_artifact_refresh("daily_ladders", str(d))
 
     return {
         "profile_bundle_path": profile_bundle_path,
@@ -17799,6 +17803,40 @@ def _build_cards_payload_context(d: str) -> Dict[str, Any]:
     artifacts = _load_cards_artifacts(
         d,
         include_market_availability=True,
+        include_daily_ladders=True,
+        allow_request_daily_ladders_refresh=False,
+    )
+    archive = _load_cards_archive_context(d) if _should_load_cards_archive_context(d, artifacts) else {}
+    game_line_index = _load_game_line_market_index(d)
+    signature = _cards_payload_signature(d, artifacts, archive, game_line_index)
+    return {
+        "artifacts": artifacts,
+        "archive": archive,
+        "game_line_index": game_line_index,
+        "signature": signature,
+    }
+
+
+def _game_detail_payload_context(d: str) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+    context_payload = _payload_cache_get_or_build(
+        "game_detail_api_context",
+        str(d),
+        max_age_seconds=_cards_context_cache_ttl_seconds_for_date(d),
+        builder=lambda: _build_game_detail_payload_context(d),
+    )
+    if not isinstance(context_payload, dict):
+        return {}, {}, {}
+    artifacts = context_payload.get("artifacts") if isinstance(context_payload.get("artifacts"), dict) else {}
+    archive = context_payload.get("archive") if isinstance(context_payload.get("archive"), dict) else {}
+    game_line_index = context_payload.get("game_line_index") if isinstance(context_payload.get("game_line_index"), dict) else {}
+    return artifacts, archive, game_line_index
+
+
+def _build_game_detail_payload_context(d: str) -> Dict[str, Any]:
+    artifacts = _load_cards_artifacts(
+        d,
+        include_market_availability=False,
+        include_daily_ladders=False,
         allow_request_daily_ladders_refresh=False,
     )
     archive = _load_cards_archive_context(d) if _should_load_cards_archive_context(d, artifacts) else {}
@@ -19432,7 +19470,7 @@ def _build_game_sim_payload(
     ensure_market_fresh: bool = True,
     live_card: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    artifacts, archive, game_line_index = _cards_payload_context(d)
+    artifacts, archive, game_line_index = _game_detail_payload_context(d)
     feed = feed if isinstance(feed, dict) else _load_live_lens_feed(int(game_pk), d)
     out = _load_sim_context_for_game(int(game_pk), d, artifacts=artifacts, archive=archive, feed=feed)
     if not include_live_context:

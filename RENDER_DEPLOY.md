@@ -25,11 +25,11 @@ Because the service uses a persistent disk, the Blueprint must target a paid web
 ## Runtime
 
 - Build command: `pip install -r requirements.txt`
-- Start command: `gunicorn wsgi:app --bind 0.0.0.0:$PORT --workers 1 --worker-class gthread --threads 2 --timeout 120 --max-requests 150 --max-requests-jitter 25`
+- Start command: `gunicorn wsgi:app --bind 0.0.0.0:$PORT --workers 2 --worker-class gthread --threads 1 --timeout 120 --max-requests 150 --max-requests-jitter 25`
 - Python version: `3.11.9`
 - Data root: `/opt/render/project/data`
 - Live lens dir: `/opt/render/project/data/live_lens`
-- Background live-lens loop: enabled on the Render web worker
+- Background live-lens loop: disabled on the Render web worker; the separate Render cron service handles scheduled live-lens refreshes
 - Inline season manifest rebuilds: disabled on the Render web worker; scheduled republish should keep `/opt/render/project/data/eval/seasons/...` fresh instead of rebuilding on user reads
 - Background live-lens interval: `MLB_LIVE_LENS_LOOP_INTERVAL_SECONDS=30`
 - JSON file cache size: `MLB_JSON_FILE_CACHE_MAXSIZE=64`
