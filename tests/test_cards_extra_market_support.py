@@ -806,6 +806,45 @@ class CardsExtraMarketSupportTests(unittest.TestCase):
         self.assertEqual((debug.get("live_context") or {}).get("strikes"), 2)
         self.assertEqual((debug.get("live_context") or {}).get("current_pa_pitch_count"), 5)
 
+    def test_build_game_card_detail_payload_omits_live_projection_debug_by_default(self) -> None:
+        with patch.object(
+            flask_frontend,
+            "_build_game_sim_payload",
+            return_value={
+                "found": True,
+                "livePropRows": [
+                    {"market": "pitcher_props", "live_projection": 4.1, "live_projection_debug": {"hook_factor": 0.9}},
+                    {"market": "hitter_props", "live_projection": 0.7},
+                ],
+            },
+        ), patch.object(flask_frontend, "_load_live_lens_feed", return_value=None):
+            payload = flask_frontend._build_game_card_detail_payload(123, "2026-05-10")
+
+        rows = ((payload.get("sim") or {}).get("livePropRows") or [])
+        self.assertEqual(len(rows), 2)
+        self.assertNotIn("live_projection_debug", rows[0])
+
+    def test_build_game_card_detail_payload_includes_live_projection_debug_when_requested(self) -> None:
+        with patch.object(
+            flask_frontend,
+            "_build_game_sim_payload",
+            return_value={
+                "found": True,
+                "livePropRows": [
+                    {"market": "pitcher_props", "live_projection": 4.1, "live_projection_debug": {"hook_factor": 0.9}},
+                ],
+            },
+        ), patch.object(flask_frontend, "_load_live_lens_feed", return_value=None):
+            payload = flask_frontend._build_game_card_detail_payload(
+                123,
+                "2026-05-10",
+                include_live_projection_debug=True,
+            )
+
+        rows = ((payload.get("sim") or {}).get("livePropRows") or [])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0].get("live_projection_debug") or {}).get("hook_factor"), 0.9)
+
     def test_api_cron_refresh_oddsapi_markets_serializes_nested_paths(self) -> None:
         with (
             flask_frontend.app.test_client() as client,

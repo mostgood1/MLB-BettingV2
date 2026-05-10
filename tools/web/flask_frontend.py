@@ -19444,7 +19444,12 @@ def api_game_snapshot(game_pk: int) -> Response:
     return jsonify(out)
 
 
-def _build_game_card_detail_payload(game_pk: int, d: str) -> Dict[str, Any]:
+def _build_game_card_detail_payload(
+    game_pk: int,
+    d: str,
+    *,
+    include_live_projection_debug: bool = False,
+) -> Dict[str, Any]:
     feed = _load_live_lens_feed(int(game_pk), d)
     snapshot = None
     feed_error = None
@@ -19501,6 +19506,19 @@ def _build_game_card_detail_payload(game_pk: int, d: str) -> Dict[str, Any]:
         ensure_market_fresh=False,
         live_card=detail_live_card,
     )
+    if not include_live_projection_debug and isinstance(sim, dict):
+        live_prop_rows = sim.get("livePropRows") if isinstance(sim.get("livePropRows"), list) else []
+        if live_prop_rows:
+            trimmed_rows = []
+            for row in live_prop_rows:
+                if not isinstance(row, dict):
+                    trimmed_rows.append(row)
+                    continue
+                item = dict(row)
+                item.pop("live_projection_debug", None)
+                trimmed_rows.append(item)
+            sim = dict(sim)
+            sim["livePropRows"] = trimmed_rows
     found = bool(snapshot is not None or sim.get("found"))
     return {
         "gamePk": int(game_pk),
@@ -19518,11 +19536,21 @@ def api_game_card_detail(game_pk: int) -> Response:
     d = str(request.args.get("date") or "").strip()
     if not d:
         return jsonify({"gamePk": int(game_pk), "found": False, "error": "missing_date"}), 400
+    include_live_projection_debug = str(request.args.get("include_live_projection_debug") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
     out = _payload_cache_get_or_build(
         "game_card_detail_api",
-        f"{str(d)}:{int(game_pk)}",
+        f"{str(d)}:{int(game_pk)}:debug={1 if include_live_projection_debug else 0}",
         max_age_seconds=_LIVE_ROUTE_CACHE_TTL_SECONDS,
-        builder=lambda: _build_game_card_detail_payload(int(game_pk), d),
+        builder=lambda: _build_game_card_detail_payload(
+            int(game_pk),
+            d,
+            include_live_projection_debug=include_live_projection_debug,
+        ),
     )
     status = 200 if out.get("found") else 404
     return jsonify(out), status
