@@ -1221,6 +1221,27 @@ def _live_lens_log_snapshot(d: str) -> Tuple[int, Optional[Dict[str, Any]]]:
     return int(entries), latest_entry if isinstance(latest_entry, dict) else None
 
 
+def _load_jsonl_rows(path: Path) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    if not path.exists() or not path.is_file():
+        return rows
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                text = str(line or "").strip()
+                if not text:
+                    continue
+                try:
+                    row = json.loads(text)
+                except Exception:
+                    continue
+                if isinstance(row, dict):
+                    rows.append(row)
+    except Exception:
+        return []
+    return rows
+
+
 def _load_live_prop_first_observation_archive(d: str) -> List[Dict[str, Any]]:
     registry = _load_live_prop_registry(d)
     entries = registry.get("entries") if isinstance(registry.get("entries"), dict) else {}
@@ -1278,6 +1299,46 @@ def _load_live_prop_first_observation_archive(d: str) -> List[Dict[str, Any]]:
             }
         )
     return out
+
+
+def _live_prop_artifacts_payload(
+    d: str,
+    *,
+    include_observation_log: bool = False,
+    include_registry_log: bool = False,
+) -> Dict[str, Any]:
+    registry_path = _live_prop_registry_path(d)
+    observation_log_path = _live_prop_observation_log_path(d)
+    registry_log_path = _live_prop_registry_log_path(d)
+    recap_path = _live_lens_daily_recap_path(d)
+    registry_doc = _load_json_file(registry_path) or {}
+    recap_doc = _load_json_file(recap_path) or {}
+    observation_rows = _load_jsonl_rows(observation_log_path) if include_observation_log else []
+    registry_log_rows = _load_jsonl_rows(registry_log_path) if include_registry_log else []
+    first_observation_archive = _load_live_prop_first_observation_archive(d)
+    registry_entries = registry_doc.get("entries") if isinstance(registry_doc.get("entries"), dict) else {}
+    summary = {
+        "registryEntryCount": len(registry_entries) if isinstance(registry_entries, dict) else 0,
+        "firstObservationArchiveCount": len(first_observation_archive),
+        "observationRowCount": len(observation_rows),
+        "registryLogRowCount": len(registry_log_rows),
+        "hasDailyRecap": bool(isinstance(recap_doc, dict) and recap_doc),
+    }
+    return {
+        "ok": True,
+        "date": str(d),
+        "generatedAt": _local_timestamp_text(),
+        "registryPath": _relative_path_str(registry_path),
+        "observationLogPath": _relative_path_str(observation_log_path),
+        "registryLogPath": _relative_path_str(registry_log_path),
+        "dailyRecapPath": _relative_path_str(recap_path),
+        "summary": summary,
+        "registry": registry_doc if isinstance(registry_doc, dict) else {},
+        "firstObservationArchive": first_observation_archive,
+        "observationLog": observation_rows,
+        "registryLog": registry_log_rows,
+        "dailyRecap": recap_doc if isinstance(recap_doc, dict) else {},
+    }
 
 
 def _live_lens_daily_recap_payload(d: str) -> Dict[str, Any]:
@@ -17386,6 +17447,25 @@ def api_cron_live_lens_reports() -> Response:
     d = str(request.args.get("date") or "").strip() or _today_iso()
     include_archive = str(request.args.get("includeArchive") or "off").strip().lower() == "on"
     return jsonify(_live_lens_reports_payload(d, include_archive=include_archive))
+
+
+@app.get("/api/cron/live-prop-artifacts")
+def api_cron_live_prop_artifacts() -> Response:
+    auth_error = _require_cron_auth()
+    if auth_error is not None:
+        return auth_error
+    d = str(request.args.get("date") or "").strip() or _today_iso()
+    include_observation_log = str(request.args.get("includeObservationLog") or "on").strip().lower() == "on"
+    include_registry_log = str(request.args.get("includeRegistryLog") or "off").strip().lower() == "on"
+    return jsonify(
+        _json_safe_value(
+            _live_prop_artifacts_payload(
+                d,
+                include_observation_log=include_observation_log,
+                include_registry_log=include_registry_log,
+            )
+        )
+    )
 
 
 @app.get("/api/cron/live-lens-loop-status")
