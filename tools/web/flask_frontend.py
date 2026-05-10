@@ -15071,7 +15071,7 @@ def _project_live_pitcher_value_details(
 ) -> Dict[str, Any]:
     prop_key = str(prop or "").strip().lower()
     mean = _safe_float(model_mean)
-    if mean is None or prop_key not in {"outs", "strikeouts", "hits_allowed", "walks_allowed"}:
+    if mean is None or prop_key not in _PITCHER_LADDER_PROPS:
         projection = _project_live_value(actual_value, model_mean, progress_fraction)
         return {
             "projection": projection,
@@ -15095,6 +15095,7 @@ def _project_live_pitcher_value_details(
             "SO": 0,
             "BB": 0,
             "H": 0,
+            "ER": 0,
         }
         synthesized_opening_row = True
     if not isinstance(actual_row, dict):

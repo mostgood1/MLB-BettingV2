@@ -1,9 +1,50 @@
 import unittest
 
-from tools.web.flask_frontend import _prop_lens_rows, normalize_pitcher_name
+from tools.web.flask_frontend import (
+    _PITCHER_LADDER_PROPS,
+    _project_live_pitcher_value_details,
+    _prop_lens_rows,
+    normalize_pitcher_name,
+)
 
 
 class LivePitcherTrackedPropsTests(unittest.TestCase):
+    def test_opening_all_pitcher_props_use_pitcher_specific_path_when_boxscore_row_missing(self) -> None:
+        snapshot = {
+            "current": {"inning": 1, "halfInning": "bottom", "count": {"outs": 0}},
+            "teams": {
+                "away": {"totals": {"R": 0}},
+                "home": {"totals": {"R": 0}},
+            },
+        }
+        model_row = {
+            "outs_mean": 16.2,
+            "so_mean": 4.1,
+            "hits_mean": 5.4,
+            "walks_mean": 2.1,
+            "er_mean": 2.5,
+            "pitches_mean": 92.0,
+            "batters_faced_mean": 24.5,
+        }
+
+        for prop_key, cfg in _PITCHER_LADDER_PROPS.items():
+            mean_key = str(cfg.get("mean_key") or "")
+            with self.subTest(prop=prop_key):
+                details = _project_live_pitcher_value_details(
+                    prop=prop_key,
+                    team_side="away",
+                    actual_value=0.0,
+                    model_mean=model_row[mean_key],
+                    progress_fraction=0.0,
+                    actual_row=None,
+                    model_row=model_row,
+                    snapshot=snapshot,
+                )
+                self.assertIsInstance(details, dict)
+                self.assertEqual("pitcher_live_context", details["debug"]["path"])
+                self.assertTrue(details["debug"]["synthesized_opening_row"])
+                self.assertAlmostEqual(model_row[mean_key], details["projection"], places=3)
+
     def test_opening_pitcher_strikeouts_keep_pitcher_baseline_when_boxscore_row_missing(self) -> None:
         card = {
             "status": {"abstract": "Live"},
