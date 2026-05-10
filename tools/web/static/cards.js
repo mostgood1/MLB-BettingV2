@@ -453,7 +453,12 @@
 
   function starterMetricBadgeKey(card) {
     const status = String(card?.status?.abstract || "").trim().toLowerCase();
-    if (status === "live" || status === "final") return "miniLadderBadges";
+    if (status === "live") return "miniLadderBadges";
+    if (status === "final") {
+      const awayHasMini = Array.isArray(card?.probable?.away?.miniLadderBadges) && card.probable.away.miniLadderBadges.length;
+      const homeHasMini = Array.isArray(card?.probable?.home?.miniLadderBadges) && card.probable.home.miniLadderBadges.length;
+      return awayHasMini || homeHasMini ? "miniLadderBadges" : "ladderBadges";
+    }
     return "ladderBadges";
   }
 
@@ -3231,10 +3236,10 @@
     const { liveTargets, deferredTargets } = partitionHydrationTargets(state.cards, options);
     const priorityTargets = liveTargets.length
       ? liveTargets.slice(0, INITIAL_LIVE_PRIORITY_CARD_LIMIT)
-      : deferredTargets;
+      : deferredTargets.slice(0, INITIAL_LIVE_PRIORITY_CARD_LIMIT);
     const backgroundTargets = liveTargets.length
       ? [...liveTargets.slice(INITIAL_LIVE_PRIORITY_CARD_LIMIT), ...deferredTargets]
-      : [];
+      : deferredTargets.slice(INITIAL_LIVE_PRIORITY_CARD_LIMIT);
 
     await runHydrationQueue(priorityTargets, HYDRATE_CARD_CONCURRENCY, async function (card) {
       if (generation !== state.hydrationGeneration) return;
