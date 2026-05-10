@@ -14076,7 +14076,7 @@ def _current_live_prop_rows(
                     if expected_pitches is not None and expected_batters_faced is not None and float(expected_batters_faced) > 0.0
                     else None
                 )
-                live_projection = _project_live_pitcher_value(
+                live_projection_details = _project_live_pitcher_value_details(
                     prop=prop_key,
                     team_side=side,
                     actual_value=actual_value,
@@ -14090,6 +14090,7 @@ def _current_live_prop_rows(
                     bullpen_profiles=bullpen_profiles,
                     snapshot=snapshot,
                 )
+                live_projection = _safe_float((live_projection_details or {}).get("projection"))
                 side_pick = _select_live_prop_side(
                     model_prob_over=model_prob_over,
                     live_projection=live_projection,
@@ -14130,6 +14131,7 @@ def _current_live_prop_rows(
                         "actual_so_far": actual_value,
                         "actual_value": actual_value,
                         "live_projection": live_projection,
+                        "live_projection_debug": (live_projection_details or {}).get("debug"),
                         "pitch_count": pitch_count,
                         "batters_faced": batters_faced,
                         "strikes": strikes,
@@ -14974,28 +14976,93 @@ def _project_live_pitcher_value(
     bullpen_profiles: Optional[List[Dict[str, Any]]] = None,
     snapshot: Optional[Dict[str, Any]] = None,
 ) -> Optional[float]:
+    result = _project_live_pitcher_value_details(
+        prop=prop,
+        team_side=team_side,
+        actual_value=actual_value,
+        model_mean=model_mean,
+        progress_fraction=progress_fraction,
+        market_line=market_line,
+        actual_row=actual_row,
+        model_row=model_row,
+        pitcher_profile=pitcher_profile,
+        current_profile=current_profile,
+        bullpen_profiles=bullpen_profiles,
+        snapshot=snapshot,
+    )
+    return _safe_float(result.get("projection")) if isinstance(result, dict) else None
+
+
+def _project_live_pitcher_value_details(
+    *,
+    prop: str,
+    team_side: str,
+    actual_value: Optional[float],
+    model_mean: Optional[float],
+    progress_fraction: float,
+    market_line: Optional[float] = None,
+    actual_row: Optional[Dict[str, Any]] = None,
+    model_row: Optional[Dict[str, Any]] = None,
+    pitcher_profile: Optional[Dict[str, Any]] = None,
+    current_profile: Optional[Dict[str, Any]] = None,
+    bullpen_profiles: Optional[List[Dict[str, Any]]] = None,
+    snapshot: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     prop_key = str(prop or "").strip().lower()
     mean = _safe_float(model_mean)
     if mean is None or prop_key not in {"outs", "strikeouts", "hits_allowed", "walks_allowed"}:
-        return _project_live_value(actual_value, model_mean, progress_fraction)
+        projection = _project_live_value(actual_value, model_mean, progress_fraction)
+        return {
+            "projection": projection,
+            "debug": {
+                "path": "generic_live_value",
+                "prop": prop_key,
+                "progress_fraction": max(0.0, min(1.0, float(progress_fraction or 0.0))),
+            },
+        }
 
     actual = float(_safe_float(actual_value) or 0.0)
     if not isinstance(actual_row, dict):
-        return _project_live_value(actual_value, model_mean, progress_fraction)
+        projection = _project_live_value(actual_value, model_mean, progress_fraction)
+        return {
+            "projection": projection,
+            "debug": {
+                "path": "generic_live_value_missing_actual_row",
+                "prop": prop_key,
+                "progress_fraction": max(0.0, min(1.0, float(progress_fraction or 0.0))),
+            },
+        }
 
     actual_bf = _safe_float(actual_row.get("BF"))
     actual_pitches = _safe_float(actual_row.get("P"))
     if actual_bf is None and actual_pitches is None:
-        return _project_live_value(actual_value, model_mean, progress_fraction)
+        projection = _project_live_value(actual_value, model_mean, progress_fraction)
+        return {
+            "projection": projection,
+            "debug": {
+                "path": "generic_live_value_missing_workload",
+                "prop": prop_key,
+                "progress_fraction": max(0.0, min(1.0, float(progress_fraction or 0.0))),
+            },
+        }
 
     model_bf = _model_pitcher_stat(model_row, "BF", "batters_faced_mean")
     model_pitches = _model_pitcher_stat(model_row, "P", "pitches_mean")
     if model_bf is None or model_bf <= 0.0:
-        return _project_live_value(actual_value, model_mean, progress_fraction)
+        projection = _project_live_value(actual_value, model_mean, progress_fraction)
+        return {
+            "projection": projection,
+            "debug": {
+                "path": "generic_live_value_missing_model_bf",
+                "prop": prop_key,
+                "progress_fraction": max(0.0, min(1.0, float(progress_fraction or 0.0))),
+            },
+        }
 
     remaining_bf = None
     if actual_bf is not None:
         remaining_bf = max(float(model_bf) - float(actual_bf), 0.0)
+    remaining_bf_pre_hook = remaining_bf
 
     pitches_per_bf = None
     if model_pitches is not None and float(model_pitches) > 0.0:
@@ -15006,6 +15073,8 @@ def _project_live_pitcher_value(
     if stamina is not None:
         workload_limit = float(stamina)
 
+    actual_pitches_per_bf = None
+    pace_ratio = None
     if pitches_per_bf is not None and actual_pitches is not None:
         if workload_limit is not None:
             pitch_headroom = max(float(workload_limit) - float(actual_pitches), 0.0)
@@ -15020,7 +15089,19 @@ def _project_live_pitcher_value(
                 remaining_bf = max(0.0, float(remaining_bf) / min(float(pace_ratio), 1.35))
 
     if remaining_bf is None:
-        return _project_live_value(actual_value, model_mean, progress_fraction)
+        projection = _project_live_value(actual_value, model_mean, progress_fraction)
+        return {
+            "projection": projection,
+            "debug": {
+                "path": "generic_live_value_missing_remaining_bf",
+                "prop": prop_key,
+                "progress_fraction": max(0.0, min(1.0, float(progress_fraction or 0.0))),
+                "model_bf": model_bf,
+                "actual_bf": actual_bf,
+                "model_pitches": model_pitches,
+                "actual_pitches": actual_pitches,
+            },
+        }
 
     hook_factor = 1.0
     live_context = _live_pitcher_projection_context(
@@ -15114,6 +15195,7 @@ def _project_live_pitcher_value(
             hook_factor = 0.0
 
     remaining_bf = max(0.0, float(remaining_bf) * max(0.0, min(1.1, float(hook_factor))))
+    remaining_bf_post_hook = remaining_bf
 
     per_bf_rate = float(mean) / float(max(model_bf, 1e-6))
     if prop_key in {"strikeouts", "hits_allowed", "walks_allowed"} and actual_bf is not None and float(actual_bf) >= 3.0:
@@ -15143,12 +15225,14 @@ def _project_live_pitcher_value(
             elif balls is not None and int(balls) >= 3:
                 per_bf_rate *= 1.05
 
-    projection = float(actual) + max(0.0, float(remaining_bf)) * float(per_bf_rate)
+    raw_projection = float(actual) + max(0.0, float(remaining_bf)) * float(per_bf_rate)
+    projection = raw_projection
     starter_removed = bool(_starter_removed_from_snapshot(snapshot, team_side)) if team_side in {"away", "home"} else False
+    correction_applied = False
+    corrected_projection = None
     if prop_key in {"outs", "strikeouts"}:
-        raw_projection = float(projection)
         corrected_projection = _apply_live_pitcher_prop_correction(
-            raw_projection,
+            float(raw_projection),
             prop_key=prop_key,
             actual_value=float(actual),
             model_mean=mean,
@@ -15164,7 +15248,49 @@ def _project_live_pitcher_value(
             projection = float(raw_projection)
         else:
             projection = float(corrected_projection)
-    return round(max(float(actual), projection), 3)
+            correction_applied = True
+
+    projection = round(max(float(actual), projection), 3)
+    debug = {
+        "path": "pitcher_live_context",
+        "prop": prop_key,
+        "actual": round(float(actual), 3),
+        "model_mean": round(float(mean), 3),
+        "market_line": _safe_float(market_line),
+        "progress_fraction": round(max(0.0, min(1.0, float(progress_fraction or 0.0))), 4),
+        "model_bf": round(float(model_bf), 3),
+        "actual_bf": round(float(actual_bf), 3) if actual_bf is not None else None,
+        "remaining_bf_pre_hook": round(float(remaining_bf_pre_hook), 3) if remaining_bf_pre_hook is not None else None,
+        "remaining_bf_post_hook": round(float(remaining_bf_post_hook), 3),
+        "model_pitches": round(float(model_pitches), 3) if model_pitches is not None else None,
+        "actual_pitches": round(float(actual_pitches), 3) if actual_pitches is not None else None,
+        "workload_limit": round(float(workload_limit), 3) if workload_limit is not None else None,
+        "usage_ratio": round(float(actual_pitches) / float(workload_limit), 4)
+        if actual_pitches is not None and workload_limit is not None and float(workload_limit) > 0.0
+        else None,
+        "pitches_per_bf_model": round(float(pitches_per_bf), 4) if pitches_per_bf is not None else None,
+        "pitches_per_bf_actual": round(float(actual_pitches_per_bf), 4) if actual_pitches_per_bf is not None else None,
+        "pace_ratio": round(float(pace_ratio), 4) if pace_ratio is not None else None,
+        "hook_factor": round(float(max(0.0, min(1.1, float(hook_factor)))), 4),
+        "per_bf_rate": round(float(per_bf_rate), 5),
+        "inning": inning,
+        "remaining_outs": remaining_outs,
+        "score_margin": round(float(team_score) - float(opp_score), 3) if team_score is not None and opp_score is not None else None,
+        "starter_removed": starter_removed,
+        "correction_applied": correction_applied,
+        "raw_projection": round(float(raw_projection), 3),
+        "corrected_projection": round(float(corrected_projection), 3) if corrected_projection is not None else None,
+        "live_context": {
+            "active": bool(live_context.get("active")),
+            "balls": _safe_int(live_context.get("balls")),
+            "strikes": _safe_int(live_context.get("strikes")),
+            "current_pa_pitch_count": _safe_int(live_context.get("current_pa_pitch_count")),
+            "pitches_this_inning": _safe_int(live_context.get("pitches_this_inning")),
+            "batters_this_inning": _safe_int(live_context.get("batters_this_inning")),
+            "entered_mid_inning": bool(live_context.get("entered_mid_inning")),
+        },
+    }
+    return {"projection": projection, "debug": debug}
 
 
 def _segment_projection(

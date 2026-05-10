@@ -12,6 +12,7 @@ from tools.web.flask_frontend import (
     _load_hitter_ladder_market_context,
     _load_pitcher_ladder_market_context,
     _prebuilt_pitcher_ladders_payload,
+    _project_live_pitcher_value_details,
     _payload_cache_get_or_build,
     _project_live_pitcher_value,
     _season_betting_day_payload,
@@ -760,6 +761,50 @@ class CardsExtraMarketSupportTests(unittest.TestCase):
         self.assertIsNotNone(walk_trouble)
         self.assertGreater(float(strikeout_putaway), float(strikeout_neutral))
         self.assertGreater(float(walk_trouble), float(walk_neutral))
+
+    def test_project_live_pitcher_value_details_exposes_debug_inputs(self) -> None:
+        result = _project_live_pitcher_value_details(
+            prop="strikeouts",
+            team_side="away",
+            actual_value=3,
+            model_mean=6.6,
+            progress_fraction=0.35,
+            market_line=5.5,
+            actual_row={"BF": 14, "P": 54, "SO": 3, "OUTS": 10},
+            model_row={"batters_faced_mean": 24.0, "pitches_mean": 92.0},
+            pitcher_profile={"id": 1, "stamina_pitches": 95},
+            current_profile={"id": 1},
+            bullpen_profiles=[{"availability_mult": 0.92, "leverage_skill": 0.6}],
+            snapshot={
+                "current": {
+                    "inning": 4,
+                    "halfInning": "top",
+                    "pitcher": {"id": 1},
+                    "count": {"balls": 0, "strikes": 2, "outs": 1},
+                },
+                "pitchingContext": {
+                    "currentPaPitchCount": 5,
+                    "pitcherPitchesThisInning": {1: 16},
+                    "pitcherBattersThisInning": {1: 4},
+                    "pitcherEnteredMidInning": {1: False},
+                },
+                "teams": {
+                    "away": {"totals": {"R": 3}},
+                    "home": {"totals": {"R": 1}},
+                },
+            },
+        )
+
+        self.assertIsInstance(result, dict)
+        self.assertIsNotNone(result.get("projection"))
+        debug = result.get("debug") or {}
+        self.assertEqual(debug.get("path"), "pitcher_live_context")
+        self.assertIn("hook_factor", debug)
+        self.assertIn("remaining_bf_pre_hook", debug)
+        self.assertIn("remaining_bf_post_hook", debug)
+        self.assertIn("per_bf_rate", debug)
+        self.assertEqual((debug.get("live_context") or {}).get("strikes"), 2)
+        self.assertEqual((debug.get("live_context") or {}).get("current_pa_pitch_count"), 5)
 
     def test_api_cron_refresh_oddsapi_markets_serializes_nested_paths(self) -> None:
         with (
