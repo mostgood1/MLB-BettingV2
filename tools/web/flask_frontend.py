@@ -14894,6 +14894,71 @@ def _model_pitcher_stat(model_row: Optional[Dict[str, Any]], *keys: str) -> Opti
     return None
 
 
+def _live_pitcher_projection_context(
+    snapshot: Optional[Dict[str, Any]],
+    *,
+    pitcher_profile: Optional[Dict[str, Any]] = None,
+    current_profile: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    if not isinstance(snapshot, dict):
+        return {
+            "active": False,
+            "balls": None,
+            "strikes": None,
+            "current_pa_pitch_count": 0,
+            "pitches_this_inning": None,
+            "batters_this_inning": None,
+            "entered_mid_inning": False,
+        }
+
+    current = snapshot.get("current") if isinstance(snapshot.get("current"), dict) else {}
+    count = current.get("count") if isinstance(current.get("count"), dict) else {}
+    pitching_context = snapshot.get("pitchingContext") if isinstance(snapshot.get("pitchingContext"), dict) else {}
+    pitcher_pitch_count_inning = (
+        pitching_context.get("pitcherPitchesThisInning")
+        if isinstance(pitching_context.get("pitcherPitchesThisInning"), dict)
+        else {}
+    )
+    pitcher_batters_this_inning = (
+        pitching_context.get("pitcherBattersThisInning")
+        if isinstance(pitching_context.get("pitcherBattersThisInning"), dict)
+        else {}
+    )
+    pitcher_entered_mid_inning = (
+        pitching_context.get("pitcherEnteredMidInning")
+        if isinstance(pitching_context.get("pitcherEnteredMidInning"), dict)
+        else {}
+    )
+
+    current_pitcher_id = _safe_int((current.get("pitcher") or {}).get("id"))
+    profile_pitcher_id = _safe_int((current_profile or {}).get("id")) if isinstance(current_profile, dict) else None
+    starter_pitcher_id = _safe_int((pitcher_profile or {}).get("id")) if isinstance(pitcher_profile, dict) else None
+    active_pitcher_id = profile_pitcher_id or current_pitcher_id or starter_pitcher_id
+    is_active = bool(
+        active_pitcher_id is not None
+        and current_pitcher_id is not None
+        and int(active_pitcher_id) == int(current_pitcher_id)
+    )
+
+    pitches_this_inning = None
+    batters_this_inning = None
+    entered_mid_inning = False
+    if active_pitcher_id is not None:
+        pitches_this_inning = _safe_int(pitcher_pitch_count_inning.get(int(active_pitcher_id)))
+        batters_this_inning = _safe_int(pitcher_batters_this_inning.get(int(active_pitcher_id)))
+        entered_mid_inning = bool(pitcher_entered_mid_inning.get(int(active_pitcher_id)))
+
+    return {
+        "active": is_active,
+        "balls": _safe_int(count.get("balls")),
+        "strikes": _safe_int(count.get("strikes")),
+        "current_pa_pitch_count": _safe_int(pitching_context.get("currentPaPitchCount")) or 0,
+        "pitches_this_inning": pitches_this_inning,
+        "batters_this_inning": batters_this_inning,
+        "entered_mid_inning": entered_mid_inning,
+    }
+
+
 def _project_live_pitcher_value(
     *,
     prop: str,
@@ -14958,6 +15023,11 @@ def _project_live_pitcher_value(
         return _project_live_value(actual_value, model_mean, progress_fraction)
 
     hook_factor = 1.0
+    live_context = _live_pitcher_projection_context(
+        snapshot,
+        pitcher_profile=pitcher_profile,
+        current_profile=current_profile,
+    )
     if actual_pitches is not None and workload_limit is not None and float(workload_limit) > 0.0:
         usage_ratio = float(actual_pitches) / float(workload_limit)
         if usage_ratio >= 0.75:
@@ -15009,6 +15079,34 @@ def _project_live_pitcher_value(
         elif avg_avail <= 0.78:
             hook_factor *= 1.06
 
+    if bool(live_context.get("active")):
+        current_pa_pitch_count = int(_safe_int(live_context.get("current_pa_pitch_count")) or 0)
+        pitches_this_inning = _safe_int(live_context.get("pitches_this_inning"))
+        batters_this_inning = _safe_int(live_context.get("batters_this_inning"))
+
+        if current_pa_pitch_count >= 5:
+            hook_factor *= 0.97
+        if current_pa_pitch_count >= 7:
+            hook_factor *= 0.93
+
+        if pitches_this_inning is not None:
+            if int(pitches_this_inning) >= 18:
+                hook_factor *= 0.97
+            if int(pitches_this_inning) >= 25:
+                hook_factor *= 0.88
+            if int(pitches_this_inning) >= 32:
+                hook_factor *= 0.78
+            elif int(pitches_this_inning) <= 10 and inning <= 5:
+                hook_factor *= 1.03
+
+        if batters_this_inning is not None:
+            if int(batters_this_inning) >= 5:
+                hook_factor *= 0.93
+            if int(batters_this_inning) >= 7:
+                hook_factor *= 0.82
+            elif int(batters_this_inning) <= 3 and inning <= 5:
+                hook_factor *= 1.02
+
     if isinstance(current_profile, dict):
         current_id = _safe_int(current_profile.get("id"))
         starter_id = _safe_int((pitcher_profile or {}).get("id")) if isinstance(pitcher_profile, dict) else None
@@ -15022,6 +15120,29 @@ def _project_live_pitcher_value(
         actual_k_rate = float(actual) / float(max(float(actual_bf), 1e-6))
         weight = min(0.3, max(0.08, float(actual_bf) / 60.0))
         per_bf_rate = ((1.0 - weight) * float(per_bf_rate)) + (weight * float(actual_k_rate))
+
+    if bool(live_context.get("active")):
+        balls = _safe_int(live_context.get("balls"))
+        strikes = _safe_int(live_context.get("strikes"))
+        current_pa_pitch_count = int(_safe_int(live_context.get("current_pa_pitch_count")) or 0)
+        if prop_key == "strikeouts":
+            if strikes is not None and int(strikes) >= 2:
+                per_bf_rate *= 1.06
+                if current_pa_pitch_count >= 5:
+                    per_bf_rate *= 1.04
+            elif balls is not None and int(balls) >= 3 and (strikes is None or int(strikes) <= 1):
+                per_bf_rate *= 0.9
+        elif prop_key == "walks_allowed":
+            if balls is not None and int(balls) >= 3 and (strikes is None or int(strikes) <= 1):
+                per_bf_rate *= 1.14
+            elif strikes is not None and int(strikes) >= 2 and (balls is None or int(balls) <= 1):
+                per_bf_rate *= 0.94
+        elif prop_key == "hits_allowed":
+            if strikes is not None and int(strikes) >= 2:
+                per_bf_rate *= 0.95
+            elif balls is not None and int(balls) >= 3:
+                per_bf_rate *= 1.05
+
     projection = float(actual) + max(0.0, float(remaining_bf)) * float(per_bf_rate)
     starter_removed = bool(_starter_removed_from_snapshot(snapshot, team_side)) if team_side in {"away", "home"} else False
     if prop_key in {"outs", "strikeouts"}:

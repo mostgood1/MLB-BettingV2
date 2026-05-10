@@ -619,6 +619,148 @@ class CardsExtraMarketSupportTests(unittest.TestCase):
         self.assertGreater(flask_frontend._selection_live_edge("over", hits_projection, 5.5), 0.0)
         self.assertGreater(flask_frontend._selection_live_edge("over", walks_projection, 2.5), 0.0)
 
+    def test_project_live_pitcher_value_penalizes_long_current_pa_and_inning_stress(self) -> None:
+        base_kwargs = {
+            "prop": "outs",
+            "team_side": "away",
+            "actual_value": 12,
+            "model_mean": 17.5,
+            "progress_fraction": 0.38,
+            "market_line": 15.5,
+            "actual_row": {"BF": 16, "P": 58, "OUTS": 12},
+            "model_row": {"batters_faced_mean": 25.0, "pitches_mean": 94.0},
+            "pitcher_profile": {"id": 1, "stamina_pitches": 98},
+            "current_profile": {"id": 1},
+            "bullpen_profiles": [{"availability_mult": 0.9, "leverage_skill": 0.58}],
+        }
+
+        calm_projection = _project_live_pitcher_value(
+            snapshot={
+                "current": {
+                    "inning": 5,
+                    "halfInning": "top",
+                    "pitcher": {"id": 1},
+                    "count": {"balls": 0, "strikes": 1, "outs": 0},
+                },
+                "pitchingContext": {
+                    "currentPaPitchCount": 1,
+                    "pitcherPitchesThisInning": {1: 8},
+                    "pitcherBattersThisInning": {1: 3},
+                    "pitcherEnteredMidInning": {1: False},
+                },
+                "teams": {
+                    "away": {"totals": {"R": 2}},
+                    "home": {"totals": {"R": 1}},
+                },
+            },
+            **base_kwargs,
+        )
+        stressed_projection = _project_live_pitcher_value(
+            snapshot={
+                "current": {
+                    "inning": 5,
+                    "halfInning": "top",
+                    "pitcher": {"id": 1},
+                    "count": {"balls": 2, "strikes": 2, "outs": 0},
+                },
+                "pitchingContext": {
+                    "currentPaPitchCount": 7,
+                    "pitcherPitchesThisInning": {1: 31},
+                    "pitcherBattersThisInning": {1: 7},
+                    "pitcherEnteredMidInning": {1: False},
+                },
+                "teams": {
+                    "away": {"totals": {"R": 2}},
+                    "home": {"totals": {"R": 1}},
+                },
+            },
+            **base_kwargs,
+        )
+
+        self.assertIsNotNone(calm_projection)
+        self.assertIsNotNone(stressed_projection)
+        self.assertLess(float(stressed_projection), float(calm_projection))
+
+    def test_project_live_pitcher_value_uses_current_count_for_strikeouts_and_walks(self) -> None:
+        common_kwargs = {
+            "team_side": "away",
+            "progress_fraction": 0.35,
+            "actual_row": {"BF": 14, "P": 54, "SO": 3, "BB": 1, "OUTS": 10},
+            "model_row": {"batters_faced_mean": 24.0, "pitches_mean": 92.0},
+            "pitcher_profile": {"id": 1, "stamina_pitches": 95},
+            "current_profile": {"id": 1},
+            "bullpen_profiles": [{"availability_mult": 0.92, "leverage_skill": 0.6}],
+            "snapshot": {
+                "current": {
+                    "inning": 4,
+                    "halfInning": "top",
+                    "pitcher": {"id": 1},
+                },
+                "pitchingContext": {
+                    "currentPaPitchCount": 5,
+                    "pitcherPitchesThisInning": {1: 16},
+                    "pitcherBattersThisInning": {1: 4},
+                    "pitcherEnteredMidInning": {1: False},
+                },
+                "teams": {
+                    "away": {"totals": {"R": 3}},
+                    "home": {"totals": {"R": 1}},
+                },
+            },
+        }
+
+        strikeout_neutral = _project_live_pitcher_value(
+            prop="strikeouts",
+            actual_value=3,
+            model_mean=6.6,
+            market_line=5.5,
+            snapshot={
+                **common_kwargs["snapshot"],
+                "current": {**common_kwargs["snapshot"]["current"], "count": {"balls": 1, "strikes": 1, "outs": 1}},
+            },
+            **{key: value for key, value in common_kwargs.items() if key != "snapshot"},
+        )
+        strikeout_putaway = _project_live_pitcher_value(
+            prop="strikeouts",
+            actual_value=3,
+            model_mean=6.6,
+            market_line=5.5,
+            snapshot={
+                **common_kwargs["snapshot"],
+                "current": {**common_kwargs["snapshot"]["current"], "count": {"balls": 0, "strikes": 2, "outs": 1}},
+            },
+            **{key: value for key, value in common_kwargs.items() if key != "snapshot"},
+        )
+        walk_neutral = _project_live_pitcher_value(
+            prop="walks_allowed",
+            actual_value=1,
+            model_mean=2.8,
+            market_line=2.5,
+            snapshot={
+                **common_kwargs["snapshot"],
+                "current": {**common_kwargs["snapshot"]["current"], "count": {"balls": 1, "strikes": 1, "outs": 1}},
+            },
+            **{key: value for key, value in common_kwargs.items() if key != "snapshot"},
+        )
+        walk_trouble = _project_live_pitcher_value(
+            prop="walks_allowed",
+            actual_value=1,
+            model_mean=2.8,
+            market_line=2.5,
+            snapshot={
+                **common_kwargs["snapshot"],
+                "current": {**common_kwargs["snapshot"]["current"], "count": {"balls": 3, "strikes": 0, "outs": 1}},
+            },
+            **{key: value for key, value in common_kwargs.items() if key != "snapshot"},
+        )
+
+        self.assertIsNotNone(strikeout_neutral)
+        self.assertIsNotNone(strikeout_putaway)
+        self.assertIsNotNone(walk_neutral)
+        self.assertIsNotNone(walk_trouble)
+        self.assertGreater(float(strikeout_putaway), float(strikeout_neutral))
+        self.assertGreater(float(walk_trouble), float(walk_neutral))
+
     def test_api_cron_refresh_oddsapi_markets_serializes_nested_paths(self) -> None:
         with (
             flask_frontend.app.test_client() as client,
