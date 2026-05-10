@@ -4,6 +4,66 @@ from tools.web.flask_frontend import _prop_lens_rows, normalize_pitcher_name
 
 
 class LivePitcherTrackedPropsTests(unittest.TestCase):
+    def test_opening_pitcher_strikeouts_keep_pitcher_baseline_when_boxscore_row_missing(self) -> None:
+        card = {
+            "status": {"abstract": "Live"},
+            "away": {"abbr": "PIT", "name": "Pirates"},
+            "home": {"abbr": "TEX", "name": "Rangers"},
+            "markets": {
+                "pitcherProps": [],
+                "extraPitcherProps": [
+                    {
+                        "market": "pitcher_props",
+                        "prop": "strikeouts",
+                        "pitcher_name": "Bubba Chandler",
+                        "team_side": "away",
+                        "market_line": 4.5,
+                        "selection": "under",
+                        "odds": -136,
+                        "edge": 0.01,
+                        "so_mean": 4.1,
+                    }
+                ],
+            },
+        }
+        snapshot = {
+            "status": {"abstractGameState": "Live"},
+            "current": {"inning": 1, "halfInning": "bottom", "count": {"outs": 0}},
+            "teams": {
+                "away": {
+                    "starter": {"name": "Bubba Chandler"},
+                    "totals": {"R": 0},
+                    "boxscore": {"pitching": []},
+                },
+                "home": {"totals": {"R": 0}, "boxscore": {"pitching": []}},
+            },
+        }
+        sim_context = {
+            "propModels": {
+                "pitchers": {
+                    normalize_pitcher_name("Bubba Chandler"): {
+                        "team_side": "away",
+                        "model": {
+                            "so_mean": 4.1,
+                            "outs_mean": 16.2,
+                            "batters_faced_mean": 24.5,
+                            "pitches_mean": 92.0,
+                        },
+                    }
+                }
+            },
+            "boxscore": {"teams": {"home": {"pitching": []}, "away": {"pitching": []}}},
+            "roster_snapshot": {},
+        }
+
+        rows = _prop_lens_rows(card, snapshot, sim_context)
+        self.assertEqual(1, len(rows))
+        row = rows[0]
+        self.assertEqual("Bubba Chandler", row["playerName"])
+        self.assertEqual("strikeouts", row["marketLabel"])
+        self.assertGreater(row["liveProjection"], 3.7)
+        self.assertLess(row["liveProjection"], 4.3)
+
     def test_tracked_pitcher_props_use_pitcher_model_when_sim_boxscore_missing(self) -> None:
         card = {
             "status": {"abstract": "Live"},

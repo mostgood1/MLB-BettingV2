@@ -15083,6 +15083,20 @@ def _project_live_pitcher_value_details(
         }
 
     actual = float(_safe_float(actual_value) or 0.0)
+    model_bf = _model_pitcher_stat(model_row, "BF", "batters_faced_mean")
+    model_pitches = _model_pitcher_stat(model_row, "P", "pitches_mean")
+    synthesized_opening_row = False
+    if not isinstance(actual_row, dict) and float(actual) <= 1e-9 and (model_bf is not None or model_pitches is not None):
+        actual_row = {
+            "BF": 0,
+            "P": 0,
+            "OUTS": 0,
+            "IP": "0.0",
+            "SO": 0,
+            "BB": 0,
+            "H": 0,
+        }
+        synthesized_opening_row = True
     if not isinstance(actual_row, dict):
         projection = _project_live_value(actual_value, model_mean, progress_fraction)
         return {
@@ -15096,6 +15110,10 @@ def _project_live_pitcher_value_details(
 
     actual_bf = _safe_float(actual_row.get("BF"))
     actual_pitches = _safe_float(actual_row.get("P"))
+    if actual_bf is None and actual_pitches is None and float(actual) <= 1e-9 and (model_bf is not None or model_pitches is not None):
+        actual_bf = 0.0
+        actual_pitches = 0.0
+        synthesized_opening_row = True
     if actual_bf is None and actual_pitches is None:
         projection = _project_live_value(actual_value, model_mean, progress_fraction)
         return {
@@ -15106,9 +15124,6 @@ def _project_live_pitcher_value_details(
                 "progress_fraction": max(0.0, min(1.0, float(progress_fraction or 0.0))),
             },
         }
-
-    model_bf = _model_pitcher_stat(model_row, "BF", "batters_faced_mean")
-    model_pitches = _model_pitcher_stat(model_row, "P", "pitches_mean")
     if model_bf is None or model_bf <= 0.0:
         projection = _project_live_value(actual_value, model_mean, progress_fraction)
         return {
@@ -15321,6 +15336,7 @@ def _project_live_pitcher_value_details(
         "progress_fraction": round(max(0.0, min(1.0, float(progress_fraction or 0.0))), 4),
         "model_bf": round(float(model_bf), 3),
         "actual_bf": round(float(actual_bf), 3) if actual_bf is not None else None,
+        "synthesized_opening_row": synthesized_opening_row,
         "remaining_bf_pre_hook": round(float(remaining_bf_pre_hook), 3) if remaining_bf_pre_hook is not None else None,
         "remaining_bf_post_hook": round(float(remaining_bf_post_hook), 3),
         "model_pitches": round(float(model_pitches), 3) if model_pitches is not None else None,
