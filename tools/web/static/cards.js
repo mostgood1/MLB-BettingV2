@@ -469,7 +469,7 @@
 
   function starterLadderStripMarkup(card) {
     const renderRow = (prefix, probable) => {
-      const badgeKey = Array.isArray(probable?.miniLadderBadges) ? "miniLadderBadges" : "ladderBadges";
+      const badgeKey = starterMetricBadgeKey(card);
       const badges = Array.isArray(probable?.[badgeKey]) ? probable[badgeKey] : [];
       if (!badges.length) return "";
       return `

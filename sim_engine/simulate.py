@@ -1301,14 +1301,38 @@ def _select_pitcher_v2(roster: TeamRoster, state: GameState, rng: random.Random)
     reliever_hook_spread = max(1.0, _ov_f("reliever_hook_spread", 5.5))
     reliever_pull_bias = _clamp01(_ov_f("reliever_pull_bias", 0.20))
     reliever_hard_cap_buffer = max(0, _ov_i("reliever_hard_cap_buffer", 18))
+    inning_hook_pitch_start = max(1.0, _ov_f("inning_hook_pitch_start", 18.0))
+    inning_hook_bf_start = max(1.0, _ov_f("inning_hook_bf_start", 5.0))
+    inning_hook_pitch_scale = max(0.0, _ov_f("inning_hook_pitch_scale", 0.8))
+    inning_hook_bf_scale = max(0.0, _ov_f("inning_hook_bf_scale", 0.5))
+    reliever_recent_entry_bf_window = max(1.0, _ov_f("reliever_recent_entry_bf_window", 3.0))
+    reliever_recent_entry_pc_window = max(1.0, _ov_f("reliever_recent_entry_pc_window", 12.0))
+    reliever_recent_entry_hook_bonus = max(0.0, _ov_f("reliever_recent_entry_hook_bonus", 0.55))
+    reliever_mid_inning_hook_bonus = max(0.0, _ov_f("reliever_mid_inning_hook_bonus", 0.20))
 
     pc = int(state.pitcher_pitch_count.get(int(current), 0) or 0)
     bf = int(state.pitcher_batters_faced.get(int(current), 0) or 0)
+    inning_pc = int(state.pitcher_pitch_count_inning.get(int(current), 0) or 0)
+    inning_bf = int(state.pitcher_batters_faced_inning.get(int(current), 0) or 0)
     half = state.half
     outs = int(half.outs) if half else 0
     bases = half.bases if half else BaseState.EMPTY
     fielding_diff = _score_diff_from_fielding(state)
     lev = _leverage_index(state.inning, state.top, outs, bases, fielding_diff)
+
+    inning_hook_pressure = 0.0
+    if inning_pc > 0:
+        inning_hook_pressure += float(inning_hook_pitch_scale) * max(0.0, float(inning_pc) - float(inning_hook_pitch_start)) / float(inning_hook_pitch_start)
+    if inning_bf > 0:
+        inning_hook_pressure += float(inning_hook_bf_scale) * max(0.0, float(inning_bf) - float(inning_hook_bf_start)) / float(inning_hook_bf_start)
+
+    reliever_recent_entry_bonus = 0.0
+    if int(current) != int(starter):
+        fresh_bf = max(0.0, float(reliever_recent_entry_bf_window) - float(bf)) / float(reliever_recent_entry_bf_window)
+        fresh_pc = max(0.0, float(reliever_recent_entry_pc_window) - float(pc)) / float(reliever_recent_entry_pc_window)
+        reliever_recent_entry_bonus = float(reliever_recent_entry_hook_bonus) * max(fresh_bf, fresh_pc)
+        if bool(state.pitcher_entered_mid_inning.get(int(current), False)):
+            reliever_recent_entry_bonus += float(reliever_mid_inning_hook_bonus)
 
     def _runner_pressure(b: BaseState) -> float:
         return {
@@ -1392,6 +1416,7 @@ def _select_pitcher_v2(roster: TeamRoster, state: GameState, rng: random.Random)
         x = (float(pc) - float(eff_hook)) / float(starter_hook_spread)
         x += 0.9 * float(lev)
         x += 0.6 * float(runner_pressure)
+        x += float(inning_hook_pressure)
         if third_time:
             x += float(roster.manager.pull_starter_third_time_penalty) * 8.0 * float(starter_third_time_scale)
         if blowout:
@@ -1424,6 +1449,8 @@ def _select_pitcher_v2(roster: TeamRoster, state: GameState, rng: random.Random)
     x = (float(pc) - float(eff_stamina)) / float(reliever_hook_spread)
     x += 0.8 * float(lev)
     x += 0.6 * float(_runner_pressure(bases))
+    x += float(inning_hook_pressure)
+    x -= float(reliever_recent_entry_bonus)
     # If low leverage and blowout-ish, keep the arm in.
     if abs(int(fielding_diff)) >= 5 and lev < 0.40:
         x -= 0.9
@@ -1455,8 +1482,17 @@ def _adjust_pitcher_day_rates_v2(
     try:
         pc = int(state.pitcher_pitch_count.get(int(pitcher_id), 0) or 0)
         bf = int(state.pitcher_batters_faced.get(int(pitcher_id), 0) or 0)
+        inning_pc = int(state.pitcher_pitch_count_inning.get(int(pitcher_id), 0) or 0)
+        inning_bf = int(state.pitcher_batters_faced_inning.get(int(pitcher_id), 0) or 0)
     except Exception:
-        pc, bf = 0, 0
+        pc, bf, inning_pc, inning_bf = 0, 0, 0, 0
+
+    current_pa_pitch_count = 0
+    try:
+        if int(getattr(getattr(state, "pa", None), "pitcher_id", 0) or 0) == int(pitcher_id):
+            current_pa_pitch_count = int(getattr(getattr(state, "pa", None), "pitch_count", 0) or 0)
+    except Exception:
+        current_pa_pitch_count = 0
 
     is_starter = int(roster.lineup.pitcher.player.mlbam_id) == int(pitcher_id)
 
@@ -1487,6 +1523,16 @@ def _adjust_pitcher_day_rates_v2(
     # This is off by default to preserve current behavior.
     bullpen_tax_scale = max(0.0, _ov_f("bullpen_tax_scale", 0.0))
     bullpen_tax_pitches = max(1.0, _ov_f("bullpen_tax_pitches", 140.0))
+    inning_fatigue_pitch_start = max(1.0, _ov_f("inning_fatigue_pitch_start", 18.0))
+    inning_fatigue_bf_start = max(1.0, _ov_f("inning_fatigue_bf_start", 5.0))
+    inning_fatigue_pitch_scale = max(0.0, _ov_f("inning_fatigue_pitch_scale", 0.35))
+    inning_fatigue_bf_scale = max(0.0, _ov_f("inning_fatigue_bf_scale", 0.20))
+    long_pa_pitch_threshold = max(1.0, _ov_f("long_pa_pitch_threshold", 5.0))
+    long_pa_fatigue_scale = max(0.0, _ov_f("long_pa_fatigue_scale", 0.18))
+    reliever_recent_entry_bf_window = max(1.0, _ov_f("reliever_recent_entry_bf_window", 3.0))
+    reliever_recent_entry_pc_window = max(1.0, _ov_f("reliever_recent_entry_pc_window", 12.0))
+    reliever_recent_entry_fatigue_bonus = max(0.0, _ov_f("reliever_recent_entry_fatigue_bonus", 0.22))
+    reliever_mid_inning_fatigue_bonus = max(0.0, _ov_f("reliever_mid_inning_fatigue_bonus", 0.08))
     bullpen_tax = 0.0
     if (not is_starter) and bullpen_tax_scale > 0:
         try:
@@ -1496,7 +1542,28 @@ def _adjust_pitcher_day_rates_v2(
         except Exception:
             bullpen_tax = 0.0
 
-    fatigue = min(2.0, float(fatigue) + float(bullpen_tax))
+    inning_stress = 0.0
+    if inning_pc > 0:
+        inning_stress += float(inning_fatigue_pitch_scale) * max(0.0, float(inning_pc) - float(inning_fatigue_pitch_start)) / float(inning_fatigue_pitch_start)
+    if inning_bf > 0:
+        inning_stress += float(inning_fatigue_bf_scale) * max(0.0, float(inning_bf) - float(inning_fatigue_bf_start)) / float(inning_fatigue_bf_start)
+
+    long_pa_stress = 0.0
+    if current_pa_pitch_count > 0:
+        long_pa_stress = float(long_pa_fatigue_scale) * max(0.0, float(current_pa_pitch_count) - float(long_pa_pitch_threshold)) / float(long_pa_pitch_threshold)
+
+    reliever_recent_entry_bonus = 0.0
+    if not is_starter:
+        fresh_bf = max(0.0, float(reliever_recent_entry_bf_window) - float(bf)) / float(reliever_recent_entry_bf_window)
+        fresh_pc = max(0.0, float(reliever_recent_entry_pc_window) - float(pc)) / float(reliever_recent_entry_pc_window)
+        reliever_recent_entry_bonus = float(reliever_recent_entry_fatigue_bonus) * max(fresh_bf, fresh_pc)
+        if bool(state.pitcher_entered_mid_inning.get(int(pitcher_id), False)):
+            reliever_recent_entry_bonus += float(reliever_mid_inning_fatigue_bonus)
+
+    fatigue = min(
+        2.0,
+        max(0.0, float(fatigue) + float(bullpen_tax) + float(inning_stress) + float(long_pa_stress) - float(reliever_recent_entry_bonus)),
+    )
     third_time = (bf >= 18) if is_starter else False
     tto_pen = float(getattr(roster.manager, "pull_starter_third_time_penalty", 0.0) or 0.0)
 
@@ -1758,6 +1825,8 @@ def simulate_game(
         except Exception:
             next_idx = 0
         state.runner_reach_source_by_id.clear()
+        state.pitcher_pitch_count_inning.clear()
+        state.pitcher_batters_faced_inning.clear()
         state.half = InningHalfState(
             batting_team=batting,
             fielding_team=fielding,
@@ -1919,13 +1988,33 @@ def simulate_game(
                 }
             )
 
-        state.pa = PlateAppearanceState(
-            batter_id=batter_prof.player.mlbam_id,
-            pitcher_id=pitcher_id,
-            pitch_count=0,
-            pitches=([] if pbp_mode == "pitch" else None),
+        seeded_pa = state.pa if isinstance(state.pa, PlateAppearanceState) else None
+        resume_seeded_pa = (
+            isinstance(seeded_pa, PlateAppearanceState)
+            and int(seeded_pa.batter_id or 0) == int(batter_prof.player.mlbam_id)
+            and int(seeded_pa.pitcher_id or 0) == int(pitcher_id)
+            and (
+                int((seeded_pa.count or (0, 0))[0] or 0) > 0
+                or int((seeded_pa.count or (0, 0))[1] or 0) > 0
+            )
         )
-        balls, strikes = 0, 0
+        if resume_seeded_pa:
+            state.pa = seeded_pa
+            state.pa.pitch_count = max(
+                int(state.pa.pitch_count or 0),
+                int((state.pa.count or (0, 0))[0] or 0) + int((state.pa.count or (0, 0))[1] or 0),
+            )
+            if pbp_mode == "pitch" and state.pa.pitches is None:
+                state.pa.pitches = []
+            balls, strikes = state.pa.count or (0, 0)
+        else:
+            state.pa = PlateAppearanceState(
+                batter_id=batter_prof.player.mlbam_id,
+                pitcher_id=pitcher_id,
+                pitch_count=0,
+                pitches=([] if pbp_mode == "pitch" else None),
+            )
+            balls, strikes = 0, 0
 
         outs_before_pa = int(half.outs)
         bases_before_pa = str(half.bases.value)
@@ -1934,7 +2023,7 @@ def simulate_game(
         # Simple stolen base attempt model (only 2B steals, no third/double steals).
         # Happens before the PA, so it should not count as a PA for the current batter.
         try:
-            if int(half.outs) <= 1 and int(half.runner_on_1b) > 0 and int(half.runner_on_2b) == 0:
+            if (not resume_seeded_pa) and int(half.outs) <= 1 and int(half.runner_on_1b) > 0 and int(half.runner_on_2b) == 0:
                 rid = int(half.runner_on_1b)
                 rprof = _batter_profile_by_id(batting_roster, rid)
                 if rprof is not None:
@@ -2001,6 +2090,7 @@ def simulate_game(
         br["PA"] += 1
         pr["BF"] += 1.0
         state.pitcher_batters_faced[pitcher_id] = state.pitcher_batters_faced.get(pitcher_id, 0) + 1
+        state.pitcher_batters_faced_inning[pitcher_id] = state.pitcher_batters_faced_inning.get(pitcher_id, 0) + 1
         starter_pitcher_id = int(getattr(getattr(fielding_roster.lineup.pitcher, "player", None), "mlbam_id", 0) or 0)
 
         pa_ended = False
@@ -2183,6 +2273,7 @@ def simulate_game(
 
             # pitch count
             state.pitcher_pitch_count[pitcher_id] = state.pitcher_pitch_count.get(pitcher_id, 0) + 1
+            state.pitcher_pitch_count_inning[pitcher_id] = state.pitcher_pitch_count_inning.get(pitcher_id, 0) + 1
             pr["P"] += 1.0
 
             if pbp_mode == "pitch":

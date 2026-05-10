@@ -12,7 +12,7 @@ from .forward_tuning import (
     should_use_forward_tuning,
 )
 from .models import BaseState, GameConfig, InningHalfState, TeamRoster
-from .state import GameState
+from .state import GameState, PlateAppearanceState
 from .simulate import simulate_game
 
 
@@ -31,8 +31,15 @@ class LiveSituation:
     home_next_batter_index: int = 0
     away_pitcher_id: Optional[int] = None
     home_pitcher_id: Optional[int] = None
+    current_batter_id: Optional[int] = None
+    balls: int = 0
+    strikes: int = 0
+    current_pa_pitch_count: int = 0
     pitcher_pitch_count: Dict[int, int] = field(default_factory=dict)
     pitcher_batters_faced: Dict[int, int] = field(default_factory=dict)
+    pitcher_pitch_count_inning: Dict[int, int] = field(default_factory=dict)
+    pitcher_batters_faced_inning: Dict[int, int] = field(default_factory=dict)
+    pitcher_entered_mid_inning: Dict[int, bool] = field(default_factory=dict)
 
 
 @dataclass
@@ -110,6 +117,21 @@ def _build_initial_state(
             for pid, value in (situation.pitcher_batters_faced or {}).items()
             if int(pid or 0) > 0
         },
+        pitcher_pitch_count_inning={
+            int(pid): max(0, int(value or 0))
+            for pid, value in (situation.pitcher_pitch_count_inning or {}).items()
+            if int(pid or 0) > 0
+        },
+        pitcher_batters_faced_inning={
+            int(pid): max(0, int(value or 0))
+            for pid, value in (situation.pitcher_batters_faced_inning or {}).items()
+            if int(pid or 0) > 0
+        },
+        pitcher_entered_mid_inning={
+            int(pid): bool(value)
+            for pid, value in (situation.pitcher_entered_mid_inning or {}).items()
+            if int(pid or 0) > 0
+        },
         next_batter_index_by_team=next_batter_index_by_team,
     )
 
@@ -132,6 +154,18 @@ def _build_initial_state(
         runs_scored=0,
         next_batter_index=int(next_batter_index_by_team.get(batting_team_id, 0) or 0),
     )
+    live_balls = max(0, min(3, int(situation.balls or 0)))
+    live_strikes = max(0, min(2, int(situation.strikes or 0)))
+    live_batter_id = int(situation.current_batter_id or 0)
+    current_fielding_pitcher_id = away_pitcher_id if batting_team_id == int(home.team.team_id) else home_pitcher_id
+    if live_batter_id > 0 and current_fielding_pitcher_id > 0 and (live_balls > 0 or live_strikes > 0):
+        state.pa = PlateAppearanceState(
+            batter_id=live_batter_id,
+            pitcher_id=int(current_fielding_pitcher_id),
+            count=(int(live_balls), int(live_strikes)),
+            pitch_count=max(int(situation.current_pa_pitch_count or 0), int(live_balls + live_strikes)),
+            pitches=None,
+        )
     return state
 
 

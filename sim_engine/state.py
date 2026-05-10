@@ -31,6 +31,9 @@ class GameState:
 
     pitcher_pitch_count: Dict[int, int] = field(default_factory=dict)
     pitcher_batters_faced: Dict[int, int] = field(default_factory=dict)
+    pitcher_pitch_count_inning: Dict[int, int] = field(default_factory=dict)
+    pitcher_batters_faced_inning: Dict[int, int] = field(default_factory=dict)
+    pitcher_entered_mid_inning: Dict[int, bool] = field(default_factory=dict)
 
     # Track who is currently pitching for each team_id
     current_pitcher_by_team: Dict[int, int] = field(default_factory=dict)

@@ -12255,6 +12255,70 @@ def _current_matchup(feed: Dict[str, Any]) -> Dict[str, Any]:
         return {"inning": None, "halfInning": None, "count": None, "batter": None, "pitcher": None}
 
 
+def _live_pitching_context(feed: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        plays = ((feed.get("liveData") or {}).get("plays") or {}) if isinstance(feed, dict) else {}
+        current_play = plays.get("currentPlay") or {}
+        current_pitcher_id = _safe_int((((current_play.get("matchup") or {}).get("pitcher") or {}).get("id")))
+        current_pa_pitch_count = sum(
+            1
+            for entry in (current_play.get("playEvents") or [])
+            if isinstance(entry, dict) and bool(entry.get("isPitch"))
+        )
+
+        about = current_play.get("about") or {}
+        inning = _safe_int(about.get("inning"))
+        half = str(about.get("halfInning") or "").strip().lower()
+        all_plays = plays.get("allPlays") or []
+        if inning is None or half not in {"top", "bottom"} or not isinstance(all_plays, list):
+            return {
+                "currentPaPitchCount": int(current_pa_pitch_count),
+                "pitcherPitchesThisInning": {},
+                "pitcherBattersThisInning": {},
+                "pitcherEnteredMidInning": {},
+            }
+
+        pitcher_pitches_this_inning: Dict[int, int] = {}
+        pitcher_batters_this_inning: Dict[int, int] = {}
+        pitcher_entered_mid_inning: Dict[int, bool] = {}
+        saw_any_prior_batter = False
+        for play in all_plays:
+            if not isinstance(play, dict):
+                continue
+            play_about = play.get("about") or {}
+            if _safe_int(play_about.get("inning")) != inning:
+                continue
+            if str(play_about.get("halfInning") or "").strip().lower() != half:
+                continue
+            pitcher_id = _safe_int((((play.get("matchup") or {}).get("pitcher") or {}).get("id")))
+            if pitcher_id is None or pitcher_id <= 0:
+                continue
+            pitch_total = sum(
+                1 for entry in (play.get("playEvents") or []) if isinstance(entry, dict) and bool(entry.get("isPitch"))
+            )
+            pitcher_pitches_this_inning[int(pitcher_id)] = pitcher_pitches_this_inning.get(int(pitcher_id), 0) + int(
+                pitch_total
+            )
+            pitcher_batters_this_inning[int(pitcher_id)] = pitcher_batters_this_inning.get(int(pitcher_id), 0) + 1
+            if int(pitcher_id) not in pitcher_entered_mid_inning:
+                pitcher_entered_mid_inning[int(pitcher_id)] = bool(saw_any_prior_batter)
+            saw_any_prior_batter = True
+
+        return {
+            "currentPaPitchCount": int(current_pa_pitch_count),
+            "pitcherPitchesThisInning": pitcher_pitches_this_inning,
+            "pitcherBattersThisInning": pitcher_batters_this_inning,
+            "pitcherEnteredMidInning": pitcher_entered_mid_inning,
+        }
+    except Exception:
+        return {
+            "currentPaPitchCount": 0,
+            "pitcherPitchesThisInning": {},
+            "pitcherBattersThisInning": {},
+            "pitcherEnteredMidInning": {},
+        }
+
+
 def _status_is_live(status_text: Any) -> bool:
     if isinstance(status_text, dict):
         abstract = str(
@@ -14252,6 +14316,16 @@ def _game_lens_min_total_cushion(progress: Dict[str, Any]) -> float:
     return 0.6 + (0.25 * fraction)
 
 
+def _is_pregame_full_game_lane(label: str, progress: Dict[str, Any]) -> bool:
+    fraction = max(0.0, min(1.0, float(_safe_float(progress.get("fraction")) or 0.0)))
+    return fraction <= 1e-9 and str(label or "").strip().lower() == "full game"
+
+
+def _is_pregame_lane(progress: Dict[str, Any]) -> bool:
+    fraction = max(0.0, min(1.0, float(_safe_float(progress.get("fraction")) or 0.0)))
+    return fraction <= 1e-9
+
+
 def _game_lens_score_phrase(side_margin: Optional[float], remaining_outs: int) -> str:
     margin = _safe_float(side_margin)
     if margin is None:
@@ -14277,6 +14351,17 @@ def _game_lens_moneyline_market(
     draw_odds: Any = None,
     snapshot: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    if _is_pregame_lane(progress):
+        return {
+            "homeOdds": home_odds,
+            "awayOdds": away_odds,
+            "drawOdds": draw_odds,
+            "marketHomeProb": None,
+            "pick": None,
+            "edge": None,
+            "reason": "Pregame moneyline recommendations are suppressed while that surface is under re-evaluation.",
+        }
+
     home_prob_market = _american_odds_implied_prob(home_odds)
     away_prob_market = _american_odds_implied_prob(away_odds)
     draw_prob_market = _american_odds_implied_prob(draw_odds)
@@ -14323,10 +14408,16 @@ def _game_lens_moneyline_market(
         out["reason"] = " ".join(piece for piece in [segment_text, f"The model leaned {selected_side} at {selected_prob:.1%} against a market price near {selected_market_prob:.1%}, but they were already chasing too much of the segment for the moneyline lane to stay live."] if piece).strip() or None
         return out
 
-    if selected_prob < _game_lens_min_ml_win_prob(progress):
+    min_win_prob = _game_lens_min_ml_win_prob(progress)
+    min_margin = _game_lens_min_margin(progress)
+    if _is_pregame_full_game_lane(label, progress):
+        min_win_prob = max(float(min_win_prob), 0.55)
+        min_margin = max(float(min_margin), 1.4)
+
+    if selected_prob < min_win_prob:
         out["reason"] = " ".join(piece for piece in [segment_text, f"The model edge only leaned {selected_side} to {selected_prob:.1%}, which was too thin to promote a moneyline side."] if piece).strip() or None
         return out
-    if selected_projection_margin < _game_lens_min_margin(progress):
+    if selected_projection_margin < min_margin:
         out["reason"] = " ".join(piece for piece in [segment_text, f"The projected margin on the {reason_label.lower()} slice was only {selected_projection_margin:+.2f}, so there was not enough separation for a side."] if piece).strip() or None
         return out
 
@@ -14374,6 +14465,9 @@ def _game_lens_spread_market(
     }
     segment_text = _game_lens_segment_result_text(label, actual_home, actual_away, closed=closed)
     reason_label = _game_lens_reason_label(label)
+    if _is_pregame_full_game_lane(label, progress):
+        out["reason"] = "Pregame full-game spread recommendations are suppressed while that surface is under re-evaluation."
+        return out
     home_margin = _safe_float(projection_home_margin)
     home_line = _safe_float(spread_line)
     if home_margin is None:
@@ -14391,10 +14485,14 @@ def _game_lens_spread_market(
     selected_side = "home" if spread_edge > 0 else "away"
     selected_odds = spread_home_odds if selected_side == "home" else spread_away_odds
     cover_cushion = abs(float(spread_edge))
-    if not _market_price_allowed(selected_odds, max_favorite_odds=-200):
+    max_favorite_odds = -150 if _is_pregame_lane(progress) else -200
+    if not _market_price_allowed(selected_odds, max_favorite_odds=max_favorite_odds):
         out["reason"] = " ".join(piece for piece in [segment_text, "The projected side was there, but the attached spread price was already too expensive to keep it realistic."] if piece).strip() or None
         return out
-    if cover_cushion < _game_lens_min_spread_cushion(progress):
+    min_spread_cushion = _game_lens_min_spread_cushion(progress)
+    if _is_pregame_full_game_lane(label, progress):
+        min_spread_cushion = max(float(min_spread_cushion), 2.25)
+    if cover_cushion < min_spread_cushion:
         out["reason"] = " ".join(piece for piece in [segment_text, f"The projected cover cushion was only {cover_cushion:.2f} runs, so the spread lane stayed below threshold."] if piece).strip() or None
         return out
 
@@ -14443,6 +14541,9 @@ def _game_lens_total_market(
         "edge": None,
         "reason": None,
     }
+    if _is_pregame_lane(progress):
+        out["reason"] = "Pregame totals recommendations are suppressed while that surface is under re-evaluation."
+        return out
     segment_text = _game_lens_segment_result_text(label, actual_home, actual_away, closed=closed)
     reason_label = _game_lens_reason_label(label)
     projected_total = _safe_float(projection_total)
@@ -14455,7 +14556,10 @@ def _game_lens_total_market(
         return out
 
     total_edge = float(projected_total) - float(live_total_line)
-    if abs(total_edge) < _game_lens_min_total_cushion(progress):
+    min_total_cushion = _game_lens_min_total_cushion(progress)
+    if _is_pregame_full_game_lane(label, progress):
+        min_total_cushion = max(float(min_total_cushion), 3.0)
+    if abs(total_edge) < min_total_cushion:
         out["reason"] = " ".join(piece for piece in [segment_text, f"The projected total of {float(projected_total):.2f} was too close to {float(live_total_line):.1f} to surface a totals play."] if piece).strip() or None
         return out
 
@@ -15208,6 +15312,7 @@ def _load_live_lens_snapshot(game_pk: int, d: str, *, feed: Optional[Dict[str, A
             "gamePk": int(game_pk),
             "status": (feed.get("gameData") or {}).get("status") or {},
             "current": _current_matchup(feed),
+            "pitchingContext": _live_pitching_context(feed),
             "offense": _live_offense_state(feed),
             "linescore": _live_linescore(feed),
             "teams": {
@@ -15514,9 +15619,28 @@ def _live_mc_projection(snapshot: Optional[Dict[str, Any]], sim_context: Optiona
     fielding_side = "home" if batting_side == "away" else "away"
     current_batter_id = _safe_int(((current.get("batter") or {}).get("id")))
     current_pitcher_id = _safe_int(((current.get("pitcher") or {}).get("id")))
+    balls = _safe_int(((current.get("count") or {}).get("balls")))
+    strikes = _safe_int(((current.get("count") or {}).get("strikes")))
     away_next_index = _live_team_next_batter_index(snapshot, away_roster, "away", current_batter_id=current_batter_id, batting_side=batting_side)
     home_next_index = _live_team_next_batter_index(snapshot, home_roster, "home", current_batter_id=current_batter_id, batting_side=batting_side)
     pitch_counts, batters_faced = _live_pitcher_usage(snapshot)
+    pitching_context = snapshot.get("pitchingContext") if isinstance(snapshot.get("pitchingContext"), dict) else {}
+    current_pa_pitch_count = _safe_int(pitching_context.get("currentPaPitchCount"))
+    pitcher_pitch_count_inning = (
+        pitching_context.get("pitcherPitchesThisInning")
+        if isinstance(pitching_context.get("pitcherPitchesThisInning"), dict)
+        else {}
+    )
+    pitcher_batters_faced_inning = (
+        pitching_context.get("pitcherBattersThisInning")
+        if isinstance(pitching_context.get("pitcherBattersThisInning"), dict)
+        else {}
+    )
+    pitcher_entered_mid_inning = (
+        pitching_context.get("pitcherEnteredMidInning")
+        if isinstance(pitching_context.get("pitcherEnteredMidInning"), dict)
+        else {}
+    )
     bases, runner_on_1b, runner_on_2b, runner_on_3b = _live_base_state(snapshot)
 
     try:
@@ -15537,8 +15661,15 @@ def _live_mc_projection(snapshot: Optional[Dict[str, Any]], sim_context: Optiona
                 home_next_batter_index=int(home_next_index),
                 away_pitcher_id=int(current_pitcher_id) if fielding_side == "away" and current_pitcher_id is not None else None,
                 home_pitcher_id=int(current_pitcher_id) if fielding_side == "home" and current_pitcher_id is not None else None,
+                current_batter_id=int(current_batter_id) if current_batter_id is not None else None,
+                balls=int(balls) if balls is not None else 0,
+                strikes=int(strikes) if strikes is not None else 0,
+                current_pa_pitch_count=int(current_pa_pitch_count) if current_pa_pitch_count is not None else 0,
                 pitcher_pitch_count=pitch_counts,
                 pitcher_batters_faced=batters_faced,
+                pitcher_pitch_count_inning=pitcher_pitch_count_inning,
+                pitcher_batters_faced_inning=pitcher_batters_faced_inning,
+                pitcher_entered_mid_inning=pitcher_entered_mid_inning,
             ),
             sims=int(_LIVE_GAME_MC_SIMS),
             seed=int(_safe_int(sim_context.get("gamePk")) or 0) or None,
@@ -15564,7 +15695,8 @@ def _build_game_lens(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], s
         "abstract": str((((snapshot or {}).get("status") or {}).get("abstractGameState") or ((card.get("status") or {}).get("abstract") or ""))),
         "detailed": str((((snapshot or {}).get("status") or {}).get("detailedState") or ((card.get("status") or {}).get("detailed") or ""))),
     }
-    if not _status_is_live(status):
+    is_live = _status_is_live(status)
+    if _status_is_final(status):
         return []
 
     predicted = (sim_context or {}).get("predicted") or {}
@@ -15585,6 +15717,8 @@ def _build_game_lens(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], s
         {"key": "first7", "label": "F7", "innings": 7, "baseline": False},
         {"key": "full", "label": "Full Game", "innings": 9, "baseline": True},
     ]
+    if not is_live:
+        lanes = [lane for lane in lanes if bool(lane.get("baseline"))]
     rows: List[Dict[str, Any]] = []
     for lane in lanes:
         projection = _segment_projection(
@@ -15595,7 +15729,7 @@ def _build_game_lens(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], s
             progress_fraction=float(progress.get("fraction") or 0.0),
             target_innings=int(lane["innings"]),
         )
-        if lane["key"] in {"live", "full"} and isinstance(live_mc_projection, dict):
+        if is_live and lane["key"] in {"live", "full"} and isinstance(live_mc_projection, dict):
             projection = {
                 "away": _safe_float(live_mc_projection.get("away")),
                 "home": _safe_float(live_mc_projection.get("home")),
@@ -15613,7 +15747,7 @@ def _build_game_lens(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], s
                 away_prob = _safe_float(baseline_probs.get("awayWin"))
                 baseline_home_prob, _ = _normalize_two_way_probs(baseline_home_prob, away_prob)
         model_home_prob = _live_margin_win_prob(projection.get("homeMargin")) if not projection.get("closed") else None
-        if lane["key"] in {"live", "full"} and isinstance(live_mc_projection, dict):
+        if is_live and lane["key"] in {"live", "full"} and isinstance(live_mc_projection, dict):
             model_home_prob = _safe_float(live_mc_projection.get("homeWinProb"))
 
         lane_markets = _game_lens_markets_for_lane(markets, str(lane["key"]))
@@ -15680,7 +15814,7 @@ def _build_game_lens(card: Dict[str, Any], snapshot: Optional[Dict[str, Any]], s
                 "progress": progress,
                 "baselineHomeWinProb": baseline_home_prob,
                 "modelHomeWinProb": model_home_prob,
-                "source": str(live_mc_projection.get("source") or "live_projection") if lane["key"] in {"live", "full"} and isinstance(live_mc_projection, dict) else ("live_projection" if lane["key"] == "live" else "segment_projection"),
+                "source": str(live_mc_projection.get("source") or "live_projection") if is_live and lane["key"] in {"live", "full"} and isinstance(live_mc_projection, dict) else ("segment_projection" if lane["key"] != "live" else "live_projection"),
                 "markets": {
                     "moneyline": moneyline_market,
                     "spread": spread_market,
