@@ -122,6 +122,53 @@ def _pitch_type_hr_mult_from_summary(summary: Dict[str, Any], base: Dict[str, An
     )
 
 
+def _summary_float(source: Any, key: str) -> Optional[float]:
+    if not isinstance(source, dict):
+        return None
+    try:
+        value = source.get(key)
+        if value is None:
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _enrich_statcast_quality_mult(mult: Dict[str, float], overall: Dict[str, Any]) -> Dict[str, float]:
+    enriched = dict(mult or {})
+    if not isinstance(overall, dict):
+        return enriched
+    for src_key, out_key in (
+        ("csw_rate", "csw_rate"),
+        ("zone_rate", "zone_rate"),
+        ("chase_swing_rate", "chase_swing_rate"),
+        ("contact_rate", "contact_rate"),
+        ("xwoba", "xwoba"),
+        ("ev_mean", "ev_mean"),
+        ("ev_max", "ev_max"),
+        ("la_mean", "la_mean"),
+        ("pulled_air_rate", "pulled_air_rate"),
+        ("sweet_spot_rate", "sweet_spot_rate"),
+        ("hardhit_rate", "hardhit_rate"),
+        ("barrel_rate", "barrel_rate"),
+    ):
+        value = _summary_float(overall, src_key)
+        if value is not None:
+            enriched[out_key] = float(value)
+    pitch_quality = overall.get("pitch_quality") if isinstance(overall.get("pitch_quality"), dict) else {}
+    for src_key, out_key in (
+        ("velo_mean", "pitch_velo_mean"),
+        ("spin_mean", "pitch_spin_mean"),
+        ("pfx_x_mean", "pitch_pfx_x_mean"),
+        ("pfx_z_mean", "pitch_pfx_z_mean"),
+        ("extension_mean", "pitch_extension_mean"),
+    ):
+        value = _summary_float(pitch_quality, src_key)
+        if value is not None:
+            enriched[out_key] = float(value)
+    return enriched
+
+
 def _profile_cache_key(
     *,
     pid: int,
@@ -578,6 +625,7 @@ def _apply_statcast_features_to_pitcher(prof: PitcherProfile, season: int) -> bo
 
     # Overall multipliers (preferred over older quality-map).
     mult = entry.get("mult_overall") or {}
+    overall = entry.get("overall") or {}
     if isinstance(mult, dict) and mult:
         def _m(key: str) -> float:
             v = mult.get(key)
@@ -588,11 +636,14 @@ def _apply_statcast_features_to_pitcher(prof: PitcherProfile, season: int) -> bo
         hr_m = max(0.75, min(1.35, _m("hr")))
         ip_m = max(0.85, min(1.20, _m("inplay")))
 
-        prof.statcast_quality_mult = {"k": k_m, "bb": bb_m, "hr": hr_m, "inplay": ip_m}
+        prof.statcast_quality_mult = _enrich_statcast_quality_mult({"k": k_m, "bb": bb_m, "hr": hr_m, "inplay": ip_m}, overall)
         prof.k_rate = _clamp_rate(float(prof.k_rate) * k_m, 0.05, 0.60)
         prof.bb_rate = _clamp_rate(float(prof.bb_rate) * bb_m, 0.01, 0.25)
         prof.hr_rate = _clamp_rate(float(prof.hr_rate) * hr_m, 0.002, 0.14)
         prof.inplay_hit_rate = _clamp_rate(float(prof.inplay_hit_rate) * ip_m, 0.10, 0.45)
+        applied = True
+    elif isinstance(overall, dict) and overall:
+        prof.statcast_quality_mult = _enrich_statcast_quality_mult(getattr(prof, "statcast_quality_mult", {}) or {}, overall)
         applied = True
 
     # Pitch mix + pitch-type multipliers
@@ -700,6 +751,7 @@ def _apply_statcast_features_to_batter(prof: BatterProfile, season: int) -> bool
         pass
 
     mult = entry.get("mult_overall") or {}
+    overall = entry.get("overall") or {}
     if isinstance(mult, dict) and mult:
         def _m(key: str) -> float:
             v = mult.get(key)
@@ -710,11 +762,14 @@ def _apply_statcast_features_to_batter(prof: BatterProfile, season: int) -> bool
         hr_m = max(0.75, min(1.35, _m("hr")))
         ip_m = max(0.85, min(1.20, _m("inplay")))
 
-        prof.statcast_quality_mult = {"k": k_m, "bb": bb_m, "hr": hr_m, "inplay": ip_m}
+        prof.statcast_quality_mult = _enrich_statcast_quality_mult({"k": k_m, "bb": bb_m, "hr": hr_m, "inplay": ip_m}, overall)
         prof.k_rate = _clamp_rate(float(prof.k_rate) * k_m, 0.05, 0.55)
         prof.bb_rate = _clamp_rate(float(prof.bb_rate) * bb_m, 0.01, 0.22)
         prof.hr_rate = _clamp_rate(float(prof.hr_rate) * hr_m, 0.002, 0.12)
         prof.inplay_hit_rate = _clamp_rate(float(prof.inplay_hit_rate) * ip_m, 0.10, 0.45)
+        applied = True
+    elif isinstance(overall, dict) and overall:
+        prof.statcast_quality_mult = _enrich_statcast_quality_mult(getattr(prof, "statcast_quality_mult", {}) or {}, overall)
         applied = True
 
     vs_pt = entry.get("vs_pitch_type") or {}
@@ -767,7 +822,10 @@ def _apply_statcast_quality_to_pitcher(prof: PitcherProfile, season: int) -> Non
     if not isinstance(entry, dict):
         return
     mult = entry.get("mult") or {}
+    overall = entry.get("overall") or {}
     if not isinstance(mult, dict) or not mult:
+        if isinstance(overall, dict) and overall:
+            prof.statcast_quality_mult = _enrich_statcast_quality_mult(getattr(prof, "statcast_quality_mult", {}) or {}, overall)
         return
 
     def _m(key: str) -> float:
@@ -779,7 +837,7 @@ def _apply_statcast_quality_to_pitcher(prof: PitcherProfile, season: int) -> Non
     hr_m = max(0.75, min(1.35, _m("hr")))
     ip_m = max(0.85, min(1.20, _m("inplay")))
 
-    prof.statcast_quality_mult = {"k": k_m, "bb": bb_m, "hr": hr_m, "inplay": ip_m}
+    prof.statcast_quality_mult = _enrich_statcast_quality_mult({"k": k_m, "bb": bb_m, "hr": hr_m, "inplay": ip_m}, overall)
     prof.k_rate = _clamp_rate(float(prof.k_rate) * k_m, 0.05, 0.60)
     prof.bb_rate = _clamp_rate(float(prof.bb_rate) * bb_m, 0.01, 0.25)
     prof.hr_rate = _clamp_rate(float(prof.hr_rate) * hr_m, 0.002, 0.14)
@@ -799,7 +857,10 @@ def _apply_statcast_quality_to_batter(prof: BatterProfile, season: int) -> None:
     if not isinstance(entry, dict):
         return
     mult = entry.get("mult") or {}
+    overall = entry.get("overall") or {}
     if not isinstance(mult, dict) or not mult:
+        if isinstance(overall, dict) and overall:
+            prof.statcast_quality_mult = _enrich_statcast_quality_mult(getattr(prof, "statcast_quality_mult", {}) or {}, overall)
         return
 
     def _m(key: str) -> float:
@@ -811,7 +872,7 @@ def _apply_statcast_quality_to_batter(prof: BatterProfile, season: int) -> None:
     hr_m = max(0.75, min(1.35, _m("hr")))
     ip_m = max(0.85, min(1.20, _m("inplay")))
 
-    prof.statcast_quality_mult = {"k": k_m, "bb": bb_m, "hr": hr_m, "inplay": ip_m}
+    prof.statcast_quality_mult = _enrich_statcast_quality_mult({"k": k_m, "bb": bb_m, "hr": hr_m, "inplay": ip_m}, overall)
     prof.k_rate = _clamp_rate(float(prof.k_rate) * k_m, 0.05, 0.55)
     prof.bb_rate = _clamp_rate(float(prof.bb_rate) * bb_m, 0.01, 0.22)
     prof.hr_rate = _clamp_rate(float(prof.hr_rate) * hr_m, 0.002, 0.12)

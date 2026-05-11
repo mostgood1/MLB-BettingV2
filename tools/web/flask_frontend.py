@@ -5404,9 +5404,30 @@ def _pitcher_ladder_strikeout_matchup_summary(
     lineup_k_rate = _pitcher_ladder_lineup_k_rate(opponent_lineup)
     pitch_type_k_factor = _pitcher_ladder_pitch_type_k_factor(pitcher_profile, opponent_lineup)
     bvp_ctx = _pitcher_ladder_bvp_k_context(int(pitcher_id), opponent_lineup)
+    quality = pitcher_profile.get("statcast_quality_mult") if isinstance(pitcher_profile.get("statcast_quality_mult"), dict) else {}
+    csw_rate = _safe_float(quality.get("csw_rate"))
+    zone_rate = _safe_float(quality.get("zone_rate"))
+    pitch_velo = _safe_float(quality.get("pitch_velo_mean"))
+    pitch_extension = _safe_float(quality.get("pitch_extension_mean"))
 
     reasons: List[str] = []
     metrics: Dict[str, Any] = {}
+    if csw_rate is not None:
+        metrics["cswRate"] = round(float(csw_rate), 3)
+        if float(csw_rate) >= 0.29:
+            reasons.append(f"Underlying CSW rate is {100.0 * float(csw_rate):.1f}%, which supports the strikeout ceiling.")
+        elif float(csw_rate) <= 0.26:
+            reasons.append(f"Underlying CSW rate is only {100.0 * float(csw_rate):.1f}%, which is lighter than a typical strikeout-forward profile.")
+    if zone_rate is not None:
+        metrics["zoneRate"] = round(float(zone_rate), 3)
+    if pitch_velo is not None:
+        metrics["pitchVelo"] = round(float(pitch_velo), 1)
+        if float(pitch_velo) >= 94.0:
+            reasons.append(f"Average pitch quality still shows up in the raw stuff, with velocity around {float(pitch_velo):.1f} mph.")
+    if pitch_extension is not None:
+        metrics["pitchExtension"] = round(float(pitch_extension), 2)
+        if float(pitch_extension) >= 6.4:
+            reasons.append(f"Extension near {float(pitch_extension):.2f} ft adds another bat-missing cue beyond the matchup splits.")
     if lineup_k_rate is not None:
         metrics["lineupKRate"] = round(float(lineup_k_rate), 4)
         lineup_pct = 100.0 * float(lineup_k_rate)

@@ -149,6 +149,74 @@ def _clamp_rate(x: float, lo: float, hi: float) -> float:
         return float(max(lo, min(hi, 0.0)))
 
 
+def _rate_ratio_mult(value: Any, neutral: float, weight: float, lo: float, hi: float) -> float:
+    try:
+        obs = float(value)
+        base = float(neutral)
+        if obs <= 0.0 or base <= 0.0:
+            return 1.0
+        return _clamp(math.exp(float(weight) * math.log(obs / base)), lo, hi)
+    except Exception:
+        return 1.0
+
+
+def _statcast_shape_rate_mults(profile: Any, *, role: str) -> Dict[str, float]:
+    quality = getattr(profile, "statcast_quality_mult", None)
+    if not isinstance(quality, dict):
+        return {"k": 1.0, "bb": 1.0, "hr": 1.0, "inplay": 1.0}
+
+    chase = quality.get("chase_swing_rate")
+    zone = quality.get("zone_rate")
+    csw = quality.get("csw_rate")
+    contact = quality.get("contact_rate")
+    xwoba = quality.get("xwoba")
+    ev_mean = quality.get("ev_mean")
+    ev_max = quality.get("ev_max")
+    pulled_air = quality.get("pulled_air_rate")
+    pitch_velo = quality.get("pitch_velo_mean")
+    pitch_extension = quality.get("pitch_extension_mean")
+
+    if role == "batter":
+        k_mult = (
+            _rate_ratio_mult(csw, 0.275, 0.22, 0.93, 1.08)
+            * _rate_ratio_mult(contact, 0.74, -0.18, 0.94, 1.06)
+            * _rate_ratio_mult(chase, 0.30, 0.10, 0.95, 1.05)
+        )
+        bb_mult = (
+            _rate_ratio_mult(chase, 0.30, -0.42, 0.90, 1.10)
+            * _rate_ratio_mult(zone, 0.49, -0.12, 0.95, 1.05)
+        )
+        hr_mult = (
+            _rate_ratio_mult(xwoba, 0.335, 0.12, 0.95, 1.06)
+            * _rate_ratio_mult(ev_max, 109.0, 0.08, 0.96, 1.05)
+            * _rate_ratio_mult(pulled_air, 0.12, 0.10, 0.96, 1.06)
+        )
+        inplay_mult = _rate_ratio_mult(xwoba, 0.335, 0.10, 0.95, 1.06)
+    else:
+        k_mult = (
+            _rate_ratio_mult(csw, 0.275, 0.24, 0.93, 1.10)
+            * _rate_ratio_mult(zone, 0.49, 0.10, 0.96, 1.05)
+            * _rate_ratio_mult(pitch_velo, 93.0, 0.06, 0.97, 1.04)
+            * _rate_ratio_mult(pitch_extension, 6.2, 0.05, 0.97, 1.03)
+        )
+        bb_mult = (
+            _rate_ratio_mult(zone, 0.49, -0.42, 0.89, 1.09)
+            * _rate_ratio_mult(chase, 0.30, -0.18, 0.94, 1.06)
+        )
+        hr_mult = (
+            _rate_ratio_mult(xwoba, 0.335, 0.12, 0.95, 1.08)
+            * _rate_ratio_mult(ev_mean, 89.0, 0.08, 0.96, 1.05)
+        )
+        inplay_mult = _rate_ratio_mult(xwoba, 0.335, 0.11, 0.95, 1.08)
+
+    return {
+        "k": _clamp(k_mult, 0.88, 1.12),
+        "bb": _clamp(bb_mult, 0.88, 1.12),
+        "hr": _clamp(hr_mult, 0.92, 1.10),
+        "inplay": _clamp(inplay_mult, 0.92, 1.10),
+    }
+
+
 def _batted_ball_type(rng: random.Random) -> BattedBallType:
     x = rng.random()
     if x < 0.44:
@@ -899,10 +967,13 @@ def _simulate_pitch(
     b_mults = getattr(batter, "platoon_mult_vs_lhp", {}) if pit_hand == "L" else getattr(batter, "platoon_mult_vs_rhp", {})
     p_mults = getattr(pitcher, "platoon_mult_vs_lhb", {}) if eff_bat == "L" else getattr(pitcher, "platoon_mult_vs_rhb", {})
 
-    batter_k = _clamp_rate(float(batter.k_rate) * _m(b_mults, "k"), 0.05, 0.55)
-    batter_bb = _clamp_rate(float(batter.bb_rate) * _m(b_mults, "bb"), 0.01, 0.22)
-    batter_hr = _clamp_rate(float(batter.hr_rate) * _m(b_mults, "hr"), 0.002, 0.12)
-    batter_inplay = _clamp_rate(float(batter.inplay_hit_rate) * _m(b_mults, "inplay"), 0.10, 0.45)
+    batter_shape_mults = _statcast_shape_rate_mults(batter, role="batter")
+    pitcher_shape_mults = _statcast_shape_rate_mults(pitcher, role="pitcher")
+
+    batter_k = _clamp_rate(float(batter.k_rate) * _m(b_mults, "k") * float(batter_shape_mults.get("k", 1.0)), 0.05, 0.55)
+    batter_bb = _clamp_rate(float(batter.bb_rate) * _m(b_mults, "bb") * float(batter_shape_mults.get("bb", 1.0)), 0.01, 0.22)
+    batter_hr = _clamp_rate(float(batter.hr_rate) * _m(b_mults, "hr") * float(batter_shape_mults.get("hr", 1.0)), 0.002, 0.12)
+    batter_inplay = _clamp_rate(float(batter.inplay_hit_rate) * _m(b_mults, "inplay") * float(batter_shape_mults.get("inplay", 1.0)), 0.10, 0.45)
 
     # Optional head-to-head batter-vs-pitcher HR adjustment.
     try:
@@ -937,10 +1008,10 @@ def _simulate_pitch(
     base_pitcher_hr = float(pr.get("hr_rate", pitcher.hr_rate))
     base_pitcher_inplay = float(pr.get("inplay_hit_rate", pitcher.inplay_hit_rate))
 
-    pitcher_k = _clamp_rate(base_pitcher_k * _m(p_mults, "k"), 0.05, 0.60)
-    pitcher_bb = _clamp_rate(base_pitcher_bb * _m(p_mults, "bb"), 0.01, 0.25)
-    pitcher_hr = _clamp_rate(base_pitcher_hr * _m(p_mults, "hr"), 0.002, 0.14)
-    pitcher_inplay = _clamp_rate(base_pitcher_inplay * _m(p_mults, "inplay"), 0.10, 0.45)
+    pitcher_k = _clamp_rate(base_pitcher_k * _m(p_mults, "k") * float(pitcher_shape_mults.get("k", 1.0)), 0.05, 0.60)
+    pitcher_bb = _clamp_rate(base_pitcher_bb * _m(p_mults, "bb") * float(pitcher_shape_mults.get("bb", 1.0)), 0.01, 0.25)
+    pitcher_hr = _clamp_rate(base_pitcher_hr * _m(p_mults, "hr") * float(pitcher_shape_mults.get("hr", 1.0)), 0.002, 0.14)
+    pitcher_inplay = _clamp_rate(base_pitcher_inplay * _m(p_mults, "inplay") * float(pitcher_shape_mults.get("inplay", 1.0)), 0.10, 0.45)
 
     pitch_type = _weighted_choice(rng, pitcher.arsenal, PitchType.FF)
     raw_pt_mult = float((batter.vs_pitch_type or {}).get(pitch_type, 1.0))
@@ -2114,10 +2185,13 @@ def simulate_game(
         batter_venue_mults = getattr(batter_prof, "venue_mult_home", {}) if batting_roster is home else getattr(batter_prof, "venue_mult_away", {})
         pitcher_venue_mults = getattr(pitcher_prof, "venue_mult_home", {}) if fielding_roster is home else getattr(pitcher_prof, "venue_mult_away", {})
 
-        batter_k = _clamp_rate(float(batter_prof.k_rate) * _mult_from_map(b_mults, "k") * _mult_from_map(batter_venue_mults, "k"), 0.05, 0.55)
-        batter_bb = _clamp_rate(float(batter_prof.bb_rate) * _mult_from_map(b_mults, "bb") * _mult_from_map(batter_venue_mults, "bb"), 0.01, 0.22)
-        batter_hr = _clamp_rate(float(batter_prof.hr_rate) * _mult_from_map(b_mults, "hr") * _mult_from_map(batter_venue_mults, "hr"), 0.002, 0.12)
-        batter_inplay = _clamp_rate(float(batter_prof.inplay_hit_rate) * _mult_from_map(b_mults, "inplay") * _mult_from_map(batter_venue_mults, "inplay"), 0.10, 0.45)
+        batter_shape_mults = _statcast_shape_rate_mults(batter_prof, role="batter")
+        pitcher_shape_mults = _statcast_shape_rate_mults(pitcher_prof, role="pitcher")
+
+        batter_k = _clamp_rate(float(batter_prof.k_rate) * _mult_from_map(b_mults, "k") * _mult_from_map(batter_venue_mults, "k") * float(batter_shape_mults.get("k", 1.0)), 0.05, 0.55)
+        batter_bb = _clamp_rate(float(batter_prof.bb_rate) * _mult_from_map(b_mults, "bb") * _mult_from_map(batter_venue_mults, "bb") * float(batter_shape_mults.get("bb", 1.0)), 0.01, 0.22)
+        batter_hr = _clamp_rate(float(batter_prof.hr_rate) * _mult_from_map(b_mults, "hr") * _mult_from_map(batter_venue_mults, "hr") * float(batter_shape_mults.get("hr", 1.0)), 0.002, 0.12)
+        batter_inplay = _clamp_rate(float(batter_prof.inplay_hit_rate) * _mult_from_map(b_mults, "inplay") * _mult_from_map(batter_venue_mults, "inplay") * float(batter_shape_mults.get("inplay", 1.0)), 0.10, 0.45)
 
         try:
             mm = getattr(batter_prof, "vs_pitcher_hr_mult", None)
@@ -2149,10 +2223,10 @@ def simulate_game(
         base_pitcher_hr = float(prates.get("hr_rate", pitcher_prof.hr_rate)) * _mult_from_map(pitcher_venue_mults, "hr")
         base_pitcher_inplay = float(prates.get("inplay_hit_rate", pitcher_prof.inplay_hit_rate)) * _mult_from_map(pitcher_venue_mults, "inplay")
 
-        pitcher_k = _clamp_rate(base_pitcher_k * _mult_from_map(p_mults, "k"), 0.05, 0.60)
-        pitcher_bb = _clamp_rate(base_pitcher_bb * _mult_from_map(p_mults, "bb"), 0.01, 0.25)
-        pitcher_hr = _clamp_rate(base_pitcher_hr * _mult_from_map(p_mults, "hr"), 0.002, 0.14)
-        pitcher_inplay = _clamp_rate(base_pitcher_inplay * _mult_from_map(p_mults, "inplay"), 0.10, 0.45)
+        pitcher_k = _clamp_rate(base_pitcher_k * _mult_from_map(p_mults, "k") * float(pitcher_shape_mults.get("k", 1.0)), 0.05, 0.60)
+        pitcher_bb = _clamp_rate(base_pitcher_bb * _mult_from_map(p_mults, "bb") * float(pitcher_shape_mults.get("bb", 1.0)), 0.01, 0.25)
+        pitcher_hr = _clamp_rate(base_pitcher_hr * _mult_from_map(p_mults, "hr") * float(pitcher_shape_mults.get("hr", 1.0)), 0.002, 0.14)
+        pitcher_inplay = _clamp_rate(base_pitcher_inplay * _mult_from_map(p_mults, "inplay") * float(pitcher_shape_mults.get("inplay", 1.0)), 0.10, 0.45)
         pitcher_hbp = float(prates.get("hbp_rate", pitcher_prof.hbp_rate))
 
         batter_hbp = float(getattr(batter_prof, "hbp_rate", 0.008) or 0.008)

@@ -2032,12 +2032,20 @@ def _pitcher_statcast_quality_reason(
     bb_mult = _safe_profile_mult(quality, "bb")
     hr_mult = _safe_profile_mult(quality, "hr")
     inplay_mult = _safe_profile_mult(quality, "inplay")
+    csw_rate = _safe_profile_mult(quality, "csw_rate")
+    zone_rate = _safe_profile_mult(quality, "zone_rate")
+    pitch_velo = _safe_profile_mult(quality, "pitch_velo_mean")
+    pitch_extension = _safe_profile_mult(quality, "pitch_extension_mean")
 
     if prop_key == "strikeouts":
         if choice == "over" and k_mult is not None and k_mult >= 1.03:
             return "His underlying bat-missing quality is still grading above baseline, which supports the strikeout ceiling."
+        if choice == "over" and ((csw_rate is not None and csw_rate >= 0.29) or (pitch_velo is not None and pitch_velo >= 94.0) or (pitch_extension is not None and pitch_extension >= 6.4)):
+            return "His command-and-stuff shape still supports strikeouts, with enough CSW or raw pitch quality to keep the ceiling live."
         if choice == "under" and k_mult is not None and k_mult <= 0.97:
             return "His underlying bat-missing quality is grading a bit lighter than baseline, which supports the lower strikeout path."
+        if choice == "under" and ((csw_rate is not None and csw_rate <= 0.26) or (zone_rate is not None and zone_rate <= 0.46)):
+            return "The current command shape is a little lighter than baseline, so the strikeout path needs more than his usual zone and CSW support."
         return None
     if prop_key == "earned_runs":
         if choice == "over" and ((hr_mult is not None and hr_mult >= 1.03) or (inplay_mult is not None and inplay_mult >= 1.03)):
@@ -2299,8 +2307,24 @@ def _hitter_statcast_quality_reason(
     prop_key = _normalized_hitter_history_prop(prop)
     choice = _selection_choice(selection)
     k_mult = _safe_profile_mult(quality, "k")
+    csw_rate = _safe_profile_mult(quality, "csw_rate")
+    chase_rate = _safe_profile_mult(quality, "chase_swing_rate")
+    contact_rate = _safe_profile_mult(quality, "contact_rate")
     hr_mult = _safe_profile_mult(quality, "hr")
     inplay_mult = _safe_profile_mult(quality, "inplay")
+
+    if prop_key == "strikeouts":
+        if choice == "over":
+            if k_mult is not None and k_mult >= 1.03:
+                return "His underlying strikeout pressure is grading above baseline, which supports the punchout path."
+            if (csw_rate is not None and csw_rate >= 0.29) or (chase_rate is not None and chase_rate >= 0.33):
+                return "His swing-decision profile is still carrying enough chase or called-plus-whiff pressure to keep the strikeout risk live."
+        elif choice == "under":
+            if k_mult is not None and k_mult <= 0.97:
+                return "His underlying strikeout risk is grading lighter than baseline, which supports the lower punchout path."
+            if contact_rate is not None and contact_rate >= 0.77:
+                return "His contact shape is strong enough to trim some of the usual strikeout pressure in this matchup."
+        return None
 
     if prop_key == "home_runs":
         if choice == "over" and hr_mult is not None and hr_mult >= 1.03:
@@ -2612,6 +2636,18 @@ def _hitter_recommendation_context_fields(
             ("bb", "batter_statcast_bb_mult"),
             ("hr", "batter_statcast_hr_mult"),
             ("inplay", "batter_statcast_inplay_mult"),
+            ("csw_rate", "batter_csw_rate"),
+            ("zone_rate", "batter_zone_rate"),
+            ("chase_swing_rate", "batter_chase_swing_rate"),
+            ("contact_rate", "batter_contact_rate"),
+            ("xwoba", "batter_xwoba"),
+            ("ev_mean", "batter_ev_mean"),
+            ("ev_max", "batter_ev_max"),
+            ("la_mean", "batter_la_mean"),
+            ("pulled_air_rate", "batter_pulled_air_rate"),
+            ("sweet_spot_rate", "batter_sweet_spot_rate"),
+            ("hardhit_rate", "batter_hardhit_rate"),
+            ("barrel_rate", "batter_barrel_rate"),
         ):
             value = _profile_mult(batter_profile.get("statcast_quality_mult"), src_key)
             if value is not None:
@@ -2634,6 +2670,13 @@ def _hitter_recommendation_context_fields(
             ("bb", "pitcher_statcast_bb_mult"),
             ("hr", "pitcher_statcast_hr_mult"),
             ("inplay", "pitcher_statcast_inplay_mult"),
+            ("csw_rate", "pitcher_csw_rate"),
+            ("zone_rate", "pitcher_zone_rate"),
+            ("chase_swing_rate", "pitcher_chase_swing_rate"),
+            ("xwoba", "pitcher_xwoba"),
+            ("ev_mean", "pitcher_ev_mean"),
+            ("pitch_velo_mean", "pitcher_pitch_velo_mean"),
+            ("pitch_extension_mean", "pitcher_pitch_extension_mean"),
         ):
             value = _profile_mult(pitcher_profile.get("statcast_quality_mult"), src_key)
             if value is not None:
@@ -2857,6 +2900,49 @@ def _hitter_hr_target_support(
             reasons.append("The opposing starter's damage profile is allowing a bit more HR carry than neutral.")
         elif float(pitcher_hr_quality) <= 0.95:
             score -= 6.0
+
+    batter_xwoba = _safe_float(context_fields.get("batter_xwoba"))
+    if batter_xwoba is not None:
+        metrics["batterXwoba"] = round(float(batter_xwoba), 3)
+        if float(batter_xwoba) >= 0.380:
+            score += 4.0
+            reasons.append("His expected-contact quality is in a strong power band.")
+        elif float(batter_xwoba) <= 0.310:
+            score -= 4.0
+
+    batter_ev_max = _safe_float(context_fields.get("batter_ev_max"))
+    if batter_ev_max is not None:
+        metrics["batterEvMax"] = round(float(batter_ev_max), 1)
+        if float(batter_ev_max) >= 111.0:
+            score += 3.0
+        elif float(batter_ev_max) <= 106.0:
+            score -= 2.0
+
+    batter_pulled_air = _safe_float(context_fields.get("batter_pulled_air_rate"))
+    if batter_pulled_air is not None:
+        metrics["batterPulledAir"] = round(float(batter_pulled_air), 3)
+        if float(batter_pulled_air) >= 0.16:
+            score += 4.0
+            reasons.append("The pulled-air shape is supportive for a one-swing damage outcome.")
+        elif float(batter_pulled_air) <= 0.09:
+            score -= 3.0
+
+    pitcher_xwoba = _safe_float(context_fields.get("pitcher_xwoba"))
+    if pitcher_xwoba is not None:
+        metrics["pitcherXwoba"] = round(float(pitcher_xwoba), 3)
+        if float(pitcher_xwoba) >= 0.350:
+            score += 4.0
+            reasons.append("The opposing pitch-contact profile is allowing louder expected damage than neutral.")
+        elif float(pitcher_xwoba) <= 0.310:
+            score -= 4.0
+
+    pitcher_ev_mean = _safe_float(context_fields.get("pitcher_ev_mean"))
+    if pitcher_ev_mean is not None:
+        metrics["pitcherEvMean"] = round(float(pitcher_ev_mean), 1)
+        if float(pitcher_ev_mean) >= 90.0:
+            score += 2.0
+        elif float(pitcher_ev_mean) <= 87.5:
+            score -= 2.0
 
     batter_platoon_hr = _safe_float(context_fields.get("batter_platoon_hr_mult"))
     pitcher_platoon_hr = _safe_float(context_fields.get("pitcher_platoon_hr_mult"))
