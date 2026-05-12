@@ -275,7 +275,11 @@ class CardsExtraMarketSupportTests(unittest.TestCase):
             "playable_unresolved_recommendations": [],
         }
 
-        with patch.object(
+        with patch.object(flask_frontend, "_today_iso", return_value="2026-05-04"), patch.object(
+            flask_frontend,
+            "_is_historical_date",
+            return_value=False,
+        ), patch.object(
             flask_frontend,
             "_load_cards_artifacts",
             return_value={
@@ -317,6 +321,97 @@ class CardsExtraMarketSupportTests(unittest.TestCase):
         self.assertEqual(payload["card_source"], str(manifest_card_path).replace("\\", "/"))
         self.assertIn(824039, payload["games"])
         self.assertEqual(payload["source_kind"], "season_manifest")
+
+    def test_season_betting_day_payload_prefers_canonical_daily_card_over_static_payload(self) -> None:
+        canonical_card_path = Path("data/daily/daily_summary_2026_05_04_locked_policy.json")
+        canonical_card = {
+            "markets": {
+                "hitter_props": {
+                    "recommendations": [
+                        {
+                            "game_pk": 824039,
+                            "player_name": "Fresh Daily Hitter",
+                            "market": "hitter_hits",
+                            "batter_statcast_bb_mult": 1.047,
+                        }
+                    ]
+                }
+            }
+        }
+        static_payload = {
+            "found": True,
+            "card_source": "data/eval/seasons/2026/season_betting_cards/2026-05-04.json",
+            "summary": {"selected_counts": {"combined": 1}},
+            "games": {
+                "824039": {
+                    "markets": {
+                        "hitterProps": [
+                            {
+                                "game_pk": 824039,
+                                "player_name": "Stale Static Hitter",
+                                "batter_statcast_bb_mult": 1.0,
+                            }
+                        ]
+                    }
+                }
+            },
+        }
+        settled_stub = {
+            "selected_counts": {"combined": 1},
+            "results": {},
+            "playable_results": {},
+            "all_results": {},
+            "_settled_rows": [],
+            "_playable_settled_rows": [],
+            "_all_settled_rows": [],
+            "unresolved_recommendations": [],
+            "playable_unresolved_recommendations": [],
+        }
+
+        with patch.object(flask_frontend, "_today_iso", return_value="2026-05-04"), patch.object(
+            flask_frontend,
+            "_is_historical_date",
+            return_value=False,
+        ), patch.object(
+            flask_frontend,
+            "_load_cards_artifacts",
+            return_value={
+                "locked_policy_path": canonical_card_path,
+                "locked_policy": canonical_card,
+                "settlement_path": None,
+                "settlement": None,
+                "embedded_settlement_summary": None,
+            },
+        ), patch.object(
+            flask_frontend,
+            "_load_season_betting_manifest",
+            return_value=(
+                "retuned",
+                Path("data/eval/seasons/2026/season_betting_cards_retuned_manifest.json"),
+                {"days": [{"date": "2026-05-04", "card_path": "data/eval/seasons/2026/season_betting_cards/2026-05-04.json"}]},
+                {"retuned": "x"},
+            ),
+        ), patch.object(
+            flask_frontend,
+            "_resolve_season_betting_day_payload_path",
+            return_value=Path("data/daily/season_frontend/season_betting_day_2026_2026_05_04_retuned.json"),
+        ), patch.object(
+            flask_frontend,
+            "_load_json_file",
+            return_value=static_payload,
+        ), patch.object(
+            flask_frontend,
+            "_pending_settlement_from_card",
+            return_value=settled_stub,
+        ):
+            payload = _season_betting_day_payload(2026, "2026-05-04", "")
+
+        hitter_rows = (((payload.get("games") or {}).get(824039) or {}).get("markets") or {}).get("hitterProps") or []
+        self.assertTrue(payload["found"])
+        self.assertEqual(payload["card_source"], str(canonical_card_path).replace("\\", "/"))
+        self.assertEqual(payload["source_kind"], "canonical_daily_override")
+        self.assertEqual(hitter_rows[0]["player_name"], "Fresh Daily Hitter")
+        self.assertAlmostEqual(hitter_rows[0]["batter_statcast_bb_mult"], 1.047)
 
     def test_cards_payload_signature_tracks_season_betting_day_artifact(self) -> None:
         artifacts = {

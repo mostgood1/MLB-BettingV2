@@ -47,6 +47,8 @@ _STATCAST_QUALITY_CACHE_BY_SEASON: Dict[int, Dict[str, Any]] = {}
 
 _STATCAST_FEATURES_CACHE_BY_SEASON: Dict[int, Dict[str, Any]] = {}
 
+_STATCAST_PROFILE_CACHE_VERSION = 3
+
 
 def _apply_statsapi_pitch_arsenal(
     client: StatsApiClient,
@@ -193,6 +195,183 @@ def _summary_float(source: Any, key: str) -> Optional[float]:
         return None
 
 
+def _to_float(value: Any) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _blend_statcast_value(current: Any, prior: Any, *, sample_n: Any, n0: float) -> Optional[float]:
+    current_f = _to_float(current)
+    prior_f = _to_float(prior)
+    if current_f is None:
+        return prior_f
+    if prior_f is None:
+        return current_f
+    sample_f = max(0.0, float(_to_float(sample_n) or 0.0))
+    if sample_f <= 0.0:
+        return prior_f
+    weight = sample_f / (sample_f + float(max(1.0, n0)))
+    return float((current_f * weight) + (prior_f * (1.0 - weight)))
+
+
+def _blend_statcast_overall(
+    current: Any,
+    prior: Any,
+    *,
+    pitch_sample: Any,
+    bip_sample: Any,
+    league_overall: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    if not isinstance(current, dict):
+        return dict(prior or {}) if isinstance(prior, dict) else {}
+    merged = dict(current)
+    prior_dict = dict(prior or {}) if isinstance(prior, dict) else {}
+    league_dict = dict(league_overall or {}) if isinstance(league_overall, dict) else {}
+
+    pitch_keys = (
+        "csw_rate",
+        "zone_rate",
+        "chase_swing_rate",
+        "contact_rate",
+    )
+    bip_keys = (
+        "xwoba",
+        "xba",
+        "ev_mean",
+        "ev_max",
+        "la_mean",
+        "pulled_air_rate",
+        "sweet_spot_rate",
+        "hardhit_rate",
+        "barrel_rate",
+        "hr_per_bip",
+        "inplay_hit_rate",
+        "xb_hit_share",
+        "triple_share_xb",
+        "gb_rate",
+        "fb_rate",
+        "ld_rate",
+        "pu_rate",
+    )
+    for key in pitch_keys:
+        reference = prior_dict.get(key)
+        if reference is None:
+            reference = league_dict.get(key)
+        blended = _blend_statcast_value(current.get(key), reference, sample_n=pitch_sample, n0=600.0)
+        if blended is not None:
+            merged[key] = blended
+    for key in bip_keys:
+        reference = prior_dict.get(key)
+        if reference is None:
+            reference = league_dict.get(key)
+        blended = _blend_statcast_value(current.get(key), reference, sample_n=bip_sample, n0=80.0)
+        if blended is not None:
+            merged[key] = blended
+
+    current_pitch_quality = current.get("pitch_quality") if isinstance(current.get("pitch_quality"), dict) else {}
+    prior_pitch_quality = prior_dict.get("pitch_quality") if isinstance(prior_dict.get("pitch_quality"), dict) else {}
+    if current_pitch_quality or prior_pitch_quality:
+        merged_pitch_quality = dict(current_pitch_quality)
+        for src_key in ("velo_mean", "spin_mean", "pfx_x_mean", "pfx_z_mean", "extension_mean"):
+            blended = _blend_statcast_value(
+                current_pitch_quality.get(src_key),
+                prior_pitch_quality.get(src_key),
+                sample_n=pitch_sample,
+                n0=600.0,
+            )
+            if blended is not None:
+                merged_pitch_quality[src_key] = blended
+        merged["pitch_quality"] = merged_pitch_quality
+    return merged
+
+
+def _blend_statcast_feature_entry(current: Any, prior: Any, *, league_overall: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    if not isinstance(current, dict):
+        return dict(prior or {}) if isinstance(prior, dict) else None
+    if not isinstance(prior, dict):
+        merged = dict(current)
+        current_overall = current.get("overall") if isinstance(current.get("overall"), dict) else {}
+        pitch_sample = current_overall.get("pitches")
+        bip_sample = current_overall.get("bip_ev") if current_overall.get("bip_ev") is not None else current_overall.get("inplay")
+        merged_overall = _blend_statcast_overall(
+            current_overall,
+            {},
+            pitch_sample=pitch_sample,
+            bip_sample=bip_sample,
+            league_overall=league_overall,
+        )
+        if merged_overall:
+            merged["overall"] = merged_overall
+        return merged
+
+    merged = dict(current)
+    current_overall = current.get("overall") if isinstance(current.get("overall"), dict) else {}
+    prior_overall = prior.get("overall") if isinstance(prior.get("overall"), dict) else {}
+    pitch_sample = current_overall.get("pitches")
+    bip_sample = current_overall.get("bip_ev") if current_overall.get("bip_ev") is not None else current_overall.get("inplay")
+    merged_overall = _blend_statcast_overall(
+        current_overall,
+        prior_overall,
+        pitch_sample=pitch_sample,
+        bip_sample=bip_sample,
+        league_overall=league_overall,
+    )
+    if merged_overall:
+        merged["overall"] = merged_overall
+
+    current_mult = current.get("mult_overall") if isinstance(current.get("mult_overall"), dict) else {}
+    prior_mult = prior.get("mult_overall") if isinstance(prior.get("mult_overall"), dict) else {}
+    if current_mult or prior_mult:
+        merged_mult = dict(current_mult)
+        for key, n0, sample in (("k", 600.0, pitch_sample), ("bb", 600.0, pitch_sample), ("hr", 80.0, bip_sample), ("inplay", 80.0, bip_sample)):
+            blended = _blend_statcast_value(current_mult.get(key), prior_mult.get(key), sample_n=sample, n0=n0)
+            if blended is not None:
+                merged_mult[key] = blended
+        merged["mult_overall"] = merged_mult
+
+    if not merged.get("pitch_mix") and isinstance(prior.get("pitch_mix"), dict):
+        merged["pitch_mix"] = dict(prior.get("pitch_mix") or {})
+    if not merged.get("pitch_type") and isinstance(prior.get("pitch_type"), dict):
+        merged["pitch_type"] = dict(prior.get("pitch_type") or {})
+    if not merged.get("vs_pitch_type") and isinstance(prior.get("vs_pitch_type"), dict):
+        merged["vs_pitch_type"] = dict(prior.get("vs_pitch_type") or {})
+    return merged
+
+
+def _blend_statcast_quality_entry(current: Any, prior: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(current, dict):
+        return dict(prior or {}) if isinstance(prior, dict) else None
+    if not isinstance(prior, dict):
+        return dict(current)
+
+    merged = dict(current)
+    pitch_sample = current.get("pitches")
+    bip_sample = current.get("bip_ev") if current.get("bip_ev") is not None else current.get("bip")
+    for key in ("whiff_rate", "ball_rate"):
+        blended = _blend_statcast_value(current.get(key), prior.get(key), sample_n=pitch_sample, n0=600.0)
+        if blended is not None:
+            merged[key] = blended
+    for key in ("hardhit_rate", "barrel_rate", "hr_per_bip", "xba"):
+        blended = _blend_statcast_value(current.get(key), prior.get(key), sample_n=bip_sample, n0=80.0)
+        if blended is not None:
+            merged[key] = blended
+
+    current_mult = current.get("mult") if isinstance(current.get("mult"), dict) else {}
+    prior_mult = prior.get("mult") if isinstance(prior.get("mult"), dict) else {}
+    if current_mult or prior_mult:
+        merged_mult = dict(current_mult)
+        for key, n0, sample in (("k", 600.0, pitch_sample), ("bb", 600.0, pitch_sample), ("hr", 80.0, bip_sample), ("inplay", 80.0, bip_sample)):
+            blended = _blend_statcast_value(current_mult.get(key), prior_mult.get(key), sample_n=sample, n0=n0)
+            if blended is not None:
+                merged_mult[key] = blended
+        merged["mult"] = merged_mult
+    return merged
+
+
 def _enrich_statcast_quality_mult(mult: Dict[str, float], overall: Dict[str, Any]) -> Dict[str, float]:
     enriched = dict(mult or {})
     if not isinstance(overall, dict):
@@ -240,6 +419,7 @@ def _profile_cache_key(
         "season": int(season),
         "kind": str(kind),
         "enable_batter_vs_pitch_type": bool(enable_batter_vs_pitch_type),
+        "statcast_profile_version": int(_STATCAST_PROFILE_CACHE_VERSION),
     }
 
 
@@ -725,6 +905,14 @@ def _apply_statcast_features_to_pitcher(prof: PitcherProfile, season: int) -> bo
         return False
     pitchers = m.get("pitchers") or {}
     entry = pitchers.get(str(prof.player.mlbam_id)) if isinstance(pitchers, dict) else None
+    prior_entry = None
+    if int(season) > 0:
+        pm = _load_statcast_features_anykey(int(season) - 1)
+        pp = pm.get("pitchers") or {}
+        prior_entry = pp.get(str(prof.player.mlbam_id)) if isinstance(pp, dict) else None
+    league = m.get("league") if isinstance(m.get("league"), dict) else {}
+    league_overall = ((league.get("overall") or {}).get("pitcher") if isinstance(league.get("overall"), dict) else {})
+    entry = _blend_statcast_feature_entry(entry, prior_entry, league_overall=(league_overall if isinstance(league_overall, dict) else None))
     if not isinstance(entry, dict):
         return False
 
@@ -825,6 +1013,19 @@ def _apply_statcast_features_to_batter(prof: BatterProfile, season: int) -> bool
         return False
     batters = m.get("batters") or {}
     entry = batters.get(str(prof.player.mlbam_id)) if isinstance(batters, dict) else None
+    prior_entry = None
+    if int(season) > 0:
+        pm = _load_statcast_features_anykey(int(season) - 1)
+        pb = pm.get("batters") or {}
+        prior_entry = pb.get(str(prof.player.mlbam_id)) if isinstance(pb, dict) else None
+    league = m.get("league") if isinstance(m.get("league"), dict) else {}
+    league_all = (league.get("overall") or {}) if isinstance(league.get("overall"), dict) else {}
+    league_overall: Dict[str, Any] = {}
+    if isinstance(league_all.get("pitcher"), dict):
+        league_overall.update(dict(league_all.get("pitcher") or {}))
+    if isinstance(league_all.get("batter"), dict):
+        league_overall.update(dict(league_all.get("batter") or {}))
+    entry = _blend_statcast_feature_entry(entry, prior_entry, league_overall=league_overall)
     if not isinstance(entry, dict):
         return False
 
@@ -930,6 +1131,12 @@ def _apply_statcast_quality_to_pitcher(prof: PitcherProfile, season: int) -> Non
     entry = None
     if isinstance(pitchers, dict):
         entry = pitchers.get(str(prof.player.mlbam_id))
+    prior_entry = None
+    if int(season) > 0:
+        pm = _load_statcast_quality_map_anykey(int(season) - 1)
+        pp = pm.get("pitchers") or {}
+        prior_entry = pp.get(str(prof.player.mlbam_id)) if isinstance(pp, dict) else None
+    entry = _blend_statcast_quality_entry(entry, prior_entry)
     if not isinstance(entry, dict):
         return
     mult = entry.get("mult") or {}
@@ -966,6 +1173,12 @@ def _apply_statcast_quality_to_batter(prof: BatterProfile, season: int) -> None:
     entry = None
     if isinstance(batters, dict):
         entry = batters.get(str(prof.player.mlbam_id))
+    prior_entry = None
+    if int(season) > 0:
+        pm = _load_statcast_quality_map_anykey(int(season) - 1)
+        pb = pm.get("batters") or {}
+        prior_entry = pb.get(str(prof.player.mlbam_id)) if isinstance(pb, dict) else None
+    entry = _blend_statcast_quality_entry(entry, prior_entry)
     if not isinstance(entry, dict):
         return
     mult = entry.get("mult") or {}

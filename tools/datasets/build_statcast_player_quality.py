@@ -81,12 +81,20 @@ INPLAY_DESCS = {
     "hit_into_play_score",
 }
 
+BALL_DESCS = {
+    "ball",
+    "blocked_ball",
+    "pitchout",
+    "intent_ball",
+}
+
 
 @dataclass
 class Acc:
     pitches: int = 0
     swings: int = 0
     whiffs: int = 0
+    balls: int = 0
     bip: int = 0
     bip_ev: int = 0
     hardhit: int = 0
@@ -138,6 +146,32 @@ def _log_ratio(r: Optional[float], baseline: Optional[float]) -> float:
     return math.log(float(r) / float(baseline))
 
 
+def _is_barrel_contact(row: Dict[str, Any]) -> bool:
+    barrel_v = row.get("barrel")
+    if barrel_v is not None:
+        s = str(barrel_v).strip().lower()
+        if s in {"1", "1.0", "true", "t", "yes", "y"}:
+            return True
+        if s in {"0", "0.0", "false", "f", "no", "n", ""}:
+            return False
+        try:
+            return int(float(s)) == 1
+        except Exception:
+            pass
+
+    launch_speed_angle = _safe_float(row.get("launch_speed_angle"))
+    if launch_speed_angle is None:
+        return False
+    try:
+        return int(round(float(launch_speed_angle))) == 6
+    except Exception:
+        return False
+
+
+def _bb_mult(ball_rate: Optional[float], baseline: Optional[float]) -> float:
+    return _mult_from_ratio(ball_rate, baseline, 0.90, 1.10, power=0.55)
+
+
 def _combine_power_log(log_terms: Tuple[Tuple[float, float], ...], lo: float, hi: float) -> float:
     # log_terms: ((weight, log_ratio), ...)
     s = 0.0
@@ -186,16 +220,11 @@ def build_quality(
 
                 swing = desc in SWING_DESCS
                 whiff = desc in WHIFF_DESCS
+                ball = desc in BALL_DESCS
                 bip = (typ == "X") or (desc in INPLAY_DESCS)
 
                 launch_speed = _safe_float(row.get("launch_speed"))
-                barrel_v = row.get("barrel")
-                barrel = False
-                if barrel_v is not None:
-                    try:
-                        barrel = int(float(str(barrel_v).strip() or "0")) == 1
-                    except Exception:
-                        barrel = False
+                barrel = _is_barrel_contact(row)
 
                 # xBA (estimated BA using speed/angle)
                 xba = _safe_float(row.get("estimated_ba_using_speedangle"))
@@ -211,6 +240,9 @@ def build_quality(
                     if whiff:
                         a.whiffs += 1
                         league_p.whiffs += 1
+                    if ball:
+                        a.balls += 1
+                        league_p.balls += 1
                     if bip:
                         a.bip += 1
                         league_p.bip += 1
@@ -243,6 +275,9 @@ def build_quality(
                     if whiff:
                         b.whiffs += 1
                         league_b.whiffs += 1
+                    if ball:
+                        b.balls += 1
+                        league_b.balls += 1
                     if bip:
                         b.bip += 1
                         league_b.bip += 1
@@ -269,12 +304,14 @@ def build_quality(
 
     # League baselines
     league_p_whiff = _rate(league_p.whiffs, league_p.swings)
+    league_p_ball = _rate(league_p.balls, league_p.pitches)
     league_p_barrel = _rate(league_p.barrels, league_p.bip_ev)
     league_p_hardhit = _rate(league_p.hardhit, league_p.bip_ev)
     league_p_hr_bip = _rate(league_p.hr, league_p.bip)
     league_p_xba = _mean(league_p.xba_sum, league_p.xba_n)
 
     league_b_whiff = _rate(league_b.whiffs, league_b.swings)
+    league_b_ball = _rate(league_b.balls, league_b.pitches)
     league_b_barrel = _rate(league_b.barrels, league_b.bip_ev)
     league_b_hardhit = _rate(league_b.hardhit, league_b.bip_ev)
     league_b_hr_bip = _rate(league_b.hr, league_b.bip)
@@ -284,12 +321,14 @@ def build_quality(
         if a.pitches < min_pitches_pitcher:
             return None
         whiff = _rate(a.whiffs, a.swings)
+        ball_rate = _rate(a.balls, a.pitches)
         barrel = _rate(a.barrels, a.bip_ev) if a.bip_ev >= min_bip_ev else None
         hardhit = _rate(a.hardhit, a.bip_ev) if a.bip_ev >= min_bip_ev else None
         hr_bip = _rate(a.hr, a.bip) if a.bip >= max(1, min_bip_ev) else None
         xba = _mean(a.xba_sum, a.xba_n) if a.xba_n >= min_bip_ev else None
 
         k_mult = _mult_from_ratio(whiff, league_p_whiff, 0.85, 1.15)
+        bb_mult = _bb_mult(ball_rate, league_p_ball)
         inplay_mult = _mult_from_ratio(xba, league_p_xba, 0.90, 1.10)
         hr_mult = _combine_power_log(
             (
@@ -301,12 +340,13 @@ def build_quality(
             1.25,
         )
 
-        mult = {"k": float(k_mult), "bb": 1.0, "hr": float(hr_mult), "inplay": float(inplay_mult)}
+        mult = {"k": float(k_mult), "bb": float(bb_mult), "hr": float(hr_mult), "inplay": float(inplay_mult)}
         return {
             "id": int(pid),
             "pitches": int(a.pitches),
             "swings": int(a.swings),
             "whiff_rate": whiff,
+            "ball_rate": ball_rate,
             "bip": int(a.bip),
             "bip_ev": int(a.bip_ev),
             "hardhit_rate": hardhit,
@@ -320,6 +360,7 @@ def build_quality(
         if a.pitches < min_pitches_batter:
             return None
         whiff = _rate(a.whiffs, a.swings)
+        ball_rate = _rate(a.balls, a.pitches)
         barrel = _rate(a.barrels, a.bip_ev) if a.bip_ev >= min_bip_ev else None
         hardhit = _rate(a.hardhit, a.bip_ev) if a.bip_ev >= min_bip_ev else None
         hr_bip = _rate(a.hr, a.bip) if a.bip >= max(1, min_bip_ev) else None
@@ -327,6 +368,7 @@ def build_quality(
 
         # batter whiff increases K (inverse: more whiff => higher K)
         k_mult = _mult_from_ratio(whiff, league_b_whiff, 0.85, 1.15)
+        bb_mult = _bb_mult(ball_rate, league_b_ball)
         inplay_mult = _mult_from_ratio(xba, league_b_xba, 0.90, 1.10)
         hr_mult = _combine_power_log(
             (
@@ -338,12 +380,13 @@ def build_quality(
             1.25,
         )
 
-        mult = {"k": float(k_mult), "bb": 1.0, "hr": float(hr_mult), "inplay": float(inplay_mult)}
+        mult = {"k": float(k_mult), "bb": float(bb_mult), "hr": float(hr_mult), "inplay": float(inplay_mult)}
         return {
             "id": int(bid),
             "pitches": int(a.pitches),
             "swings": int(a.swings),
             "whiff_rate": whiff,
+            "ball_rate": ball_rate,
             "bip": int(a.bip),
             "bip_ev": int(a.bip_ev),
             "hardhit_rate": hardhit,
@@ -375,6 +418,7 @@ def build_quality(
             "min_bip_ev": int(min_bip_ev),
             "league_pitcher": {
                 "whiff_rate": league_p_whiff,
+                "ball_rate": league_p_ball,
                 "barrel_rate": league_p_barrel,
                 "hardhit_rate": league_p_hardhit,
                 "hr_per_bip": league_p_hr_bip,
@@ -382,6 +426,7 @@ def build_quality(
             },
             "league_batter": {
                 "whiff_rate": league_b_whiff,
+                "ball_rate": league_b_ball,
                 "barrel_rate": league_b_barrel,
                 "hardhit_rate": league_b_hardhit,
                 "hr_per_bip": league_b_hr_bip,

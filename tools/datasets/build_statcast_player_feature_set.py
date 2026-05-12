@@ -58,6 +58,30 @@ def _safe_date(x: Any) -> Optional[date]:
         return None
 
 
+def _is_barrel_contact(row: Dict[str, Any]) -> bool:
+    barrel_v = row.get("barrel")
+    if barrel_v is not None:
+        s = str(barrel_v).strip().lower()
+        if s in {"1", "1.0", "true", "t", "yes", "y"}:
+            return True
+        if s in {"0", "0.0", "false", "f", "no", "n", ""}:
+            return False
+        try:
+            return int(float(s)) == 1
+        except Exception:
+            pass
+
+    # Statcast CSV exports often omit a dedicated barrel column but retain the
+    # categorical launch_speed_angle bucket where 6 denotes a barrel.
+    launch_speed_angle = _safe_float(row.get("launch_speed_angle"))
+    if launch_speed_angle is None:
+        return False
+    try:
+        return int(round(float(launch_speed_angle))) == 6
+    except Exception:
+        return False
+
+
 # Statcast descriptions
 SWING_DESCS = {
     "swinging_strike",
@@ -282,6 +306,10 @@ def _combine_power_log(log_terms: Tuple[Tuple[float, float], ...], lo: float, hi
     return _clamp(m, lo, hi)
 
 
+def _bb_mult(ball_rate: Optional[float], league_ball_rate: Optional[float]) -> float:
+    return _mult_ratio(ball_rate, league_ball_rate, 0.90, 1.10, power=0.55)
+
+
 def _iter_statcast_files(raw_root: Path, season: int) -> Iterable[Path]:
     base = raw_root / str(int(season))
     if not base.exists():
@@ -363,13 +391,7 @@ def build_feature_set(
                 hc_x = _safe_float(row.get("hc_x"))
                 hc_y = _safe_float(row.get("hc_y"))
 
-                barrel_v = row.get("barrel")
-                barrel = False
-                if barrel_v is not None:
-                    try:
-                        barrel = int(float(str(barrel_v).strip() or "0")) == 1
-                    except Exception:
-                        barrel = False
+                barrel = _is_barrel_contact(row)
 
                 xba = _safe_float(row.get("estimated_ba_using_speedangle"))
                 xwoba = _safe_float(row.get("estimated_woba_using_speedangle"))
@@ -601,8 +623,12 @@ def build_feature_set(
             },
         }
 
-    def overall_mult(a: Acc) -> Dict[str, float]:
+    league_pitcher_ball = _rate(league_overall_p.balls, league_overall_p.pitches)
+    league_batter_ball = _rate(league_overall_b.balls, league_overall_b.pitches)
+
+    def overall_mult(a: Acc, league_ball_rate: Optional[float]) -> Dict[str, float]:
         wh = _rate(a.whiffs, a.swings)
+        ball_rate = _rate(a.balls, a.pitches)
         xba = _mean(a.xba_sum, a.xba_n) if a.xba_n >= min_bip_ev else None
         barrel = _rate(a.barrels, a.bip_ev) if a.bip_ev >= min_bip_ev else None
         hard = _rate(a.hardhit, a.bip_ev) if a.bip_ev >= min_bip_ev else None
@@ -612,6 +638,7 @@ def build_feature_set(
         ev = _mean(a.ev_sum, a.ev_n) if a.ev_n >= min_bip_ev else None
 
         k_m = _mult_ratio(wh, league_whiff, 0.85, 1.15)
+        bb_m = _bb_mult(ball_rate, league_ball_rate)
         inplay_m = _mult_ratio(xba, league_xba, 0.90, 1.10)
         hr_m = _combine_power_log(
             (
@@ -625,8 +652,7 @@ def build_feature_set(
             0.85,
             1.25,
         )
-        # bb left neutral for now (we can add zone/chase discipline later without destabilizing)
-        return {"k": float(k_m), "bb": 1.0, "hr": float(hr_m), "inplay": float(inplay_m)}
+        return {"k": float(k_m), "bb": float(bb_m), "hr": float(hr_m), "inplay": float(inplay_m)}
 
     # Pitchers output
     out_pitchers: Dict[str, Any] = {}
@@ -675,7 +701,7 @@ def build_feature_set(
         out_pitchers[str(pid)] = {
             "id": int(pid),
             "overall": summarize(a),
-            "mult_overall": overall_mult(a),
+            "mult_overall": overall_mult(a, league_pitcher_ball),
             "pitch_mix": pitch_mix,
             "pitch_type": pt_payload,
         }
@@ -711,7 +737,7 @@ def build_feature_set(
         out_batters[str(bid)] = {
             "id": int(bid),
             "overall": summarize(a),
-            "mult_overall": overall_mult(a),
+            "mult_overall": overall_mult(a, league_batter_ball),
             "vs_pitch_type": vs_pt,
             "pitch_type": pt_payload,
         }

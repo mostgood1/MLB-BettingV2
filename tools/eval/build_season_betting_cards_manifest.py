@@ -1562,10 +1562,20 @@ def main() -> int:
         default=(season_dir / ("betting_day_payloads_retuned" if normalized_profile == "retuned" else "betting_day_payloads")),
     )
     full_publish = not list(args.date or []) and int(args.max_days or 0) <= 0
+    prefer_canonical_daily = str(args.prefer_canonical_daily or "off").strip().lower() == "on"
 
     report_paths = _iter_report_paths(batch_dir, list(args.date or []), int(args.max_days or 0))
     if not report_paths:
-        raise SystemExit(f"No per-day reports found in {batch_dir}")
+        selected_dates = [str(value).strip() for value in list(args.date or []) if str(value).strip()]
+        if not (prefer_canonical_daily and selected_dates):
+            raise SystemExit(f"No per-day reports found in {batch_dir}")
+
+        missing_canonical = [date_str for date_str in selected_dates if _canonical_daily_card_path(date_str) is None]
+        if missing_canonical:
+            raise SystemExit(
+                "No per-day reports found in "
+                f"{batch_dir} and no canonical daily cards were found for: {', '.join(missing_canonical)}"
+            )
 
     all_reports = sorted(batch_dir.glob("sim_vs_actual_*.json"))
     policy = _policy_with_overrides(
@@ -1606,10 +1616,10 @@ def main() -> int:
             },
         )
     )
-    prefer_canonical_daily = str(args.prefer_canonical_daily or "off").strip().lower() == "on"
 
     day_entries_by_date: Dict[str, Dict[str, Any]] = {}
     source_modes_by_date: Dict[str, str] = {}
+    selected_dates = [str(value).strip() for value in list(args.date or []) if str(value).strip()]
 
     for report_path in report_paths:
         date_str = str(report_path.stem.replace("sim_vs_actual_", "")).strip()
@@ -1680,6 +1690,41 @@ def main() -> int:
         )
         day_entries_by_date[date_str] = summary_row
         source_modes_by_date[date_str] = "season_eval_batch_reconstruction"
+
+    if prefer_canonical_daily and selected_dates:
+        for date_str in selected_dates:
+            if date_str in day_entries_by_date:
+                continue
+            canonical_card_path = _canonical_daily_card_path(date_str)
+            if canonical_card_path is None:
+                continue
+            canonical_card = _read_json_dict(canonical_card_path)
+            if not canonical_card:
+                continue
+            settled_card = _settle_card(canonical_card_path)
+            payload_path = _day_payload_output_path(day_payload_dir, date_str)
+            summary_row = _manifest_day_entry(
+                card_path=canonical_card_path,
+                report_path=None,
+                card=canonical_card,
+                settled_card=settled_card,
+                payload_path=payload_path,
+            )
+            _write_json(
+                payload_path,
+                _static_day_payload(
+                    season=season,
+                    profile_name=normalized_profile,
+                    card_path=canonical_card_path,
+                    report_path=None,
+                    card=canonical_card,
+                    settled_card=settled_card,
+                    summary=summary_row,
+                    payload_path=payload_path,
+                ),
+            )
+            day_entries_by_date[date_str] = summary_row
+            source_modes_by_date[date_str] = "canonical_daily_locked_policy"
 
     if full_publish:
         season_floor = min(day_entries_by_date) if day_entries_by_date else ""

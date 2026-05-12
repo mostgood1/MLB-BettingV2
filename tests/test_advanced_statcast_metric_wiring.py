@@ -303,6 +303,185 @@ class AdvancedStatcastMetricWiringTests(unittest.TestCase):
         self.assertAlmostEqual(enriched["pitch_velo_mean"], 95.2)
         self.assertAlmostEqual(enriched["pitch_extension_mean"], 6.5)
 
+    def test_statcast_features_blend_current_season_with_prior_signal(self) -> None:
+        batter = BatterProfile(
+            player=Player(
+                mlbam_id=7001,
+                full_name="Blend Test Batter",
+                primary_position="OF",
+                bat_side=Handedness.R,
+                throw_side=Handedness.R,
+            ),
+            k_rate=0.22,
+            bb_rate=0.08,
+            hbp_rate=0.008,
+            hr_rate=0.03,
+            inplay_hit_rate=0.28,
+            xb_hit_share=0.25,
+        )
+        current = {
+            "batters": {
+                "7001": {
+                    "id": 7001,
+                    "overall": {
+                        "pitches": 120,
+                        "inplay": 12,
+                        "bip_ev": 12,
+                        "barrel_rate": 0.0,
+                        "hardhit_rate": 0.33,
+                        "xwoba": 0.341,
+                    },
+                    "mult_overall": {"k": 1.01, "bb": 1.0, "hr": 1.0, "inplay": 1.0},
+                }
+            }
+        }
+        prior = {
+            "batters": {
+                "7001": {
+                    "id": 7001,
+                    "overall": {
+                        "pitches": 620,
+                        "inplay": 84,
+                        "bip_ev": 84,
+                        "barrel_rate": 0.14,
+                        "hardhit_rate": 0.47,
+                        "xwoba": 0.388,
+                    },
+                    "mult_overall": {"k": 0.97, "bb": 1.08, "hr": 1.12, "inplay": 1.06},
+                }
+            }
+        }
+
+        def _fake_load(season: int):
+            if int(season) == 2026:
+                return current
+            if int(season) == 2025:
+                return prior
+            return {}
+
+        with patch.object(build_roster, "_load_statcast_features_anykey", side_effect=_fake_load):
+            applied = build_roster._apply_statcast_features_to_batter(batter, 2026)
+
+        self.assertTrue(applied)
+        self.assertGreater(batter.statcast_quality_mult.get("bb", 1.0), 1.0)
+        self.assertGreater(batter.statcast_quality_mult.get("barrel_rate", 0.0), 0.0)
+        self.assertGreater(batter.statcast_quality_mult.get("xwoba", 0.0), 0.341)
+
+    def test_statcast_quality_blend_uses_prior_when_current_is_missing_or_neutral(self) -> None:
+        pitcher = PitcherProfile(
+            player=Player(
+                mlbam_id=8001,
+                full_name="Blend Test Pitcher",
+                primary_position="P",
+                bat_side=Handedness.R,
+                throw_side=Handedness.R,
+            ),
+            k_rate=0.24,
+            bb_rate=0.08,
+            hbp_rate=0.008,
+            hr_rate=0.03,
+            inplay_hit_rate=0.27,
+        )
+        current = {
+            "pitchers": {
+                "8001": {
+                    "id": 8001,
+                    "pitches": 140,
+                    "bip": 18,
+                    "bip_ev": 18,
+                    "whiff_rate": 0.26,
+                    "ball_rate": 0.36,
+                    "barrel_rate": 0.0,
+                    "hardhit_rate": 0.35,
+                    "hr_per_bip": 0.0,
+                    "xba": 0.27,
+                    "mult": {"k": 1.02, "bb": 1.0, "hr": 1.0, "inplay": 0.99},
+                }
+            }
+        }
+        prior = {
+            "pitchers": {
+                "8001": {
+                    "id": 8001,
+                    "pitches": 710,
+                    "bip": 96,
+                    "bip_ev": 96,
+                    "whiff_rate": 0.31,
+                    "ball_rate": 0.39,
+                    "barrel_rate": 0.11,
+                    "hardhit_rate": 0.43,
+                    "hr_per_bip": 0.06,
+                    "xba": 0.31,
+                    "mult": {"k": 1.1, "bb": 1.07, "hr": 1.08, "inplay": 1.04},
+                }
+            }
+        }
+
+        def _fake_load(season: int):
+            if int(season) == 2026:
+                return current
+            if int(season) == 2025:
+                return prior
+            return {}
+
+        with patch.object(build_roster, "_load_statcast_quality_map_anykey", side_effect=_fake_load):
+            build_roster._apply_statcast_quality_to_pitcher(pitcher, 2026)
+
+        self.assertGreater(pitcher.statcast_quality_mult.get("bb", 1.0), 1.0)
+        self.assertGreater(pitcher.bb_rate, 0.08)
+
+    def test_statcast_features_blend_zero_barrel_rate_toward_league_when_no_prior_exists(self) -> None:
+        batter = BatterProfile(
+            player=Player(
+                mlbam_id=7002,
+                full_name="League Blend Batter",
+                primary_position="OF",
+                bat_side=Handedness.L,
+                throw_side=Handedness.R,
+            ),
+            k_rate=0.22,
+            bb_rate=0.08,
+            hbp_rate=0.008,
+            hr_rate=0.03,
+            inplay_hit_rate=0.28,
+            xb_hit_share=0.25,
+        )
+        current = {
+            "league": {
+                "overall": {
+                    "pitcher": {"barrel_rate": 0.085, "hardhit_rate": 0.405, "xwoba": 0.322},
+                    "batter": {"whiff_rate": 0.235},
+                }
+            },
+            "batters": {
+                "7002": {
+                    "id": 7002,
+                    "overall": {
+                        "pitches": 220,
+                        "inplay": 18,
+                        "bip_ev": 18,
+                        "barrel_rate": 0.0,
+                        "hardhit_rate": 0.33,
+                        "xwoba": 0.301,
+                    },
+                    "mult_overall": {"k": 1.01, "bb": 0.99, "hr": 1.0, "inplay": 1.0},
+                }
+            }
+        }
+
+        def _fake_load(season: int):
+            if int(season) == 2026:
+                return current
+            if int(season) == 2025:
+                return {}
+            return {}
+
+        with patch.object(build_roster, "_load_statcast_features_anykey", side_effect=_fake_load):
+            applied = build_roster._apply_statcast_features_to_batter(batter, 2026)
+
+        self.assertTrue(applied)
+        self.assertGreater(batter.statcast_quality_mult.get("barrel_rate", 0.0), 0.0)
+
     def test_statcast_shape_rate_mults_use_discipline_and_stuff(self) -> None:
         class Profile:
             def __init__(self, quality):

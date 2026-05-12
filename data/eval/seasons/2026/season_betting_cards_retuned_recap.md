@@ -1,7 +1,7 @@
 # MLB 2026 Betting Card Recap
 
 - Season: 2026
-- Generated: 2026-05-12T10:15:19.940011
+- Generated: 2026-05-12T15:52:16.423409
 - Batch: data/eval/batches/season_2026_ui_daily_live
 - Cards Dir: data/eval/seasons/2026/locked_cards_retuned
 - Source Mode: canonical_daily_locked_policy
@@ -10,7 +10,7 @@
 ## Overall
 
 - Cards: 49 total, 46 with bets, 3 without bets
-- Recommendations: selected 585 / settled 573 / unresolved 12
+- Recommendations: selected 591 / settled 573 / unresolved 18
 - Combined ROI: -0.0822 on 312.5u staked, profit -25.6883u (291-282)
 - Hitter Props ROI: -0.0602 on 157.5u staked, profit -9.4766u
 - Daily Units: mean -0.5243, median -0.3103, std 1.6851, best 2026-03-31 (3.3078u), worst 2026-04-12 (-4.5072u)

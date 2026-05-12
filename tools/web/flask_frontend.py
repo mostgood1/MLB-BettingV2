@@ -11451,6 +11451,14 @@ def _season_betting_day_payload(season: int, date_str: str, requested_profile: s
         static_card_obj = _load_json_file(static_card_path)
         static_summary = static_payload.get("summary") if isinstance(static_payload.get("summary"), dict) else None
         static_source_kind = str(static_payload.get("source_kind") or "season_manifest_static")
+        if not historical_date and canonical_card_path and isinstance(canonical_card_obj, dict):
+            return _finalize_from_card(
+                card_path=canonical_card_path,
+                card_obj=canonical_card_obj,
+                summary=static_summary,
+                manifest_source=manifest_path,
+                source_kind="canonical_daily_override",
+            )
         if historical_date and not _payload_has_row_settlement(static_payload.get("games")):
             if static_card_path and isinstance(static_card_obj, dict):
                 return _finalize_from_card(
