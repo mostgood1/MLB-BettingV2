@@ -2955,10 +2955,10 @@ def _hitter_hr_target_support(
     if batter_hr_quality is not None:
         metrics["batterHrQuality"] = round(float(batter_hr_quality), 3)
         if float(batter_hr_quality) >= 1.05:
-            score += 7.0
+            score += 6.0
             reasons.append("His underlying HR-quality profile is running above baseline.")
         elif float(batter_hr_quality) <= 0.95:
-            score -= 7.0
+            score -= 6.0
 
     pitcher_hr_quality = _safe_float(context_fields.get("pitcher_statcast_hr_mult"))
     if pitcher_hr_quality is not None:
@@ -3018,17 +3018,17 @@ def _hitter_hr_target_support(
     if batter_platoon_hr is not None:
         metrics["batterPlatoonHr"] = round(float(batter_platoon_hr), 3)
         if float(batter_platoon_hr) >= 1.05:
-            score += 5.0
+            score += 4.0
             platoon_signal = True
         elif float(batter_platoon_hr) <= 0.95:
-            score -= 5.0
+            score -= 4.0
     if pitcher_platoon_hr is not None:
         metrics["pitcherPlatoonHr"] = round(float(pitcher_platoon_hr), 3)
         if float(pitcher_platoon_hr) >= 1.05:
-            score += 4.0
+            score += 3.0
             platoon_signal = True
         elif float(pitcher_platoon_hr) <= 0.95:
-            score -= 4.0
+            score -= 3.0
     if platoon_signal:
         reasons.append("The handedness split is leaning toward extra damage in this matchup.")
 
@@ -3045,19 +3045,19 @@ def _hitter_hr_target_support(
     if primary_pitch_type:
         metrics["primaryPitchType"] = primary_pitch_type
     if pitch_type_signal >= 1.06 and primary_pitch_type:
-        score += 8.0
+        score += 6.0
         reasons.append(f"The {primary_pitch_type} HR matchup is grading above neutral, which is the cleanest new power signal in this build.")
     elif pitch_type_signal <= 0.94 and primary_pitch_type:
-        score -= 8.0
+        score -= 6.0
 
     park_hr_mult = _safe_float(context_fields.get("park_hr_mult"))
     if park_hr_mult is not None:
         metrics["parkHr"] = round(float(park_hr_mult), 3)
         if float(park_hr_mult) >= 1.03:
-            score += 4.0
+            score += 3.0
             reasons.append("The park is a little better than neutral for home-run carry.")
         elif float(park_hr_mult) <= 0.97:
-            score -= 4.0
+            score -= 3.0
 
     weather_hr_mult = _safe_float(context_fields.get("weather_hr_mult"))
     if weather_hr_mult is not None:
