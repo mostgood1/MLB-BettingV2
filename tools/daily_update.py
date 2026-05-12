@@ -5518,6 +5518,30 @@ def main() -> int:
     )
 
     client = StatsApiClient.with_default_cache(ttl_seconds=int(args.cache_ttl_hours * 3600))
+    live_context_refresh_client = StatsApiClient.with_default_cache(ttl_seconds=0)
+
+    def _game_context_is_effectively_empty(weather, umpire) -> bool:
+        if weather is None and umpire is None:
+            return True
+        weather_empty = True
+        if weather is not None:
+            weather_empty = not any(
+                (
+                    str(getattr(weather, "condition", "") or "").strip(),
+                    getattr(weather, "temperature_f", None) is not None,
+                    getattr(weather, "wind_speed_mph", None) is not None,
+                    str(getattr(weather, "wind_raw", "") or "").strip(),
+                )
+            )
+        umpire_empty = True
+        if umpire is not None:
+            umpire_empty = not any(
+                (
+                    getattr(umpire, "home_plate_umpire_id", None) is not None,
+                    str(getattr(umpire, "home_plate_umpire_name", "") or "").strip(),
+                )
+            )
+        return bool(weather_empty and umpire_empty)
 
     statcast_cache = None
     statcast_ttl_seconds = None
@@ -7342,6 +7366,8 @@ def main() -> int:
         }
         try:
             weather, park, umpire = fetch_game_context(client, int(game_pk)) if game_pk else (None, None, None)
+            if game_pk and _game_context_is_effectively_empty(weather, umpire):
+                weather, park, umpire = fetch_game_context(live_context_refresh_client, int(game_pk))
         except KeyboardInterrupt:
             raise
         except Exception as e:
