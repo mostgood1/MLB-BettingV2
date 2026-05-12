@@ -1,7 +1,7 @@
 # MLB 2026 Betting Card Recap
 
 - Season: 2026
-- Generated: 2026-05-12T15:52:16.423409
+- Generated: 2026-05-12T16:15:05.026889
 - Batch: data/eval/batches/season_2026_ui_daily_live
 - Cards Dir: data/eval/seasons/2026/locked_cards_retuned
 - Source Mode: canonical_daily_locked_policy

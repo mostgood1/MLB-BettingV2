@@ -1,14 +1,14 @@
 {
   "tool": "tools/daily_update.py",
   "workflow": "ui-daily",
-  "generated_at": "2026-05-12T14:44:25.559956",
+  "generated_at": "2026-05-12T16:12:52.539805",
   "date": "2026-05-12",
   "season": 2026,
   "run_lock": {
     "status": "acquired",
     "path": "data/runtime/locks/daily_update_ui-daily_2026_2026-05-12_3fa2a74e5f2b.lock",
-    "pid": 58800,
-    "created_at": "2026-05-12T14:44:25.557348"
+    "pid": 65220,
+    "created_at": "2026-05-12T16:12:52.519686"
   },
   "seed": {
     "value": 1337,
@@ -267,7 +267,7 @@
       "batch_dir": "data/eval/batches/season_2026_ui_daily_live",
       "report_path": "data/eval/batches/season_2026_ui_daily_live/sim_vs_actual_2026-05-11.json",
       "command": [
-        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\.venv_x64\\Scripts\\python.exe",
+        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\.venv\\Scripts\\python.exe",
         "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\tools\\eval\\reconcile_daily_sim_artifacts.py",
         "--date",
         "2026-05-11",
@@ -333,35 +333,35 @@
       "hitter_props_path": "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\data\\market\\oddsapi\\oddsapi_hitter_props_2026_05_12.json",
       "counts": {
         "game_lines": {
-          "events_matched": 15,
-          "games": 15,
-          "h2h_games": 15,
-          "totals_games": 15,
-          "spreads_games": 15
+          "events_matched": 11,
+          "games": 11,
+          "h2h_games": 11,
+          "totals_games": 11,
+          "spreads_games": 11
         },
         "pitcher_props": {
-          "players": 29,
+          "players": 21,
           "markets": {
-            "earned_runs": 29,
-            "hits_allowed": 28,
-            "outs": 28,
-            "strikeouts": 29,
-            "walks_allowed": 28
+            "earned_runs": 21,
+            "hits_allowed": 20,
+            "outs": 20,
+            "strikeouts": 20,
+            "walks_allowed": 20
           },
-          "events_matched": 15
+          "events_matched": 11
         },
         "hitter_props": {
-          "players": 291,
+          "players": 212,
           "markets": {
-            "batter_hits": 288,
-            "batter_hits_runs_rbis": 276,
-            "batter_home_runs": 286,
-            "batter_rbis": 276,
-            "batter_runs_scored": 276,
-            "batter_strikeouts": 263,
-            "batter_total_bases": 285
+            "batter_hits": 212,
+            "batter_hits_runs_rbis": 198,
+            "batter_home_runs": 211,
+            "batter_rbis": 197,
+            "batter_runs_scored": 197,
+            "batter_strikeouts": 187,
+            "batter_total_bases": 211
           },
-          "events_matched": 15
+          "events_matched": 11
         }
       }
     },
@@ -394,32 +394,20 @@
     "current_day_multi_profile": {
       "status": "ok",
       "command": [
-        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\.venv_x64\\Scripts\\python.exe",
+        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\.venv\\Scripts\\python.exe",
         "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\tools\\daily_update_multi_profile.py",
         "--date",
         "2026-05-12",
         "--season",
         "2026",
         "--python-exe",
-        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\.venv_x64\\Scripts\\python.exe",
+        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\.venv\\Scripts\\python.exe",
         "--out-game",
         "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\data\\daily",
         "--out-pitcher",
         "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\data\\daily_pitcher_props",
         "--out-hitter",
         "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\data\\daily_hitter_props",
-        "--sims",
-        "1000",
-        "--workers",
-        "4",
-        "--pbp",
-        "off",
-        "--use-roster-artifacts",
-        "on",
-        "--write-roster-artifacts",
-        "on",
-        "--build-next-day",
-        "on",
         "--seed",
         "1337",
         "--seed-source",
@@ -444,8 +432,8 @@
           "sparse_support_rate": 0.0,
           "support_min_reasons": 2,
           "status_counts": {
-            "strong": 8,
-            "supported": 5,
+            "strong": 9,
+            "supported": 4,
             "thin": 0,
             "none": 0
           },
@@ -476,8 +464,8 @@
               "selected_n": 1,
               "sparse_support_n": 0,
               "status_counts": {
-                "strong": 0,
-                "supported": 1,
+                "strong": 1,
+                "supported": 0,
                 "thin": 0,
                 "none": 0
               },
@@ -554,8 +542,8 @@
         },
         "selected_support_policy": {
           "support_min_reasons": 2,
-          "removed_sparse_support_n": 4,
-          "replacement_added_n": 4,
+          "removed_sparse_support_n": 2,
+          "replacement_added_n": 2,
           "selection_shortfall_n": 0,
           "markets": {
             "totals": {
@@ -592,7 +580,7 @@
                   "selection": "under",
                   "market": "pitcher_props:strikeouts",
                   "baseball_reasons_n": 1,
-                  "reason_summary": "The model lands on the under side in 65.4% of sims, while the market is pricing it closer to 50.6%. Across his last 5 starts, he has averaged 6.8 strikeouts. The model baseline sits around 4.3 strikeouts against a line of 7.5. If he stays on his normal starter path, the matchup against COL gives him a fair shot to reach full workload volume."
+                  "reason_summary": "The model lands on the under side in 70.3% of sims, while the market is pricing it closer to 50.6%. Across his last 5 starts, he has averaged 6.8 strikeouts. The model baseline sits around 4.0 strikeouts against a line of 7.5. If he stays on his normal starter path, the matchup against COL gives him a fair shot to reach full workload volume."
                 }
               ]
             },
@@ -601,30 +589,16 @@
               "support_min_reasons": 2,
               "baseline_selected_n": 11,
               "final_selected_n": 11,
-              "removed_sparse_support_n": 3,
-              "replacement_added_n": 3,
+              "removed_sparse_support_n": 1,
+              "replacement_added_n": 1,
               "selection_shortfall_n": 0,
               "removed_examples": [
                 {
-                  "subject": "Ryan Waldschmidt",
+                  "subject": "Gage Workman",
                   "selection": "over",
                   "market": "hitter_total_bases",
-                  "baseball_reasons_n": 1,
-                  "reason_summary": "The model lands on the over side in 65.5% of sims, while the market is pricing it closer to 52.1%. The handedness matchup leans his way here, with his expected damage against L-handed pitching grading above baseline. The model baseline comes in around 1.5 batter total bases against a line of 0.5. He is projected to hit in the 8 spot, which points to about 4.3 plate appearances."
-                },
-                {
-                  "subject": "Pedro Pag\u00e9s",
-                  "selection": "over",
-                  "market": "hitter_total_bases",
-                  "baseball_reasons_n": 1,
-                  "reason_summary": "The model lands on the over side in 64.9% of sims, while the market is pricing it closer to 54.7%. Against this starter, he has 2 hits in 4 prior plate appearances, and he has turned balls in play against this starter into hits a little more often than his usual rate. The model baseline comes in around 1.4 batter total bases against a line of 0.5. He is projected to hit in the 8 spot, which points to about 4.5 plate appearances."
-                },
-                {
-                  "subject": "MJ Melendez",
-                  "selection": "over",
-                  "market": "hitter_hits",
                   "baseball_reasons_n": 0,
-                  "reason_summary": "The model lands on the over side in 61.7% of sims, while the market is pricing it closer to 49.2%. The model baseline comes in around 1.2 batter hits against a line of 0.5. He is projected to hit in the 5 spot, which points to about 4.5 plate appearances."
+                  "reason_summary": "The model lands on the over side in 58.4% of sims, while the market is pricing it closer to 46.0%. The model baseline comes in around 1.5 batter total bases against a line of 0.5. He is projected to hit in the 7 spot, which points to about 4.3 plate appearances."
                 }
               ]
             },
@@ -643,18 +617,10 @@
               "support_min_reasons": 2,
               "baseline_selected_n": 4,
               "final_selected_n": 4,
-              "removed_sparse_support_n": 1,
-              "replacement_added_n": 1,
+              "removed_sparse_support_n": 0,
+              "replacement_added_n": 0,
               "selection_shortfall_n": 0,
-              "removed_examples": [
-                {
-                  "subject": "MJ Melendez",
-                  "selection": "over",
-                  "market": "hitter_hits",
-                  "baseball_reasons_n": 0,
-                  "reason_summary": "The model lands on the over side in 61.7% of sims, while the market is pricing it closer to 49.2%. The model baseline comes in around 1.2 batter hits against a line of 0.5. He is projected to hit in the 5 spot, which points to about 4.5 plate appearances."
-                }
-              ]
+              "removed_examples": []
             },
             "hitter_hits_runs_rbis": {
               "market": "hitter_hits_runs_rbis",
@@ -671,23 +637,16 @@
               "support_min_reasons": 2,
               "baseline_selected_n": 6,
               "final_selected_n": 6,
-              "removed_sparse_support_n": 2,
-              "replacement_added_n": 2,
+              "removed_sparse_support_n": 1,
+              "replacement_added_n": 1,
               "selection_shortfall_n": 0,
               "removed_examples": [
                 {
-                  "subject": "Ryan Waldschmidt",
+                  "subject": "Gage Workman",
                   "selection": "over",
                   "market": "hitter_total_bases",
-                  "baseball_reasons_n": 1,
-                  "reason_summary": "The model lands on the over side in 65.5% of sims, while the market is pricing it closer to 52.1%. The handedness matchup leans his way here, with his expected damage against L-handed pitching grading above baseline. The model baseline comes in around 1.5 batter total bases against a line of 0.5. He is projected to hit in the 8 spot, which points to about 4.3 plate appearances."
-                },
-                {
-                  "subject": "Pedro Pag\u00e9s",
-                  "selection": "over",
-                  "market": "hitter_total_bases",
-                  "baseball_reasons_n": 1,
-                  "reason_summary": "The model lands on the over side in 64.9% of sims, while the market is pricing it closer to 54.7%. Against this starter, he has 2 hits in 4 prior plate appearances, and he has turned balls in play against this starter into hits a little more often than his usual rate. The model baseline comes in around 1.4 batter total bases against a line of 0.5. He is projected to hit in the 8 spot, which points to about 4.5 plate appearances."
+                  "baseball_reasons_n": 0,
+                  "reason_summary": "The model lands on the over side in 58.4% of sims, while the market is pricing it closer to 46.0%. The model baseline comes in around 1.5 batter total bases against a line of 0.5. He is projected to hit in the 7 spot, which points to about 4.3 plate appearances."
                 }
               ]
             },
@@ -719,8 +678,8 @@
           "markets": {
             "pitcher_props": {
               "market": "pitcher_props",
-              "evaluated_n": 15,
-              "kept_n": 15,
+              "evaluated_n": 7,
+              "kept_n": 7,
               "removed_sparse_support_n": 0,
               "removed_examples": []
             },
@@ -733,8 +692,8 @@
             },
             "hitter_hits": {
               "market": "hitter_hits",
-              "evaluated_n": 26,
-              "kept_n": 26,
+              "evaluated_n": 14,
+              "kept_n": 14,
               "removed_sparse_support_n": 0,
               "removed_examples": []
             },
@@ -747,22 +706,22 @@
             },
             "hitter_total_bases": {
               "market": "hitter_total_bases",
-              "evaluated_n": 73,
-              "kept_n": 73,
+              "evaluated_n": 59,
+              "kept_n": 59,
               "removed_sparse_support_n": 0,
               "removed_examples": []
             },
             "hitter_runs": {
               "market": "hitter_runs",
-              "evaluated_n": 13,
-              "kept_n": 13,
+              "evaluated_n": 6,
+              "kept_n": 6,
               "removed_sparse_support_n": 0,
               "removed_examples": []
             },
             "hitter_rbis": {
               "market": "hitter_rbis",
-              "evaluated_n": 79,
-              "kept_n": 79,
+              "evaluated_n": 54,
+              "kept_n": 54,
               "removed_sparse_support_n": 0,
               "removed_examples": []
             }
@@ -771,23 +730,16 @@
         "shadow_support_policy": {
           "pitcher_props": {
             "market": "shadow_pitcher_props",
-            "evaluated_n": 17,
-            "kept_n": 12,
-            "removed_sparse_support_n": 5,
+            "evaluated_n": 14,
+            "kept_n": 10,
+            "removed_sparse_support_n": 4,
             "removed_examples": [
               {
                 "subject": "Walbert Ure\u00f1a",
                 "selection": "under",
                 "market": "pitcher_props:walks allowed",
                 "baseball_reasons_n": 1,
-                "reason_summary": "The model lands on the under side in 50.8% of sims, while the market is pricing it closer to 46.0%. He mixes changeup, sinker, and four-seam fastball often enough that hitters have to cover multiple looks. The model baseline sits around 2.1 walks allowed against a line of 2.5. If he stays on his normal starter path, the matchup against CLE gives him a fair shot to reach full workload volume."
-              },
-              {
-                "subject": "MacKenzie Gore",
-                "selection": "under",
-                "market": "pitcher_props:walks allowed",
-                "baseball_reasons_n": 1,
-                "reason_summary": "The model lands on the under side in 50.3% of sims, while the market is pricing it closer to 44.5%. He mixes four-seam fastball, curveball, and changeup often enough that hitters have to cover multiple looks. The model baseline sits around 1.5 walks allowed against a line of 1.5. If he stays on his normal starter path, the matchup against AZ gives him a fair shot to reach full workload volume."
+                "reason_summary": "The model lands on the under side in 51.0% of sims, while the market is pricing it closer to 45.2%. He mixes changeup, sinker, and four-seam fastball often enough that hitters have to cover multiple looks. The model baseline sits around 1.9 walks allowed against a line of 2.5. If he stays on his normal starter path, the matchup against CLE gives him a fair shot to reach full workload volume."
               },
               {
                 "subject": "Miles Mikolas",
@@ -797,18 +749,18 @@
                 "reason_summary": "The model lands on the over side in 50.0% of sims, while the market is pricing it closer to 35.6%. He mixes four-seam fastball, sinker, and slider often enough that hitters have to cover multiple looks. The model baseline sits around 1.6 walks allowed against a line of 1.5. If he stays on his normal starter path, the matchup against CIN gives him a fair shot to reach full workload volume."
               },
               {
+                "subject": "Colin Rea",
+                "selection": "under",
+                "market": "pitcher_props:walks allowed",
+                "baseball_reasons_n": 1,
+                "reason_summary": "The model lands on the under side in 50.3% of sims, while the market is pricing it closer to 48.7%. He mixes four-seam fastball, splitter, and slider often enough that hitters have to cover multiple looks. The model baseline sits around 1.4 walks allowed against a line of 1.5. If he stays on his normal starter path, the matchup against ATL gives him a fair shot to reach full workload volume."
+              },
+              {
                 "subject": "Erick Fedde",
                 "selection": "under",
                 "market": "pitcher_props:walks allowed",
                 "baseball_reasons_n": 1,
-                "reason_summary": "The model lands on the under side in 50.5% of sims, while the market is pricing it closer to 48.1%. He mixes secondary mix, cutter, and sinker often enough that hitters have to cover multiple looks. The model baseline sits around 1.4 walks allowed against a line of 1.5. If he stays on his normal starter path, the matchup against KC gives him a fair shot to reach full workload volume."
-              },
-              {
-                "subject": "Bailey Ober",
-                "selection": "under",
-                "market": "pitcher_props:walks allowed",
-                "baseball_reasons_n": 1,
-                "reason_summary": "The model lands on the under side in 50.3% of sims, while the market is pricing it closer to 46.2%. He mixes changeup, four-seam fastball, and slider often enough that hitters have to cover multiple looks. The model baseline sits around 1.5 walks allowed against a line of 1.5. If he stays on his normal starter path, the matchup against MIA gives him a fair shot to reach full workload volume."
+                "reason_summary": "The model lands on the under side in 50.6% of sims, while the market is pricing it closer to 48.1%. He mixes secondary mix, cutter, and sinker often enough that hitters have to cover multiple looks. The model baseline sits around 1.3 walks allowed against a line of 1.5. If he stays on his normal starter path, the matchup against KC gives him a fair shot to reach full workload volume."
               }
             ]
           },
@@ -827,8 +779,8 @@
         "sparse_support_rate": 0.0,
         "support_min_reasons": 2,
         "status_counts": {
-          "strong": 8,
-          "supported": 5,
+          "strong": 9,
+          "supported": 4,
           "thin": 0,
           "none": 0
         },
@@ -859,8 +811,8 @@
             "selected_n": 1,
             "sparse_support_n": 0,
             "status_counts": {
-              "strong": 0,
-              "supported": 1,
+              "strong": 1,
+              "supported": 0,
               "thin": 0,
               "none": 0
             },
@@ -946,7 +898,7 @@
       "status": "ok",
       "season": 2026,
       "command": [
-        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\.venv_x64\\Scripts\\python.exe",
+        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\.venv\\Scripts\\python.exe",
         "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\tools\\eval\\reconcile_hr_target_artifacts.py",
         "--season",
         "2026",
@@ -969,14 +921,14 @@
       "group_summaries": {
         "pitcher": {
           "found": true,
-          "candidateCount": 142,
-          "displayedCount": 142,
+          "candidateCount": 100,
+          "displayedCount": 100,
           "sectionCount": 5
         },
         "hitter": {
           "found": true,
-          "candidateCount": 1943,
-          "displayedCount": 1943,
+          "candidateCount": 1413,
+          "displayedCount": 1413,
           "sectionCount": 7
         }
       }
@@ -1083,33 +1035,33 @@
       "artifact_path": "data/daily/ladders/daily_ladder_audit_2026_05_12.json",
       "summary": {
         "cards": 15,
-        "badges": 96,
+        "badges": 71,
         "sources": {
-          "none": 96
+          "none": 71
         },
         "tones": {
-          "soft": 29,
-          "solid": 39,
-          "strong": 28
+          "strong": 18,
+          "soft": 27,
+          "solid": 26
         },
         "stats": {
           "hits_allowed": {
-            "badges": 26,
+            "badges": 20,
             "rungWins": 0,
             "rungLosses": 0
           },
           "outs": {
-            "badges": 23,
+            "badges": 16,
             "rungWins": 0,
             "rungLosses": 0
           },
           "strikeouts": {
-            "badges": 21,
+            "badges": 17,
             "rungWins": 0,
             "rungLosses": 0
           },
           "walks_allowed": {
-            "badges": 26,
+            "badges": 18,
             "rungWins": 0,
             "rungLosses": 0
           }
@@ -1162,7 +1114,7 @@
       "date": "2026-05-13",
       "season": 2026,
       "command": [
-        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\.venv_x64\\Scripts\\python.exe",
+        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\.venv\\Scripts\\python.exe",
         "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\tools\\daily_update.py",
         "--workflow",
         "ui-daily",
@@ -1186,16 +1138,6 @@
         "off",
         "--validate-render-frontend",
         "off",
-        "--sims",
-        "1000",
-        "--workers",
-        "4",
-        "--pbp",
-        "off",
-        "--use-roster-artifacts",
-        "on",
-        "--write-roster-artifacts",
-        "on",
         "--seed",
         "1337",
         "--seed-source",
@@ -1217,13 +1159,13 @@
       "games": 15,
       "summary": {
         "games": 15,
-        "projected_teams": 17,
+        "projected_teams": 5,
         "adjusted_teams": 0,
         "partial_teams": 0,
         "fallback_pool_teams": 0,
-        "confirmed_teams": 13,
-        "projected_only_teams": 17,
-        "confirmed_only_teams": 13,
+        "confirmed_teams": 25,
+        "projected_only_teams": 5,
+        "confirmed_only_teams": 25,
         "comparable_teams": 0,
         "exact_match_teams": 0,
         "true_mismatch_teams": 0
@@ -1245,7 +1187,7 @@
     }
   },
   "notes": [
-    "official locked card removed 4 sparse-support selected recommendation(s) before publish and added 4 replacement(s)"
+    "official locked card removed 2 sparse-support selected recommendation(s) before publish and added 2 replacement(s)"
   ],
   "warnings": [],
   "validation_errors": [],
@@ -1264,61 +1206,45 @@
         "phase": "prior_day",
         "label": "prior-day reconciliation outputs for 2026-05-11",
         "requested": true,
-        "preexisting_change_count": 65,
+        "preexisting_change_count": 1,
         "status": "skipped",
         "reason": "preexisting non-artifact repository changes",
         "non_managed_preexisting_paths": [
-          "sim_engine/data/build_roster.py",
-          "tests/test_advanced_statcast_metric_wiring.py",
-          "tests/test_cards_extra_market_support.py",
-          "tests/test_statcast_dataset_builders.py",
-          "tools/datasets/build_statcast_player_feature_set.py",
-          "tools/datasets/build_statcast_player_quality.py",
-          "tools/web/flask_frontend.py"
+          "tools/daily_update.py"
         ]
       },
       {
         "phase": "current_day",
         "label": "current-day artifacts for 2026-05-12",
         "requested": true,
-        "preexisting_change_count": 65,
+        "preexisting_change_count": 32,
         "status": "skipped",
         "reason": "preexisting non-artifact repository changes",
         "non_managed_preexisting_paths": [
-          "sim_engine/data/build_roster.py",
-          "tests/test_advanced_statcast_metric_wiring.py",
-          "tests/test_cards_extra_market_support.py",
-          "tests/test_statcast_dataset_builders.py",
-          "tools/datasets/build_statcast_player_feature_set.py",
-          "tools/datasets/build_statcast_player_quality.py",
-          "tools/web/flask_frontend.py"
+          "RENDER_DEPLOY.md",
+          "render.yaml"
         ]
       },
       {
         "phase": "next_day",
         "label": "next-day forward outputs for 2026-05-13",
         "requested": true,
-        "preexisting_change_count": 65,
+        "preexisting_change_count": 59,
         "status": "skipped",
         "reason": "preexisting non-artifact repository changes",
         "non_managed_preexisting_paths": [
-          "sim_engine/data/build_roster.py",
-          "tests/test_advanced_statcast_metric_wiring.py",
-          "tests/test_cards_extra_market_support.py",
-          "tests/test_statcast_dataset_builders.py",
-          "tools/datasets/build_statcast_player_feature_set.py",
-          "tools/datasets/build_statcast_player_quality.py",
-          "tools/web/flask_frontend.py"
+          "RENDER_DEPLOY.md",
+          "render.yaml"
         ]
       },
       {
         "phase": "final_report",
         "label": "final ops/report state for 2026-05-12",
         "requested": true,
-        "preexisting_change_count": 65
+        "preexisting_change_count": 59
       }
     ],
-    "preexisting_change_count": 65,
+    "preexisting_change_count": 1,
     "status": "skipped"
   },
   "status": "ok"
