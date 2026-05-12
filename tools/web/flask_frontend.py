@@ -6997,13 +6997,16 @@ def _normalize_hr_target_sort(value: Any) -> str:
 
 def _sort_hr_target_rows(rows: List[Dict[str, Any]], sort_key: str) -> List[Dict[str, Any]]:
     normalized = _normalize_hr_target_sort(sort_key)
+    def _support_sort_value(row: Dict[str, Any]) -> float:
+        return float(row.get("hr_support_raw_score") or row.get("hr_support_score") or 0.0)
+
     if normalized == "prob":
         return sorted(
             rows,
             key=lambda row: (
                 float(row.get("p_hr_1plus") or 0.0),
                 float(row.get("hr_target_score") or 0.0),
-                float(row.get("hr_support_score") or 0.0),
+                _support_sort_value(row),
             ),
             reverse=True,
         )
@@ -7011,7 +7014,7 @@ def _sort_hr_target_rows(rows: List[Dict[str, Any]], sort_key: str) -> List[Dict
         return sorted(
             rows,
             key=lambda row: (
-                float(row.get("hr_support_score") or 0.0),
+                _support_sort_value(row),
                 float(row.get("p_hr_1plus") or 0.0),
                 float(row.get("hr_target_score") or 0.0),
             ),
@@ -7031,7 +7034,7 @@ def _sort_hr_target_rows(rows: List[Dict[str, Any]], sort_key: str) -> List[Dict
         key=lambda row: (
             float(row.get("hr_target_score") or 0.0),
             float(row.get("p_hr_1plus") or 0.0),
-            float(row.get("hr_support_score") or 0.0),
+            _support_sort_value(row),
         ),
         reverse=True,
     )
@@ -7052,6 +7055,13 @@ def _hr_target_page_row_payload(d: str, row: Dict[str, Any], *, schedule_row: Op
     game_pk = _safe_int(row.get("game_pk"))
     batter_id = _safe_int(row.get("batter_id"))
     team_id, opponent_team_id = _hr_target_resolved_team_ids(row, schedule_row)
+    support_score = _safe_float(row.get("hr_support_score"))
+    support_score_raw = _safe_float(row.get("hr_support_raw_score"))
+    if support_score_raw is None:
+        support_score_raw = support_score
+    support_score_display = None
+    if support_score_raw is not None:
+        support_score_display = "100+" if float(support_score_raw) > 100.0 else f"{float(support_score_raw):.1f}"
     return {
         "gamePk": int(game_pk) if game_pk is not None else None,
         "batterId": int(batter_id) if batter_id is not None else None,
@@ -7068,7 +7078,9 @@ def _hr_target_page_row_payload(d: str, row: Dict[str, Any], *, schedule_row: Op
         "lineupOrder": _safe_int(row.get("lineup_order")),
         "paMean": _safe_float(row.get("pa_mean")),
         "pHr1Plus": _safe_float(row.get("p_hr_1plus")),
-        "supportScore": _safe_float(row.get("hr_support_score")),
+        "supportScore": support_score,
+        "supportScoreRaw": support_score_raw,
+        "supportScoreDisplay": support_score_display,
         "supportLabel": _first_text(row.get("hr_support_label")),
         "summary": _first_text(row.get("hr_target_summary")),
         "drivers": _cards_hr_target_driver_payload(row),

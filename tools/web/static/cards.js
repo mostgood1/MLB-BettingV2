@@ -2964,7 +2964,7 @@
               </div>
               <div class="cards-hr-target-metrics">
                 <div class="cards-hr-target-pill">
-                  <strong>${escapeHtml(formatNumber(row.supportScore, 1))}</strong>
+                  <strong>${escapeHtml(String(row.supportScoreDisplay || formatNumber(row.supportScore, 1)))}</strong>
                   <span>support</span>
                 </div>
                 <div class="cards-hr-target-pill">
