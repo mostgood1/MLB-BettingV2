@@ -4756,6 +4756,15 @@ def main() -> int:
         ),
     )
     ap.add_argument(
+        "--write-season-frontend-artifacts",
+        choices=["on", "off"],
+        default="on",
+        help=(
+            "If on, write season_frontend artifacts for core runs. "
+            "Multi-profile orchestration disables this for child profile runs and republishes after locked-policy assembly."
+        ),
+    )
+    ap.add_argument(
         "--lineups-last-known",
         default="",
         help=(
@@ -7602,16 +7611,17 @@ def main() -> int:
             print(f"Wrote ladder audit artifact: {ladder_audit_result.get('path')}")
         except Exception as exc:
             print(f"Warning: failed to write ladder audit artifact for {args.date}: {type(exc).__name__}: {exc}")
-        try:
-            season_frontend_result = write_current_day_season_frontend_artifacts(
-                int(args.season),
-                str(args.date),
-                betting_profile="retuned",
-                out_dir=(out_ROOT_DIR / "season_frontend"),
-            )
-            print(f"Wrote season frontend artifacts: {season_frontend_result.get('dir')}")
-        except Exception as exc:
-            print(f"Warning: failed to write season frontend artifacts for {args.date}: {type(exc).__name__}: {exc}")
+        if str(getattr(args, "write_season_frontend_artifacts", "on") or "on") == "on":
+            try:
+                season_frontend_result = write_current_day_season_frontend_artifacts(
+                    int(args.season),
+                    str(args.date),
+                    betting_profile="retuned",
+                    out_dir=(out_ROOT_DIR / "season_frontend"),
+                )
+                print(f"Wrote season frontend artifacts: {season_frontend_result.get('dir')}")
+            except Exception as exc:
+                print(f"Warning: failed to write season frontend artifacts for {args.date}: {type(exc).__name__}: {exc}")
 
     # Persist lineup artifacts (best-effort).
     try:

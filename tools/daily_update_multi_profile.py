@@ -5371,6 +5371,7 @@ def _run_profile(
         "--season",
         str(int(season)),
     ]
+    cmd.extend(["--write-season-frontend-artifacts", "off"])
     cmd.extend(list(passthrough_args))
     cmd.extend(["--out", str(out_dir)])
     if lineups_last_known_path is not None:
