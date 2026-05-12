@@ -1543,6 +1543,11 @@ def _run_render_frontend_validation_stage(
         stage["reason"] = "validate_render_frontend=off"
         return stage
 
+    expected_commit_value = str(expected_commit or "").strip()
+    if not expected_commit_value:
+        stage["reason"] = "render validation skipped because no published commit is available"
+        return stage
+
     base_url = _normalize_render_base_url(
         str(getattr(args, "render_validation_base_url", "") or "").strip()
         or str(getattr(args, "live_lens_base_url", "") or "").strip()
@@ -1572,12 +1577,11 @@ def _run_render_frontend_validation_stage(
     ]
     if cron_token:
         cmd.extend(["--cron-token", str(cron_token)])
-    if str(expected_commit or "").strip():
-        cmd.extend(["--expected-commit", str(expected_commit).strip()])
+    cmd.extend(["--expected-commit", expected_commit_value])
 
     stage["command"] = [str(part) for part in cmd]
     stage["base_url"] = str(base_url)
-    stage["expected_commit"] = str(expected_commit or "").strip()
+    stage["expected_commit"] = expected_commit_value
     try:
         completed = subprocess.run(cmd, check=False, capture_output=True, text=True, cwd=str(_ROOT_DIR))
         stage["exit_code"] = int(completed.returncode or 0)
@@ -2408,16 +2412,30 @@ def _maybe_git_push_daily_update(
     if not enabled:
         return {"status": "skipped", "reason": "git_push=off"}
 
+    before = set(preexisting_changes or set())
+    non_managed_preexisting_paths = sorted(
+        path for path in before if not _path_is_within_roots(path, _UI_DAILY_MANAGED_GIT_ROOTS)
+    )
+    if non_managed_preexisting_paths:
+        return {
+            "status": "skipped",
+            "reason": "preexisting non-artifact repository changes",
+            "preexisting_change_count": int(len(before)),
+            "non_managed_preexisting_paths": non_managed_preexisting_paths[:25],
+        }
+
     preexisting_staged_paths = _git_staged_paths(repo_ROOT_DIR)
     non_managed_staged_paths = [
         path for path in preexisting_staged_paths if not _path_is_within_roots(path, _UI_DAILY_MANAGED_GIT_ROOTS)
     ]
     if non_managed_staged_paths:
-        raise RuntimeError(
-            "git index already contains staged non-artifact changes: " + ", ".join(non_managed_staged_paths[:10])
-        )
+        return {
+            "status": "skipped",
+            "reason": "git index already contains staged non-artifact changes",
+            "preexisting_change_count": int(len(before)),
+            "non_managed_staged_paths": non_managed_staged_paths[:25],
+        }
 
-    before = set(preexisting_changes or set())
     after = _git_current_change_set(repo_ROOT_DIR)
     preexisting_managed_paths = sorted(path for path in before if _path_is_within_roots(path, _UI_DAILY_MANAGED_GIT_ROOTS))
     candidate_paths = sorted(
@@ -2915,6 +2933,7 @@ def _run_ui_daily_workflow(args: argparse.Namespace, *, raw_argv: List[str]) -> 
             print(
                 f"[ui-daily] Git push phase {phase_name}: {str(git_push_result.get('status') or 'unknown')}"
                 + (f" ({git_push_result.get('commit_sha')})" if git_push_result.get("commit_sha") else "")
+                + (f" [{git_push_result.get('reason')}]" if git_push_result.get("reason") else "")
             )
             return None
         except Exception as exc:

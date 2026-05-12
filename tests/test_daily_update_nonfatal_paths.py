@@ -122,6 +122,49 @@ class DailyUpdateNonfatalPathTests(unittest.TestCase):
         self.assertTrue(removed_any)
         self.assertIsNone(warning_text)
 
+    def test_git_push_skips_when_non_managed_changes_already_exist(self) -> None:
+        with mock.patch.object(daily_update, "_git_staged_paths", return_value=[]), mock.patch.object(
+            daily_update, "_git_current_change_set"
+        ) as change_set_mock, mock.patch.object(daily_update, "_git_run") as git_run_mock:
+            result = daily_update._maybe_git_push_daily_update(
+                repo_ROOT_DIR=Path("."),
+                date_str="2026-05-12",
+                workflow="ui-daily",
+                preexisting_changes={"sim_engine/data/build_roster.py", "tests/test_advanced_statcast_metric_wiring.py"},
+                enabled=True,
+                remote="origin",
+                branch="main",
+                commit_message="Daily update 2026-05-12",
+            )
+
+        self.assertEqual("skipped", result["status"])
+        self.assertEqual("preexisting non-artifact repository changes", result["reason"])
+        self.assertIn("sim_engine/data/build_roster.py", result["non_managed_preexisting_paths"])
+        change_set_mock.assert_not_called()
+        git_run_mock.assert_not_called()
+
+    def test_render_validation_skips_without_expected_commit(self) -> None:
+        args = argparse.Namespace(
+            validate_render_frontend="on",
+            render_validation_base_url="https://mlb-betting-v2.onrender.com",
+            render_validation_cron_token="token",
+            live_lens_base_url="",
+            live_lens_cron_token="",
+            render_validation_timeout_seconds=45,
+        )
+
+        with mock.patch.object(daily_update, "subprocess") as subprocess_mock:
+            stage = daily_update._run_render_frontend_validation_stage(
+                args,
+                date_str="2026-05-12",
+                season=2026,
+                expected_commit="",
+            )
+
+        self.assertEqual("skipped", stage["status"])
+        self.assertEqual("render validation skipped because no published commit is available", stage["reason"])
+        subprocess_mock.run.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

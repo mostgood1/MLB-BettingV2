@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import sim_engine.data.build_roster as build_roster
-from sim_engine.data.build_roster import _apply_cached_statcast_pitch_splits, _apply_statsapi_pitch_arsenal, _apply_statcast_pitch_count_stamina_adjustment, _enrich_statcast_quality_mult
+from sim_engine.data.build_roster import _apply_cached_statcast_pitch_splits, _apply_statsapi_pitch_arsenal, _apply_statcast_pitch_count_stamina_adjustment, _derive_stamina_pitches_from_season_stats, _enrich_statcast_quality_mult
 from sim_engine.simulate import simulate_game, _starter_effective_hook, _starter_matchup_hook_adjustment, _statcast_shape_rate_mults
 from sim_engine.pitch_model import PitchModelConfig, simulate_pitch
 from sim_engine.models import (
@@ -31,6 +31,17 @@ from tools.daily_update_multi_profile import (
 
 
 class AdvancedStatcastMetricWiringTests(unittest.TestCase):
+    def test_reliever_stamina_estimate_never_returns_none(self) -> None:
+        stamina = _derive_stamina_pitches_from_season_stats(
+            {
+                "pitchesThrown": 300,
+                "gamesPitched": 10,
+                "gamesStarted": 0,
+            }
+        )
+
+        self.assertEqual(27, stamina)
+
     def test_cached_statcast_pitch_splits_apply_to_nonstarter_pitchers(self) -> None:
         pitcher = PitcherProfile(
             player=Player(

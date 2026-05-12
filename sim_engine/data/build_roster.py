@@ -443,6 +443,14 @@ def _derive_stamina_pitches_from_season_stats(
             est = sp_prior
         return int(max(70, min(115, round(est))))
 
+    # Reliever-like: estimate by pitches per game pitched, shrunk to RP prior.
+    if total_pitches > 0 and g >= 1:
+        obs = total_pitches / max(1.0, g)
+        est = _shrink_to_prior(obs, rp_prior, n=g, n0=20.0)
+    else:
+        est = rp_prior
+    return int(max(12, min(65, round(est))))
+
 
 def _statcast_pitch_count_pressure(quality: Any, *, role: str) -> Optional[float]:
     if not isinstance(quality, dict):
@@ -494,14 +502,6 @@ def _apply_statcast_pitch_count_stamina_adjustment(prof: PitcherProfile) -> bool
 
     prof.stamina_pitches = int(max(70, min(118, baseline + delta)))
     return int(prof.stamina_pitches) != int(baseline)
-
-    # Reliever-like: estimate by pitches per game pitched, shrunk to RP prior.
-    if total_pitches > 0 and g >= 1:
-        obs = total_pitches / max(1.0, g)
-        est = _shrink_to_prior(obs, rp_prior, n=g, n0=20.0)
-    else:
-        est = rp_prior
-    return int(max(12, min(65, round(est))))
 
 
 def _pitching_role_workload(pstat: Dict[str, Any]) -> Dict[str, float]:
