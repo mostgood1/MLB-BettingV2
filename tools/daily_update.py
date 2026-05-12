@@ -1004,6 +1004,9 @@ def _artifact_lineup_ids(value: Any) -> List[int]:
     return out[:9]
 
 
+_ROSTER_ARTIFACT_CONTEXT_REV = 2
+
+
 def _roster_artifact_matches_inputs(
     meta: Any,
     *,
@@ -1027,6 +1030,9 @@ def _roster_artifact_matches_inputs(
         return False, "stats_season_mismatch"
     if bool(meta.get("spring_mode")) != bool(spring_mode):
         return False, "spring_mode_mismatch"
+
+    if _safe_int(meta.get("context_refresh_rev")) != _ROSTER_ARTIFACT_CONTEXT_REV:
+        return False, "context_refresh_rev_mismatch"
 
     artifact_statcast_starter_splits = str(meta.get("statcast_starter_splits") or "").strip().lower()
     current_statcast_starter_splits = str(statcast_starter_splits or "").strip().lower()
@@ -7188,6 +7194,7 @@ def main() -> int:
                         "date": str(args.date),
                         "stats_season": int(args.stats_season),
                         "spring_mode": bool(spring_mode),
+                        "context_refresh_rev": _ROSTER_ARTIFACT_CONTEXT_REV,
                         "game_pk": int(game_pk) if game_pk else None,
                         "away_abbr": str(t_away.abbreviation),
                         "home_abbr": str(t_home.abbreviation),
