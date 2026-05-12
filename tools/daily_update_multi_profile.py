@@ -1493,19 +1493,62 @@ def _is_bvp_reason_text(value: Any) -> bool:
     return text.startswith("against this starter,") or text.startswith("there is some real lineup-level history here")
 
 
+def _is_statcast_reason_text(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return False
+    markers = (
+        "underlying bat-missing quality",
+        "command-and-stuff shape",
+        "current command shape",
+        "underlying contact-quality profile",
+        "underlying contact profile",
+        "command shape is",
+        "underlying profile is",
+        "underlying strikeout pressure",
+        "swing-decision profile",
+        "contact shape is strong enough",
+        "underlying batted-ball quality",
+        "underlying damage quality",
+        "underlying strikeout risk",
+        "underlying contact quality",
+        "expected-contact quality",
+        "pulled-air shape",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _preserve_priority_reason(
+    limited: List[str],
+    overflow: Sequence[str],
+    matcher: Any,
+) -> List[str]:
+    if any(matcher(reason) for reason in limited):
+        return limited
+    priority_reason = next((reason for reason in overflow if matcher(reason)), None)
+    if not priority_reason:
+        return limited
+    replacement_index = next(
+        (
+            idx
+            for idx in range(len(limited) - 1, -1, -1)
+            if not _is_bvp_reason_text(limited[idx]) and not _is_statcast_reason_text(limited[idx])
+        ),
+        len(limited) - 1,
+    )
+    limited[replacement_index] = priority_reason
+    return limited
+
+
 def _trim_reason_list(reasons: Sequence[str]) -> List[str]:
     limit = max(1, int(_RECOMMENDATION_BASEBALL_REASON_LIMIT))
     cleaned = [str(reason or "").strip() for reason in reasons if str(reason or "").strip()]
     if len(cleaned) <= limit:
         return cleaned
     limited = list(cleaned[:limit])
-    if any(_is_bvp_reason_text(reason) for reason in limited):
-        return limited
-    bvp_reason = next((reason for reason in cleaned[limit:] if _is_bvp_reason_text(reason)), None)
-    if not bvp_reason:
-        return limited
-    replacement_index = next((idx for idx in range(len(limited) - 1, -1, -1) if not _is_bvp_reason_text(limited[idx])), len(limited) - 1)
-    limited[replacement_index] = bvp_reason
+    overflow = cleaned[limit:]
+    limited = _preserve_priority_reason(limited, overflow, _is_statcast_reason_text)
+    limited = _preserve_priority_reason(limited, overflow, _is_bvp_reason_text)
     return limited
 
 
@@ -2034,6 +2077,7 @@ def _pitcher_statcast_quality_reason(
     inplay_mult = _safe_profile_mult(quality, "inplay")
     csw_rate = _safe_profile_mult(quality, "csw_rate")
     zone_rate = _safe_profile_mult(quality, "zone_rate")
+    xwoba = _safe_profile_mult(quality, "xwoba")
     pitch_velo = _safe_profile_mult(quality, "pitch_velo_mean")
     pitch_extension = _safe_profile_mult(quality, "pitch_extension_mean")
 
@@ -2053,10 +2097,34 @@ def _pitcher_statcast_quality_reason(
         if choice == "under" and ((hr_mult is not None and hr_mult <= 0.97) or (inplay_mult is not None and inplay_mult <= 0.97)):
             return "The underlying contact-quality profile is keeping damage a bit lighter than baseline, which supports the run suppression case."
         return None
-    if prop_key == "outs":
-        if choice == "over" and ((bb_mult is not None and bb_mult <= 0.97) or (inplay_mult is not None and inplay_mult <= 0.97)):
+    if prop_key == "hits_allowed":
+        if choice == "over" and ((inplay_mult is not None and inplay_mult >= 1.03) or (xwoba is not None and xwoba >= 0.35)):
+            return "The underlying contact profile is allowing cleaner contact than baseline, which keeps the hits-allowed risk elevated."
+        if choice == "under" and ((inplay_mult is not None and inplay_mult <= 0.97) or (xwoba is not None and xwoba <= 0.31)):
+            return "The underlying contact profile is suppressing cleaner contact a bit better than baseline, which supports the lower hits-allowed path."
+        return None
+    if prop_key == "walks_allowed":
+        if choice == "over" and ((bb_mult is not None and bb_mult >= 1.03) or (zone_rate is not None and zone_rate <= 0.46)):
+            return "The command shape is carrying a little more traffic than baseline, which keeps the walks-allowed risk live."
+        if choice == "under" and ((bb_mult is not None and bb_mult <= 0.97) or (zone_rate is not None and zone_rate >= 0.50)):
+            return "The command shape is still supporting walk suppression, with enough zone rate to keep the free-pass path lighter than baseline."
+        return None
+    if prop_key in {"outs", "pitches", "batters_faced"}:
+        if choice == "over" and (
+            (bb_mult is not None and bb_mult >= 1.03)
+            or (zone_rate is not None and zone_rate <= 0.46)
+            or (csw_rate is not None and csw_rate <= 0.26)
+        ):
+            return "The current command shape is likely to create more deep counts and traffic than baseline, which can run up workload and pitch volume."
+        if choice == "over" and prop_key == "outs" and ((bb_mult is not None and bb_mult <= 0.97) or (inplay_mult is not None and inplay_mult <= 0.97)):
             return "His underlying profile is still limiting free passes and noisy contact enough to help the workload case."
-        if choice == "under" and ((bb_mult is not None and bb_mult >= 1.03) or (inplay_mult is not None and inplay_mult >= 1.03)):
+        if choice == "under" and (
+            (bb_mult is not None and bb_mult <= 0.97)
+            or (zone_rate is not None and zone_rate >= 0.50)
+            or (csw_rate is not None and csw_rate >= 0.29)
+        ):
+            return "The command-and-count shape still looks efficient enough to trim some pitch volume and keep the outing cleaner."
+        if choice == "under" and prop_key == "outs" and ((bb_mult is not None and bb_mult >= 1.03) or (inplay_mult is not None and inplay_mult >= 1.03)):
             return "His underlying profile is carrying a bit more traffic than baseline, which can shorten the outing."
         return None
     return None
@@ -2069,7 +2137,7 @@ def _pitcher_workload_reason(
     selection: Optional[str] = None,
 ) -> Optional[str]:
     prop_key = str(prop or "").strip().lower()
-    if prop_key not in {"strikeouts", "outs"}:
+    if prop_key not in {"strikeouts", "outs", "pitches", "batters_faced"}:
         return None
     choice = _selection_choice(selection)
     stamina = _safe_int((pitcher_profile or {}).get("stamina_pitches"))
@@ -2333,20 +2401,20 @@ def _hitter_statcast_quality_reason(
             return "His underlying damage quality is a bit lighter than baseline, which supports the lower home-run path."
         return None
 
-    if prop_key in {"hits", "total_bases", "runs", "rbis", "rbi"}:
+    if prop_key in {"hits", "hits_runs_rbis", "total_bases", "runs", "rbis", "rbi"}:
         if choice == "over":
             if inplay_mult is not None and inplay_mult >= 1.03:
                 return "His underlying contact quality is grading above baseline, which supports the production side of the prop."
             if k_mult is not None and k_mult <= 0.97:
                 return "His underlying strikeout risk is running below baseline, which helps the ball-in-play volume case."
-            if hr_mult is not None and hr_mult >= 1.03 and prop_key in {"total_bases", "runs", "rbis", "rbi"}:
+            if hr_mult is not None and hr_mult >= 1.03 and prop_key in {"hits_runs_rbis", "total_bases", "runs", "rbis", "rbi"}:
                 return "His underlying damage quality is strong enough to support the extra-base production path."
         elif choice == "under":
             if inplay_mult is not None and inplay_mult <= 0.97:
                 return "His underlying contact quality is coming in a bit lighter than baseline, which supports the under path."
             if k_mult is not None and k_mult >= 1.03:
                 return "His underlying strikeout pressure is elevated enough to support the lower-volume outcome."
-            if hr_mult is not None and hr_mult <= 0.97 and prop_key in {"total_bases", "runs", "rbis", "rbi"}:
+            if hr_mult is not None and hr_mult <= 0.97 and prop_key in {"hits_runs_rbis", "total_bases", "runs", "rbis", "rbi"}:
                 return "His underlying damage quality is lighter than baseline, which trims the extra-base ceiling."
     return None
 

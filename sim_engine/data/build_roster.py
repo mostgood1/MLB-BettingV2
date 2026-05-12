@@ -48,6 +48,65 @@ _STATCAST_QUALITY_CACHE_BY_SEASON: Dict[int, Dict[str, Any]] = {}
 _STATCAST_FEATURES_CACHE_BY_SEASON: Dict[int, Dict[str, Any]] = {}
 
 
+def _apply_statsapi_pitch_arsenal(
+    client: StatsApiClient,
+    prof: PitcherProfile,
+    *,
+    season: int,
+) -> bool:
+    pitcher_id = int(getattr(getattr(prof, "player", None), "mlbam_id", 0) or 0)
+    if pitcher_id <= 0:
+        return False
+    try:
+        mix, total_pitches = fetch_person_pitch_arsenal(client, pitcher_id, season)
+    except Exception:
+        return False
+    if not mix:
+        return False
+    prof.arsenal = mix
+    prof.arsenal_source = "statsapi_pitchArsenal"
+    prof.arsenal_sample_size = int(total_pitches or 0)
+    return True
+
+
+def _apply_cached_statcast_pitch_splits(
+    prof: PitcherProfile,
+    *,
+    season: int,
+    statcast_cache: Optional[DiskCache],
+    statcast_ttl_seconds: Optional[int],
+) -> bool:
+    if statcast_cache is None:
+        return False
+    pitcher_id = int(getattr(getattr(prof, "player", None), "mlbam_id", 0) or 0)
+    if pitcher_id <= 0:
+        return False
+    try:
+        splits = fetch_pitcher_pitch_splits(
+            cache=statcast_cache,
+            pitcher_id=pitcher_id,
+            season=season,
+            ttl_seconds=statcast_ttl_seconds,
+        )
+    except Exception:
+        return False
+    if splits is None:
+        return False
+
+    prof.statcast_splits_source = str(getattr(splits, "source", "") or "")
+    prof.statcast_splits_n_pitches = int(getattr(splits, "n_pitches", 0) or 0)
+    prof.statcast_splits_start_date = str(getattr(splits, "start_date", "") or "")
+    prof.statcast_splits_end_date = str(getattr(splits, "end_date", "") or "")
+
+    whiff_mult = getattr(splits, "whiff_mult", None)
+    if isinstance(whiff_mult, dict) and whiff_mult:
+        prof.pitch_type_whiff_mult = dict(whiff_mult)
+    inplay_mult = getattr(splits, "inplay_mult", None)
+    if isinstance(inplay_mult, dict) and inplay_mult:
+        prof.pitch_type_inplay_mult = dict(inplay_mult)
+    return True
+
+
 def _default_profile_cache_root() -> Path:
     # build_roster.py lives at MLB-BettingV2/sim_engine/data/build_roster.py
     # parents[2] => MLB-BettingV2/
@@ -383,6 +442,58 @@ def _derive_stamina_pitches_from_season_stats(
         else:
             est = sp_prior
         return int(max(70, min(115, round(est))))
+
+
+def _statcast_pitch_count_pressure(quality: Any, *, role: str) -> Optional[float]:
+    if not isinstance(quality, dict):
+        return None
+
+    def _ratio(value: Any, baseline: float, scale: float, lo: float, hi: float) -> float:
+        numeric = _safe_float(value)
+        if numeric is None or baseline <= 0.0:
+            return 1.0
+        ratio = 1.0 + (float(numeric) - float(baseline)) * float(scale)
+        return max(float(lo), min(float(hi), float(ratio)))
+
+    bb_mult = _safe_float(quality.get("bb"))
+    chase = _safe_float(quality.get("chase_swing_rate"))
+    zone = _safe_float(quality.get("zone_rate"))
+    csw = _safe_float(quality.get("csw_rate"))
+    contact = _safe_float(quality.get("contact_rate"))
+
+    if str(role or "").strip().lower() == "pitcher":
+        pressure = 1.0
+        if bb_mult is not None:
+            pressure *= max(0.92, min(1.10, bb_mult))
+        pressure *= _ratio(zone, 0.49, -1.1, 0.94, 1.06)
+        pressure *= _ratio(csw, 0.28, -1.0, 0.94, 1.06)
+        return max(0.92, min(1.10, pressure))
+
+    pressure = 1.0
+    if bb_mult is not None:
+        pressure *= max(0.93, min(1.10, bb_mult))
+    pressure *= _ratio(contact, 0.74, 0.9, 0.94, 1.07)
+    pressure *= _ratio(chase, 0.30, -0.9, 0.94, 1.07)
+    pressure *= _ratio(zone, 0.49, -0.5, 0.96, 1.04)
+    return max(0.92, min(1.10, pressure))
+
+
+def _apply_statcast_pitch_count_stamina_adjustment(prof: PitcherProfile) -> bool:
+    baseline = int(getattr(prof, "stamina_pitches", 0) or 0)
+    if baseline < 70:
+        return False
+
+    pressure = _statcast_pitch_count_pressure(getattr(prof, "statcast_quality_mult", None), role="pitcher")
+    if pressure is None:
+        return False
+
+    delta = int(round((float(pressure) - 1.0) * 60.0))
+    delta = max(-4, min(6, delta))
+    if delta == 0:
+        return False
+
+    prof.stamina_pitches = int(max(70, min(118, baseline + delta)))
+    return int(prof.stamina_pitches) != int(baseline)
 
     # Reliever-like: estimate by pitches per game pitched, shrunk to RP prior.
     if total_pitches > 0 and g >= 1:
@@ -842,6 +953,7 @@ def _apply_statcast_quality_to_pitcher(prof: PitcherProfile, season: int) -> Non
     prof.bb_rate = _clamp_rate(float(prof.bb_rate) * bb_m, 0.01, 0.25)
     prof.hr_rate = _clamp_rate(float(prof.hr_rate) * hr_m, 0.002, 0.14)
     prof.inplay_hit_rate = _clamp_rate(float(prof.inplay_hit_rate) * ip_m, 0.10, 0.45)
+    _apply_statcast_pitch_count_stamina_adjustment(prof)
 
 
 def _apply_statcast_quality_to_batter(prof: BatterProfile, season: int) -> None:
@@ -1231,6 +1343,9 @@ def build_team_roster(
         pid = _safe_int(person.get("id"), 0)
         if pid <= 0:
             continue
+        is_requested_probable_pitcher = bool(probable_pitcher_id and int(pid) == int(probable_pitcher_id))
+        entry_pos = (entry.get("position") or {}) if isinstance(entry.get("position"), dict) else {}
+        entry_pos_abbr = str(entry_pos.get("abbreviation") or "").strip().upper()
 
         if bool(fast_mode):
             # Skip expensive enrichment for non-essential players.
@@ -1243,7 +1358,7 @@ def build_team_roster(
                 if pid not in wanted_hitters:
                     continue
 
-        if bool(exclude_injured):
+        if bool(exclude_injured) and not is_requested_probable_pitcher:
             try:
                 if pid in injured_set:
                     continue
@@ -1267,19 +1382,20 @@ def build_team_roster(
             throw_side=throw_side,
         )
 
-        cached = None
-        if bool(use_profile_cache) and prof_cache is not None:
-            try:
-                kind = "P" if prim_pos == "P" else "B"
-                cached = prof_cache.get(
-                    "player_base_profile",
-                    _profile_cache_key(pid=pid, season=season, kind=kind, enable_batter_vs_pitch_type=bool(enable_batter_vs_pitch_type)),
-                    ttl_seconds=prof_ttl,
-                )
-            except Exception:
-                cached = None
+        build_as_pitcher = bool(prim_pos == "P" or is_requested_probable_pitcher)
+        build_as_hitter = bool(prim_pos != "P")
 
-        if prim_pos == "P":
+        if build_as_pitcher:
+            cached = None
+            if bool(use_profile_cache) and prof_cache is not None:
+                try:
+                    cached = prof_cache.get(
+                        "player_base_profile",
+                        _profile_cache_key(pid=pid, season=season, kind="P", enable_batter_vs_pitch_type=bool(enable_batter_vs_pitch_type)),
+                        ttl_seconds=prof_ttl,
+                    )
+                except Exception:
+                    cached = None
             if isinstance(cached, dict) and cached.get("kind") == "P" and isinstance(cached.get("profile"), dict):
                 prof = _pprof_from_cached(player, cached.get("profile") or {})
                 pitchers.append(prof)
@@ -1299,6 +1415,10 @@ def build_team_roster(
                         )
                         try:
                             prof.stamina_pitches = int(max(float(getattr(prof, "stamina_pitches", 0) or 0.0), float(derived_stamina)))
+                        except Exception:
+                            pass
+                        try:
+                            _apply_statcast_pitch_count_stamina_adjustment(prof)
                         except Exception:
                             pass
                 except Exception:
@@ -1402,7 +1522,17 @@ def build_team_roster(
                 apply_recency_to_pitcher(prof, recent, pitcher_rec_cfg)
             except Exception:
                 pass
-        else:
+        if build_as_hitter:
+            cached = None
+            if bool(use_profile_cache) and prof_cache is not None:
+                try:
+                    cached = prof_cache.get(
+                        "player_base_profile",
+                        _profile_cache_key(pid=pid, season=season, kind="B", enable_batter_vs_pitch_type=bool(enable_batter_vs_pitch_type)),
+                        ttl_seconds=prof_ttl,
+                    )
+                except Exception:
+                    cached = None
             if isinstance(cached, dict) and cached.get("kind") == "B" and isinstance(cached.get("profile"), dict):
                 prof = _bprof_from_cached(player, cached.get("profile") or {})
                 hitters.append(prof)
@@ -1574,32 +1704,28 @@ def build_team_roster(
     # Optional: enrich starter arsenal + pitch-type multipliers from Statcast.
     if statcast_cache is not None and starter.player.mlbam_id > 0:
         try:
-            mix, total_pitches = fetch_person_pitch_arsenal(client, starter.player.mlbam_id, season)
-            if mix:
-                starter.arsenal = mix
-                starter.arsenal_source = "statsapi_pitchArsenal"
-                starter.arsenal_sample_size = int(total_pitches or 0)
+            _apply_statsapi_pitch_arsenal(client, starter, season=season)
 
             # Cache-only Statcast per-pitch outcome multipliers (populated via x64 tool).
-            splits = fetch_pitcher_pitch_splits(
-                cache=statcast_cache,
-                pitcher_id=starter.player.mlbam_id,
+            _apply_cached_statcast_pitch_splits(
+                starter,
                 season=season,
-                ttl_seconds=statcast_ttl_seconds,
+                statcast_cache=statcast_cache,
+                statcast_ttl_seconds=statcast_ttl_seconds,
             )
-            if splits is not None:
-                starter.statcast_splits_source = str(splits.source or "")
-                starter.statcast_splits_n_pitches = int(splits.n_pitches or 0)
-                starter.statcast_splits_start_date = str(splits.start_date or "")
-                starter.statcast_splits_end_date = str(splits.end_date or "")
-                if splits.whiff_mult:
-                    starter.pitch_type_whiff_mult = dict(splits.whiff_mult)
-                if splits.inplay_mult:
-                    starter.pitch_type_inplay_mult = dict(splits.inplay_mult)
         except Exception:
             pass
 
     bullpen_all = [p for p in pitchers if p.player.mlbam_id != starter.player.mlbam_id]
+    if statcast_cache is not None:
+        for p in bullpen_all:
+            _apply_statsapi_pitch_arsenal(client, p, season=season)
+            _apply_cached_statcast_pitch_splits(
+                p,
+                season=season,
+                statcast_cache=statcast_cache,
+                statcast_ttl_seconds=statcast_ttl_seconds,
+            )
     if starter.player.mlbam_id:
         starter.role = "SP"
     try:

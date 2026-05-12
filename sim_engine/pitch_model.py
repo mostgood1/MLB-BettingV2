@@ -301,6 +301,8 @@ def simulate_pitch(
     pitcher_bb_ld_rate: float = 0.20,
     pitcher_bb_pu_rate: float = 0.11,
     pitcher_bb_inplay_n: int = 0,
+    batter_pitch_count_mult: float = 1.0,
+    pitcher_pitch_count_mult: float = 1.0,
     has_runners_on: bool = False,
     is_reliever: bool = False,
 ) -> PitchResult:
@@ -380,17 +382,25 @@ def simulate_pitch(
 
     # Batter pitch-type multiplier (hook populated by features)
     pt_mult = float(batter_pt_mult)
+    count_mult = max(
+        0.90,
+        min(
+            1.12,
+            math.sqrt(max(0.75, float(batter_pitch_count_mult)) * max(0.75, float(pitcher_pitch_count_mult))),
+        ),
+    )
+    count_delta = float(count_mult) - 1.0
 
-    p_ball = clamp01(cfg.base_ball + ball_bias + take_bias)
-    p_called = clamp01(cfg.base_called_strike * (1.0 - 0.5 * k_tgt))
+    p_ball = clamp01((cfg.base_ball + ball_bias + take_bias) * (1.0 + 0.45 * count_delta))
+    p_called = clamp01(cfg.base_called_strike * (1.0 - 0.5 * k_tgt) * (1.0 + 0.10 * count_delta))
 
     # Umpire zone effect: slightly shift BALL vs CALLED_STRIKE.
     ump = max(0.92, min(1.08, float(umpire_called_strike_mult)))
     p_called = clamp01(p_called * ump)
     p_ball = clamp01(p_ball * (1.0 / ump))
     p_whiff = clamp01((cfg.base_swinging_strike + whiff_boost) * (0.7 + 1.2 * k_tgt) * whiff_mult / max(0.75, pt_mult))
-    p_foul = clamp01((cfg.base_foul + foul_boost) * (0.9 + 0.4 * (1.0 - k_tgt)))
-    p_inplay = clamp01((cfg.base_in_play - inplay_penalty) * (0.85 + 0.5 * (1.0 - k_tgt)) * inplay_mult * pt_mult)
+    p_foul = clamp01((cfg.base_foul + foul_boost) * (0.9 + 0.4 * (1.0 - k_tgt)) * (1.0 + 0.35 * count_delta))
+    p_inplay = clamp01((cfg.base_in_play - inplay_penalty) * (0.85 + 0.5 * (1.0 - k_tgt)) * inplay_mult * pt_mult / max(0.88, count_mult))
 
     # Normalize after HBP
     rest = 1.0 - p_hbp

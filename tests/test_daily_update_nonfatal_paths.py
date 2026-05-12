@@ -8,6 +8,36 @@ from tools import daily_update
 
 
 class DailyUpdateNonfatalPathTests(unittest.TestCase):
+    def test_roster_artifact_statcast_mode_mismatch_is_rejected(self) -> None:
+        artifact_meta = {
+            "date": "2026-05-11",
+            "stats_season": 2026,
+            "spring_mode": False,
+            "statcast_starter_splits": "off",
+            "roster_builder": {
+                "as_of_date": "2026-05-11",
+                "away_probable_pitcher_id": 101,
+                "home_probable_pitcher_id": 202,
+                "away_lineup_ids": [1, 2, 3],
+                "home_lineup_ids": [4, 5, 6],
+            },
+        }
+
+        matches, reason = daily_update._roster_artifact_matches_inputs(
+            artifact_meta,
+            date_str="2026-05-11",
+            stats_season=2026,
+            spring_mode=False,
+            statcast_starter_splits="on",
+            away_probable_pitcher_id=101,
+            home_probable_pitcher_id=202,
+            away_lineup_ids=[1, 2, 3],
+            home_lineup_ids=[4, 5, 6],
+        )
+
+        self.assertFalse(matches)
+        self.assertEqual("statcast_starter_splits_mismatch", reason)
+
     def test_prior_day_live_lens_missing_render_credentials_is_skipped(self) -> None:
         args = argparse.Namespace(
             sync_live_lens="on",

@@ -5469,6 +5469,154 @@ def _pitcher_ladder_strikeout_matchup_summary(
         "metrics": metrics,
     }
 
+def _statcast_pitch_count_pressure(quality: Any, *, role: str) -> Optional[float]:
+    if not isinstance(quality, dict):
+        return None
+
+    def _ratio(value: Any, baseline: float, scale: float, lo: float, hi: float) -> float:
+        numeric = _safe_float(value)
+        if numeric is None or baseline <= 0.0:
+            return 1.0
+        ratio = 1.0 + (float(numeric) - float(baseline)) * float(scale)
+        return max(float(lo), min(float(hi), float(ratio)))
+
+    bb_mult = _safe_float(quality.get("bb"))
+    chase = _safe_float(quality.get("chase_swing_rate"))
+    zone = _safe_float(quality.get("zone_rate"))
+    csw = _safe_float(quality.get("csw_rate"))
+    contact = _safe_float(quality.get("contact_rate"))
+
+    if str(role or "").strip().lower() == "pitcher":
+        pressure = 1.0
+        if bb_mult is not None:
+            pressure *= max(0.92, min(1.10, bb_mult))
+        pressure *= _ratio(zone, 0.49, -1.1, 0.94, 1.06)
+        pressure *= _ratio(csw, 0.28, -1.0, 0.94, 1.06)
+        return max(0.92, min(1.10, pressure))
+
+    pressure = 1.0
+    if bb_mult is not None:
+        pressure *= max(0.93, min(1.10, bb_mult))
+    pressure *= _ratio(contact, 0.74, 0.9, 0.94, 1.07)
+    pressure *= _ratio(chase, 0.30, -0.9, 0.94, 1.07)
+    pressure *= _ratio(zone, 0.49, -0.5, 0.96, 1.04)
+    return max(0.92, min(1.10, pressure))
+
+
+def _hitter_ladder_matchup_summary(
+    d: str,
+    sim_path: Path,
+    sim_obj: Dict[str, Any],
+    hitter_side: str,
+    batter_id: int,
+    prop: str,
+    snapshot_cache: Dict[Path, Optional[Dict[str, Any]]],
+) -> Optional[Dict[str, Any]]:
+    roster_snapshot = _pitcher_ladder_roster_snapshot(d, sim_path, sim_obj, snapshot_cache)
+    if not isinstance(roster_snapshot, dict) or hitter_side not in {"away", "home"}:
+        return None
+    opponent_side = "home" if hitter_side == "away" else "away"
+    side_doc = roster_snapshot.get(hitter_side) if isinstance(roster_snapshot.get(hitter_side), dict) else None
+    opponent_doc = roster_snapshot.get(opponent_side) if isinstance(roster_snapshot.get(opponent_side), dict) else None
+    if not isinstance(side_doc, dict) or not isinstance(opponent_doc, dict):
+        return None
+
+    batter_profile = next(
+        (
+            row
+            for row in (side_doc.get("lineup") or [])
+            if isinstance(row, dict) and int(_safe_int(row.get("id")) or 0) == int(batter_id)
+        ),
+        None,
+    )
+    pitcher_profile = opponent_doc.get("starter_profile") if isinstance(opponent_doc.get("starter_profile"), dict) else None
+    if not isinstance(batter_profile, dict) or not isinstance(pitcher_profile, dict):
+        return None
+
+    season = _safe_int(sim_obj.get("season"))
+    prop_text = str(prop or "").strip().lower()
+    reasons = _dedupe_reason_texts(
+        [
+            reason
+            for reason in (
+                _hitter_statcast_quality_reason(batter_profile, prop=prop_text, selection="over"),
+                _hitter_platoon_reason(batter_profile, pitcher_profile, prop=prop_text, selection="over"),
+                _hitter_pitch_mix_reason(batter_profile, pitcher_profile, prop=prop_text, selection="over"),
+                _hitter_bvp_reason(
+                    batter_profile,
+                    pitcher_profile,
+                    season=season,
+                    prop=prop_text,
+                    selection="over",
+                ),
+            )
+            if str(reason or "").strip()
+        ]
+    )
+
+    batter_quality = batter_profile.get("statcast_quality_mult") if isinstance(batter_profile.get("statcast_quality_mult"), dict) else {}
+    pitcher_quality = pitcher_profile.get("statcast_quality_mult") if isinstance(pitcher_profile.get("statcast_quality_mult"), dict) else {}
+    metrics: Dict[str, Any] = {}
+
+    batter_xwoba = _safe_float(batter_quality.get("xwoba"))
+    batter_ev_max = _safe_float(batter_quality.get("ev_max"))
+    batter_pulled_air = _safe_float(batter_quality.get("pulled_air_rate"))
+    batter_contact = _safe_float(batter_quality.get("contact_rate"))
+    batter_pitch_pressure = _statcast_pitch_count_pressure(batter_quality, role="batter")
+    pitcher_xwoba = _safe_float(pitcher_quality.get("xwoba"))
+    pitcher_ev_mean = _safe_float(pitcher_quality.get("ev_mean"))
+    pitcher_csw = _safe_float(pitcher_quality.get("csw_rate"))
+    pitcher_zone = _safe_float(pitcher_quality.get("zone_rate"))
+    pitcher_pitch_pressure = _statcast_pitch_count_pressure(pitcher_quality, role="pitcher")
+
+    if batter_xwoba is not None:
+        metrics["batterXwoba"] = round(float(batter_xwoba), 3)
+        if prop_text == "home_runs" and float(batter_xwoba) >= 0.38:
+            reasons.append("Expected-contact quality is in a strong power band for a one-swing outcome.")
+        elif prop_text in {"total_bases", "hits_runs_rbis"} and float(batter_xwoba) >= 0.36:
+            reasons.append("Expected-contact quality is supportive for multi-base production.")
+    if batter_ev_max is not None:
+        metrics["batterEvMax"] = round(float(batter_ev_max), 1)
+    if batter_pulled_air is not None:
+        metrics["batterPulledAir"] = round(float(batter_pulled_air), 3)
+        if prop_text == "home_runs" and float(batter_pulled_air) >= 0.16:
+            reasons.append("Pulled-air shape is strong enough to support the HR ladder.")
+    if batter_contact is not None:
+        metrics["batterContactRate"] = round(float(batter_contact), 3)
+        if prop_text in {"total_bases", "hits_runs_rbis"} and float(batter_contact) >= 0.77:
+            reasons.append("Contact shape is strong enough to help the ball-in-play volume path.")
+    if batter_pitch_pressure is not None:
+        metrics["batterPitchCountPressure"] = round(float(batter_pitch_pressure), 3)
+    if pitcher_xwoba is not None:
+        metrics["pitcherXwoba"] = round(float(pitcher_xwoba), 3)
+        if float(pitcher_xwoba) >= 0.35:
+            reasons.append("The opposing starter's expected-contact profile is allowing louder damage than neutral.")
+    if pitcher_ev_mean is not None:
+        metrics["pitcherEvMean"] = round(float(pitcher_ev_mean), 1)
+    if pitcher_csw is not None:
+        metrics["pitcherCswRate"] = round(float(pitcher_csw), 3)
+    if pitcher_zone is not None:
+        metrics["pitcherZoneRate"] = round(float(pitcher_zone), 3)
+    if pitcher_pitch_pressure is not None:
+        metrics["pitcherPitchCountPressure"] = round(float(pitcher_pitch_pressure), 3)
+    if batter_pitch_pressure is not None and pitcher_pitch_pressure is not None:
+        matchup_pitch_pressure = max(0.90, min(1.14, math.sqrt(float(batter_pitch_pressure) * float(pitcher_pitch_pressure))))
+        metrics["matchupPitchCountPressure"] = round(float(matchup_pitch_pressure), 3)
+        if prop_text in {"hits", "hits_runs_rbis", "total_bases", "runs", "rbis", "rbi", "hitter_strikeouts"}:
+            if matchup_pitch_pressure >= 1.03:
+                reasons.append("The count-shape matchup points to a few more deep counts than neutral, which can add volume to the plate-appearance path.")
+            elif matchup_pitch_pressure <= 0.97:
+                reasons.append("The count-shape matchup looks cleaner than neutral, which can trim some of the usual pitch-count volume.")
+
+    reasons = _dedupe_reason_texts(reasons)
+    if not reasons and not metrics:
+        return None
+    return {
+        "summary": " ".join(reasons[:4]).strip() if reasons else "",
+        "reasons": reasons,
+        "metrics": metrics,
+    }
+
 
 def _pitcher_ladders_payload(
     d: str,
@@ -5569,16 +5717,15 @@ def _pitcher_ladders_payload(
             if market_line is not None:
                 over_line_count = int(sum(row.get("exactCount") or 0 for row in ladder_rows if float(row.get("total") or 0) > float(market_line)))
                 over_line_prob = float(over_line_count / float(max(1, sim_count)))
-            matchup_summary = None
-            if prop == "strikeouts":
-                matchup_summary = _pitcher_ladder_strikeout_matchup_summary(
-                    str(d),
-                    sim_path,
-                    sim_obj,
-                    str(side),
-                    int(starter_id),
-                    roster_snapshot_cache,
-                )
+            matchup_summary = _pitcher_ladder_matchup_summary(
+                str(d),
+                sim_path,
+                sim_obj,
+                str(side),
+                int(starter_id),
+                str(prop),
+                roster_snapshot_cache,
+            )
             mode_row = max(
                 ladder_rows,
                 key=lambda row: (int(row.get("exactCount") or 0), -int(row.get("total") or 0)),
@@ -5767,6 +5914,7 @@ def _hitter_ladders_payload(
 
     sim_files = _list_unique_sim_files(sim_dir)
     threshold_specs = list(prop_cfg.get("thresholds") or [])
+    roster_snapshot_cache: Dict[Path, Optional[Dict[str, Any]]] = {}
     rows: List[Dict[str, Any]] = []
     topn_limits: List[int] = []
     for sim_path in sim_files:
@@ -5823,12 +5971,20 @@ def _hitter_ladders_payload(
                 if market_line is not None:
                     over_line_count = int(sum(row.get("exactCount") or 0 for row in ladder_rows if float(row.get("total") or 0) > float(market_line)))
                     over_line_prob = float(over_line_count / float(max(1, row_sim_count)))
+                matchup_summary = _hitter_ladder_matchup_summary(
+                    str(d),
+                    sim_path,
+                    sim_obj,
+                    str(side),
+                    int(batter_id),
+                    str(prop),
+                    roster_snapshot_cache,
+                )
                 mode_row = max(
                     ladder_rows,
                     key=lambda row: (int(row.get("exactCount") or 0), -int(row.get("total") or 0)),
                 )
-                rows.append(
-                    {
+                row_out = {
                         "gamePk": int(game_pk) if game_pk is not None else None,
                         "batterId": int(batter_id),
                         "hitterId": int(batter_id),
@@ -5862,7 +6018,15 @@ def _hitter_ladders_payload(
                         "ladderShape": "exact",
                         "sourceFile": _relative_path_str(sim_path),
                     }
-                )
+                if isinstance(matchup_summary, dict):
+                    row_out["matchupSummary"] = str(matchup_summary.get("summary") or "").strip()
+                    row_out["matchupReasons"] = [
+                        str(reason).strip()
+                        for reason in (matchup_summary.get("reasons") or [])
+                        if str(reason).strip()
+                    ]
+                    row_out["matchupMetrics"] = dict(matchup_summary.get("metrics") or {})
+                rows.append(row_out)
                 exact_rows_added = True
 
         if exact_rows_added:
@@ -5893,8 +6057,16 @@ def _hitter_ladders_payload(
                 hit_count = _threshold_prob_to_count(hit_prob, sim_count)
                 over_line_count = hit_count if market_line is not None and float(market_line) < 1.0 else None
                 over_line_prob = hit_prob if over_line_count is not None else None
-                rows.append(
-                    {
+                matchup_summary = _hitter_ladder_matchup_summary(
+                    str(d),
+                    sim_path,
+                    sim_obj,
+                    str(side),
+                    int(batter_id),
+                    str(prop),
+                    roster_snapshot_cache,
+                )
+                row_out = {
                         "gamePk": int(game_pk) if game_pk is not None else None,
                         "batterId": int(batter_id),
                         "hitterId": int(batter_id),
@@ -5926,7 +6098,15 @@ def _hitter_ladders_payload(
                         "ladderShape": "threshold",
                         "sourceFile": _relative_path_str(sim_path),
                     }
-                )
+                if isinstance(matchup_summary, dict):
+                    row_out["matchupSummary"] = str(matchup_summary.get("summary") or "").strip()
+                    row_out["matchupReasons"] = [
+                        str(reason).strip()
+                        for reason in (matchup_summary.get("reasons") or [])
+                        if str(reason).strip()
+                    ]
+                    row_out["matchupMetrics"] = dict(matchup_summary.get("metrics") or {})
+                rows.append(row_out)
             continue
 
         if not isinstance(hitter_topn, dict):
@@ -6020,6 +6200,23 @@ def _hitter_ladders_payload(
             batter["overLineProb"] = over_line_prob
             batter["ladder"] = ladder_rows
             batter["ladderShape"] = "threshold"
+            matchup_summary = _hitter_ladder_matchup_summary(
+                str(d),
+                sim_path,
+                sim_obj,
+                str(batter.get("side") or ""),
+                int(batter.get("batterId") or 0),
+                str(prop),
+                roster_snapshot_cache,
+            )
+            if isinstance(matchup_summary, dict):
+                batter["matchupSummary"] = str(matchup_summary.get("summary") or "").strip()
+                batter["matchupReasons"] = [
+                    str(reason).strip()
+                    for reason in (matchup_summary.get("reasons") or [])
+                    if str(reason).strip()
+                ]
+                batter["matchupMetrics"] = dict(matchup_summary.get("metrics") or {})
             rows.append(batter)
 
     payload["gameOptions"] = [
@@ -7379,6 +7576,108 @@ def _first_text(*values: Any) -> str:
         if text:
             return text
     return ""
+
+
+def _pitcher_ladder_matchup_summary(
+    d: str,
+    sim_path: Path,
+    sim_obj: Dict[str, Any],
+    pitcher_side: str,
+    pitcher_id: int,
+    prop: str,
+    snapshot_cache: Dict[Path, Optional[Dict[str, Any]]],
+) -> Optional[Dict[str, Any]]:
+    roster_snapshot = _pitcher_ladder_roster_snapshot(d, sim_path, sim_obj, snapshot_cache)
+    if not isinstance(roster_snapshot, dict) or pitcher_side not in {"away", "home"}:
+        return None
+    opponent_side = "home" if pitcher_side == "away" else "away"
+    side_doc = roster_snapshot.get(pitcher_side) if isinstance(roster_snapshot.get(pitcher_side), dict) else None
+    opponent_doc = roster_snapshot.get(opponent_side) if isinstance(roster_snapshot.get(opponent_side), dict) else None
+    if not isinstance(side_doc, dict) or not isinstance(opponent_doc, dict):
+        return None
+
+    pitcher_profile = side_doc.get("starter_profile") if isinstance(side_doc.get("starter_profile"), dict) else None
+    opponent_lineup = [row for row in (opponent_doc.get("lineup") or []) if isinstance(row, dict)]
+    if not isinstance(pitcher_profile, dict):
+        return None
+
+    prop_text = str(prop or "").strip().lower()
+    reasons: List[str] = []
+    metrics: Dict[str, Any] = {}
+
+    if prop_text == "strikeouts":
+        strikeout_summary = _pitcher_ladder_strikeout_matchup_summary(
+            d,
+            sim_path,
+            sim_obj,
+            pitcher_side,
+            pitcher_id,
+            snapshot_cache,
+        )
+        if isinstance(strikeout_summary, dict):
+            reasons.extend(str(reason).strip() for reason in (strikeout_summary.get("reasons") or []) if str(reason).strip())
+            metrics.update(dict(strikeout_summary.get("metrics") or {}))
+
+    reasons.extend(
+        reason
+        for reason in (
+            _pitch_mix_reason(pitcher_profile, prop=prop_text, selection="over"),
+            _opponent_lineup_reason(pitcher_profile, opponent_lineup, prop=prop_text, selection="over"),
+            _pitcher_statcast_quality_reason(pitcher_profile, prop=prop_text, selection="over"),
+            _pitcher_workload_reason(pitcher_profile, prop=prop_text, selection="over"),
+            _pitcher_bvp_reason(pitcher_profile, opponent_lineup),
+        )
+        if str(reason or "").strip()
+    )
+
+    quality = pitcher_profile.get("statcast_quality_mult") if isinstance(pitcher_profile.get("statcast_quality_mult"), dict) else {}
+    pitcher_pitch_pressure = _statcast_pitch_count_pressure(quality, role="pitcher")
+    lineup_pitch_pressures = [
+        float(value)
+        for value in (
+            _statcast_pitch_count_pressure((row.get("statcast_quality_mult") if isinstance(row.get("statcast_quality_mult"), dict) else {}), role="batter")
+            for row in opponent_lineup
+        )
+        if value is not None
+    ]
+    lineup_pitch_pressure = (sum(lineup_pitch_pressures) / float(len(lineup_pitch_pressures))) if lineup_pitch_pressures else None
+    for src_key, metric_key, digits in (
+        ("k", "kShapeMult", 3),
+        ("bb", "bbShapeMult", 3),
+        ("hr", "hrShapeMult", 3),
+        ("inplay", "inplayShapeMult", 3),
+        ("xwoba", "xwoba", 3),
+        ("csw_rate", "cswRate", 3),
+        ("zone_rate", "zoneRate", 3),
+        ("ev_mean", "evMean", 1),
+        ("pitch_velo_mean", "pitchVelo", 1),
+        ("pitch_extension_mean", "pitchExtension", 2),
+    ):
+        value = _safe_float(quality.get(src_key))
+        if value is not None and metric_key not in metrics:
+            metrics[metric_key] = round(float(value), digits)
+
+    if pitcher_pitch_pressure is not None:
+        metrics["pitcherPitchCountPressure"] = round(float(pitcher_pitch_pressure), 3)
+    if lineup_pitch_pressure is not None:
+        metrics["lineupPitchCountPressure"] = round(float(lineup_pitch_pressure), 3)
+    if pitcher_pitch_pressure is not None and lineup_pitch_pressure is not None:
+        matchup_pitch_pressure = max(0.90, min(1.14, math.sqrt(float(pitcher_pitch_pressure) * float(lineup_pitch_pressure))))
+        metrics["matchupPitchCountPressure"] = round(float(matchup_pitch_pressure), 3)
+        if prop_text in {"outs", "pitches", "batters_faced", "strikeouts"}:
+            if matchup_pitch_pressure >= 1.03:
+                reasons.append("The count-shape matchup points to longer at-bats than neutral, which can add workload pressure and raise hook risk.")
+            elif matchup_pitch_pressure <= 0.97:
+                reasons.append("The count-shape matchup looks more efficient than neutral, which can keep the pitch count lighter for longer.")
+
+    reasons = _dedupe_reason_texts(reasons)
+    if not reasons and not metrics:
+        return None
+    return {
+        "summary": " ".join(reasons[:4]).strip() if reasons else "",
+        "reasons": reasons,
+        "metrics": metrics,
+    }
 
 
 def _recommendations_by_game(locked_policy: Optional[Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
@@ -13646,13 +13945,35 @@ def _live_pitcher_matchup_context(
     pitcher_entry = pitcher_models.get(normalize_pitcher_name(pitcher_name)) if pitcher_name else None
     pitcher_model = pitcher_entry.get("model") if isinstance(pitcher_entry, dict) and isinstance(pitcher_entry.get("model"), dict) else None
     pitcher_state = _live_pitcher_profile_for_game_state(roster_snapshot, snapshot, side)
+    current_profile = pitcher_state.get("current_profile") if isinstance(pitcher_state.get("current_profile"), dict) else None
+    matchup_profile = current_profile if isinstance(current_profile, dict) else pitcher_profile
+    matchup_quality = matchup_profile.get("statcast_quality_mult") if isinstance((matchup_profile or {}).get("statcast_quality_mult"), dict) else {}
+    pitcher_pitch_pressure = _statcast_pitch_count_pressure(matchup_quality, role="pitcher")
+    lineup_pitch_pressures = [
+        float(value)
+        for value in (
+            _statcast_pitch_count_pressure((item.get("statcast_quality_mult") if isinstance(item.get("statcast_quality_mult"), dict) else {}), role="batter")
+            for item in opponent_lineup
+            if isinstance(item, dict)
+        )
+        if value is not None
+    ]
+    lineup_pitch_pressure = (sum(lineup_pitch_pressures) / float(len(lineup_pitch_pressures))) if lineup_pitch_pressures else None
+    matchup_pitch_pressure = (
+        max(0.90, min(1.14, math.sqrt(float(pitcher_pitch_pressure) * float(lineup_pitch_pressure))))
+        if pitcher_pitch_pressure is not None and lineup_pitch_pressure is not None
+        else None
+    )
     return {
         "pitcher_profile": pitcher_profile,
         "bullpen_profiles": bullpen_profiles,
         "opponent_lineup": [item for item in opponent_lineup if isinstance(item, dict)],
         "pitcher_model": pitcher_model,
-        "current_profile": pitcher_state.get("current_profile") if isinstance(pitcher_state.get("current_profile"), dict) else None,
+        "current_profile": current_profile,
         "current_is_starter": bool(pitcher_state.get("current_is_starter")),
+        "pitcher_pitch_count_pressure": pitcher_pitch_pressure,
+        "lineup_pitch_count_pressure": lineup_pitch_pressure,
+        "matchup_pitch_count_pressure": matchup_pitch_pressure,
     }
 
 
@@ -13702,6 +14023,8 @@ def _live_pitcher_count_reason(
     row: Dict[str, Any],
     actual_row: Optional[Dict[str, Any]],
     pitcher_profile: Optional[Dict[str, Any]],
+    *,
+    matchup_pitch_count_pressure: Optional[float] = None,
 ) -> Optional[str]:
     if not isinstance(actual_row, dict):
         return None
@@ -13716,11 +14039,15 @@ def _live_pitcher_count_reason(
     if choice == "over":
         if pitch_count is not None and stamina is not None and pitch_count <= max(0, int(stamina) - 15):
             return f"He is only at {int(pitch_count)} pitches against a leash closer to {int(stamina)}, so there is still room for more workload."
+        if matchup_pitch_count_pressure is not None and float(matchup_pitch_count_pressure) >= 1.03 and pitch_count is not None and stamina is not None and pitch_count <= max(0, int(stamina) - 10):
+            return f"The pregame count-shape matchup was already pointing to longer at-bats, and at only {int(pitch_count)} pitches against a leash near {int(stamina)}, there is still room for that pitch-count pressure to show up."
         if batters_faced is not None and batters_faced <= 18 and (outs_recorded or 0) >= 9:
             return f"He is only {float(batters_faced) / 9.0:.1f} times through the order, which keeps the deeper-outing path available."
     elif choice == "under":
         if pitch_count is not None and stamina is not None and pitch_count >= max(1, int(stamina) - 8):
             return f"He is already up to {int(pitch_count)} pitches against a leash around {int(stamina)}, so the hook risk is climbing."
+        if matchup_pitch_count_pressure is not None and float(matchup_pitch_count_pressure) <= 0.97 and pitch_count is not None and stamina is not None and pitch_count >= max(1, int(stamina) - 15):
+            return f"Even though the pregame count-shape matchup looked efficient, he is already at {int(pitch_count)} pitches versus a leash around {int(stamina)}, so the margin for a longer outing is shrinking."
         if batters_faced is not None and batters_faced >= 19:
             return "He is already into the third trip through the order, which raises the chance the outing gets cut shorter from here."
     return None
@@ -13766,7 +14093,12 @@ def _live_pitcher_matchup_reasons(
     prop = str(row.get("prop") or "")
 
     reasons: List[str] = []
-    pitch_count_reason = _live_pitcher_count_reason(row, actual_row, pitcher_profile)
+    pitch_count_reason = _live_pitcher_count_reason(
+        row,
+        actual_row,
+        pitcher_profile,
+        matchup_pitch_count_pressure=_safe_float(ctx.get("matchup_pitch_count_pressure")),
+    )
     if pitch_count_reason:
         reasons.append(pitch_count_reason)
     efficiency_reason = _live_pitcher_efficiency_reason(row, actual_row, pitcher_model)
@@ -14170,6 +14502,7 @@ def _current_live_prop_rows(
                     pitcher_profile=pitcher_profile,
                     current_profile=current_profile,
                     bullpen_profiles=bullpen_profiles,
+                    opponent_lineup=(pitcher_ctx.get("opponent_lineup") if isinstance(pitcher_ctx.get("opponent_lineup"), list) else []),
                     snapshot=snapshot,
                 )
                 live_projection = _safe_float((live_projection_details or {}).get("projection"))
@@ -15056,6 +15389,7 @@ def _project_live_pitcher_value(
     pitcher_profile: Optional[Dict[str, Any]] = None,
     current_profile: Optional[Dict[str, Any]] = None,
     bullpen_profiles: Optional[List[Dict[str, Any]]] = None,
+    opponent_lineup: Optional[List[Dict[str, Any]]] = None,
     snapshot: Optional[Dict[str, Any]] = None,
 ) -> Optional[float]:
     result = _project_live_pitcher_value_details(
@@ -15070,6 +15404,7 @@ def _project_live_pitcher_value(
         pitcher_profile=pitcher_profile,
         current_profile=current_profile,
         bullpen_profiles=bullpen_profiles,
+        opponent_lineup=opponent_lineup,
         snapshot=snapshot,
     )
     return _safe_float(result.get("projection")) if isinstance(result, dict) else None
@@ -15088,6 +15423,7 @@ def _project_live_pitcher_value_details(
     pitcher_profile: Optional[Dict[str, Any]] = None,
     current_profile: Optional[Dict[str, Any]] = None,
     bullpen_profiles: Optional[List[Dict[str, Any]]] = None,
+    opponent_lineup: Optional[List[Dict[str, Any]]] = None,
     snapshot: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     prop_key = str(prop or "").strip().lower()
@@ -15207,10 +15543,33 @@ def _project_live_pitcher_value_details(
         pitcher_profile=pitcher_profile,
         current_profile=current_profile,
     )
+    matchup_profile = current_profile if isinstance(current_profile, dict) else pitcher_profile
+    matchup_quality = matchup_profile.get("statcast_quality_mult") if isinstance((matchup_profile or {}).get("statcast_quality_mult"), dict) else {}
+    pitcher_pitch_pressure = _statcast_pitch_count_pressure(matchup_quality, role="pitcher")
+    lineup_pitch_pressures = [
+        float(value)
+        for value in (
+            _statcast_pitch_count_pressure((row.get("statcast_quality_mult") if isinstance(row.get("statcast_quality_mult"), dict) else {}), role="batter")
+            for row in (opponent_lineup or [])
+            if isinstance(row, dict)
+        )
+        if value is not None
+    ]
+    lineup_pitch_pressure = (sum(lineup_pitch_pressures) / float(len(lineup_pitch_pressures))) if lineup_pitch_pressures else None
+    matchup_pitch_pressure = (
+        max(0.90, min(1.14, math.sqrt(float(pitcher_pitch_pressure) * float(lineup_pitch_pressure))))
+        if pitcher_pitch_pressure is not None and lineup_pitch_pressure is not None
+        else None
+    )
     if actual_pitches is not None and workload_limit is not None and float(workload_limit) > 0.0:
         usage_ratio = float(actual_pitches) / float(workload_limit)
         if usage_ratio >= 0.75:
             hook_factor *= max(0.35, 1.0 - ((usage_ratio - 0.75) * 1.45))
+    if matchup_pitch_pressure is not None:
+        if float(matchup_pitch_pressure) >= 1.03:
+            hook_factor *= 0.97
+        elif float(matchup_pitch_pressure) <= 0.97:
+            hook_factor *= 1.02
     if actual_bf is not None:
         if float(actual_bf) >= 21.0:
             hook_factor *= 0.95
@@ -15364,6 +15723,9 @@ def _project_live_pitcher_value_details(
         "model_pitches": round(float(model_pitches), 3) if model_pitches is not None else None,
         "actual_pitches": round(float(actual_pitches), 3) if actual_pitches is not None else None,
         "workload_limit": round(float(workload_limit), 3) if workload_limit is not None else None,
+        "pitcher_pitch_count_pressure": round(float(pitcher_pitch_pressure), 3) if pitcher_pitch_pressure is not None else None,
+        "lineup_pitch_count_pressure": round(float(lineup_pitch_pressure), 3) if lineup_pitch_pressure is not None else None,
+        "matchup_pitch_count_pressure": round(float(matchup_pitch_pressure), 3) if matchup_pitch_pressure is not None else None,
         "usage_ratio": round(float(actual_pitches) / float(workload_limit), 4)
         if actual_pitches is not None and workload_limit is not None and float(workload_limit) > 0.0
         else None,

@@ -995,6 +995,65 @@ def _safe_int(value: Any) -> Optional[int]:
         return None
 
 
+def _artifact_lineup_ids(value: Any) -> List[int]:
+    out: List[int] = []
+    for item in (value or []):
+        pid = _safe_int(item)
+        if pid is not None and int(pid) > 0:
+            out.append(int(pid))
+    return out[:9]
+
+
+def _roster_artifact_matches_inputs(
+    meta: Any,
+    *,
+    date_str: Any,
+    stats_season: int,
+    spring_mode: bool,
+    statcast_starter_splits: Any,
+    away_probable_pitcher_id: Any,
+    home_probable_pitcher_id: Any,
+    away_lineup_ids: Any,
+    home_lineup_ids: Any,
+) -> Tuple[bool, str]:
+    if not isinstance(meta, dict):
+        return False, "missing_meta"
+
+    builder = meta.get("roster_builder") if isinstance(meta.get("roster_builder"), dict) else {}
+    artifact_date = str(meta.get("date") or builder.get("as_of_date") or "").strip()
+    if artifact_date != str(date_str):
+        return False, "date_mismatch"
+    if _safe_int(meta.get("stats_season")) != int(stats_season):
+        return False, "stats_season_mismatch"
+    if bool(meta.get("spring_mode")) != bool(spring_mode):
+        return False, "spring_mode_mismatch"
+
+    artifact_statcast_starter_splits = str(meta.get("statcast_starter_splits") or "").strip().lower()
+    current_statcast_starter_splits = str(statcast_starter_splits or "").strip().lower()
+    if artifact_statcast_starter_splits != current_statcast_starter_splits:
+        return False, "statcast_starter_splits_mismatch"
+
+    current_away_probable = _safe_int(away_probable_pitcher_id)
+    current_home_probable = _safe_int(home_probable_pitcher_id)
+    artifact_away_probable = _safe_int(builder.get("away_probable_pitcher_id"))
+    artifact_home_probable = _safe_int(builder.get("home_probable_pitcher_id"))
+    if artifact_away_probable != current_away_probable:
+        return False, "away_probable_mismatch"
+    if artifact_home_probable != current_home_probable:
+        return False, "home_probable_mismatch"
+
+    artifact_away_lineup = _artifact_lineup_ids(builder.get("away_lineup_ids"))
+    artifact_home_lineup = _artifact_lineup_ids(builder.get("home_lineup_ids"))
+    current_away_lineup = _artifact_lineup_ids(away_lineup_ids)
+    current_home_lineup = _artifact_lineup_ids(home_lineup_ids)
+    if artifact_away_lineup != current_away_lineup:
+        return False, "away_lineup_mismatch"
+    if artifact_home_lineup != current_home_lineup:
+        return False, "home_lineup_mismatch"
+
+    return True, "ok"
+
+
 def _load_json_if_exists(path: Path) -> Dict[str, Any]:
     try:
         if path.exists() and path.is_file():
@@ -6283,54 +6342,6 @@ def main() -> int:
             },
         )
 
-    def _artifact_lineup_ids(value: Any) -> List[int]:
-        out: List[int] = []
-        for item in (value or []):
-            pid = _safe_int(item)
-            if pid is not None and int(pid) > 0:
-                out.append(int(pid))
-        return out[:9]
-
-    def _roster_artifact_matches_inputs(
-        meta: Any,
-        *,
-        away_probable_pitcher_id: Any,
-        home_probable_pitcher_id: Any,
-        away_lineup_ids: Any,
-        home_lineup_ids: Any,
-    ) -> Tuple[bool, str]:
-        if not isinstance(meta, dict):
-            return False, "missing_meta"
-
-        builder = meta.get("roster_builder") if isinstance(meta.get("roster_builder"), dict) else {}
-        artifact_date = str(meta.get("date") or builder.get("as_of_date") or "").strip()
-        if artifact_date != str(args.date):
-            return False, "date_mismatch"
-        if _safe_int(meta.get("stats_season")) != int(args.stats_season):
-            return False, "stats_season_mismatch"
-        if bool(meta.get("spring_mode")) != bool(spring_mode):
-            return False, "spring_mode_mismatch"
-
-        current_away_probable = _safe_int(away_probable_pitcher_id)
-        current_home_probable = _safe_int(home_probable_pitcher_id)
-        artifact_away_probable = _safe_int(builder.get("away_probable_pitcher_id"))
-        artifact_home_probable = _safe_int(builder.get("home_probable_pitcher_id"))
-        if artifact_away_probable != current_away_probable:
-            return False, "away_probable_mismatch"
-        if artifact_home_probable != current_home_probable:
-            return False, "home_probable_mismatch"
-
-        artifact_away_lineup = _artifact_lineup_ids(builder.get("away_lineup_ids"))
-        artifact_home_lineup = _artifact_lineup_ids(builder.get("home_lineup_ids"))
-        current_away_lineup = _artifact_lineup_ids(away_lineup_ids)
-        current_home_lineup = _artifact_lineup_ids(home_lineup_ids)
-        if artifact_away_lineup != current_away_lineup:
-            return False, "away_lineup_mismatch"
-        if artifact_home_lineup != current_home_lineup:
-            return False, "home_lineup_mismatch"
-
-        return True, "ok"
-
     projected_name_index_by_team: Dict[int, Dict[str, List[Dict[str, Any]]]] = {}
 
     def _build_team_hitter_name_index(team_id: int) -> Dict[str, List[Dict[str, Any]]]:
@@ -6975,6 +6986,10 @@ def main() -> int:
                 expected_home_lineup_ids = home_lineup_ids if home_lineup_ids else home_projected_ids
                 artifact_ok, artifact_reason = _roster_artifact_matches_inputs(
                     rr.get("meta"),
+                    date_str=date_str,
+                    stats_season=int(stats_season),
+                    spring_mode=bool(spring_mode),
+                    statcast_starter_splits=getattr(args, "statcast_starter_splits", ""),
                     away_probable_pitcher_id=away_prob_id,
                     home_probable_pitcher_id=home_prob_id,
                     away_lineup_ids=expected_away_lineup_ids,

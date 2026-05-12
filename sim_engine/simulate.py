@@ -163,7 +163,7 @@ def _rate_ratio_mult(value: Any, neutral: float, weight: float, lo: float, hi: f
 def _statcast_shape_rate_mults(profile: Any, *, role: str) -> Dict[str, float]:
     quality = getattr(profile, "statcast_quality_mult", None)
     if not isinstance(quality, dict):
-        return {"k": 1.0, "bb": 1.0, "hr": 1.0, "inplay": 1.0}
+        return {"k": 1.0, "bb": 1.0, "hr": 1.0, "inplay": 1.0, "pitch_count": 1.0, "xb": 1.0}
 
     chase = quality.get("chase_swing_rate")
     zone = quality.get("zone_rate")
@@ -192,6 +192,16 @@ def _statcast_shape_rate_mults(profile: Any, *, role: str) -> Dict[str, float]:
             * _rate_ratio_mult(pulled_air, 0.12, 0.10, 0.96, 1.06)
         )
         inplay_mult = _rate_ratio_mult(xwoba, 0.335, 0.10, 0.95, 1.06)
+        pitch_count_mult = (
+            _rate_ratio_mult(chase, 0.30, -0.18, 0.94, 1.07)
+            * _rate_ratio_mult(contact, 0.74, 0.12, 0.97, 1.05)
+            * _rate_ratio_mult(csw, 0.275, -0.12, 0.96, 1.05)
+        )
+        xb_mult = (
+            _rate_ratio_mult(xwoba, 0.335, 0.08, 0.96, 1.05)
+            * _rate_ratio_mult(ev_max, 109.0, 0.06, 0.97, 1.05)
+            * _rate_ratio_mult(pulled_air, 0.12, 0.05, 0.97, 1.04)
+        )
     else:
         k_mult = (
             _rate_ratio_mult(csw, 0.275, 0.24, 0.93, 1.10)
@@ -208,12 +218,22 @@ def _statcast_shape_rate_mults(profile: Any, *, role: str) -> Dict[str, float]:
             * _rate_ratio_mult(ev_mean, 89.0, 0.08, 0.96, 1.05)
         )
         inplay_mult = _rate_ratio_mult(xwoba, 0.335, 0.11, 0.95, 1.08)
+        pitch_count_mult = (
+            _rate_ratio_mult(zone, 0.49, -0.16, 0.94, 1.06)
+            * _rate_ratio_mult(csw, 0.275, 0.08, 0.97, 1.04)
+        )
+        xb_mult = (
+            _rate_ratio_mult(xwoba, 0.335, 0.08, 0.96, 1.06)
+            * _rate_ratio_mult(ev_mean, 89.0, 0.06, 0.97, 1.04)
+        )
 
     return {
         "k": _clamp(k_mult, 0.88, 1.12),
         "bb": _clamp(bb_mult, 0.88, 1.12),
         "hr": _clamp(hr_mult, 0.92, 1.10),
         "inplay": _clamp(inplay_mult, 0.92, 1.10),
+        "pitch_count": _clamp(pitch_count_mult, 0.92, 1.10),
+        "xb": _clamp(xb_mult, 0.94, 1.10),
     }
 
 
@@ -974,6 +994,12 @@ def _simulate_pitch(
     batter_bb = _clamp_rate(float(batter.bb_rate) * _m(b_mults, "bb") * float(batter_shape_mults.get("bb", 1.0)), 0.01, 0.22)
     batter_hr = _clamp_rate(float(batter.hr_rate) * _m(b_mults, "hr") * float(batter_shape_mults.get("hr", 1.0)), 0.002, 0.12)
     batter_inplay = _clamp_rate(float(batter.inplay_hit_rate) * _m(b_mults, "inplay") * float(batter_shape_mults.get("inplay", 1.0)), 0.10, 0.45)
+    batter_xb_share = _clamp_rate(float(getattr(batter, "xb_hit_share", 0.28) or 0.28) * float(batter_shape_mults.get("xb", 1.0)) * float(pitcher_shape_mults.get("xb", 1.0)), 0.08, 0.55)
+    pitch_count_mult = _clamp(
+        math.sqrt(float(batter_shape_mults.get("pitch_count", 1.0)) * float(pitcher_shape_mults.get("pitch_count", 1.0))),
+        0.90,
+        1.14,
+    )
 
     # Optional head-to-head batter-vs-pitcher HR adjustment.
     try:
@@ -999,6 +1025,29 @@ def _simulate_pitch(
                 mult = mm.get(pid)
                 if isinstance(mult, (int, float)):
                     batter_inplay = _clamp_rate(float(batter_inplay) * float(mult), 0.10, 0.45)
+                    batter_xb_share = _clamp_rate(float(batter_xb_share) * float(_clamp(float(mult), 0.90, 1.12)) ** 0.20, 0.08, 0.55)
+            h2h_pc_mult = 1.0
+            mm = getattr(batter, "vs_pitcher_bb_mult", None)
+            if isinstance(mm, dict):
+                mult = mm.get(pid)
+                if isinstance(mult, (int, float)):
+                    h2h_pc_mult *= float(_clamp(float(mult), 0.90, 1.12)) ** 0.30
+            mm = getattr(batter, "vs_pitcher_k_mult", None)
+            if isinstance(mm, dict):
+                mult = mm.get(pid)
+                if isinstance(mult, (int, float)):
+                    h2h_pc_mult *= float(_clamp(float(mult), 0.90, 1.12)) ** 0.12
+            mm = getattr(batter, "vs_pitcher_inplay_mult", None)
+            if isinstance(mm, dict):
+                mult = mm.get(pid)
+                if isinstance(mult, (int, float)):
+                    h2h_pc_mult *= float(_clamp(1.0 / max(0.90, float(mult)), 0.92, 1.10)) ** 0.22
+            mm = getattr(batter, "vs_pitcher_hr_mult", None)
+            if isinstance(mm, dict):
+                mult = mm.get(pid)
+                if isinstance(mult, (int, float)):
+                    batter_xb_share = _clamp_rate(float(batter_xb_share) * float(_clamp(float(mult), 0.90, 1.15)) ** 0.28, 0.08, 0.55)
+            pitch_count_mult = _clamp(float(pitch_count_mult) * float(_clamp(h2h_pc_mult, 0.93, 1.08)), 0.90, 1.16)
     except Exception:
         pass
 
@@ -1066,7 +1115,7 @@ def _simulate_pitch(
         batter_hbp_rate=batter.hbp_rate,
         batter_hr_rate=batter_hr,
         batter_inplay_hit_rate=batter_inplay,
-        batter_xb_hit_share=batter.xb_hit_share,
+        batter_xb_hit_share=batter_xb_share,
         batter_bb_gb_rate=float(getattr(batter, "bb_gb_rate", 0.44)),
         batter_bb_fb_rate=float(getattr(batter, "bb_fb_rate", 0.25)),
         batter_bb_ld_rate=float(getattr(batter, "bb_ld_rate", 0.20)),
@@ -1086,6 +1135,8 @@ def _simulate_pitch(
         pitcher_bb_ld_rate=float(getattr(pitcher, "bb_ld_rate", 0.20)),
         pitcher_bb_pu_rate=float(getattr(pitcher, "bb_pu_rate", 0.11)),
         pitcher_bb_inplay_n=int(getattr(pitcher, "bb_inplay_n", 0) or 0),
+        batter_pitch_count_mult=pitch_count_mult,
+        pitcher_pitch_count_mult=float(pitcher_shape_mults.get("pitch_count", 1.0)),
     )
 
 
@@ -1313,7 +1364,101 @@ def _sigmoid(x: float) -> float:
         return 0.5
 
 
-def _select_pitcher_v2(roster: TeamRoster, state: GameState, rng: random.Random) -> int:
+def _starter_effective_hook(base_hook: int, stamina_hook: int, availability_mult: float) -> int:
+    base = int(base_hook)
+    stamina = int(stamina_hook)
+    avail = _clamp01(float(availability_mult))
+    eff_hook = min(base, stamina)
+    if stamina > base:
+        eff_hook += int(round(0.25 * float(stamina - base)))
+    eff_hook -= int(round((1.0 - avail) * 10.0))
+    return int(eff_hook)
+
+
+def _starter_matchup_hook_adjustment(
+    batting_roster: Any,
+    pitcher_id: int,
+    next_batter_index: int,
+    *,
+    lookahead: int = 4,
+) -> Dict[str, float]:
+    lineup = getattr(batting_roster, "lineup", None)
+    batters = list(getattr(lineup, "batters", None) or [])
+    if int(pitcher_id or 0) <= 0 or not batters:
+        return {"pressure": 0.0, "hook_delta": 0.0, "pull_delta": 0.0}
+
+    total_pressure = 0.0
+    total_weight = 0.0
+    window = max(1, min(int(lookahead or 4), len(batters)))
+    for offset in range(window):
+        batter = batters[(int(next_batter_index or 0) + offset) % len(batters)]
+        quality = getattr(batter, "statcast_quality_mult", None)
+        if not isinstance(quality, dict):
+            quality = {}
+        weight = max(0.35, 1.0 - (0.15 * float(offset)))
+
+        pressure = 0.0
+        hr_mult = quality.get("hr")
+        inplay_mult = quality.get("inplay")
+        k_mult = quality.get("k")
+        bb_mult = quality.get("bb")
+        chase = quality.get("chase_swing_rate")
+        zone = quality.get("zone_rate")
+        contact = quality.get("contact_rate")
+        xwoba = quality.get("xwoba")
+        ev_max = quality.get("ev_max")
+        pulled_air = quality.get("pulled_air_rate")
+
+        if isinstance(hr_mult, (int, float)):
+            pressure += 0.75 * float(_clamp(float(hr_mult) - 1.0, -0.18, 0.20))
+        if isinstance(inplay_mult, (int, float)):
+            pressure += 0.45 * float(_clamp(float(inplay_mult) - 1.0, -0.18, 0.20))
+        if isinstance(k_mult, (int, float)):
+            pressure -= 0.30 * float(_clamp(float(k_mult) - 1.0, -0.18, 0.20))
+        if isinstance(bb_mult, (int, float)):
+            pressure += 0.18 * float(_clamp(float(bb_mult) - 1.0, -0.18, 0.20))
+        if isinstance(chase, (int, float)):
+            pressure -= 0.16 * float(_clamp((float(chase) - 0.30) / 0.08, -1.0, 1.0))
+        if isinstance(zone, (int, float)):
+            pressure -= 0.10 * float(_clamp((float(zone) - 0.49) / 0.07, -1.0, 1.0))
+        if isinstance(contact, (int, float)):
+            pressure += 0.18 * float(_clamp((float(contact) - 0.74) / 0.08, -1.0, 1.0))
+        if isinstance(xwoba, (int, float)):
+            pressure += 0.30 * float(_clamp((float(xwoba) - 0.335) / 0.05, -1.0, 1.0))
+        if isinstance(ev_max, (int, float)):
+            pressure += 0.18 * float(_clamp((float(ev_max) - 109.0) / 5.0, -1.0, 1.0))
+        if isinstance(pulled_air, (int, float)):
+            pressure += 0.15 * float(_clamp((float(pulled_air) - 0.12) / 0.06, -1.0, 1.0))
+
+        history_map = getattr(batter, "vs_pitcher_history", None)
+        history = None
+        if isinstance(history_map, dict):
+            history = history_map.get(str(int(pitcher_id))) if str(int(pitcher_id)) in history_map else history_map.get(int(pitcher_id))
+        if isinstance(history, dict):
+            h_hr = history.get("hr_mult")
+            h_inplay = history.get("inplay_mult")
+            h_k = history.get("k_mult")
+            if isinstance(h_hr, (int, float)):
+                pressure += 0.55 * float(_clamp(float(h_hr) - 1.0, -0.20, 0.22))
+            if isinstance(h_inplay, (int, float)):
+                pressure += 0.35 * float(_clamp(float(h_inplay) - 1.0, -0.20, 0.22))
+            if isinstance(h_k, (int, float)):
+                pressure -= 0.25 * float(_clamp(float(h_k) - 1.0, -0.20, 0.22))
+
+        total_pressure += float(weight) * float(pressure)
+        total_weight += float(weight)
+
+    if total_weight <= 0.0:
+        return {"pressure": 0.0, "hook_delta": 0.0, "pull_delta": 0.0}
+    avg_pressure = float(_clamp(total_pressure / total_weight, -0.25, 0.25))
+    return {
+        "pressure": avg_pressure,
+        "hook_delta": float(_clamp(round(-24.0 * avg_pressure), -8.0, 6.0)),
+        "pull_delta": float(_clamp(1.35 * avg_pressure, -0.35, 0.35)),
+    }
+
+
+def _select_pitcher_v2(roster: TeamRoster, state: GameState, rng: random.Random, batting_roster: Optional[TeamRoster] = None) -> int:
     """V2 manager hook with probabilistic pull decisions.
 
     Goal: better calibration of starter outs by allowing realistic variance
@@ -1433,7 +1578,7 @@ def _select_pitcher_v2(roster: TeamRoster, state: GameState, rng: random.Random)
         base_hook = int(roster.manager.pull_starter_pitch_count)
         stamina_hook = int(getattr(starter_prof, "stamina_pitches", base_hook) or base_hook)
         avail = _avail_pitcher(starter_prof)
-        eff_hook = int(min(base_hook, stamina_hook) - round((1.0 - avail) * 10.0))
+        eff_hook = _starter_effective_hook(base_hook, stamina_hook, avail)
 
         if early_sample_scale > 0:
             eff_hook -= int(round(float(starter_early_sample_hook_delta_max) * float(early_sample_scale)))
@@ -1468,6 +1613,18 @@ def _select_pitcher_v2(roster: TeamRoster, state: GameState, rng: random.Random)
         runner_pressure = _runner_pressure(bases)
         third_time = bf >= 18
         tto = float(bf) / 9.0 if bf > 0 else 0.0
+        matchup_hook = _starter_matchup_hook_adjustment(
+            batting_roster,
+            int(current),
+            int(getattr(half, "next_batter_index", 0) or 0),
+        )
+        raw_matchup_hook_delta = float(matchup_hook.get("hook_delta", 0.0) or 0.0)
+        matchup_hook_delta = raw_matchup_hook_delta
+        if raw_matchup_hook_delta < 0.0:
+            matchup_hook_delta = 0.4 * float(raw_matchup_hook_delta)
+        elif raw_matchup_hook_delta > 0.0:
+            matchup_hook_delta = 0.75 * float(raw_matchup_hook_delta)
+        eff_hook = int(_clamp(float(eff_hook) + float(matchup_hook_delta), 45.0, 120.0))
 
         # Keep starter early unless extreme. Allow a "leash break" in high-pressure spots
         # (high leverage, runners, or 3rd time through) via tuning overrides.
@@ -1490,6 +1647,7 @@ def _select_pitcher_v2(roster: TeamRoster, state: GameState, rng: random.Random)
         x += float(inning_hook_pressure)
         if third_time:
             x += float(roster.manager.pull_starter_third_time_penalty) * 8.0 * float(starter_third_time_scale)
+        x += float(matchup_hook.get("pull_delta", 0.0) or 0.0)
         if blowout:
             x -= 0.8  # leave him in during blowouts
 
@@ -2033,7 +2191,7 @@ def simulate_game(
             pitcher_id = int(fielding_roster.lineup.pitcher.player.mlbam_id)
             state.current_pitcher_by_team[fielding_roster.team.team_id] = int(pitcher_id)
         elif mp == "v2":
-            pitcher_id = int(_select_pitcher_v2(fielding_roster, state, rng))
+            pitcher_id = int(_select_pitcher_v2(fielding_roster, state, rng, batting_roster))
         else:
             pitcher_id = int(_select_pitcher_legacy(fielding_roster, state))
 
@@ -2192,6 +2350,12 @@ def simulate_game(
         batter_bb = _clamp_rate(float(batter_prof.bb_rate) * _mult_from_map(b_mults, "bb") * _mult_from_map(batter_venue_mults, "bb") * float(batter_shape_mults.get("bb", 1.0)), 0.01, 0.22)
         batter_hr = _clamp_rate(float(batter_prof.hr_rate) * _mult_from_map(b_mults, "hr") * _mult_from_map(batter_venue_mults, "hr") * float(batter_shape_mults.get("hr", 1.0)), 0.002, 0.12)
         batter_inplay = _clamp_rate(float(batter_prof.inplay_hit_rate) * _mult_from_map(b_mults, "inplay") * _mult_from_map(batter_venue_mults, "inplay") * float(batter_shape_mults.get("inplay", 1.0)), 0.10, 0.45)
+        batter_xb_share = _clamp_rate(float(getattr(batter_prof, "xb_hit_share", 0.28) or 0.28) * float(batter_shape_mults.get("xb", 1.0)) * float(pitcher_shape_mults.get("xb", 1.0)), 0.08, 0.55)
+        pitch_count_mult = _clamp(
+            math.sqrt(float(batter_shape_mults.get("pitch_count", 1.0)) * float(pitcher_shape_mults.get("pitch_count", 1.0))),
+            0.90,
+            1.14,
+        )
 
         try:
             mm = getattr(batter_prof, "vs_pitcher_hr_mult", None)
@@ -2199,6 +2363,7 @@ def simulate_game(
                 mult = mm.get(int(pitcher_id))
                 if isinstance(mult, (int, float)):
                     batter_hr = _clamp_rate(float(batter_hr) * float(mult), 0.002, 0.12)
+                    batter_xb_share = _clamp_rate(float(batter_xb_share) * float(_clamp(float(mult), 0.90, 1.15)) ** 0.28, 0.08, 0.55)
             mm = getattr(batter_prof, "vs_pitcher_k_mult", None)
             if isinstance(mm, dict):
                 mult = mm.get(int(pitcher_id))
@@ -2214,6 +2379,24 @@ def simulate_game(
                 mult = mm.get(int(pitcher_id))
                 if isinstance(mult, (int, float)):
                     batter_inplay = _clamp_rate(float(batter_inplay) * float(mult), 0.10, 0.45)
+                    batter_xb_share = _clamp_rate(float(batter_xb_share) * float(_clamp(float(mult), 0.90, 1.12)) ** 0.20, 0.08, 0.55)
+            h2h_pc_mult = 1.0
+            mm = getattr(batter_prof, "vs_pitcher_bb_mult", None)
+            if isinstance(mm, dict):
+                mult = mm.get(int(pitcher_id))
+                if isinstance(mult, (int, float)):
+                    h2h_pc_mult *= float(_clamp(float(mult), 0.90, 1.12)) ** 0.30
+            mm = getattr(batter_prof, "vs_pitcher_k_mult", None)
+            if isinstance(mm, dict):
+                mult = mm.get(int(pitcher_id))
+                if isinstance(mult, (int, float)):
+                    h2h_pc_mult *= float(_clamp(float(mult), 0.90, 1.12)) ** 0.12
+            mm = getattr(batter_prof, "vs_pitcher_inplay_mult", None)
+            if isinstance(mm, dict):
+                mult = mm.get(int(pitcher_id))
+                if isinstance(mult, (int, float)):
+                    h2h_pc_mult *= float(_clamp(1.0 / max(0.90, float(mult)), 0.92, 1.10)) ** 0.22
+            pitch_count_mult = _clamp(float(pitch_count_mult) * float(_clamp(h2h_pc_mult, 0.93, 1.08)), 0.90, 1.16)
         except Exception:
             pass
 
@@ -2230,7 +2413,6 @@ def simulate_game(
         pitcher_hbp = float(prates.get("hbp_rate", pitcher_prof.hbp_rate))
 
         batter_hbp = float(getattr(batter_prof, "hbp_rate", 0.008) or 0.008)
-        batter_xb_share = float(getattr(batter_prof, "xb_hit_share", 0.28) or 0.28)
         batter_triple_share = float(getattr(batter_prof, "triple_share_of_xb", 0.12) or 0.12)
 
         batter_bb_gb = float(getattr(batter_prof, "bb_gb_rate", 0.44))
@@ -2339,6 +2521,8 @@ def simulate_game(
                 pitcher_bb_ld_rate=pitcher_bb_ld,
                 pitcher_bb_pu_rate=pitcher_bb_pu,
                 pitcher_bb_inplay_n=pitcher_bb_n,
+                batter_pitch_count_mult=pitch_count_mult,
+                pitcher_pitch_count_mult=float(pitcher_shape_mults.get("pitch_count", 1.0)),
             )
 
             state.pa.pitch_count += 1

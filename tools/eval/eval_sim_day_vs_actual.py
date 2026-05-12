@@ -1353,6 +1353,29 @@ def _implied_prob_from_american(odds: Any) -> Optional[float]:
     return None
 
 
+def _resolve_pitcher_prop_prediction(
+    pitcher_props: Dict[str, Any],
+    *,
+    requested_starter_id: Optional[int],
+    simulated_starter_id: Optional[int],
+) -> Dict[str, Any]:
+    requested_id = int(requested_starter_id or 0) or None
+    simulated_id = int(simulated_starter_id or 0) or None
+    requested_pred = pitcher_props.get(str(requested_id)) if requested_id is not None else None
+    simulated_pred = pitcher_props.get(str(simulated_id)) if simulated_id is not None else None
+    mismatch = bool(
+        requested_id is not None
+        and simulated_id is not None
+        and int(requested_id) != int(simulated_id)
+    )
+    return {
+        "pred": (None if mismatch else requested_pred),
+        "pred_simulated_starter": (simulated_pred if mismatch else None),
+        "simulated_starter_id": simulated_id,
+        "starter_mismatch": mismatch,
+    }
+
+
 def _no_vig_two_way(p1: Optional[float], p2: Optional[float]) -> Tuple[Optional[float], Optional[float]]:
     if p1 is None or p2 is None:
         return None, None
@@ -2679,6 +2702,16 @@ def main() -> int:
                 market_for_game[side] = {"name_key": nk, **(market_lines.get(nk) or {})}
 
         per_seg: Dict[str, Any] = {}
+        away_pitcher_pred = _resolve_pitcher_prop_prediction(
+            pitcher_props,
+            requested_starter_id=t["starters"].get("away"),
+            simulated_starter_id=(t.get("roster_starters") or {}).get("away"),
+        )
+        home_pitcher_pred = _resolve_pitcher_prop_prediction(
+            pitcher_props,
+            requested_starter_id=t["starters"].get("home"),
+            simulated_starter_id=(t.get("roster_starters") or {}).get("home"),
+        )
         for seg_name in ("full", "first5", "first3"):
             seg = (sims.get("segments") or {}).get(seg_name) or {}
 
@@ -2764,14 +2797,20 @@ def main() -> int:
                 "pitcher_props": {
                     "away": {
                         "starter_id": t["starters"].get("away"),
+                        "simulated_starter_id": away_pitcher_pred.get("simulated_starter_id"),
+                        "starter_mismatch": bool(away_pitcher_pred.get("starter_mismatch")),
                         "actual": (t.get("actual_starters") or {}).get("away"),
-                        "pred": pitcher_props.get(str(t["starters"].get("away"))) if t["starters"].get("away") else None,
+                        "pred": away_pitcher_pred.get("pred"),
+                        "pred_simulated_starter": away_pitcher_pred.get("pred_simulated_starter"),
                         "market": market_for_game.get("away"),
                     },
                     "home": {
                         "starter_id": t["starters"].get("home"),
+                        "simulated_starter_id": home_pitcher_pred.get("simulated_starter_id"),
+                        "starter_mismatch": bool(home_pitcher_pred.get("starter_mismatch")),
                         "actual": (t.get("actual_starters") or {}).get("home"),
-                        "pred": pitcher_props.get(str(t["starters"].get("home"))) if t["starters"].get("home") else None,
+                        "pred": home_pitcher_pred.get("pred"),
+                        "pred_simulated_starter": home_pitcher_pred.get("pred_simulated_starter"),
                         "market": market_for_game.get("home"),
                     },
                 },
@@ -3127,6 +3166,7 @@ def main() -> int:
 
     so_line_pushes = 0
     outs_line_pushes = 0
+    starter_mismatch_rows = 0
 
     for g in results:
         full = (g.get("segments") or {}).get("full") or {}
@@ -3166,6 +3206,8 @@ def main() -> int:
         # Pitcher props: starters
         for side in ("away", "home"):
             pp = ((g.get("pitcher_props") or {}).get(side) or {})
+            if bool(pp.get("starter_mismatch")):
+                starter_mismatch_rows += 1
             actp = pp.get("actual") or {}
             pred = pp.get("pred") or {}
             market = pp.get("market") or {}
@@ -3327,6 +3369,7 @@ def main() -> int:
             },
             "pitcher_props_starters": {
                 "starters": int(len(so_abs)),
+                "starter_mismatch_rows": int(starter_mismatch_rows),
                 "so_mae": (sum(so_abs) / len(so_abs)) if so_abs else None,
                 "so_rmse": _rmse(so_err),
                 "outs_mae": (sum(outs_abs) / len(outs_abs)) if outs_abs else None,

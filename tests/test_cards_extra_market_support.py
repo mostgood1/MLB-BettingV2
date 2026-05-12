@@ -10,6 +10,7 @@ from tools.web.flask_frontend import (
     _cards_list_from_sources,
     _load_game_line_market_context,
     _load_hitter_ladder_market_context,
+    _live_pitcher_count_reason,
     _load_pitcher_ladder_market_context,
     _prebuilt_pitcher_ladders_payload,
     _project_live_pitcher_value_details,
@@ -33,6 +34,17 @@ class CardsExtraMarketSupportTests(unittest.TestCase):
             return
         self._season_betting_path.parent.mkdir(parents=True, exist_ok=True)
         self._season_betting_path.write_text(self._season_betting_original, encoding="utf-8")
+
+    def test_live_pitcher_count_reason_uses_matchup_pitch_pressure(self) -> None:
+        reason = _live_pitcher_count_reason(
+            {"selection": "over"},
+            {"P": 84, "BF": 14, "OUTS": 9},
+            {"stamina_pitches": 95},
+            matchup_pitch_count_pressure=1.06,
+        )
+
+        self.assertIsNotNone(reason)
+        self.assertIn("count-shape matchup", str(reason))
 
     def test_payload_cache_rebuilds_when_signature_changes_within_ttl(self) -> None:
         first = _payload_cache_get_or_build(
@@ -775,6 +787,10 @@ class CardsExtraMarketSupportTests(unittest.TestCase):
             pitcher_profile={"id": 1, "stamina_pitches": 95},
             current_profile={"id": 1},
             bullpen_profiles=[{"availability_mult": 0.92, "leverage_skill": 0.6}],
+            opponent_lineup=[
+                {"statcast_quality_mult": {"bb": 1.08, "zone_rate": 0.97, "csw_rate": 0.96}},
+                {"statcast_quality_mult": {"bb": 1.05, "zone_rate": 0.98, "csw_rate": 0.97}},
+            ],
             snapshot={
                 "current": {
                     "inning": 4,
@@ -803,6 +819,8 @@ class CardsExtraMarketSupportTests(unittest.TestCase):
         self.assertIn("remaining_bf_pre_hook", debug)
         self.assertIn("remaining_bf_post_hook", debug)
         self.assertIn("per_bf_rate", debug)
+        self.assertIn("matchup_pitch_count_pressure", debug)
+        self.assertGreater(float(debug.get("matchup_pitch_count_pressure") or 0.0), 1.0)
         self.assertEqual((debug.get("live_context") or {}).get("strikes"), 2)
         self.assertEqual((debug.get("live_context") or {}).get("current_pa_pitch_count"), 5)
 
