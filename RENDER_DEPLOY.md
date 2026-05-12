@@ -25,7 +25,7 @@ Because the service uses a persistent disk, the Blueprint must target a paid web
 ## Runtime
 
 - Build command: `pip install -r requirements.txt`
-- Start command: `gunicorn wsgi:app --bind 0.0.0.0:$PORT --workers 2 --worker-class gthread --threads 1 --timeout 120 --max-requests 150 --max-requests-jitter 25`
+- Start command: `gunicorn wsgi:app --bind 0.0.0.0:$PORT --workers 1 --worker-class gthread --threads 2 --timeout 120 --max-requests 150 --max-requests-jitter 25`
 - Python version: `3.11.9`
 - Data root: `/opt/render/project/data`
 - Live lens dir: `/opt/render/project/data/live_lens`
