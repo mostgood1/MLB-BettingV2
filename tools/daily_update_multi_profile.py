@@ -60,7 +60,7 @@ _HR_TARGET_HIGH_SUPPORT_SCORE = 70.0
 _HR_TARGET_HIGH_SUPPORT_MIN_PROB = 0.12
 _HR_TARGET_MAX_PER_GAME = 3
 _HR_TARGET_MAX_PER_TEAM = 2
-_HR_TARGET_SUPPORT_RANK_WEIGHT = 0.12
+_HR_TARGET_SUPPORT_RANK_WEIGHT = 0.18
 
 _RFI_NRFI_MIN_PROB = 0.55
 _RFI_NRFI_MAX_MEAN_RUNS = 0.80
@@ -3067,9 +3067,11 @@ def _hitter_hr_target_support(
         elif float(weather_hr_mult) <= 0.97:
             score -= 3.0
 
-    clipped_score = max(0.0, min(100.0, float(score)))
+    raw_score = max(0.0, float(score))
+    clipped_score = min(100.0, raw_score)
     return {
         "score": round(clipped_score, 1),
+        "raw_score": round(raw_score, 1),
         "label": _hr_target_support_label(clipped_score),
         "reasons": _trim_reason_list(reasons),
         "metrics": metrics,
@@ -3285,7 +3287,8 @@ def _collect_daily_hr_targets(
             matchup_ctx = _lookup_hitter_matchup_context(sim_obj, rec, roster_snapshot)
             context_fields = _hitter_recommendation_context_fields(rec, matchup_ctx, roster_snapshot, season=season)
             support = _hitter_hr_target_support(rec, context_fields)
-            support_score = float(support.get("score") or 0.0)
+            support_score = float(support.get("raw_score") or support.get("score") or 0.0)
+            display_support_score = float(support.get("score") or support_score)
             exclusion_reasons = _hitter_hr_target_exclusion_reasons(rec, context_fields, hr_prob, support_score, resolved_hr_target_policy)
             if exclusion_reasons:
                 primary_reason = _hr_target_exclusion_priority(exclusion_reasons)
@@ -3307,7 +3310,8 @@ def _collect_daily_hr_targets(
                         "ab_mean": _safe_float(rec.get("ab_mean")),
                         "p_hr_1plus": (round(float(hr_prob), 4) if hr_prob is not None else None),
                         "min_prob_threshold": round(float(min_prob_threshold), 4),
-                        "hr_support_score": round(float(support_score), 1),
+                        "hr_support_score": round(float(display_support_score), 1),
+                        "hr_support_raw_score": round(float(support_score), 1),
                         "primary_reason": primary_reason,
                         "reasons": exclusion_reasons,
                         "prob_gap": prob_gap,
@@ -3340,7 +3344,8 @@ def _collect_daily_hr_targets(
                 "matchup": matchup,
                 "p_hr_1plus": round(float(hr_prob), 4),
                 "min_prob_threshold": round(float(_hitter_hr_target_min_prob_threshold(support_score, resolved_hr_target_policy)), 4),
-                "hr_support_score": support_score,
+                "hr_support_score": round(float(display_support_score), 1),
+                "hr_support_raw_score": round(float(support_score), 1),
                 "hr_support_label": str(support.get("label") or ""),
                 "hr_target_score": rank_score,
                 "hr_target_reasons": list(support.get("reasons") or []),
