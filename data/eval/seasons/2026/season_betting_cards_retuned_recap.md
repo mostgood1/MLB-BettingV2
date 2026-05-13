@@ -1,7 +1,7 @@
 # MLB 2026 Betting Card Recap
 
 - Season: 2026
-- Generated: 2026-05-12T16:15:05.026889
+- Generated: 2026-05-13T16:08:32.226440
 - Batch: data/eval/batches/season_2026_ui_daily_live
 - Cards Dir: data/eval/seasons/2026/locked_cards_retuned
 - Source Mode: canonical_daily_locked_policy
@@ -9,32 +9,30 @@
 
 ## Overall
 
-- Cards: 49 total, 46 with bets, 3 without bets
-- Recommendations: selected 591 / settled 573 / unresolved 18
-- Combined ROI: -0.0822 on 312.5u staked, profit -25.6883u (291-282)
-- Hitter Props ROI: -0.0602 on 157.5u staked, profit -9.4766u
-- Daily Units: mean -0.5243, median -0.3103, std 1.6851, best 2026-03-31 (3.3078u), worst 2026-04-12 (-4.5072u)
+- Cards: 2 total, 1 with bets, 1 without bets
+- Recommendations: selected 25 / settled 13 / unresolved 12
+- Combined ROI: -0.5391 on 7.5u staked, profit -4.0432u (4-9)
+- Hitter Props ROI: -0.3715 on 5.5u staked, profit -2.0432u
+- Daily Units: mean -2.0216, median -2.0216, std 2.0216, best 2026-05-13 (0.0000u), worst 2026-05-12 (-4.0432u)
 
 ## Market Breakdown
 
 | Market | Bets | Stake (u) | Profit (u) | ROI |
 | --- | ---: | ---: | ---: | ---: |
-| Combined | 573 | 312.5000 | -25.6883 | -0.0822 |
-| Totals | 32 | 32.0000 | -11.0935 | -0.3467 |
-| Moneyline | 43 | 43.0000 | 8.6417 | 0.2010 |
-| Pitcher Props | 80 | 80.0000 | -13.7599 | -0.1720 |
-| Hitter Props | 418 | 157.5000 | -9.4766 | -0.0602 |
-| Hitter HR | 26 | 6.5000 | -2.5000 | -0.3846 |
-| Hitter Hits | 159 | 59.5000 | -3.8113 | -0.0641 |
+| Combined | 13 | 7.5000 | -4.0432 | -0.5391 |
+| Totals | 0 | 0.0000 | 0.0000 | n/a |
+| Moneyline | 1 | 1.0000 | -1.0000 | -1.0000 |
+| Pitcher Props | 1 | 1.0000 | -1.0000 | -1.0000 |
+| Hitter Props | 11 | 5.5000 | -2.0432 | -0.3715 |
+| Hitter HR | 0 | 0.0000 | 0.0000 | n/a |
+| Hitter Hits | 4 | 2.0000 | 0.5809 | 0.2904 |
 | Hitter H+R+R | 0 | 0.0000 | 0.0000 | n/a |
-| Hitter TB | 196 | 78.0000 | -0.8411 | -0.0108 |
-| Hitter Runs | 37 | 13.5000 | -2.3242 | -0.1722 |
+| Hitter TB | 6 | 3.0000 | -2.1241 | -0.7080 |
+| Hitter Runs | 1 | 0.5000 | -0.5000 | -1.0000 |
 | Hitter RBIs | 0 | 0.0000 | 0.0000 | n/a |
 
 ## Monthly Breakdown
 
 | Month | Cards | Bets | Profit (u) | ROI | Hitter ROI |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Mar 2026 | 7 | 92 | 1.1390 | 0.0263 | -0.0204 |
-| Apr 2026 | 30 | 349 | -17.7120 | -0.0914 | -0.0180 |
-| May 2026 | 12 | 132 | -9.1153 | -0.1207 | -0.1349 |
+| May 2026 | 2 | 13 | -4.0432 | -0.5391 | -0.3715 |
