@@ -1,14 +1,14 @@
 {
   "tool": "tools/daily_update.py",
   "workflow": "ui-daily",
-  "generated_at": "2026-05-18T09:09:32.334710",
+  "generated_at": "2026-05-18T16:26:04.750599",
   "date": "2026-05-18",
   "season": 2026,
   "run_lock": {
     "status": "acquired",
-    "path": "data/runtime/locks/daily_update_ui-daily_2026_2026-05-18_3fa2a74e5f2b.lock",
-    "pid": 36384,
-    "created_at": "2026-05-18T09:09:32.332806"
+    "path": "data/runtime/locks/daily_update_ui-daily_2026_2026-05-18_bb9ef09c8579.lock",
+    "pid": 2397,
+    "created_at": "2026-05-18T16:26:04.750435"
   },
   "seed": {
     "value": 1337,
@@ -21,10 +21,10 @@
     "eval_report_path": "data/eval/batches/season_2026_ui_daily_live/sim_vs_actual_2026-05-17.json",
     "top_props_artifact_path": "data/daily/top_props/daily_top_props_2026_05_17.json",
     "live_lens": {
-      "status": "skipped",
-      "source": null,
+      "status": "ok",
+      "source": "render_api",
       "sync_out_path": "data/live_lens/render_sync/live_lens_reports_2026_05_17.json",
-      "headline": null
+      "headline": "Prior-day live lens tracked 801 opportunities across 15 games and 271 owners; active lanes were earned_runs:10, hits:224, hits_allowed:50."
     }
   },
   "current_day": {
@@ -287,27 +287,294 @@
       "all_unresolved_n": 0
     },
     "prior_day_live_lens": {
-      "status": "skipped",
+      "status": "ok",
       "date": "2026-05-17",
       "sync_requested": true,
       "sync_out_path": "data/live_lens/render_sync/live_lens_reports_2026_05_17.json",
       "local_report_path": "data/live_lens/live_lens_report_2026_05_17.json",
       "local_registry_path": "data/live_lens/prop_registry/live_prop_registry_2026_05_17.json",
       "render_base_url": "https://mlb-betting-v2.onrender.com",
-      "reason": "live-lens sync requested but Render base URL or cron token is unavailable",
-      "missing_credentials": [
-        "live_lens_cron_token"
-      ]
+      "source": "render_api",
+      "synced_report_path": "data/live_lens/render_sync/live_lens_reports_2026_05_17.json",
+      "registry_summary": {
+        "byProp": {
+          "earned_runs": 10,
+          "hits": 224,
+          "hits_allowed": 50,
+          "outs": 66,
+          "rbi": 23,
+          "runs": 39,
+          "strikeouts": 68,
+          "total_bases": 285,
+          "walks_allowed": 36
+        },
+        "bySelection": {
+          "over": 615,
+          "under": 186
+        },
+        "date": "2026-05-17",
+        "resultCounts": {
+          "loss": 615,
+          "pending": 0,
+          "push": 0,
+          "win": 186
+        },
+        "settledEntries": 801,
+        "topEdges": [
+          {
+            "actual": 0.0,
+            "firstSeenAt": "2026-05-17T12:50:17-05:00",
+            "firstSeenLiveEdge": 6.417,
+            "gamePk": 824599,
+            "lastSeenAt": "2026-05-17T13:10:15-05:00",
+            "lastSeenLiveEdge": 6.417,
+            "market": "pitcher_props",
+            "marketLine": 15.5,
+            "owner": "Erick Fedde",
+            "prop": "outs",
+            "result": "loss",
+            "seenCount": 5,
+            "selection": "over"
+          },
+          {
+            "actual": 1.0,
+            "firstSeenAt": "2026-05-17T12:20:24-05:00",
+            "firstSeenLiveEdge": 5.72,
+            "gamePk": 824923,
+            "lastSeenAt": "2026-05-17T12:45:22-05:00",
+            "lastSeenLiveEdge": 6.073,
+            "market": "pitcher_props",
+            "marketLine": 15.5,
+            "owner": "Brayan Bello",
+            "prop": "outs",
+            "result": "loss",
+            "seenCount": 6,
+            "selection": "over"
+          },
+          {
+            "actual": 10.0,
+            "firstSeenAt": "2026-05-17T13:46:01-05:00",
+            "firstSeenLiveEdge": 4.974,
+            "gamePk": 822738,
+            "lastSeenAt": "2026-05-17T13:50:34-05:00",
+            "lastSeenLiveEdge": 6.033,
+            "market": "pitcher_props",
+            "marketLine": 17.5,
+            "owner": "Brandon Young",
+            "prop": "outs",
+            "result": "win",
+            "seenCount": 2,
+            "selection": "under"
+          },
+          {
+            "actual": 0.0,
+            "firstSeenAt": "2026-05-17T12:15:27-05:00",
+            "firstSeenLiveEdge": 5.573,
+            "gamePk": 823628,
+            "lastSeenAt": "2026-05-17T12:40:15-05:00",
+            "lastSeenLiveEdge": 5.573,
+            "market": "pitcher_props",
+            "marketLine": 15.5,
+            "owner": "Freddy Peralta",
+            "prop": "outs",
+            "result": "loss",
+            "seenCount": 6,
+            "selection": "over"
+          },
+          {
+            "actual": 0.0,
+            "firstSeenAt": "2026-05-17T12:15:27-05:00",
+            "firstSeenLiveEdge": 4.767,
+            "gamePk": 824279,
+            "lastSeenAt": "2026-05-17T12:40:15-05:00",
+            "lastSeenLiveEdge": 4.767,
+            "market": "pitcher_props",
+            "marketLine": 15.5,
+            "owner": "Jack Flaherty",
+            "prop": "outs",
+            "result": "loss",
+            "seenCount": 6,
+            "selection": "over"
+          }
+        ],
+        "topStable": [
+          {
+            "actual": 0.0,
+            "firstSeenAt": "2026-05-17T12:15:27-05:00",
+            "firstSeenLiveEdge": 0.608,
+            "gamePk": 823628,
+            "lastSeenAt": "2026-05-17T14:45:59-05:00",
+            "lastSeenLiveEdge": 0.356,
+            "market": "hitter_props",
+            "marketLine": 0.5,
+            "owner": "Jazz Chisholm Jr.",
+            "prop": "hits",
+            "result": "loss",
+            "seenCount": 34,
+            "selection": "over"
+          },
+          {
+            "actual": 0.0,
+            "firstSeenAt": "2026-05-17T12:10:23-05:00",
+            "firstSeenLiveEdge": 0.429,
+            "gamePk": 823381,
+            "lastSeenAt": "2026-05-17T14:45:07-05:00",
+            "lastSeenLiveEdge": 0.406,
+            "market": "hitter_props",
+            "marketLine": 0.5,
+            "owner": "Adolis Garc\u00eda",
+            "prop": "hits",
+            "result": "loss",
+            "seenCount": 33,
+            "selection": "over"
+          },
+          {
+            "actual": 0.0,
+            "firstSeenAt": "2026-05-17T12:50:17-05:00",
+            "firstSeenLiveEdge": 0.494,
+            "gamePk": 824599,
+            "lastSeenAt": "2026-05-17T15:10:20-05:00",
+            "lastSeenLiveEdge": 0.233,
+            "market": "hitter_props",
+            "marketLine": 0.5,
+            "owner": "Tristan Peters",
+            "prop": "hits",
+            "result": "loss",
+            "seenCount": 33,
+            "selection": "over"
+          },
+          {
+            "actual": 0.0,
+            "firstSeenAt": "2026-05-17T18:45:17-05:00",
+            "firstSeenLiveEdge": 0.448,
+            "gamePk": 823138,
+            "lastSeenAt": "2026-05-17T20:40:18-05:00",
+            "lastSeenLiveEdge": 0.11,
+            "market": "hitter_props",
+            "marketLine": 0.5,
+            "owner": "Ram\u00f3n Laureano",
+            "prop": "total_bases",
+            "result": "loss",
+            "seenCount": 32,
+            "selection": "over"
+          },
+          {
+            "actual": 1.0,
+            "firstSeenAt": "2026-05-17T12:20:24-05:00",
+            "firstSeenLiveEdge": 0.525,
+            "gamePk": 824923,
+            "lastSeenAt": "2026-05-17T15:10:17-05:00",
+            "lastSeenLiveEdge": 0.458,
+            "market": "hitter_props",
+            "marketLine": 1.5,
+            "owner": "Jos\u00e9 Az\u00f3car",
+            "prop": "total_bases",
+            "result": "loss",
+            "seenCount": 31,
+            "selection": "over"
+          }
+        ],
+        "totalEntries": 801,
+        "uniqueGames": 15,
+        "uniqueOwners": 271,
+        "updatedAt": "2026-05-17T20:40:18-05:00"
+      },
+      "readout": {
+        "headline": "Prior-day live lens tracked 801 opportunities across 15 games and 271 owners; active lanes were earned_runs:10, hits:224, hits_allowed:50.",
+        "learnings": [
+          "Resolved prior-day live spots finished 186-615-0 with a 23.2% win rate excluding pushes.",
+          "The most active live lane was earned runs with 10 tracked opportunities.",
+          "Most persistent opportunity: Jazz Chisholm Jr. hits over 0.5 stayed on the board for 34 observations.",
+          "Largest closing live edge: Erick Fedde outs over 15.5 at 6.42."
+        ],
+        "performance": [
+          "Render live-lens report processed 15 games in 7674.3 ms with 0 ms spent refreshing markets.",
+          "The latest persisted live-lens report archived 571 finalized live prop rows for 2026-05-17."
+        ]
+      }
     },
     "live_pitcher_corrections": {
-      "status": "skipped",
+      "status": "ok",
       "max_date": "2026-05-17",
-      "artifacts": {},
-      "render_base_url": "https://mlb-betting-v2.onrender.com",
-      "reason": "live pitcher correction refresh requested but Render base URL or cron token is unavailable",
-      "missing_credentials": [
-        "live_lens_cron_token"
-      ]
+      "artifacts": {
+        "outs": {
+          "command": [
+            "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python",
+            "/home/runner/work/MLB-BettingV2/MLB-BettingV2/tools/tune/fit_live_pitcher_outs_correction.py",
+            "--source",
+            "render-sync",
+            "--max-date",
+            "2026-05-17",
+            "--render-timeout-seconds",
+            "45",
+            "--out",
+            "/home/runner/work/MLB-BettingV2/MLB-BettingV2/data/eval/live_pitcher_outs_correction.json",
+            "--render-base-url",
+            "https://mlb-betting-v2.onrender.com",
+            "--render-cron-token",
+            "1234567890"
+          ],
+          "artifact_path": "data/eval/live_pitcher_outs_correction.json",
+          "exit_code": 0,
+          "rows": 48,
+          "date_window": {
+            "min_date": "2026-05-17",
+            "max_date": "2026-05-17"
+          },
+          "training_metrics": {
+            "baseline_mae": 6.279,
+            "baseline_rmse": 8.574,
+            "corrected_mae": 1.986,
+            "corrected_rmse": 2.474
+          },
+          "leave_one_out_metrics": {
+            "baseline_mae": 6.279,
+            "baseline_rmse": 8.574,
+            "corrected_mae": 2.336,
+            "corrected_rmse": 2.89
+          },
+          "status": "ok"
+        },
+        "strikeouts": {
+          "command": [
+            "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python",
+            "/home/runner/work/MLB-BettingV2/MLB-BettingV2/tools/tune/fit_live_pitcher_strikeouts_correction.py",
+            "--source",
+            "render-sync",
+            "--max-date",
+            "2026-05-17",
+            "--render-timeout-seconds",
+            "45",
+            "--out",
+            "/home/runner/work/MLB-BettingV2/MLB-BettingV2/data/eval/live_pitcher_strikeouts_correction.json",
+            "--render-base-url",
+            "https://mlb-betting-v2.onrender.com",
+            "--render-cron-token",
+            "1234567890"
+          ],
+          "artifact_path": "data/eval/live_pitcher_strikeouts_correction.json",
+          "exit_code": 0,
+          "rows": 48,
+          "date_window": {
+            "min_date": "2026-05-17",
+            "max_date": "2026-05-17"
+          },
+          "training_metrics": {
+            "baseline_mae": 1.639,
+            "baseline_rmse": 2.073,
+            "corrected_mae": 0.717,
+            "corrected_rmse": 0.889
+          },
+          "leave_one_out_metrics": {
+            "baseline_mae": 1.639,
+            "baseline_rmse": 2.073,
+            "corrected_mae": 0.846,
+            "corrected_rmse": 1.071
+          },
+          "status": "ok"
+        }
+      },
+      "render_base_url": "https://mlb-betting-v2.onrender.com"
     },
     "prior_day_eval_report": {
       "status": "ok",
@@ -315,14 +582,14 @@
       "batch_dir": "data/eval/batches/season_2026_ui_daily_live",
       "report_path": "data/eval/batches/season_2026_ui_daily_live/sim_vs_actual_2026-05-17.json",
       "command": [
-        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\.venv\\Scripts\\python.exe",
-        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\tools\\eval\\reconcile_daily_sim_artifacts.py",
+        "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python3.11",
+        "/home/runner/work/MLB-BettingV2/MLB-BettingV2/tools/eval/reconcile_daily_sim_artifacts.py",
         "--date",
         "2026-05-17",
         "--season",
         "2026",
         "--out",
-        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\data\\eval\\batches\\season_2026_ui_daily_live\\sim_vs_actual_2026-05-17.json",
+        "/home/runner/work/MLB-BettingV2/MLB-BettingV2/data/eval/batches/season_2026_ui_daily_live/sim_vs_actual_2026-05-17.json",
         "--prop-lines-source",
         "auto",
         "--hitter-hr-prob-calibration",
@@ -341,7 +608,7 @@
       "season_eval_recap": "data/eval/seasons/2026/season_eval_recap.md",
       "season_eval_status": "partial",
       "season_eval_partial": true,
-      "season_eval_days": 53,
+      "season_eval_days": 1,
       "betting_profile": "retuned",
       "season_betting_manifest": "data/eval/seasons/2026/season_betting_cards_retuned_manifest.json",
       "season_betting_recap": "data/eval/seasons/2026/season_betting_cards_retuned_recap.md",
@@ -358,15 +625,15 @@
       "artifact_path": "data/daily/top_props/daily_top_props_2026_05_17.json",
       "group_summaries": {
         "pitcher": {
-          "found": true,
-          "candidateCount": 130,
-          "displayedCount": 130,
+          "found": false,
+          "candidateCount": 0,
+          "displayedCount": 0,
           "sectionCount": 5
         },
         "hitter": {
-          "found": true,
-          "candidateCount": 1913,
-          "displayedCount": 1913,
+          "found": false,
+          "candidateCount": 0,
+          "displayedCount": 0,
           "sectionCount": 7
         }
       }
@@ -375,10 +642,10 @@
       "status": "ok",
       "date": "2026-05-18",
       "mode": "live",
-      "out_dir": "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\data\\market\\oddsapi",
-      "game_lines_path": "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\data\\market\\oddsapi\\oddsapi_game_lines_2026_05_18.json",
-      "pitcher_props_path": "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\data\\market\\oddsapi\\oddsapi_pitcher_props_2026_05_18.json",
-      "hitter_props_path": "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\data\\market\\oddsapi\\oddsapi_hitter_props_2026_05_18.json",
+      "out_dir": "/home/runner/work/MLB-BettingV2/MLB-BettingV2/data/market/oddsapi",
+      "game_lines_path": "/home/runner/work/MLB-BettingV2/MLB-BettingV2/data/market/oddsapi/oddsapi_game_lines_2026_05_18.json",
+      "pitcher_props_path": "/home/runner/work/MLB-BettingV2/MLB-BettingV2/data/market/oddsapi/oddsapi_pitcher_props_2026_05_18.json",
+      "hitter_props_path": "/home/runner/work/MLB-BettingV2/MLB-BettingV2/data/market/oddsapi/oddsapi_hitter_props_2026_05_18.json",
       "counts": {
         "game_lines": {
           "events_matched": 14,
@@ -393,19 +660,20 @@
             "earned_runs": 27,
             "hits_allowed": 27,
             "outs": 23,
-            "strikeouts": 27
+            "strikeouts": 27,
+            "walks_allowed": 18
           },
           "events_matched": 14
         },
         "hitter_props": {
-          "players": 277,
+          "players": 275,
           "markets": {
-            "batter_hits": 271,
-            "batter_hits_runs_rbis": 267,
+            "batter_hits": 270,
+            "batter_hits_runs_rbis": 264,
             "batter_home_runs": 264,
             "batter_rbis": 265,
             "batter_runs_scored": 265,
-            "batter_total_bases": 271
+            "batter_total_bases": 270
           },
           "events_matched": 14
         }
@@ -420,36 +688,43 @@
         "data/daily/daily_summary_2026_05_18_locked_policy.json",
         "data/daily/daily_summary_2026_05_18_hr_targets.json",
         "data/daily/sims/2026-05-18",
-        "data/daily/snapshots/2026-05-18",
         "data/daily/top_props/daily_top_props_2026_05_18.json",
         "data/daily/ladders/daily_ladders_2026_05_18.json",
         "data/daily/ladders/daily_ladder_audit_2026_05_18.json",
         "data/daily/season_frontend/season_manifest_2026_2026_05_18.json",
         "data/daily/season_frontend/season_day_2026_2026_05_18_retuned.json",
         "data/daily/season_frontend/season_betting_day_2026_2026_05_18_retuned.json",
-        "data/daily/season_frontend/season_official_betting_day_2026_2026_05_18_retuned.json",
-        "data/daily_pitcher_props/snapshots/2026-05-18",
-        "data/daily_hitter_props/snapshots/2026-05-18"
+        "data/daily/season_frontend/season_official_betting_day_2026_2026_05_18_retuned.json"
       ],
-      "removed_count": 15
+      "removed_count": 12
     },
     "current_day_multi_profile": {
       "status": "ok",
       "command": [
-        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\.venv\\Scripts\\python.exe",
-        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\tools\\daily_update_multi_profile.py",
+        "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python",
+        "/home/runner/work/MLB-BettingV2/MLB-BettingV2/tools/daily_update_multi_profile.py",
         "--date",
         "2026-05-18",
         "--season",
         "2026",
         "--python-exe",
-        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\.venv\\Scripts\\python.exe",
+        "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python3.11",
         "--out-game",
-        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\data\\daily",
+        "/home/runner/work/MLB-BettingV2/MLB-BettingV2/data/daily",
         "--out-pitcher",
-        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\data\\daily_pitcher_props",
+        "/home/runner/work/MLB-BettingV2/MLB-BettingV2/data/daily_pitcher_props",
         "--out-hitter",
-        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\data\\daily_hitter_props",
+        "/home/runner/work/MLB-BettingV2/MLB-BettingV2/data/daily_hitter_props",
+        "--sims",
+        "1000",
+        "--workers",
+        "4",
+        "--pbp",
+        "off",
+        "--use-roster-artifacts",
+        "on",
+        "--write-roster-artifacts",
+        "on",
         "--seed",
         "1337",
         "--seed-source",
@@ -474,8 +749,8 @@
           "sparse_support_rate": 0.0,
           "support_min_reasons": 2,
           "status_counts": {
-            "strong": 8,
-            "supported": 5,
+            "strong": 2,
+            "supported": 11,
             "thin": 0,
             "none": 0
           },
@@ -495,8 +770,8 @@
               "selected_n": 1,
               "sparse_support_n": 0,
               "status_counts": {
-                "strong": 1,
-                "supported": 0,
+                "strong": 0,
+                "supported": 1,
                 "thin": 0,
                 "none": 0
               },
@@ -528,8 +803,8 @@
               "selected_n": 4,
               "sparse_support_n": 0,
               "status_counts": {
-                "strong": 2,
-                "supported": 2,
+                "strong": 0,
+                "supported": 4,
                 "thin": 0,
                 "none": 0
               },
@@ -550,8 +825,8 @@
               "selected_n": 6,
               "sparse_support_n": 0,
               "status_counts": {
-                "strong": 5,
-                "supported": 1,
+                "strong": 1,
+                "supported": 5,
                 "thin": 0,
                 "none": 0
               },
@@ -561,8 +836,8 @@
               "selected_n": 1,
               "sparse_support_n": 0,
               "status_counts": {
-                "strong": 0,
-                "supported": 1,
+                "strong": 1,
+                "supported": 0,
                 "thin": 0,
                 "none": 0
               },
@@ -584,8 +859,8 @@
         },
         "selected_support_policy": {
           "support_min_reasons": 2,
-          "removed_sparse_support_n": 2,
-          "replacement_added_n": 2,
+          "removed_sparse_support_n": 6,
+          "replacement_added_n": 6,
           "selection_shortfall_n": 0,
           "markets": {
             "totals": {
@@ -603,10 +878,18 @@
               "support_min_reasons": 2,
               "baseline_selected_n": 1,
               "final_selected_n": 1,
-              "removed_sparse_support_n": 0,
-              "replacement_added_n": 0,
+              "removed_sparse_support_n": 1,
+              "replacement_added_n": 1,
               "selection_shortfall_n": 0,
-              "removed_examples": []
+              "removed_examples": [
+                {
+                  "subject": "MIL @ CHC",
+                  "selection": "home",
+                  "market": "ml",
+                  "baseball_reasons_n": 1,
+                  "reason_summary": "The model lands on the home side in 62.3% of sims, while the market is pricing it closer to 60.0%. Across his last 5 starts, Shota Imanaga has allowed about 1.6 earned runs per outing. CHC wins this matchup in about 62.3% of model runs."
+                }
+              ]
             },
             "pitcher_props": {
               "market": "pitcher_props",
@@ -623,23 +906,44 @@
               "support_min_reasons": 2,
               "baseline_selected_n": 11,
               "final_selected_n": 11,
-              "removed_sparse_support_n": 2,
-              "replacement_added_n": 2,
+              "removed_sparse_support_n": 5,
+              "replacement_added_n": 5,
               "selection_shortfall_n": 0,
               "removed_examples": [
                 {
-                  "subject": "Blaze Alexander",
+                  "subject": "Ryan Vilade",
                   "selection": "over",
                   "market": "hitter_hits",
                   "baseball_reasons_n": 1,
-                  "reason_summary": "The model lands on the over side in 59.2% of sims, while the market is pricing it closer to 49.5%. His underlying contact quality is grading above baseline, which supports the production side of the prop. The model baseline comes in around 1.1 batter hits against a line of 0.5. He is projected to hit in the 9 spot, which points to about 4.3 plate appearances."
+                  "reason_summary": "The model lands on the over side in 71.4% of sims, while the market is pricing it closer to 56.3%. The handedness matchup leans his way here, with his expected damage against L-handed pitching grading above baseline. The model baseline comes in around 1.2 batter hits against a line of 0.5. He is projected to hit in the 2 spot, which points to about 4.9 plate appearances."
                 },
                 {
-                  "subject": "Andrew Benintendi",
+                  "subject": "Nick Fortes",
                   "selection": "over",
                   "market": "hitter_hits",
                   "baseball_reasons_n": 1,
-                  "reason_summary": "The model lands on the over side in 59.2% of sims, while the market is pricing it closer to 55.0%. Against this starter, he has 3 hits, including 1 homer in 13 prior plate appearances, and the head-to-head sample has shown a bit more damage than baseline. The model baseline comes in around 1.1 batter hits against a line of 0.5. He is projected to hit in the 6 spot, which points to about 4.6 plate appearances."
+                  "reason_summary": "The model lands on the over side in 67.7% of sims, while the market is pricing it closer to 54.6%. Over his last 10 games, he has recorded a hit in 8 of 10 games. The model baseline comes in around 1.0 batter hits against a line of 0.5. He is projected to hit in the 8 spot, which points to about 4.2 plate appearances."
+                },
+                {
+                  "subject": "Daylen Lile",
+                  "selection": "under",
+                  "market": "hitter_total_bases",
+                  "baseball_reasons_n": 1,
+                  "reason_summary": "The model lands on the under side in 64.5% of sims, while the market is pricing it closer to 55.9%. Against NYM, he has been held to one total base or fewer in 6 of 8 games. The model baseline comes in around 1.4 batter total bases against a line of 1.5. He is projected to hit in the 5 spot, which points to about 4.5 plate appearances."
+                },
+                {
+                  "subject": "Paul Goldschmidt",
+                  "selection": "under",
+                  "market": "hitter_total_bases",
+                  "baseball_reasons_n": 1,
+                  "reason_summary": "The model lands on the under side in 63.9% of sims, while the market is pricing it closer to 53.7%. Against TOR, he has been held to one total base or fewer in 6 of 9 games. The model baseline comes in around 1.4 batter total bases against a line of 1.5. He is projected to hit in the 5 spot, which points to about 4.4 plate appearances."
+                },
+                {
+                  "subject": "Michael Harris II",
+                  "selection": "under",
+                  "market": "hitter_total_bases",
+                  "baseball_reasons_n": 1,
+                  "reason_summary": "The model lands on the under side in 63.7% of sims, while the market is pricing it closer to 56.3%. Over his last 10 games, he has been held to one total base or fewer in 7 of 10 games. The model baseline comes in around 1.4 batter total bases against a line of 1.5. He is projected to hit in the 4 spot, which points to about 4.7 plate appearances."
                 }
               ]
             },
@@ -663,18 +967,18 @@
               "selection_shortfall_n": 0,
               "removed_examples": [
                 {
-                  "subject": "Blaze Alexander",
+                  "subject": "Ryan Vilade",
                   "selection": "over",
                   "market": "hitter_hits",
                   "baseball_reasons_n": 1,
-                  "reason_summary": "The model lands on the over side in 59.2% of sims, while the market is pricing it closer to 49.5%. His underlying contact quality is grading above baseline, which supports the production side of the prop. The model baseline comes in around 1.1 batter hits against a line of 0.5. He is projected to hit in the 9 spot, which points to about 4.3 plate appearances."
+                  "reason_summary": "The model lands on the over side in 71.4% of sims, while the market is pricing it closer to 56.3%. The handedness matchup leans his way here, with his expected damage against L-handed pitching grading above baseline. The model baseline comes in around 1.2 batter hits against a line of 0.5. He is projected to hit in the 2 spot, which points to about 4.9 plate appearances."
                 },
                 {
-                  "subject": "Andrew Benintendi",
+                  "subject": "Nick Fortes",
                   "selection": "over",
                   "market": "hitter_hits",
                   "baseball_reasons_n": 1,
-                  "reason_summary": "The model lands on the over side in 59.2% of sims, while the market is pricing it closer to 55.0%. Against this starter, he has 3 hits, including 1 homer in 13 prior plate appearances, and the head-to-head sample has shown a bit more damage than baseline. The model baseline comes in around 1.1 batter hits against a line of 0.5. He is projected to hit in the 6 spot, which points to about 4.6 plate appearances."
+                  "reason_summary": "The model lands on the over side in 67.7% of sims, while the market is pricing it closer to 54.6%. Over his last 10 games, he has recorded a hit in 8 of 10 games. The model baseline comes in around 1.0 batter hits against a line of 0.5. He is projected to hit in the 8 spot, which points to about 4.2 plate appearances."
                 }
               ]
             },
@@ -693,10 +997,32 @@
               "support_min_reasons": 2,
               "baseline_selected_n": 6,
               "final_selected_n": 6,
-              "removed_sparse_support_n": 0,
-              "replacement_added_n": 0,
+              "removed_sparse_support_n": 3,
+              "replacement_added_n": 3,
               "selection_shortfall_n": 0,
-              "removed_examples": []
+              "removed_examples": [
+                {
+                  "subject": "Daylen Lile",
+                  "selection": "under",
+                  "market": "hitter_total_bases",
+                  "baseball_reasons_n": 1,
+                  "reason_summary": "The model lands on the under side in 64.5% of sims, while the market is pricing it closer to 55.9%. Against NYM, he has been held to one total base or fewer in 6 of 8 games. The model baseline comes in around 1.4 batter total bases against a line of 1.5. He is projected to hit in the 5 spot, which points to about 4.5 plate appearances."
+                },
+                {
+                  "subject": "Paul Goldschmidt",
+                  "selection": "under",
+                  "market": "hitter_total_bases",
+                  "baseball_reasons_n": 1,
+                  "reason_summary": "The model lands on the under side in 63.9% of sims, while the market is pricing it closer to 53.7%. Against TOR, he has been held to one total base or fewer in 6 of 9 games. The model baseline comes in around 1.4 batter total bases against a line of 1.5. He is projected to hit in the 5 spot, which points to about 4.4 plate appearances."
+                },
+                {
+                  "subject": "Michael Harris II",
+                  "selection": "under",
+                  "market": "hitter_total_bases",
+                  "baseball_reasons_n": 1,
+                  "reason_summary": "The model lands on the under side in 63.7% of sims, while the market is pricing it closer to 56.3%. Over his last 10 games, he has been held to one total base or fewer in 7 of 10 games. The model baseline comes in around 1.4 batter total bases against a line of 1.5. He is projected to hit in the 4 spot, which points to about 4.7 plate appearances."
+                }
+              ]
             },
             "hitter_runs": {
               "market": "hitter_runs",
@@ -726,8 +1052,8 @@
           "markets": {
             "pitcher_props": {
               "market": "pitcher_props",
-              "evaluated_n": 6,
-              "kept_n": 6,
+              "evaluated_n": 10,
+              "kept_n": 10,
               "removed_sparse_support_n": 0,
               "removed_examples": []
             },
@@ -740,8 +1066,8 @@
             },
             "hitter_hits": {
               "market": "hitter_hits",
-              "evaluated_n": 13,
-              "kept_n": 13,
+              "evaluated_n": 12,
+              "kept_n": 12,
               "removed_sparse_support_n": 0,
               "removed_examples": []
             },
@@ -754,22 +1080,22 @@
             },
             "hitter_total_bases": {
               "market": "hitter_total_bases",
-              "evaluated_n": 62,
-              "kept_n": 62,
+              "evaluated_n": 3,
+              "kept_n": 3,
               "removed_sparse_support_n": 0,
               "removed_examples": []
             },
             "hitter_runs": {
               "market": "hitter_runs",
-              "evaluated_n": 11,
-              "kept_n": 11,
+              "evaluated_n": 6,
+              "kept_n": 6,
               "removed_sparse_support_n": 0,
               "removed_examples": []
             },
             "hitter_rbis": {
               "market": "hitter_rbis",
-              "evaluated_n": 59,
-              "kept_n": 59,
+              "evaluated_n": 6,
+              "kept_n": 6,
               "removed_sparse_support_n": 0,
               "removed_examples": []
             }
@@ -778,16 +1104,44 @@
         "shadow_support_policy": {
           "pitcher_props": {
             "market": "shadow_pitcher_props",
-            "evaluated_n": 6,
-            "kept_n": 5,
-            "removed_sparse_support_n": 1,
+            "evaluated_n": 32,
+            "kept_n": 11,
+            "removed_sparse_support_n": 21,
             "removed_examples": [
               {
-                "subject": "Jose Quintana",
+                "subject": "Slade Cecconi",
+                "selection": "over",
+                "market": "pitcher_props:walks allowed",
+                "baseball_reasons_n": 1,
+                "reason_summary": "The model lands on the over side in 60.0% of sims, while the market is pricing it closer to 51.5%. He mixes four-seam fastball, cutter, and sinker often enough that hitters have to cover multiple looks. The model baseline sits around 2.0 walks allowed against a line of 1.5. If he stays on his normal starter path, the matchup against DET gives him a fair shot to reach full workload volume."
+              },
+              {
+                "subject": "Framber Valdez",
                 "selection": "over",
                 "market": "pitcher_props:hits allowed",
                 "baseball_reasons_n": 1,
-                "reason_summary": "The model lands on the over side in 50.0% of sims, while the market is pricing it closer to 47.0%. He mixes four-seam fastball, sinker, and changeup often enough that hitters have to cover multiple looks. The model baseline sits around 5.7 hits allowed against a line of 5.5. If he stays on his normal starter path, the matchup against TEX gives him a fair shot to reach full workload volume."
+                "reason_summary": "The model lands on the over side in 67.3% of sims, while the market is pricing it closer to 48.9%. He leans heavily on his sinker, with curveball and changeup working as the main support. The model baseline sits around 6.9 hits allowed against a line of 5.5. If he stays on his normal starter path, the matchup against CLE gives him a fair shot to reach full workload volume."
+              },
+              {
+                "subject": "Walbert Ure\u00f1a",
+                "selection": "over",
+                "market": "pitcher_props:hits allowed",
+                "baseball_reasons_n": 1,
+                "reason_summary": "The model lands on the over side in 56.3% of sims, while the market is pricing it closer to 39.2%. He mixes changeup, sinker, and four-seam fastball often enough that hitters have to cover multiple looks. The model baseline sits around 6.1 hits allowed against a line of 5.5. If he stays on his normal starter path, the matchup against ATH gives him a fair shot to reach full workload volume."
+              },
+              {
+                "subject": "Yoshinobu Yamamoto",
+                "selection": "over",
+                "market": "pitcher_props:hits allowed",
+                "baseball_reasons_n": 1,
+                "reason_summary": "The model lands on the over side in 61.5% of sims, while the market is pricing it closer to 41.8%. He mixes splitter, four-seam fastball, and cutter often enough that hitters have to cover multiple looks. The model baseline sits around 6.5 hits allowed against a line of 5.5. If he stays on his normal starter path, the matchup against SD gives him a fair shot to reach full workload volume."
+              },
+              {
+                "subject": "Michael King",
+                "selection": "over",
+                "market": "pitcher_props:hits allowed",
+                "baseball_reasons_n": 1,
+                "reason_summary": "The model lands on the over side in 56.7% of sims, while the market is pricing it closer to 37.3%. He mixes changeup, sinker, and secondary mix often enough that hitters have to cover multiple looks. The model baseline sits around 6.2 hits allowed against a line of 5.5. If he stays on his normal starter path, the matchup against LAD gives him a fair shot to reach full workload volume."
               }
             ]
           },
@@ -806,8 +1160,8 @@
         "sparse_support_rate": 0.0,
         "support_min_reasons": 2,
         "status_counts": {
-          "strong": 8,
-          "supported": 5,
+          "strong": 2,
+          "supported": 11,
           "thin": 0,
           "none": 0
         },
@@ -827,8 +1181,8 @@
             "selected_n": 1,
             "sparse_support_n": 0,
             "status_counts": {
-              "strong": 1,
-              "supported": 0,
+              "strong": 0,
+              "supported": 1,
               "thin": 0,
               "none": 0
             },
@@ -860,8 +1214,8 @@
             "selected_n": 4,
             "sparse_support_n": 0,
             "status_counts": {
-              "strong": 2,
-              "supported": 2,
+              "strong": 0,
+              "supported": 4,
               "thin": 0,
               "none": 0
             },
@@ -882,8 +1236,8 @@
             "selected_n": 6,
             "sparse_support_n": 0,
             "status_counts": {
-              "strong": 5,
-              "supported": 1,
+              "strong": 1,
+              "supported": 5,
               "thin": 0,
               "none": 0
             },
@@ -893,8 +1247,8 @@
             "selected_n": 1,
             "sparse_support_n": 0,
             "status_counts": {
-              "strong": 0,
-              "supported": 1,
+              "strong": 1,
+              "supported": 0,
               "thin": 0,
               "none": 0
             },
@@ -916,7 +1270,7 @@
       },
       "hr_targets_artifact_path": "data/daily/daily_summary_2026_05_18_hr_targets.json",
       "hr_targets_artifact_exists": true,
-      "hr_targets_rows": 28,
+      "hr_targets_rows": 7,
       "rfi_targets_artifact_path": "data/daily/daily_summary_2026_05_18_rfi_targets.json",
       "rfi_targets_artifact_exists": true,
       "rfi_targets_rows": 0
@@ -925,14 +1279,14 @@
       "status": "ok",
       "season": 2026,
       "command": [
-        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\.venv\\Scripts\\python.exe",
-        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\tools\\eval\\reconcile_hr_target_artifacts.py",
+        "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python",
+        "/home/runner/work/MLB-BettingV2/MLB-BettingV2/tools/eval/reconcile_hr_target_artifacts.py",
         "--season",
         "2026",
         "--write",
         "on",
         "--report-out",
-        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\data\\daily\\season_frontend\\hr_target_reconcile_2026.json"
+        "/home/runner/work/MLB-BettingV2/MLB-BettingV2/data/daily/season_frontend/hr_target_reconcile_2026.json"
       ],
       "report_path": "data/daily/season_frontend/hr_target_reconcile_2026.json",
       "exit_code": 0,
@@ -948,14 +1302,14 @@
       "group_summaries": {
         "pitcher": {
           "found": true,
-          "candidateCount": 104,
-          "displayedCount": 104,
+          "candidateCount": 122,
+          "displayedCount": 122,
           "sectionCount": 5
         },
         "hitter": {
           "found": true,
-          "candidateCount": 1597,
-          "displayedCount": 1597,
+          "candidateCount": 1592,
+          "displayedCount": 1592,
           "sectionCount": 7
         }
       }
@@ -1062,28 +1416,33 @@
       "artifact_path": "data/daily/ladders/daily_ladder_audit_2026_05_18.json",
       "summary": {
         "cards": 14,
-        "badges": 66,
+        "badges": 95,
         "sources": {
-          "none": 66
+          "none": 95
         },
         "tones": {
-          "solid": 38,
-          "strong": 8,
-          "soft": 20
+          "soft": 24,
+          "strong": 25,
+          "solid": 46
         },
         "stats": {
           "hits_allowed": {
-            "badges": 26,
+            "badges": 27,
             "rungWins": 0,
             "rungLosses": 0
           },
           "outs": {
-            "badges": 18,
+            "badges": 23,
             "rungWins": 0,
             "rungLosses": 0
           },
           "strikeouts": {
-            "badges": 22,
+            "badges": 27,
+            "rungWins": 0,
+            "rungLosses": 0
+          },
+          "walks_allowed": {
+            "badges": 18,
             "rungWins": 0,
             "rungLosses": 0
           }
@@ -1136,8 +1495,8 @@
       "date": "2026-05-19",
       "season": 2026,
       "command": [
-        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\.venv\\Scripts\\python.exe",
-        "C:\\Users\\mostg\\OneDrive\\Coding\\MLB-BettingV2\\tools\\daily_update.py",
+        "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python3.11",
+        "/home/runner/work/MLB-BettingV2/MLB-BettingV2/tools/daily_update.py",
         "--workflow",
         "ui-daily",
         "--date",
@@ -1160,6 +1519,16 @@
         "off",
         "--validate-render-frontend",
         "off",
+        "--sims",
+        "1000",
+        "--workers",
+        "4",
+        "--pbp",
+        "off",
+        "--use-roster-artifacts",
+        "on",
+        "--write-roster-artifacts",
+        "on",
         "--seed",
         "1337",
         "--seed-source",
@@ -1209,7 +1578,7 @@
     }
   },
   "notes": [
-    "official locked card removed 2 sparse-support selected recommendation(s) before publish and added 2 replacement(s)",
+    "official locked card removed 6 sparse-support selected recommendation(s) before publish and added 6 replacement(s)",
     "current-day lineup validation adjusted projected lineups for 1 team(s)"
   ],
   "warnings": [],
@@ -1221,135 +1590,33 @@
     "season": 2026
   },
   "git_push": {
-    "requested": true,
+    "requested": false,
     "remote": "origin",
     "branch": "",
     "phases": [
       {
         "phase": "prior_day",
         "label": "prior-day reconciliation outputs for 2026-05-17",
-        "requested": true,
-        "preexisting_change_count": 0,
-        "status": "ok",
-        "remote": "origin",
-        "branch": "main",
-        "commit_message": "Daily update 2026-05-18 [prior-day reconcile 2026-05-17]",
-        "commit_sha": "326679aaf882b07a64e79030d92ec605fe3a5cd3",
-        "committed_paths": [
-          "data/daily/ops/daily_ops_2026_05_18.json",
-          "data/daily/settlements/daily_summary_2026_05_17_locked_policy_settlement.json",
-          "data/daily/top_props/daily_top_props_2026_05_17.json",
-          "data/eval/seasons/2026/season_betting_cards_retuned_manifest.json",
-          "data/eval/seasons/2026/season_betting_cards_retuned_recap.md"
-        ],
-        "preexisting_managed_change_count": 0,
-        "rebase": {
-          "remote_ref": "origin/main",
-          "auto_resolved_conflicts": 0
-        }
+        "requested": false,
+        "status": "skipped",
+        "reason": "git_push=off"
       },
       {
         "phase": "current_day",
         "label": "current-day artifacts for 2026-05-18",
-        "requested": true,
-        "preexisting_change_count": 26,
-        "status": "ok",
-        "remote": "origin",
-        "branch": "main",
-        "commit_message": "Daily update 2026-05-18 [current-day build 2026-05-18]",
-        "commit_sha": "f42f71089607b57417431b2d60d0b261c86215bf",
-        "committed_paths": [
-          "data/daily/daily_summary_2026_05_18.json",
-          "data/daily/daily_summary_2026_05_18_hr_targets.json",
-          "data/daily/daily_summary_2026_05_18_locked_policy.json",
-          "data/daily/daily_summary_2026_05_18_profile_bundle.json",
-          "data/daily/ladders/daily_ladder_audit_2026_05_18.json",
-          "data/daily/ladders/daily_ladders_2026_05_18.json",
-          "data/daily/ops/daily_ops_2026_05_18.json",
-          "data/daily/season_frontend/hr_target_reconcile_2026.json",
-          "data/daily/season_frontend/season_betting_day_2026_2026_05_18_retuned.json",
-          "data/daily/season_frontend/season_day_2026_2026_05_18_retuned.json",
-          "data/daily/season_frontend/season_manifest_2026_2026_05_18.json",
-          "data/daily/season_frontend/season_official_betting_day_2026_2026_05_18_retuned.json",
-          "data/daily/sims/2026-05-18/sim_0_CLE_at_DET_pk824277_g1.json",
-          "data/daily/sims/2026-05-18/sim_10_ATH_at_LAA_pk824035_g1.json",
-          "data/daily/sims/2026-05-18/sim_11_LAD_at_SD_pk823301_g1.json",
-          "data/daily/sims/2026-05-18/sim_12_SF_at_AZ_pk825087_g1.json",
-          "data/daily/sims/2026-05-18/sim_13_CWS_at_SEA_pk823137_g1.json",
-          "data/daily/sims/2026-05-18/sim_1_BAL_at_TB_pk822980_g1.json",
-          "data/daily/sims/2026-05-18/sim_2_CIN_at_PHI_pk823465_g1.json",
-          "data/daily/sims/2026-05-18/sim_3_ATL_at_MIA_pk823867_g1.json",
-          "data/daily/sims/2026-05-18/sim_4_NYM_at_WSH_pk822734_g1.json",
-          "data/daily/sims/2026-05-18/sim_5_TOR_at_NYY_pk823549_g1.json",
-          "data/daily/sims/2026-05-18/sim_6_BOS_at_KC_pk824114_g1.json",
-          "data/daily/sims/2026-05-18/sim_7_HOU_at_MIN_pk823705_g1.json",
-          "data/daily/sims/2026-05-18/sim_8_MIL_at_CHC_pk824680_g1.json",
-          "data/daily/sims/2026-05-18/sim_9_TEX_at_COL_pk824357_g1.json",
-          "data/daily/top_props/daily_top_props_2026_05_18.json"
-        ],
-        "preexisting_managed_change_count": 26,
-        "rebase": {
-          "remote_ref": "origin/main",
-          "auto_resolved_conflicts": 0
-        }
+        "requested": false,
+        "status": "skipped",
+        "reason": "git_push=off"
       },
       {
         "phase": "next_day",
         "label": "next-day forward outputs for 2026-05-19",
-        "requested": true,
-        "preexisting_change_count": 27,
-        "status": "ok",
-        "remote": "origin",
-        "branch": "main",
-        "commit_message": "Daily update 2026-05-18 [next-day build 2026-05-19]",
-        "commit_sha": "984fe01cfece1ecb7b6ee57619c2de37accaf052",
-        "committed_paths": [
-          "data/daily/daily_summary_2026_05_19.json",
-          "data/daily/daily_summary_2026_05_19_hr_targets.json",
-          "data/daily/daily_summary_2026_05_19_locked_policy.json",
-          "data/daily/daily_summary_2026_05_19_profile_bundle.json",
-          "data/daily/ladders/daily_ladder_audit_2026_05_19.json",
-          "data/daily/ladders/daily_ladders_2026_05_19.json",
-          "data/daily/ops/daily_ops_2026_05_18.json",
-          "data/daily/ops/daily_ops_2026_05_19.json",
-          "data/daily/season_frontend/season_betting_day_2026_2026_05_19_retuned.json",
-          "data/daily/season_frontend/season_day_2026_2026_05_19_retuned.json",
-          "data/daily/season_frontend/season_manifest_2026_2026_05_19.json",
-          "data/daily/sims/2026-05-19/sim_0_ATL_at_MIA_pk823865_g1.json",
-          "data/daily/sims/2026-05-19/sim_10_TEX_at_COL_pk824356_g1.json",
-          "data/daily/sims/2026-05-19/sim_11_ATH_at_LAA_pk824033_g1.json",
-          "data/daily/sims/2026-05-19/sim_12_LAD_at_SD_pk823302_g1.json",
-          "data/daily/sims/2026-05-19/sim_13_SF_at_AZ_pk825086_g1.json",
-          "data/daily/sims/2026-05-19/sim_14_CWS_at_SEA_pk823136_g1.json",
-          "data/daily/sims/2026-05-19/sim_1_CLE_at_DET_pk824276_g1.json",
-          "data/daily/sims/2026-05-19/sim_2_BAL_at_TB_pk822979_g1.json",
-          "data/daily/sims/2026-05-19/sim_3_CIN_at_PHI_pk823464_g1.json",
-          "data/daily/sims/2026-05-19/sim_4_NYM_at_WSH_pk822736_g1.json",
-          "data/daily/sims/2026-05-19/sim_5_TOR_at_NYY_pk823548_g1.json",
-          "data/daily/sims/2026-05-19/sim_6_BOS_at_KC_pk824112_g1.json",
-          "data/daily/sims/2026-05-19/sim_7_HOU_at_MIN_pk823704_g1.json",
-          "data/daily/sims/2026-05-19/sim_8_MIL_at_CHC_pk824677_g1.json",
-          "data/daily/sims/2026-05-19/sim_9_PIT_at_STL_pk823059_g1.json",
-          "data/daily/top_props/daily_top_props_2026_05_18.json",
-          "data/daily/top_props/daily_top_props_2026_05_19.json"
-        ],
-        "preexisting_managed_change_count": 27,
-        "rebase": {
-          "remote_ref": "origin/main",
-          "auto_resolved_conflicts": 0
-        }
-      },
-      {
-        "phase": "final_report",
-        "label": "final ops/report state for 2026-05-18",
-        "requested": true,
-        "preexisting_change_count": 1
+        "requested": false,
+        "status": "skipped",
+        "reason": "git_push=off"
       }
     ],
-    "preexisting_change_count": 0,
-    "last_commit_sha": "984fe01cfece1ecb7b6ee57619c2de37accaf052",
-    "last_phase": "next_day",
-    "status": "ok"
+    "status": "skipped"
   },
   "status": "ok"
 }
