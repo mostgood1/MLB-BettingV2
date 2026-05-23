@@ -1,14 +1,14 @@
 {
   "tool": "tools/daily_update.py",
   "workflow": "ui-daily",
-  "generated_at": "2026-05-23T15:26:48.745173",
+  "generated_at": "2026-05-23T15:55:55.473944",
   "date": "2026-05-24",
   "season": 2026,
   "run_lock": {
     "status": "acquired",
     "path": "data/runtime/locks/daily_update_ui-daily_2026_2026-05-24_4f0d1e46e294.lock",
-    "pid": 16737,
-    "created_at": "2026-05-23T15:26:48.744868"
+    "pid": 37750,
+    "created_at": "2026-05-23T15:55:55.472967"
   },
   "seed": {
     "value": 1337,
@@ -124,15 +124,18 @@
         "data/daily/daily_summary_2026_05_24_locked_policy.json",
         "data/daily/daily_summary_2026_05_24_hr_targets.json",
         "data/daily/sims/2026-05-24",
+        "data/daily/snapshots/2026-05-24",
         "data/daily/top_props/daily_top_props_2026_05_24.json",
         "data/daily/ladders/daily_ladders_2026_05_24.json",
         "data/daily/ladders/daily_ladder_audit_2026_05_24.json",
         "data/daily/season_frontend/season_manifest_2026_2026_05_24.json",
         "data/daily/season_frontend/season_day_2026_2026_05_24_retuned.json",
         "data/daily/season_frontend/season_betting_day_2026_2026_05_24_retuned.json",
-        "data/daily/season_frontend/season_official_betting_day_2026_2026_05_24_retuned.json"
+        "data/daily/season_frontend/season_official_betting_day_2026_2026_05_24_retuned.json",
+        "data/daily_pitcher_props/snapshots/2026-05-24",
+        "data/daily_hitter_props/snapshots/2026-05-24"
       ],
-      "removed_count": 12
+      "removed_count": 15
     },
     "current_day_multi_profile": {
       "status": "ok",
@@ -157,6 +160,16 @@
         "off",
         "--validate-render-frontend",
         "off",
+        "--sims",
+        "1000",
+        "--workers",
+        "4",
+        "--pbp",
+        "off",
+        "--use-roster-artifacts",
+        "on",
+        "--write-roster-artifacts",
+        "on",
         "--seed",
         "1337",
         "--seed-source",
