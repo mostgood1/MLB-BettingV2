@@ -1,13 +1,11 @@
 {
   "date": "2026-05-23",
   "season": 2026,
-  "generated_at": "2026-05-22T16:23:25.770194",
+  "generated_at": "2026-05-23T14:55:22.003879",
   "tool": "tools/daily_update_multi_profile.py",
   "daily_update_tool": "tools/daily_update.py",
-  "python_exe": "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python3.11",
+  "python_exe": "/usr/bin/python3.12",
   "passthrough_args": [
-    "--refresh-season-manifests",
-    "off",
     "--sims",
     "1000",
     "--workers",
@@ -19,9 +17,9 @@
     "--write-roster-artifacts",
     "on",
     "--seed",
-    "2145349090",
+    "1337",
     "--seed-source",
-    "auto_future_date"
+    "default_fixed"
   ],
   "profiles": {
     "game_recos": {
@@ -36,8 +34,8 @@
         "--pitch-model-overrides",
         "data/tuning/pitch_model_overrides/_tmp_hr_bbhbp1p04_starterbbhbp1p04.json"
       ],
-      "exit_code": 0,
-      "duration_s": 128.926,
+      "exit_code": 1,
+      "duration_s": 2.462,
       "skipped": false
     },
     "pitcher_props_recos": {
@@ -137,9 +135,9 @@
       }
     },
     "warnings": [
-      "No game lines entries found in data/market/oddsapi/oddsapi_game_lines_2026_05_23.json",
-      "No pitcher lines entries found in data/market/oddsapi/oddsapi_pitcher_props_2026_05_23.json",
-      "No hitter lines entries found in data/market/oddsapi/oddsapi_hitter_props_2026_05_23.json",
+      "Missing game lines: data/market/oddsapi/oddsapi_game_lines_2026_05_23.json",
+      "Missing pitcher lines: data/market/oddsapi/oddsapi_pitcher_props_2026_05_23.json",
+      "Missing hitter lines: data/market/oddsapi/oddsapi_hitter_props_2026_05_23.json",
       "No support-qualified hitter strikeout shadow candidates were published; current hitter sim artifacts may not include strikeout distributions yet."
     ],
     "explanation_diagnostics": {
@@ -555,8 +553,8 @@
   },
   "hr_targets": {
     "artifact_path": "data/daily/daily_summary_2026_05_23_hr_targets.json",
-    "games": 4,
-    "rows": 5,
+    "games": 0,
+    "rows": 0,
     "policy_preset": "default",
     "error": null
   },
@@ -569,11 +567,51 @@
   },
   "timings": {
     "profiles": {
-      "game_recos": 128.926
+      "game_recos": 2.462
     },
-    "locked_policy_s": 0.132,
-    "total_s": 129.073
+    "locked_policy_s": 0.005,
+    "total_s": 2.472
   },
-  "failures": [],
-  "failures_n": 0
+  "failures": [
+    {
+      "role": "game_recos",
+      "profile": "game_roi",
+      "exit_code": 1,
+      "command": [
+        "/usr/bin/python3.12",
+        "/tmp/workspace/mostgood1/MLB-BettingV2/tools/daily_update.py",
+        "--workflow",
+        "core",
+        "--date",
+        "2026-05-23",
+        "--season",
+        "2026",
+        "--write-season-frontend-artifacts",
+        "off",
+        "--sims",
+        "1000",
+        "--workers",
+        "4",
+        "--pbp",
+        "off",
+        "--use-roster-artifacts",
+        "on",
+        "--write-roster-artifacts",
+        "on",
+        "--seed",
+        "1337",
+        "--seed-source",
+        "default_fixed",
+        "--out",
+        "/tmp/workspace/mostgood1/MLB-BettingV2/data/daily",
+        "--lineups-last-known",
+        "/tmp/workspace/mostgood1/MLB-BettingV2/data/daily/lineups_last_known_by_team.json",
+        "--write-derived-artifacts",
+        "off",
+        "--pitch-model-overrides",
+        "data/tuning/pitch_model_overrides/_tmp_hr_bbhbp1p04_starterbbhbp1p04.json"
+      ]
+    }
+  ],
+  "failures_n": 1
 }
