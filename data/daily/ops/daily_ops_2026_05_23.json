@@ -1,18 +1,18 @@
 {
   "tool": "tools/daily_update.py",
   "workflow": "ui-daily",
-  "generated_at": "2026-05-22T16:21:09.552988",
+  "generated_at": "2026-05-23T15:13:15.934033",
   "date": "2026-05-23",
   "season": 2026,
   "run_lock": {
     "status": "acquired",
-    "path": "data/runtime/locks/daily_update_ui-daily_2026_2026-05-23_bb9ef09c8579.lock",
-    "pid": 3570,
-    "created_at": "2026-05-22T16:21:09.552740"
+    "path": "data/runtime/locks/daily_update_ui-daily_2026_2026-05-23_4f0d1e46e294.lock",
+    "pid": 8621,
+    "created_at": "2026-05-23T15:13:15.907661"
   },
   "seed": {
-    "value": 2145349090,
-    "source": "auto_future_date",
+    "value": 1337,
+    "source": "default_fixed",
     "explicit_cli": false
   },
   "prior_day": {
@@ -21,10 +21,10 @@
     "eval_report_path": "data/eval/batches/season_2026_ui_daily_live/sim_vs_actual_2026-05-22.json",
     "top_props_artifact_path": "data/daily/top_props/daily_top_props_2026_05_22.json",
     "live_lens": {
-      "status": "ok",
-      "source": "render_api",
+      "status": "skipped",
+      "source": null,
       "sync_out_path": "data/live_lens/render_sync/live_lens_reports_2026_05_22.json",
-      "headline": "No prior-day live-lens activity found for 2026-05-22."
+      "headline": null
     }
   },
   "current_day": {
@@ -45,132 +45,324 @@
   },
   "stages": {
     "prior_day_feed_live_refresh": {
-      "status": "skipped",
+      "status": "ok",
       "date": "2026-05-22",
       "season": 2026,
-      "reason": "refresh_prior_feed_live=off"
+      "games_scheduled": 15,
+      "regular_season_games_scheduled": 15,
+      "games_written": 15,
+      "errors": [],
+      "error_count": 0,
+      "out_dir": "data/raw/statsapi/feed_live/2026/2026-05-22",
+      "pbp_source": "statsapi_feed_live"
     },
     "prior_day_card_settlement": {
-      "status": "skipped",
+      "status": "ok",
       "date": "2026-05-22",
       "card_path": "data/daily/daily_summary_2026_05_22_locked_policy.json",
-      "reason": "settle_prior_card=off"
+      "settlement_path": "data/daily/settlements/daily_summary_2026_05_22_locked_policy_settlement.json",
+      "selected_counts": {
+        "totals": 0,
+        "ml": 1,
+        "pitcher_props": 1,
+        "hitter_home_runs": 0,
+        "hitter_hits": 4,
+        "hitter_hits_runs_rbis": 0,
+        "hitter_total_bases": 6,
+        "hitter_runs": 1,
+        "hitter_rbis": 0,
+        "combined": 13
+      },
+      "playable_selected_counts": {
+        "totals": 0,
+        "ml": 0,
+        "pitcher_props": 10,
+        "hitter_home_runs": 0,
+        "hitter_hits": 20,
+        "hitter_hits_runs_rbis": 0,
+        "hitter_total_bases": 6,
+        "hitter_runs": 1,
+        "hitter_rbis": 4,
+        "combined": 41
+      },
+      "all_selected_counts": {
+        "combined": 54,
+        "hitter_hits": 24,
+        "hitter_hits_runs_rbis": 0,
+        "hitter_home_runs": 0,
+        "hitter_rbis": 4,
+        "hitter_runs": 2,
+        "hitter_total_bases": 12,
+        "ml": 1,
+        "pitcher_props": 11,
+        "totals": 0
+      },
+      "results": {
+        "hitter_hits": {
+          "n": 4,
+          "wins": 2,
+          "losses": 2,
+          "stake_u": 2.0,
+          "profit_u": -0.2885,
+          "roi": -0.1442
+        },
+        "hitter_runs": {
+          "n": 1,
+          "wins": 0,
+          "losses": 1,
+          "stake_u": 0.5,
+          "profit_u": -0.5,
+          "roi": -1.0
+        },
+        "hitter_total_bases": {
+          "n": 5,
+          "wins": 3,
+          "losses": 2,
+          "stake_u": 2.5,
+          "profit_u": 0.0682,
+          "roi": 0.0273
+        },
+        "ml": {
+          "n": 1,
+          "wins": 0,
+          "losses": 1,
+          "stake_u": 1.0,
+          "profit_u": -1.0,
+          "roi": -1.0
+        },
+        "pitcher_props": {
+          "n": 1,
+          "wins": 1,
+          "losses": 0,
+          "stake_u": 1.0,
+          "profit_u": 0.7692,
+          "roi": 0.7692
+        },
+        "hitter_props": {
+          "n": 10,
+          "wins": 5,
+          "losses": 5,
+          "stake_u": 5.0,
+          "profit_u": -0.7203,
+          "roi": -0.1441
+        },
+        "combined": {
+          "n": 12,
+          "wins": 6,
+          "losses": 6,
+          "stake_u": 7.0,
+          "profit_u": -0.9511,
+          "roi": -0.1359
+        }
+      },
+      "playable_results": {
+        "hitter_hits": {
+          "n": 20,
+          "wins": 8,
+          "losses": 12,
+          "stake_u": 10.0,
+          "profit_u": -2.9769,
+          "roi": -0.2977
+        },
+        "hitter_rbis": {
+          "n": 3,
+          "wins": 2,
+          "losses": 1,
+          "stake_u": 1.5,
+          "profit_u": 1.5,
+          "roi": 1.0
+        },
+        "hitter_runs": {
+          "n": 1,
+          "wins": 0,
+          "losses": 1,
+          "stake_u": 0.5,
+          "profit_u": -0.5,
+          "roi": -1.0
+        },
+        "hitter_total_bases": {
+          "n": 5,
+          "wins": 0,
+          "losses": 5,
+          "stake_u": 2.5,
+          "profit_u": -2.5,
+          "roi": -1.0
+        },
+        "pitcher_props": {
+          "n": 9,
+          "wins": 4,
+          "losses": 5,
+          "stake_u": 9.0,
+          "profit_u": -1.6747,
+          "roi": -0.1861
+        },
+        "hitter_props": {
+          "n": 29,
+          "wins": 10,
+          "losses": 19,
+          "stake_u": 14.5,
+          "profit_u": -4.4769,
+          "roi": -0.3088
+        },
+        "combined": {
+          "n": 38,
+          "wins": 14,
+          "losses": 24,
+          "stake_u": 23.5,
+          "profit_u": -6.1516,
+          "roi": -0.2618
+        }
+      },
+      "all_results": {
+        "hitter_hits": {
+          "n": 24,
+          "wins": 10,
+          "losses": 14,
+          "stake_u": 12.0,
+          "profit_u": -3.2654,
+          "roi": -0.2721
+        },
+        "hitter_rbis": {
+          "n": 3,
+          "wins": 2,
+          "losses": 1,
+          "stake_u": 1.5,
+          "profit_u": 1.5,
+          "roi": 1.0
+        },
+        "hitter_runs": {
+          "n": 2,
+          "wins": 0,
+          "losses": 2,
+          "stake_u": 1.0,
+          "profit_u": -1.0,
+          "roi": -1.0
+        },
+        "hitter_total_bases": {
+          "n": 10,
+          "wins": 3,
+          "losses": 7,
+          "stake_u": 5.0,
+          "profit_u": -2.4318,
+          "roi": -0.4864
+        },
+        "ml": {
+          "n": 1,
+          "wins": 0,
+          "losses": 1,
+          "stake_u": 1.0,
+          "profit_u": -1.0,
+          "roi": -1.0
+        },
+        "pitcher_props": {
+          "n": 10,
+          "wins": 5,
+          "losses": 5,
+          "stake_u": 10.0,
+          "profit_u": -0.9055,
+          "roi": -0.0905
+        },
+        "hitter_props": {
+          "n": 39,
+          "wins": 15,
+          "losses": 24,
+          "stake_u": 19.5,
+          "profit_u": -5.1972,
+          "roi": -0.2665
+        },
+        "combined": {
+          "n": 50,
+          "wins": 20,
+          "losses": 30,
+          "stake_u": 30.5,
+          "profit_u": -7.1027,
+          "roi": -0.2329
+        }
+      },
+      "settled_n": 12,
+      "playable_settled_n": 38,
+      "all_settled_n": 50,
+      "unresolved_n": 1,
+      "playable_unresolved_n": 3,
+      "all_unresolved_n": 4,
+      "unresolved_reason_counts": {
+        "game not final": 4
+      },
+      "unresolved_game_pks": [
+        824518
+      ],
+      "final_game_pks": [],
+      "non_final_game_pks": [
+        824518
+      ],
+      "unknown_game_pks": [],
+      "all_unresolved_games_final": false
     },
     "prior_day_live_lens": {
-      "status": "ok",
+      "status": "skipped",
       "date": "2026-05-22",
       "sync_requested": true,
       "sync_out_path": "data/live_lens/render_sync/live_lens_reports_2026_05_22.json",
       "local_report_path": "data/live_lens/live_lens_report_2026_05_22.json",
       "local_registry_path": "data/live_lens/prop_registry/live_prop_registry_2026_05_22.json",
       "render_base_url": "https://mlb-betting-v2.onrender.com",
-      "source": "render_api",
-      "synced_report_path": "data/live_lens/render_sync/live_lens_reports_2026_05_22.json",
-      "registry_summary": {
-        "byProp": {},
-        "bySelection": {},
-        "date": "2026-05-22",
-        "resultCounts": {
-          "loss": 0,
-          "pending": 0,
-          "push": 0,
-          "win": 0
-        },
-        "settledEntries": 0,
-        "topEdges": [],
-        "topStable": [],
-        "totalEntries": 0,
-        "uniqueGames": 0,
-        "uniqueOwners": 0,
-        "updatedAt": null
-      },
-      "readout": {
-        "headline": "No prior-day live-lens activity found for 2026-05-22.",
-        "learnings": [],
-        "performance": [
-          "Render live-lens report processed 15 games in 3587.3 ms with 0 ms spent refreshing markets."
-        ]
-      }
+      "reason": "live-lens sync requested but Render base URL or cron token is unavailable",
+      "missing_credentials": [
+        "live_lens_cron_token"
+      ]
     },
     "live_pitcher_corrections": {
-      "status": "warning",
+      "status": "skipped",
       "max_date": "2026-05-22",
-      "artifacts": {
-        "outs": {
-          "command": [
-            "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python",
-            "/home/runner/work/MLB-BettingV2/MLB-BettingV2/tools/tune/fit_live_pitcher_outs_correction.py",
-            "--source",
-            "render-sync",
-            "--max-date",
-            "2026-05-22",
-            "--render-timeout-seconds",
-            "45",
-            "--out",
-            "/home/runner/work/MLB-BettingV2/MLB-BettingV2/data/eval/live_pitcher_outs_correction.json",
-            "--render-base-url",
-            "https://mlb-betting-v2.onrender.com",
-            "--render-cron-token",
-            "1234567890"
-          ],
-          "artifact_path": "data/eval/live_pitcher_outs_correction.json",
-          "exit_code": 1,
-          "stderr_tail": "Need at least 5 settled outs rows to fit a correction layer; found 3",
-          "status": "error"
-        },
-        "strikeouts": {
-          "command": [
-            "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python",
-            "/home/runner/work/MLB-BettingV2/MLB-BettingV2/tools/tune/fit_live_pitcher_strikeouts_correction.py",
-            "--source",
-            "render-sync",
-            "--max-date",
-            "2026-05-22",
-            "--render-timeout-seconds",
-            "45",
-            "--out",
-            "/home/runner/work/MLB-BettingV2/MLB-BettingV2/data/eval/live_pitcher_strikeouts_correction.json",
-            "--render-base-url",
-            "https://mlb-betting-v2.onrender.com",
-            "--render-cron-token",
-            "1234567890"
-          ],
-          "artifact_path": "data/eval/live_pitcher_strikeouts_correction.json",
-          "exit_code": 0,
-          "rows": 6,
-          "date_window": {
-            "min_date": "2026-05-21",
-            "max_date": "2026-05-21"
-          },
-          "training_metrics": {
-            "baseline_mae": 0.708,
-            "baseline_rmse": 0.899,
-            "corrected_mae": 0.169,
-            "corrected_rmse": 0.231
-          },
-          "leave_one_out_metrics": {
-            "baseline_mae": 0.708,
-            "baseline_rmse": 0.899,
-            "corrected_mae": 0.526,
-            "corrected_rmse": 0.602
-          },
-          "status": "ok"
-        }
-      },
+      "artifacts": {},
       "render_base_url": "https://mlb-betting-v2.onrender.com",
-      "error": "outs fitter exited 1"
+      "reason": "live pitcher correction refresh requested but Render base URL or cron token is unavailable",
+      "missing_credentials": [
+        "live_lens_cron_token"
+      ]
     },
     "prior_day_eval_report": {
-      "status": "skipped",
+      "status": "ok",
       "date": "2026-05-22",
+      "batch_dir": "data/eval/batches/season_2026_ui_daily_live",
       "report_path": "data/eval/batches/season_2026_ui_daily_live/sim_vs_actual_2026-05-22.json",
-      "reason": "refresh_season_manifests=off"
+      "command": [
+        "/usr/bin/python3.12",
+        "/workspaces/MLB-BettingV2/tools/eval/reconcile_daily_sim_artifacts.py",
+        "--date",
+        "2026-05-22",
+        "--season",
+        "2026",
+        "--out",
+        "/workspaces/MLB-BettingV2/data/eval/batches/season_2026_ui_daily_live/sim_vs_actual_2026-05-22.json",
+        "--prop-lines-source",
+        "auto",
+        "--hitter-hr-prob-calibration",
+        "data/tuning/hitter_hr_calibration/default.json",
+        "--hitter-props-prob-calibration",
+        "data/tuning/hitter_props_calibration/default.json"
+      ],
+      "exit_code": 0,
+      "report_exists": true
     },
     "season_publish": {
-      "status": "skipped",
+      "status": "ok",
       "season": 2026,
       "batch_dir": "data/eval/batches/season_2026_ui_daily_live",
-      "reason": "refresh_season_manifests=off"
+      "season_eval_manifest": "data/eval/seasons/2026/season_eval_manifest.json",
+      "season_eval_recap": "data/eval/seasons/2026/season_eval_recap.md",
+      "season_eval_status": "partial",
+      "season_eval_partial": true,
+      "season_eval_days": 1,
+      "betting_profile": "retuned",
+      "season_betting_manifest": "data/eval/seasons/2026/season_betting_cards_retuned_manifest.json",
+      "season_betting_recap": "data/eval/seasons/2026/season_betting_cards_retuned_recap.md",
+      "season_betting_cards_dir": "data/eval/seasons/2026/locked_cards_retuned",
+      "season_betting_day_payload_dir": "data/eval/seasons/2026/betting_day_payloads_retuned",
+      "season_betting_exit_code": 0,
+      "season_betting_manifest_exists": true,
+      "season_betting_fallback_used": false,
+      "season_betting_fallback_error": ""
     },
     "prior_day_top_props_artifact": {
       "status": "ok",
@@ -178,562 +370,6 @@
       "artifact_path": "data/daily/top_props/daily_top_props_2026_05_22.json",
       "group_summaries": {
         "pitcher": {
-          "found": true,
-          "candidateCount": 116,
-          "displayedCount": 116,
-          "sectionCount": 5
-        },
-        "hitter": {
-          "found": true,
-          "candidateCount": 1675,
-          "displayedCount": 1675,
-          "sectionCount": 7
-        }
-      }
-    },
-    "current_day_oddsapi": {
-      "status": "warning",
-      "date": "2026-05-23",
-      "mode": "live",
-      "out_dir": "/home/runner/work/MLB-BettingV2/MLB-BettingV2/data/market/oddsapi",
-      "game_lines_path": "/home/runner/work/MLB-BettingV2/MLB-BettingV2/data/market/oddsapi/oddsapi_game_lines_2026_05_23.json",
-      "pitcher_props_path": "/home/runner/work/MLB-BettingV2/MLB-BettingV2/data/market/oddsapi/oddsapi_pitcher_props_2026_05_23.json",
-      "hitter_props_path": "/home/runner/work/MLB-BettingV2/MLB-BettingV2/data/market/oddsapi/oddsapi_hitter_props_2026_05_23.json",
-      "counts": {
-        "game_lines": {
-          "events_matched": 0,
-          "games": 0,
-          "h2h_games": 0,
-          "totals_games": 0,
-          "spreads_games": 0
-        },
-        "pitcher_props": {
-          "players": 0,
-          "markets": {},
-          "events_matched": 0
-        },
-        "hitter_props": {
-          "players": 0,
-          "markets": {},
-          "events_matched": 0
-        }
-      },
-      "warnings": [
-        "current-day OddsAPI ingest captured no game lines",
-        "current-day OddsAPI ingest captured no pitcher props",
-        "current-day OddsAPI ingest captured no hitter props"
-      ]
-    },
-    "current_day_overwrite_prep": {
-      "status": "ok",
-      "date": "2026-05-23",
-      "removed": [
-        "data/daily/daily_summary_2026_05_23.json",
-        "data/daily/daily_summary_2026_05_23_profile_bundle.json",
-        "data/daily/daily_summary_2026_05_23_locked_policy.json",
-        "data/daily/daily_summary_2026_05_23_hr_targets.json",
-        "data/daily/sims/2026-05-23",
-        "data/daily/snapshots/2026-05-23",
-        "data/daily/top_props/daily_top_props_2026_05_23.json",
-        "data/daily/ladders/daily_ladders_2026_05_23.json",
-        "data/daily/ladders/daily_ladder_audit_2026_05_23.json",
-        "data/daily/season_frontend/season_manifest_2026_2026_05_23.json",
-        "data/daily/season_frontend/season_day_2026_2026_05_23_retuned.json",
-        "data/daily/season_frontend/season_betting_day_2026_2026_05_23_retuned.json",
-        "data/daily/season_frontend/season_official_betting_day_2026_2026_05_23_retuned.json",
-        "data/daily_pitcher_props/snapshots/2026-05-23",
-        "data/daily_hitter_props/snapshots/2026-05-23"
-      ],
-      "removed_count": 15
-    },
-    "current_day_multi_profile": {
-      "status": "ok",
-      "command": [
-        "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python",
-        "/home/runner/work/MLB-BettingV2/MLB-BettingV2/tools/daily_update_multi_profile.py",
-        "--date",
-        "2026-05-23",
-        "--season",
-        "2026",
-        "--python-exe",
-        "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python3.11",
-        "--out-game",
-        "/home/runner/work/MLB-BettingV2/MLB-BettingV2/data/daily",
-        "--out-pitcher",
-        "/home/runner/work/MLB-BettingV2/MLB-BettingV2/data/daily_pitcher_props",
-        "--out-hitter",
-        "/home/runner/work/MLB-BettingV2/MLB-BettingV2/data/daily_hitter_props",
-        "--refresh-season-manifests",
-        "off",
-        "--sims",
-        "1000",
-        "--workers",
-        "4",
-        "--pbp",
-        "off",
-        "--use-roster-artifacts",
-        "on",
-        "--write-roster-artifacts",
-        "on",
-        "--seed",
-        "2145349090",
-        "--seed-source",
-        "auto_future_date"
-      ],
-      "seed": {
-        "value": 2145349090,
-        "source": "auto_future_date",
-        "explicit_cli": false
-      },
-      "summary_path": "data/daily/daily_summary_2026_05_23.json",
-      "profile_bundle_path": "data/daily/daily_summary_2026_05_23_profile_bundle.json",
-      "locked_policy_path": "data/daily/daily_summary_2026_05_23_locked_policy.json",
-      "exit_code": 0,
-      "summary_exists": true,
-      "profile_bundle_exists": true,
-      "locked_policy_exists": true,
-      "official_card_audit_track": {
-        "official_card_explanation_support": {
-          "selected_rows_n": 0,
-          "sparse_support_n": 0,
-          "sparse_support_rate": 0.0,
-          "support_min_reasons": 2,
-          "status_counts": {
-            "strong": 0,
-            "supported": 0,
-            "thin": 0,
-            "none": 0
-          },
-          "markets": {
-            "totals": {
-              "selected_n": 0,
-              "sparse_support_n": 0,
-              "status_counts": {
-                "strong": 0,
-                "supported": 0,
-                "thin": 0,
-                "none": 0
-              },
-              "examples": []
-            },
-            "ml": {
-              "selected_n": 0,
-              "sparse_support_n": 0,
-              "status_counts": {
-                "strong": 0,
-                "supported": 0,
-                "thin": 0,
-                "none": 0
-              },
-              "examples": []
-            },
-            "pitcher_props": {
-              "selected_n": 0,
-              "sparse_support_n": 0,
-              "status_counts": {
-                "strong": 0,
-                "supported": 0,
-                "thin": 0,
-                "none": 0
-              },
-              "examples": []
-            },
-            "hitter_home_runs": {
-              "selected_n": 0,
-              "sparse_support_n": 0,
-              "status_counts": {
-                "strong": 0,
-                "supported": 0,
-                "thin": 0,
-                "none": 0
-              },
-              "examples": []
-            },
-            "hitter_hits": {
-              "selected_n": 0,
-              "sparse_support_n": 0,
-              "status_counts": {
-                "strong": 0,
-                "supported": 0,
-                "thin": 0,
-                "none": 0
-              },
-              "examples": []
-            },
-            "hitter_hits_runs_rbis": {
-              "selected_n": 0,
-              "sparse_support_n": 0,
-              "status_counts": {
-                "strong": 0,
-                "supported": 0,
-                "thin": 0,
-                "none": 0
-              },
-              "examples": []
-            },
-            "hitter_total_bases": {
-              "selected_n": 0,
-              "sparse_support_n": 0,
-              "status_counts": {
-                "strong": 0,
-                "supported": 0,
-                "thin": 0,
-                "none": 0
-              },
-              "examples": []
-            },
-            "hitter_runs": {
-              "selected_n": 0,
-              "sparse_support_n": 0,
-              "status_counts": {
-                "strong": 0,
-                "supported": 0,
-                "thin": 0,
-                "none": 0
-              },
-              "examples": []
-            },
-            "hitter_rbis": {
-              "selected_n": 0,
-              "sparse_support_n": 0,
-              "status_counts": {
-                "strong": 0,
-                "supported": 0,
-                "thin": 0,
-                "none": 0
-              },
-              "examples": []
-            }
-          },
-          "sparse_support_examples": []
-        },
-        "selected_support_policy": {
-          "support_min_reasons": 2,
-          "removed_sparse_support_n": 0,
-          "replacement_added_n": 0,
-          "selection_shortfall_n": 0,
-          "markets": {
-            "totals": {
-              "market": "totals",
-              "support_min_reasons": 2,
-              "baseline_selected_n": 0,
-              "final_selected_n": 0,
-              "removed_sparse_support_n": 0,
-              "replacement_added_n": 0,
-              "selection_shortfall_n": 0,
-              "removed_examples": []
-            },
-            "ml": {
-              "market": "ml",
-              "support_min_reasons": 2,
-              "baseline_selected_n": 0,
-              "final_selected_n": 0,
-              "removed_sparse_support_n": 0,
-              "replacement_added_n": 0,
-              "selection_shortfall_n": 0,
-              "removed_examples": []
-            },
-            "pitcher_props": {
-              "market": "pitcher_props",
-              "support_min_reasons": 2,
-              "baseline_selected_n": 0,
-              "final_selected_n": 0,
-              "removed_sparse_support_n": 0,
-              "replacement_added_n": 0,
-              "selection_shortfall_n": 0,
-              "removed_examples": []
-            },
-            "hitter_props": {
-              "market": "hitter_props",
-              "support_min_reasons": 2,
-              "baseline_selected_n": 0,
-              "final_selected_n": 0,
-              "removed_sparse_support_n": 0,
-              "replacement_added_n": 0,
-              "selection_shortfall_n": 0,
-              "removed_examples": []
-            },
-            "hitter_home_runs": {
-              "market": "hitter_home_runs",
-              "support_min_reasons": 2,
-              "baseline_selected_n": 0,
-              "final_selected_n": 0,
-              "removed_sparse_support_n": 0,
-              "replacement_added_n": 0,
-              "selection_shortfall_n": 0,
-              "removed_examples": []
-            },
-            "hitter_hits": {
-              "market": "hitter_hits",
-              "support_min_reasons": 2,
-              "baseline_selected_n": 0,
-              "final_selected_n": 0,
-              "removed_sparse_support_n": 0,
-              "replacement_added_n": 0,
-              "selection_shortfall_n": 0,
-              "removed_examples": []
-            },
-            "hitter_hits_runs_rbis": {
-              "market": "hitter_hits_runs_rbis",
-              "support_min_reasons": 2,
-              "baseline_selected_n": 0,
-              "final_selected_n": 0,
-              "removed_sparse_support_n": 0,
-              "replacement_added_n": 0,
-              "selection_shortfall_n": 0,
-              "removed_examples": []
-            },
-            "hitter_total_bases": {
-              "market": "hitter_total_bases",
-              "support_min_reasons": 2,
-              "baseline_selected_n": 0,
-              "final_selected_n": 0,
-              "removed_sparse_support_n": 0,
-              "replacement_added_n": 0,
-              "selection_shortfall_n": 0,
-              "removed_examples": []
-            },
-            "hitter_runs": {
-              "market": "hitter_runs",
-              "support_min_reasons": 2,
-              "baseline_selected_n": 0,
-              "final_selected_n": 0,
-              "removed_sparse_support_n": 0,
-              "replacement_added_n": 0,
-              "selection_shortfall_n": 0,
-              "removed_examples": []
-            },
-            "hitter_rbis": {
-              "market": "hitter_rbis",
-              "support_min_reasons": 2,
-              "baseline_selected_n": 0,
-              "final_selected_n": 0,
-              "removed_sparse_support_n": 0,
-              "replacement_added_n": 0,
-              "selection_shortfall_n": 0,
-              "removed_examples": []
-            }
-          }
-        },
-        "playable_support_policy": {
-          "support_min_reasons": 2,
-          "removed_sparse_support_n": 0,
-          "markets": {
-            "pitcher_props": {
-              "market": "pitcher_props",
-              "evaluated_n": 0,
-              "kept_n": 0,
-              "removed_sparse_support_n": 0,
-              "removed_examples": []
-            },
-            "hitter_home_runs": {
-              "market": "hitter_home_runs",
-              "evaluated_n": 0,
-              "kept_n": 0,
-              "removed_sparse_support_n": 0,
-              "removed_examples": []
-            },
-            "hitter_hits": {
-              "market": "hitter_hits",
-              "evaluated_n": 0,
-              "kept_n": 0,
-              "removed_sparse_support_n": 0,
-              "removed_examples": []
-            },
-            "hitter_hits_runs_rbis": {
-              "market": "hitter_hits_runs_rbis",
-              "evaluated_n": 0,
-              "kept_n": 0,
-              "removed_sparse_support_n": 0,
-              "removed_examples": []
-            },
-            "hitter_total_bases": {
-              "market": "hitter_total_bases",
-              "evaluated_n": 0,
-              "kept_n": 0,
-              "removed_sparse_support_n": 0,
-              "removed_examples": []
-            },
-            "hitter_runs": {
-              "market": "hitter_runs",
-              "evaluated_n": 0,
-              "kept_n": 0,
-              "removed_sparse_support_n": 0,
-              "removed_examples": []
-            },
-            "hitter_rbis": {
-              "market": "hitter_rbis",
-              "evaluated_n": 0,
-              "kept_n": 0,
-              "removed_sparse_support_n": 0,
-              "removed_examples": []
-            }
-          }
-        },
-        "shadow_support_policy": {
-          "pitcher_props": {
-            "market": "shadow_pitcher_props",
-            "evaluated_n": 0,
-            "kept_n": 0,
-            "removed_sparse_support_n": 0,
-            "removed_examples": []
-          },
-          "hitter_props": {
-            "market": "shadow_hitter_props",
-            "evaluated_n": 0,
-            "kept_n": 0,
-            "removed_sparse_support_n": 0,
-            "removed_examples": []
-          }
-        }
-      },
-      "official_card_explanation_diagnostics": {
-        "selected_rows_n": 0,
-        "sparse_support_n": 0,
-        "sparse_support_rate": 0.0,
-        "support_min_reasons": 2,
-        "status_counts": {
-          "strong": 0,
-          "supported": 0,
-          "thin": 0,
-          "none": 0
-        },
-        "markets": {
-          "totals": {
-            "selected_n": 0,
-            "sparse_support_n": 0,
-            "status_counts": {
-              "strong": 0,
-              "supported": 0,
-              "thin": 0,
-              "none": 0
-            },
-            "examples": []
-          },
-          "ml": {
-            "selected_n": 0,
-            "sparse_support_n": 0,
-            "status_counts": {
-              "strong": 0,
-              "supported": 0,
-              "thin": 0,
-              "none": 0
-            },
-            "examples": []
-          },
-          "pitcher_props": {
-            "selected_n": 0,
-            "sparse_support_n": 0,
-            "status_counts": {
-              "strong": 0,
-              "supported": 0,
-              "thin": 0,
-              "none": 0
-            },
-            "examples": []
-          },
-          "hitter_home_runs": {
-            "selected_n": 0,
-            "sparse_support_n": 0,
-            "status_counts": {
-              "strong": 0,
-              "supported": 0,
-              "thin": 0,
-              "none": 0
-            },
-            "examples": []
-          },
-          "hitter_hits": {
-            "selected_n": 0,
-            "sparse_support_n": 0,
-            "status_counts": {
-              "strong": 0,
-              "supported": 0,
-              "thin": 0,
-              "none": 0
-            },
-            "examples": []
-          },
-          "hitter_hits_runs_rbis": {
-            "selected_n": 0,
-            "sparse_support_n": 0,
-            "status_counts": {
-              "strong": 0,
-              "supported": 0,
-              "thin": 0,
-              "none": 0
-            },
-            "examples": []
-          },
-          "hitter_total_bases": {
-            "selected_n": 0,
-            "sparse_support_n": 0,
-            "status_counts": {
-              "strong": 0,
-              "supported": 0,
-              "thin": 0,
-              "none": 0
-            },
-            "examples": []
-          },
-          "hitter_runs": {
-            "selected_n": 0,
-            "sparse_support_n": 0,
-            "status_counts": {
-              "strong": 0,
-              "supported": 0,
-              "thin": 0,
-              "none": 0
-            },
-            "examples": []
-          },
-          "hitter_rbis": {
-            "selected_n": 0,
-            "sparse_support_n": 0,
-            "status_counts": {
-              "strong": 0,
-              "supported": 0,
-              "thin": 0,
-              "none": 0
-            },
-            "examples": []
-          }
-        },
-        "sparse_support_examples": []
-      },
-      "hr_targets_artifact_path": "data/daily/daily_summary_2026_05_23_hr_targets.json",
-      "hr_targets_artifact_exists": true,
-      "hr_targets_rows": 5,
-      "rfi_targets_artifact_path": "data/daily/daily_summary_2026_05_23_rfi_targets.json",
-      "rfi_targets_artifact_exists": true,
-      "rfi_targets_rows": 0
-    },
-    "hr_target_history_reconcile": {
-      "status": "ok",
-      "season": 2026,
-      "command": [
-        "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python",
-        "/home/runner/work/MLB-BettingV2/MLB-BettingV2/tools/eval/reconcile_hr_target_artifacts.py",
-        "--season",
-        "2026",
-        "--write",
-        "on",
-        "--report-out",
-        "/home/runner/work/MLB-BettingV2/MLB-BettingV2/data/daily/season_frontend/hr_target_reconcile_2026.json"
-      ],
-      "report_path": "data/daily/season_frontend/hr_target_reconcile_2026.json",
-      "exit_code": 0,
-      "report_exists": true,
-      "dates_checked": 61,
-      "dates_changed": 0,
-      "changed_dates": []
-    },
-    "current_day_top_props_artifact": {
-      "status": "ok",
-      "date": "2026-05-23",
-      "artifact_path": "data/daily/top_props/daily_top_props_2026_05_23.json",
-      "group_summaries": {
-        "pitcher": {
           "found": false,
           "candidateCount": 0,
           "displayedCount": 0,
@@ -746,253 +382,11 @@
           "sectionCount": 7
         }
       }
-    },
-    "current_day_ladders_artifact": {
-      "status": "ok",
-      "date": "2026-05-23",
-      "artifact_path": "data/daily/ladders/daily_ladders_2026_05_23.json",
-      "group_summaries": {
-        "pitcher": {
-          "strikeouts": {
-            "found": true,
-            "rowCount": 30,
-            "error": null
-          },
-          "outs": {
-            "found": true,
-            "rowCount": 30,
-            "error": null
-          },
-          "pitches": {
-            "found": true,
-            "rowCount": 30,
-            "error": null
-          },
-          "hits_allowed": {
-            "found": true,
-            "rowCount": 30,
-            "error": null
-          },
-          "earned_runs": {
-            "found": true,
-            "rowCount": 30,
-            "error": null
-          },
-          "walks_allowed": {
-            "found": true,
-            "rowCount": 30,
-            "error": null
-          },
-          "batters_faced": {
-            "found": true,
-            "rowCount": 30,
-            "error": null
-          }
-        },
-        "hitter": {
-          "hits": {
-            "found": true,
-            "rowCount": 390,
-            "error": null
-          },
-          "hits_runs_rbis": {
-            "found": true,
-            "rowCount": 390,
-            "error": null
-          },
-          "home_runs": {
-            "found": true,
-            "rowCount": 390,
-            "error": null
-          },
-          "total_bases": {
-            "found": true,
-            "rowCount": 390,
-            "error": null
-          },
-          "runs": {
-            "found": true,
-            "rowCount": 390,
-            "error": null
-          },
-          "rbi": {
-            "found": true,
-            "rowCount": 390,
-            "error": null
-          },
-          "hitter_strikeouts": {
-            "found": true,
-            "rowCount": 390,
-            "error": null
-          },
-          "doubles": {
-            "found": true,
-            "rowCount": 390,
-            "error": null
-          },
-          "triples": {
-            "found": true,
-            "rowCount": 390,
-            "error": null
-          },
-          "stolen_bases": {
-            "found": true,
-            "rowCount": 390,
-            "error": null
-          }
-        }
-      }
-    },
-    "current_day_ladder_audit_artifact": {
-      "status": "ok",
-      "date": "2026-05-23",
-      "artifact_path": "data/daily/ladders/daily_ladder_audit_2026_05_23.json",
-      "summary": {
-        "cards": 15,
-        "badges": 0,
-        "sources": {},
-        "tones": {},
-        "stats": {},
-        "final": {
-          "badges": 0,
-          "rungWins": 0,
-          "rungLosses": 0,
-          "rungHitRate": null,
-          "mixedBadgeCount": 0
-        },
-        "lossSizeCounts": {},
-        "winSizeCounts": {}
-      }
-    },
-    "current_day_season_frontend_artifacts": {
-      "status": "ok",
-      "date": "2026-05-23",
-      "dir": "data/daily/season_frontend",
-      "profile": "retuned",
-      "artifacts": {
-        "season_manifest": {
-          "path": "data/daily/season_frontend/season_manifest_2026_2026_05_23.json",
-          "found": true,
-          "error": null,
-          "exists": true
-        },
-        "season_day": {
-          "path": "data/daily/season_frontend/season_day_2026_2026_05_23_retuned.json",
-          "found": true,
-          "error": null,
-          "exists": true
-        },
-        "season_betting_day": {
-          "path": "data/daily/season_frontend/season_betting_day_2026_2026_05_23_retuned.json",
-          "found": true,
-          "error": null,
-          "exists": true
-        },
-        "season_official_betting_day": {
-          "path": "data/daily/season_frontend/season_official_betting_day_2026_2026_05_23_retuned.json",
-          "found": true,
-          "error": null,
-          "exists": true
-        }
-      }
-    },
-    "next_day_forward_build": {
-      "status": "ok",
-      "date": "2026-05-24",
-      "season": 2026,
-      "command": [
-        "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python3.11",
-        "/home/runner/work/MLB-BettingV2/MLB-BettingV2/tools/daily_update.py",
-        "--workflow",
-        "ui-daily",
-        "--date",
-        "2026-05-24",
-        "--season",
-        "2026",
-        "--reconcile-date",
-        "2026-05-23",
-        "--refresh-prior-feed-live",
-        "off",
-        "--settle-prior-card",
-        "off",
-        "--refresh-season-manifests",
-        "off",
-        "--reconcile-hr-target-history",
-        "off",
-        "--git-push",
-        "off",
-        "--build-next-day",
-        "off",
-        "--validate-render-frontend",
-        "off",
-        "--refresh-season-manifests",
-        "off",
-        "--sims",
-        "1000",
-        "--workers",
-        "4",
-        "--pbp",
-        "off",
-        "--use-roster-artifacts",
-        "on",
-        "--write-roster-artifacts",
-        "on",
-        "--seed",
-        "2145349090",
-        "--seed-source",
-        "auto_future_date"
-      ],
-      "exit_code": 0
-    },
-    "current_day_roster_snapshot": {
-      "status": "ok",
-      "snapshot_dir": "data/daily/snapshots/2026-05-23",
-      "team_rosters_raw": "data/daily/snapshots/2026-05-23/team_rosters_raw.json",
-      "injuries_raw": "data/daily/snapshots/2026-05-23/injuries_raw.json",
-      "roster_events": "data/daily/snapshots/2026-05-23/roster_events.json",
-      "lineups_last_known": "data/daily/lineups_last_known_by_team.json"
-    },
-    "current_day_batting_lineups": {
-      "status": "ok",
-      "path": "data/daily/snapshots/2026-05-23/lineups.json",
-      "games": 15,
-      "summary": {
-        "games": 15,
-        "projected_teams": 30,
-        "adjusted_teams": 0,
-        "partial_teams": 0,
-        "fallback_pool_teams": 0,
-        "confirmed_teams": 0,
-        "projected_only_teams": 30,
-        "confirmed_only_teams": 0,
-        "comparable_teams": 0,
-        "exact_match_teams": 0,
-        "true_mismatch_teams": 0
-      },
-      "adjusted_teams": 0,
-      "partial_teams": 0,
-      "fallback_pool_teams": 0
-    },
-    "current_day_probable_pitchers": {
-      "status": "ok",
-      "path": "data/daily/snapshots/2026-05-23/probables.json",
-      "games": 15
-    },
-    "render_frontend_validation": {
-      "status": "skipped",
-      "date": "2026-05-23",
-      "season": 2026,
-      "reason": "render validation skipped because no published commit is available"
     }
   },
-  "notes": [
-    "current-day official betting card day artifact has no selected rows yet"
-  ],
+  "notes": [],
   "warnings": [
-    "live pitcher correction refresh warning: outs fitter exited 1",
-    "current-day OddsAPI ingest captured no game lines",
-    "current-day OddsAPI ingest captured no pitcher props",
-    "current-day OddsAPI ingest captured no hitter props"
+    "prior-day card settlement left 4 unresolved recommendation(s)"
   ],
   "validation_errors": [],
   "errors": [],
@@ -1002,33 +396,17 @@
     "season": 2026
   },
   "git_push": {
-    "requested": false,
+    "requested": true,
     "remote": "origin",
     "branch": "",
     "phases": [
       {
         "phase": "prior_day",
         "label": "prior-day reconciliation outputs for 2026-05-22",
-        "requested": false,
-        "status": "skipped",
-        "reason": "git_push=off"
-      },
-      {
-        "phase": "current_day",
-        "label": "current-day artifacts for 2026-05-23",
-        "requested": false,
-        "status": "skipped",
-        "reason": "git_push=off"
-      },
-      {
-        "phase": "next_day",
-        "label": "next-day forward outputs for 2026-05-24",
-        "requested": false,
-        "status": "skipped",
-        "reason": "git_push=off"
+        "requested": true,
+        "preexisting_change_count": 0
       }
     ],
-    "status": "skipped"
-  },
-  "status": "partial"
+    "preexisting_change_count": 0
+  }
 }
