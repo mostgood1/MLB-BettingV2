@@ -1,21 +1,27 @@
 {
   "date": "2026-05-25",
   "season": 2026,
-  "generated_at": "2026-05-24T12:26:26.928657",
+  "generated_at": "2026-05-24T16:06:39.341793",
   "tool": "tools/daily_update_multi_profile.py",
   "daily_update_tool": "tools/daily_update.py",
-  "python_exe": "/usr/bin/python3.12",
+  "python_exe": "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python3.11",
   "passthrough_args": [
     "--refresh-season-manifests",
     "off",
-    "--build-next-day",
+    "--sims",
+    "1000",
+    "--workers",
+    "4",
+    "--pbp",
     "off",
-    "--validate-render-frontend",
-    "off",
+    "--use-roster-artifacts",
+    "on",
+    "--write-roster-artifacts",
+    "on",
     "--seed",
-    "1337",
+    "1464505460",
     "--seed-source",
-    "default_fixed"
+    "auto_future_date"
   ],
   "profiles": {
     "game_recos": {
@@ -31,7 +37,7 @@
         "data/tuning/pitch_model_overrides/_tmp_hr_bbhbp1p04_starterbbhbp1p04.json"
       ],
       "exit_code": 0,
-      "duration_s": 347.573,
+      "duration_s": 95.561,
       "skipped": false
     },
     "pitcher_props_recos": {
@@ -131,9 +137,9 @@
       }
     },
     "warnings": [
-      "Missing game lines: data/market/oddsapi/oddsapi_game_lines_2026_05_25.json",
-      "Missing pitcher lines: data/market/oddsapi/oddsapi_pitcher_props_2026_05_25.json",
-      "Missing hitter lines: data/market/oddsapi/oddsapi_hitter_props_2026_05_25.json",
+      "No game lines entries found in data/market/oddsapi/oddsapi_game_lines_2026_05_25.json",
+      "No pitcher lines entries found in data/market/oddsapi/oddsapi_pitcher_props_2026_05_25.json",
+      "No hitter lines entries found in data/market/oddsapi/oddsapi_hitter_props_2026_05_25.json",
       "No support-qualified hitter strikeout shadow candidates were published; current hitter sim artifacts may not include strikeout distributions yet."
     ],
     "explanation_diagnostics": {
@@ -549,8 +555,8 @@
   },
   "hr_targets": {
     "artifact_path": "data/daily/daily_summary_2026_05_25_hr_targets.json",
-    "games": 1,
-    "rows": 1,
+    "games": 2,
+    "rows": 2,
     "policy_preset": "default",
     "error": null
   },
@@ -563,10 +569,10 @@
   },
   "timings": {
     "profiles": {
-      "game_recos": 347.573
+      "game_recos": 95.561
     },
-    "locked_policy_s": 0.301,
-    "total_s": 348.07
+    "locked_policy_s": 0.116,
+    "total_s": 95.696
   },
   "failures": [],
   "failures_n": 0
