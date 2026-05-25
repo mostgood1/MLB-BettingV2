@@ -3231,6 +3231,51 @@ def _collect_daily_hr_targets(
     exclusion_examples: List[Dict[str, Any]] = []
     exclusion_rows_all: List[Dict[str, Any]] = []
 
+    def _backfill_selected_targets(
+        selected_rows: List[Dict[str, Any]],
+        excluded_rows: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        max_per_game = int(resolved_hr_target_policy.get("max_per_game") or _HR_TARGET_MAX_PER_GAME)
+        max_per_team = int(resolved_hr_target_policy.get("max_per_team") or _HR_TARGET_MAX_PER_TEAM)
+        if max_per_game <= 0 or len(selected_rows) >= max_per_game:
+            return selected_rows
+        team_counts: Counter[str] = Counter(str(row.get("team") or "") for row in selected_rows if str(row.get("team") or ""))
+        selected_keys = {
+            (
+                str(row.get("player_name") or "").strip().lower(),
+                str(row.get("team") or "").strip().lower(),
+                _safe_int(row.get("batter_id")),
+            )
+            for row in selected_rows
+            if isinstance(row, dict)
+        }
+        for row in excluded_rows:
+            if not isinstance(row, dict) or not bool(row.get("near_threshold")):
+                continue
+            primary_reason = str(row.get("primary_reason") or "").strip().lower()
+            if primary_reason not in {"below_min_prob", "below_min_support_score"}:
+                continue
+            row_key = (
+                str(row.get("player_name") or "").strip().lower(),
+                str(row.get("team") or "").strip().lower(),
+                _safe_int(row.get("batter_id")),
+            )
+            if row_key in selected_keys:
+                continue
+            team_key = str(row.get("team") or "")
+            if team_key and team_counts[team_key] >= max_per_team:
+                continue
+            fallback_row = dict(row)
+            fallback_row["source"] = str(fallback_row.get("source") or "hitter_hr_likelihood_fallback")
+            fallback_row["fallback_selected"] = True
+            selected_rows.append(fallback_row)
+            selected_keys.add(row_key)
+            if team_key:
+                team_counts[team_key] += 1
+            if len(selected_rows) >= max_per_game:
+                break
+        return selected_rows
+
     for sim_obj in _iter_sim_records(sim_dir):
         base = _base_game_row(sim_obj)
         roster_snapshot = _roster_for(sim_obj)
@@ -3289,40 +3334,8 @@ def _collect_daily_hr_targets(
             support = _hitter_hr_target_support(rec, context_fields)
             support_score = float(support.get("raw_score") or support.get("score") or 0.0)
             display_support_score = float(support.get("score") or support_score)
-            exclusion_reasons = _hitter_hr_target_exclusion_reasons(rec, context_fields, hr_prob, support_score, resolved_hr_target_policy)
-            if exclusion_reasons:
-                primary_reason = _hr_target_exclusion_priority(exclusion_reasons)
-                exclusion_counts[primary_reason] = int(exclusion_counts.get(primary_reason, 0)) + 1
-                prob_gap = None
-                min_prob_threshold = _hitter_hr_target_min_prob_threshold(support_score, resolved_hr_target_policy)
-                if hr_prob is not None:
-                    prob_gap = round(float(min_prob_threshold) - float(hr_prob), 4)
-                support_gap = round(float(resolved_hr_target_policy.get("min_support_score") or _HR_TARGET_MIN_SUPPORT_SCORE) - float(support_score), 1)
-                excluded_rows.append(
-                    {
-                        **base,
-                        "player_name": rec.get("name"),
-                        "team": str(matchup_ctx.get("team") or rec.get("team") or "").strip(),
-                        "batter_id": _safe_int(rec.get("batter_id")),
-                        "lineup_status": context_fields.get("lineup_status"),
-                        "lineup_order": _safe_int(rec.get("lineup_order")),
-                        "pa_mean": _safe_float(rec.get("pa_mean")),
-                        "ab_mean": _safe_float(rec.get("ab_mean")),
-                        "p_hr_1plus": (round(float(hr_prob), 4) if hr_prob is not None else None),
-                        "min_prob_threshold": round(float(min_prob_threshold), 4),
-                        "hr_support_score": round(float(display_support_score), 1),
-                        "hr_support_raw_score": round(float(support_score), 1),
-                        "primary_reason": primary_reason,
-                        "reasons": exclusion_reasons,
-                        "prob_gap": prob_gap,
-                        "support_gap": support_gap,
-                        "near_threshold": bool((prob_gap is not None and prob_gap <= 0.03) or float(support_gap) <= 10.0),
-                    }
-                )
-                continue
-
             rank_score = _hitter_hr_target_rank_score(
-                float(hr_prob),
+                float(hr_prob or 0.0),
                 support_score,
                 _safe_float(rec.get("pa_mean")),
                 _safe_int(rec.get("lineup_order")),
@@ -3334,7 +3347,7 @@ def _collect_daily_hr_targets(
                 side = "away" if team and team == str(base.get("away_abbr") or "") else ("home" if team and team == str(base.get("home_abbr") or "") else "")
             matchup = f"{team} @ {opponent}" if side == "away" else (f"{opponent} @ {team}" if side == "home" else team)
 
-            candidate = {
+            candidate_base = {
                 **base,
                 **context_fields,
                 "player_name": rec.get("name"),
@@ -3342,7 +3355,7 @@ def _collect_daily_hr_targets(
                 "team_id": _safe_int(matchup_ctx.get("team_id")) or _safe_int(context_fields.get("team_id")),
                 "team_side": side,
                 "matchup": matchup,
-                "p_hr_1plus": round(float(hr_prob), 4),
+                "p_hr_1plus": (round(float(hr_prob), 4) if hr_prob is not None else None),
                 "min_prob_threshold": round(float(_hitter_hr_target_min_prob_threshold(support_score, resolved_hr_target_policy)), 4),
                 "hr_support_score": round(float(display_support_score), 1),
                 "hr_support_raw_score": round(float(support_score), 1),
@@ -3355,11 +3368,38 @@ def _collect_daily_hr_targets(
                 "ab_mean": _safe_float(rec.get("ab_mean")),
                 "lineup_order": _safe_int(rec.get("lineup_order")),
                 "lineup_status": context_fields.get("lineup_status"),
-                "source": "hitter_hr_likelihood_topn",
             }
             batter_id = _safe_int(raw_row.get("batter_id")) or _safe_int(context_fields.get("batter_id"))
             if batter_id is not None:
-                candidate["batter_id"] = int(batter_id)
+                candidate_base["batter_id"] = int(batter_id)
+
+            exclusion_reasons = _hitter_hr_target_exclusion_reasons(rec, context_fields, hr_prob, support_score, resolved_hr_target_policy)
+            if exclusion_reasons:
+                primary_reason = _hr_target_exclusion_priority(exclusion_reasons)
+                exclusion_counts[primary_reason] = int(exclusion_counts.get(primary_reason, 0)) + 1
+                prob_gap = None
+                min_prob_threshold = _hitter_hr_target_min_prob_threshold(support_score, resolved_hr_target_policy)
+                if hr_prob is not None:
+                    prob_gap = round(float(min_prob_threshold) - float(hr_prob), 4)
+                support_gap = round(float(resolved_hr_target_policy.get("min_support_score") or _HR_TARGET_MIN_SUPPORT_SCORE) - float(support_score), 1)
+                excluded_rows.append(
+                    {
+                        **candidate_base,
+                        "min_prob_threshold": round(float(min_prob_threshold), 4),
+                        "primary_reason": primary_reason,
+                        "reasons": exclusion_reasons,
+                        "prob_gap": prob_gap,
+                        "support_gap": support_gap,
+                        "near_threshold": bool((prob_gap is not None and prob_gap <= 0.03) or float(support_gap) <= 10.0),
+                        "source": "hitter_hr_likelihood_fallback",
+                    }
+                )
+                continue
+
+            candidate = {
+                **candidate_base,
+                "source": "hitter_hr_likelihood_topn",
+            }
             candidates.append(candidate)
 
         excluded_rows.sort(
@@ -3395,6 +3435,8 @@ def _collect_daily_hr_targets(
                 continue
             team_counts[team_key] += 1
             selected.append(row)
+
+        selected = _backfill_selected_targets(selected, excluded_rows)
 
         for idx, row in enumerate(selected, start=1):
             row["game_rank"] = int(idx)
