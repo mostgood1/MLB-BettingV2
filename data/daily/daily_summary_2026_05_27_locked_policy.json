@@ -1,7 +1,7 @@
 {
   "date": "2026-05-27",
   "season": 2026,
-  "generated_at": "2026-05-26T16:55:32.497180",
+  "generated_at": "2026-05-26T19:36:17.848930",
   "tool": "tools/daily_update_multi_profile.py",
   "selection_source": "_tmp_best_set_selection_holdout13.json",
   "best_selection": null,
@@ -93,10 +93,10 @@
   "profiles": {
     "game_recos": {
       "profile": "game_roi",
-      "out_dir": "data/daily",
-      "summary_path": "data/daily/daily_summary_2026_05_27.json",
-      "sim_dir": "data/daily/sims/2026-05-27",
-      "snapshot_dir": "data/daily/snapshots/2026-05-27",
+      "out_dir": "data\\daily",
+      "summary_path": "data\\daily\\daily_summary_2026_05_27.json",
+      "sim_dir": "data\\daily\\sims\\2026-05-27",
+      "snapshot_dir": "data\\daily\\snapshots\\2026-05-27",
       "extra_args": [
         "--write-derived-artifacts",
         "off",
@@ -104,26 +104,26 @@
         "data/tuning/pitch_model_overrides/_tmp_hr_bbhbp1p04_starterbbhbp1p04.json"
       ],
       "exit_code": 0,
-      "duration_s": 124.611,
+      "duration_s": 269.667,
       "skipped": false
     },
     "pitcher_props_recos": {
       "profile": "pitcher_props",
-      "out_dir": "data/daily_pitcher_props",
-      "summary_path": "data/daily_pitcher_props/daily_summary_2026_05_27.json",
-      "sim_dir": "data/daily_pitcher_props/sims/2026-05-27",
-      "snapshot_dir": "data/daily_pitcher_props/snapshots/2026-05-27",
+      "out_dir": "data\\daily_pitcher_props",
+      "summary_path": "data\\daily_pitcher_props\\daily_summary_2026_05_27.json",
+      "sim_dir": "data\\daily_pitcher_props\\sims\\2026-05-27",
+      "snapshot_dir": "data\\daily_pitcher_props\\snapshots\\2026-05-27",
       "extra_args": [],
       "exit_code": 0,
-      "skipped": true,
-      "skip_reason": "no pitcher prop market entries in data/market/oddsapi/oddsapi_pitcher_props_2026_05_27.json"
+      "duration_s": 474.421,
+      "skipped": false
     },
     "hitter_props_recos": {
       "profile": "hitter_props",
-      "out_dir": "data/daily_hitter_props",
-      "summary_path": "data/daily_hitter_props/daily_summary_2026_05_27.json",
-      "sim_dir": "data/daily_hitter_props/sims/2026-05-27",
-      "snapshot_dir": "data/daily_hitter_props/snapshots/2026-05-27",
+      "out_dir": "data\\daily_hitter_props",
+      "summary_path": "data\\daily_hitter_props\\daily_summary_2026_05_27.json",
+      "sim_dir": "data\\daily_hitter_props\\sims\\2026-05-27",
+      "snapshot_dir": "data\\daily_hitter_props\\snapshots\\2026-05-27",
       "extra_args": [
         "--bip-roe-rate",
         "0.015",
@@ -135,41 +135,39 @@
         "24"
       ],
       "exit_code": 0,
-      "skipped": true,
-      "skip_reason": "no hitter prop market entries in data/market/oddsapi/oddsapi_hitter_props_2026_05_27.json"
+      "duration_s": 360.46,
+      "skipped": false
     }
   },
   "inputs": {
-    "game_lines": "data/market/oddsapi/oddsapi_game_lines_2026_05_27.json",
-    "pitcher_lines": "data/market/oddsapi/oddsapi_pitcher_props_2026_05_27.json",
-    "hitter_lines": "data/market/oddsapi/oddsapi_hitter_props_2026_05_27.json",
-    "so_prob_calibration": "data/tuning/so_calibration/default.json",
-    "outs_prob_calibration": "data/tuning/outs_calibration/default.json"
+    "game_lines": "data\\market\\oddsapi\\oddsapi_game_lines_2026_05_27.json",
+    "pitcher_lines": "data\\market\\oddsapi\\oddsapi_pitcher_props_2026_05_27.json",
+    "hitter_lines": "data\\market\\oddsapi\\oddsapi_hitter_props_2026_05_27.json",
+    "so_prob_calibration": "data\\tuning\\so_calibration\\default.json",
+    "outs_prob_calibration": "data\\tuning\\outs_calibration\\default.json"
   },
   "warnings": [
-    "No game lines entries found in data/market/oddsapi/oddsapi_game_lines_2026_05_27.json",
-    "No pitcher lines entries found in data/market/oddsapi/oddsapi_pitcher_props_2026_05_27.json",
-    "No hitter lines entries found in data/market/oddsapi/oddsapi_hitter_props_2026_05_27.json",
-    "No support-qualified hitter strikeout shadow candidates were published; current hitter sim artifacts may not include strikeout distributions yet."
+    "No support-qualified hitter strikeout shadow candidates were published; current hitter sim artifacts may not include strikeout distributions yet.",
+    "Removed 1 sparse-support official recommendation(s) before final publish"
   ],
   "timings": {
-    "collect_game_candidates_s": 0.025,
-    "collect_pitcher_candidates_s": 0.0,
-    "collect_shadow_pitcher_candidates_s": 0.0,
-    "collect_hitter_candidates_s": 0.0,
-    "collect_shadow_hitter_candidates_s": 0.0,
-    "selection_and_support_s": 0.0,
+    "collect_game_candidates_s": 38.962,
+    "collect_pitcher_candidates_s": 0.371,
+    "collect_shadow_pitcher_candidates_s": 0.148,
+    "collect_hitter_candidates_s": 0.459,
+    "collect_shadow_hitter_candidates_s": 0.237,
+    "selection_and_support_s": 0.001,
     "explanation_diagnostics_s": 0.0,
-    "total_build_s": 0.027
+    "total_build_s": 40.182
   },
   "explanation_diagnostics": {
-    "selected_rows_n": 0,
+    "selected_rows_n": 1,
     "sparse_support_n": 0,
     "sparse_support_rate": 0.0,
     "support_min_reasons": 2,
     "status_counts": {
       "strong": 0,
-      "supported": 0,
+      "supported": 1,
       "thin": 0,
       "none": 0
     },
@@ -186,11 +184,11 @@
         "examples": []
       },
       "ml": {
-        "selected_n": 0,
+        "selected_n": 1,
         "sparse_support_n": 0,
         "status_counts": {
           "strong": 0,
-          "supported": 0,
+          "supported": 1,
           "thin": 0,
           "none": 0
         },
@@ -278,13 +276,13 @@
   },
   "audit_track": {
     "official_card_explanation_support": {
-      "selected_rows_n": 0,
+      "selected_rows_n": 1,
       "sparse_support_n": 0,
       "sparse_support_rate": 0.0,
       "support_min_reasons": 2,
       "status_counts": {
         "strong": 0,
-        "supported": 0,
+        "supported": 1,
         "thin": 0,
         "none": 0
       },
@@ -301,11 +299,11 @@
           "examples": []
         },
         "ml": {
-          "selected_n": 0,
+          "selected_n": 1,
           "sparse_support_n": 0,
           "status_counts": {
             "strong": 0,
-            "supported": 0,
+            "supported": 1,
             "thin": 0,
             "none": 0
           },
@@ -393,8 +391,8 @@
     },
     "selected_support_policy": {
       "support_min_reasons": 2,
-      "removed_sparse_support_n": 0,
-      "replacement_added_n": 0,
+      "removed_sparse_support_n": 1,
+      "replacement_added_n": 1,
       "selection_shortfall_n": 0,
       "markets": {
         "totals": {
@@ -410,12 +408,20 @@
         "ml": {
           "market": "ml",
           "support_min_reasons": 2,
-          "baseline_selected_n": 0,
-          "final_selected_n": 0,
-          "removed_sparse_support_n": 0,
-          "replacement_added_n": 0,
+          "baseline_selected_n": 1,
+          "final_selected_n": 1,
+          "removed_sparse_support_n": 1,
+          "replacement_added_n": 1,
           "selection_shortfall_n": 0,
-          "removed_examples": []
+          "removed_examples": [
+            {
+              "subject": "NYY @ KC",
+              "selection": "away",
+              "market": "ml",
+              "baseball_reasons_n": 0,
+              "reason_summary": "The model lands on the away side in 66.8% of sims, while the market is pricing it closer to 58.6%. NYY wins this matchup in about 66.8% of model runs."
+            }
+          ]
         },
         "pitcher_props": {
           "market": "pitcher_props",
@@ -608,18 +614,63 @@
   },
   "markets": {
     "totals": {
-      "raw_candidates_n": 0,
+      "raw_candidates_n": 13,
       "selected_n": 0,
       "cap": 0,
       "stake_u": 1.0,
       "recommendations": []
     },
     "ml": {
-      "raw_candidates_n": 0,
-      "selected_n": 0,
+      "raw_candidates_n": 13,
+      "selected_n": 1,
       "cap": 1,
       "stake_u": 1.0,
-      "recommendations": []
+      "recommendations": [
+        {
+          "date": "2026-05-27",
+          "game_pk": 825003,
+          "away": "Seattle Mariners",
+          "home": "Athletics",
+          "away_abbr": "SEA",
+          "home_abbr": "ATH",
+          "double_header": "N",
+          "game_number": 1,
+          "event_id": "adfc9cd4529fc7b4ed6fb31e0e3d714c",
+          "commence_time": "2026-05-27T19:06:00Z",
+          "market": "ml",
+          "selection": "home",
+          "edge": 0.1576567324679315,
+          "model_prob": 0.607,
+          "selected_side_model_prob": 0.607,
+          "selected_side_market_prob": 0.4493432675320685,
+          "market_no_vig_prob": 0.4493432675320685,
+          "odds": "+114",
+          "stake_u": 1.0,
+          "sim_sample_size": 1000,
+          "baseball_reasons": [
+            "Across his last 5 starts, Jeffrey Springs has allowed about 2.6 earned runs per outing.",
+            "The underlying contact-quality profile is keeping damage a bit lighter than baseline, which supports the run suppression case."
+          ],
+          "explanation_diagnostic": {
+            "status": "supported",
+            "flag_sparse_support": false,
+            "support_min_reasons": 2,
+            "baseball_reasons_n": 2,
+            "reason_sentences_n": 4,
+            "market": "ml",
+            "subject": "SEA @ ATH",
+            "supporting_reasons": [
+              "Across his last 5 starts, Jeffrey Springs has allowed about 2.6 earned runs per outing.",
+              "The underlying contact-quality profile is keeping damage a bit lighter than baseline, which supports the run suppression case."
+            ]
+          },
+          "reasons": [
+            "The model lands on the home side in 60.7% of sims, while the market is pricing it closer to 44.9%. Across his last 5 starts, Jeffrey Springs has allowed about 2.6 earned runs per outing. The underlying contact-quality profile is keeping damage a bit lighter than baseline, which supports the run suppression case. ATH wins this matchup in about 60.7% of model runs."
+          ],
+          "reason_summary": "The model lands on the home side in 60.7% of sims, while the market is pricing it closer to 44.9%. Across his last 5 starts, Jeffrey Springs has allowed about 2.6 earned runs per outing. The underlying contact-quality profile is keeping damage a bit lighter than baseline, which supports the run suppression case. ATH wins this matchup in about 60.7% of model runs.",
+          "rank": 1
+        }
+      ]
     },
     "pitcher_props": {
       "raw_candidates_n": 0,
@@ -739,7 +790,7 @@
     }
   },
   "combined": {
-    "raw_candidates_n": 0,
-    "selected_n": 0
+    "raw_candidates_n": 26,
+    "selected_n": 1
   }
 }
