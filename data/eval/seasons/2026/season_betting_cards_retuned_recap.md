@@ -1,7 +1,7 @@
 # MLB 2026 Betting Card Recap
 
 - Season: 2026
-- Generated: 2026-06-06T15:44:45.760275
+- Generated: 2026-06-07T15:46:06.430132
 - Batch: data/eval/batches/season_2026_ui_daily_live
 - Cards Dir: data/eval/seasons/2026/locked_cards_retuned
 - Source Mode: canonical_daily_locked_policy
@@ -10,29 +10,29 @@
 ## Overall
 
 - Cards: 2 total, 1 with bets, 1 without bets
-- Recommendations: selected 13 / settled 13 / unresolved 0
-- Combined ROI: -0.1955 on 7.5u staked, profit -1.4659u (6-7)
-- Hitter Props ROI: -0.2110 on 5.5u staked, profit -1.1603u
-- Daily Units: mean -0.7329, median -0.7329, std 0.7329, best 2026-06-06 (0.0000u), worst 2026-06-05 (-1.4659u)
+- Recommendations: selected 13 / settled 12 / unresolved 1
+- Combined ROI: -0.2617 on 7.0u staked, profit -1.8316u (6-6)
+- Hitter Props ROI: 0.0337 on 5.0u staked, profit 0.1684u
+- Daily Units: mean -0.9158, median -0.9158, std 0.9158, best 2026-06-07 (0.0000u), worst 2026-06-06 (-1.8316u)
 
 ## Market Breakdown
 
 | Market | Bets | Stake (u) | Profit (u) | ROI |
 | --- | ---: | ---: | ---: | ---: |
-| Combined | 13 | 7.5000 | -1.4659 | -0.1955 |
+| Combined | 12 | 7.0000 | -1.8316 | -0.2617 |
 | Totals | 0 | 0.0000 | 0.0000 | n/a |
-| Moneyline | 1 | 1.0000 | 0.6944 | 0.6944 |
+| Moneyline | 1 | 1.0000 | -1.0000 | -1.0000 |
 | Pitcher Props | 1 | 1.0000 | -1.0000 | -1.0000 |
-| Hitter Props | 11 | 5.5000 | -1.1603 | -0.2110 |
+| Hitter Props | 10 | 5.0000 | 0.1684 | 0.0337 |
 | Hitter HR | 0 | 0.0000 | 0.0000 | n/a |
-| Hitter Hits | 4 | 2.0000 | -0.2803 | -0.1401 |
+| Hitter Hits | 4 | 2.0000 | 0.6168 | 0.3084 |
 | Hitter H+R+R | 0 | 0.0000 | 0.0000 | n/a |
-| Hitter TB | 6 | 3.0000 | -1.2371 | -0.4124 |
-| Hitter Runs | 1 | 0.5000 | 0.3571 | 0.7142 |
+| Hitter TB | 5 | 2.5000 | 0.0516 | 0.0206 |
+| Hitter Runs | 1 | 0.5000 | -0.5000 | -1.0000 |
 | Hitter RBIs | 0 | 0.0000 | 0.0000 | n/a |
 
 ## Monthly Breakdown
 
 | Month | Cards | Bets | Profit (u) | ROI | Hitter ROI |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Jun 2026 | 2 | 13 | -1.4659 | -0.1955 | -0.2110 |
+| Jun 2026 | 2 | 12 | -1.8316 | -0.2617 | 0.0337 |
