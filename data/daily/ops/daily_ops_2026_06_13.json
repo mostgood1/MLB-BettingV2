@@ -1,17 +1,17 @@
 {
   "tool": "tools/daily_update.py",
   "workflow": "ui-daily",
-  "generated_at": "2026-06-11T16:55:00.948121",
+  "generated_at": "2026-06-12T16:40:36.526055",
   "date": "2026-06-13",
   "season": 2026,
   "run_lock": {
     "status": "acquired",
     "path": "data/runtime/locks/daily_update_ui-daily_2026_2026-06-13_bb9ef09c8579.lock",
-    "pid": 3616,
-    "created_at": "2026-06-11T16:55:00.947918"
+    "pid": 3647,
+    "created_at": "2026-06-12T16:40:36.525861"
   },
   "seed": {
-    "value": 1536641764,
+    "value": 516118223,
     "source": "auto_future_date",
     "explicit_cli": false
   },
@@ -87,7 +87,9 @@
       "readout": {
         "headline": "No prior-day live-lens activity found for 2026-06-12.",
         "learnings": [],
-        "performance": []
+        "performance": [
+          "Render live-lens report processed 15 games in 3539.2 ms with 0 ms spent refreshing markets."
+        ]
       }
     },
     "live_pitcher_corrections": {
@@ -96,7 +98,7 @@
       "artifacts": {
         "outs": {
           "command": [
-            "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python3.11",
+            "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python",
             "/home/runner/work/MLB-BettingV2/MLB-BettingV2/tools/tune/fit_live_pitcher_outs_correction.py",
             "--source",
             "render-sync",
@@ -113,28 +115,28 @@
           ],
           "artifact_path": "data/eval/live_pitcher_outs_correction.json",
           "exit_code": 0,
-          "rows": 27,
+          "rows": 7,
           "date_window": {
-            "min_date": "2026-06-10",
-            "max_date": "2026-06-10"
+            "min_date": "2026-06-11",
+            "max_date": "2026-06-11"
           },
           "training_metrics": {
-            "baseline_mae": 10.036,
-            "baseline_rmse": 11.447,
-            "corrected_mae": 3.121,
-            "corrected_rmse": 3.783
+            "baseline_mae": 10.872,
+            "baseline_rmse": 12.826,
+            "corrected_mae": 3.61,
+            "corrected_rmse": 4.922
           },
           "leave_one_out_metrics": {
-            "baseline_mae": 10.036,
-            "baseline_rmse": 11.447,
-            "corrected_mae": 4.052,
-            "corrected_rmse": 4.948
+            "baseline_mae": 10.872,
+            "baseline_rmse": 12.826,
+            "corrected_mae": 6.297,
+            "corrected_rmse": 7.746
           },
           "status": "ok"
         },
         "strikeouts": {
           "command": [
-            "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python3.11",
+            "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python",
             "/home/runner/work/MLB-BettingV2/MLB-BettingV2/tools/tune/fit_live_pitcher_strikeouts_correction.py",
             "--source",
             "render-sync",
@@ -151,22 +153,22 @@
           ],
           "artifact_path": "data/eval/live_pitcher_strikeouts_correction.json",
           "exit_code": 0,
-          "rows": 32,
+          "rows": 9,
           "date_window": {
-            "min_date": "2026-06-10",
-            "max_date": "2026-06-10"
+            "min_date": "2026-06-11",
+            "max_date": "2026-06-11"
           },
           "training_metrics": {
-            "baseline_mae": 1.129,
-            "baseline_rmse": 1.525,
-            "corrected_mae": 0.66,
-            "corrected_rmse": 0.925
+            "baseline_mae": 1.479,
+            "baseline_rmse": 1.907,
+            "corrected_mae": 0.143,
+            "corrected_rmse": 0.171
           },
           "leave_one_out_metrics": {
-            "baseline_mae": 1.129,
-            "baseline_rmse": 1.525,
-            "corrected_mae": 0.862,
-            "corrected_rmse": 1.261
+            "baseline_mae": 1.479,
+            "baseline_rmse": 1.907,
+            "corrected_mae": 0.429,
+            "corrected_rmse": 0.591
           },
           "status": "ok"
         }
@@ -191,15 +193,15 @@
       "artifact_path": "data/daily/top_props/daily_top_props_2026_06_12.json",
       "group_summaries": {
         "pitcher": {
-          "found": false,
-          "candidateCount": 0,
-          "displayedCount": 0,
+          "found": true,
+          "candidateCount": 119,
+          "displayedCount": 119,
           "sectionCount": 5
         },
         "hitter": {
-          "found": false,
-          "candidateCount": 0,
-          "displayedCount": 0,
+          "found": true,
+          "candidateCount": 1685,
+          "displayedCount": 1685,
           "sectionCount": 7
         }
       }
@@ -240,13 +242,29 @@
     "current_day_overwrite_prep": {
       "status": "ok",
       "date": "2026-06-13",
-      "removed": [],
-      "removed_count": 0
+      "removed": [
+        "data/daily/daily_summary_2026_06_13.json",
+        "data/daily/daily_summary_2026_06_13_profile_bundle.json",
+        "data/daily/daily_summary_2026_06_13_locked_policy.json",
+        "data/daily/daily_summary_2026_06_13_hr_targets.json",
+        "data/daily/sims/2026-06-13",
+        "data/daily/snapshots/2026-06-13",
+        "data/daily/top_props/daily_top_props_2026_06_13.json",
+        "data/daily/ladders/daily_ladders_2026_06_13.json",
+        "data/daily/ladders/daily_ladder_audit_2026_06_13.json",
+        "data/daily/season_frontend/season_manifest_2026_2026_06_13.json",
+        "data/daily/season_frontend/season_day_2026_2026_06_13_retuned.json",
+        "data/daily/season_frontend/season_betting_day_2026_2026_06_13_retuned.json",
+        "data/daily/season_frontend/season_official_betting_day_2026_2026_06_13_retuned.json",
+        "data/daily_pitcher_props/snapshots/2026-06-13",
+        "data/daily_hitter_props/snapshots/2026-06-13"
+      ],
+      "removed_count": 15
     },
     "current_day_multi_profile": {
       "status": "ok",
       "command": [
-        "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python3.11",
+        "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python",
         "/home/runner/work/MLB-BettingV2/MLB-BettingV2/tools/daily_update_multi_profile.py",
         "--date",
         "2026-06-13",
@@ -262,12 +280,6 @@
         "/home/runner/work/MLB-BettingV2/MLB-BettingV2/data/daily_hitter_props",
         "--refresh-season-manifests",
         "off",
-        "--build-next-day",
-        "off",
-        "--validate-render-frontend",
-        "off",
-        "--refresh-season-manifests",
-        "off",
         "--sims",
         "1000",
         "--workers",
@@ -279,12 +291,12 @@
         "--write-roster-artifacts",
         "on",
         "--seed",
-        "1536641764",
+        "516118223",
         "--seed-source",
         "auto_future_date"
       ],
       "seed": {
-        "value": 1536641764,
+        "value": 516118223,
         "source": "auto_future_date",
         "explicit_cli": false
       },
@@ -712,9 +724,24 @@
       "rfi_targets_rows": 1
     },
     "hr_target_history_reconcile": {
-      "status": "skipped",
+      "status": "ok",
       "season": 2026,
-      "reason": "reconcile_hr_target_history=off"
+      "command": [
+        "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python",
+        "/home/runner/work/MLB-BettingV2/MLB-BettingV2/tools/eval/reconcile_hr_target_artifacts.py",
+        "--season",
+        "2026",
+        "--write",
+        "on",
+        "--report-out",
+        "/home/runner/work/MLB-BettingV2/MLB-BettingV2/data/daily/season_frontend/hr_target_reconcile_2026.json"
+      ],
+      "report_path": "data/daily/season_frontend/hr_target_reconcile_2026.json",
+      "exit_code": 0,
+      "report_exists": true,
+      "dates_checked": 82,
+      "dates_changed": 0,
+      "changed_dates": []
     },
     "current_day_top_props_artifact": {
       "status": "ok",
@@ -780,52 +807,52 @@
         "hitter": {
           "hits": {
             "found": true,
-            "rowCount": 389,
+            "rowCount": 390,
             "error": null
           },
           "hits_runs_rbis": {
             "found": true,
-            "rowCount": 389,
+            "rowCount": 390,
             "error": null
           },
           "home_runs": {
             "found": true,
-            "rowCount": 389,
+            "rowCount": 390,
             "error": null
           },
           "total_bases": {
             "found": true,
-            "rowCount": 389,
+            "rowCount": 390,
             "error": null
           },
           "runs": {
             "found": true,
-            "rowCount": 389,
+            "rowCount": 390,
             "error": null
           },
           "rbi": {
             "found": true,
-            "rowCount": 389,
+            "rowCount": 390,
             "error": null
           },
           "hitter_strikeouts": {
             "found": true,
-            "rowCount": 389,
+            "rowCount": 390,
             "error": null
           },
           "doubles": {
             "found": true,
-            "rowCount": 389,
+            "rowCount": 390,
             "error": null
           },
           "triples": {
             "found": true,
-            "rowCount": 389,
+            "rowCount": 390,
             "error": null
           },
           "stolen_bases": {
             "found": true,
-            "rowCount": 389,
+            "rowCount": 390,
             "error": null
           }
         }
@@ -885,9 +912,52 @@
       }
     },
     "next_day_forward_build": {
-      "status": "skipped",
+      "status": "ok",
       "date": "2026-06-14",
-      "reason": "build_next_day=off"
+      "season": 2026,
+      "command": [
+        "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python3.11",
+        "/home/runner/work/MLB-BettingV2/MLB-BettingV2/tools/daily_update.py",
+        "--workflow",
+        "ui-daily",
+        "--date",
+        "2026-06-14",
+        "--season",
+        "2026",
+        "--reconcile-date",
+        "2026-06-13",
+        "--refresh-prior-feed-live",
+        "off",
+        "--settle-prior-card",
+        "off",
+        "--refresh-season-manifests",
+        "off",
+        "--reconcile-hr-target-history",
+        "off",
+        "--git-push",
+        "off",
+        "--build-next-day",
+        "off",
+        "--validate-render-frontend",
+        "off",
+        "--refresh-season-manifests",
+        "off",
+        "--sims",
+        "1000",
+        "--workers",
+        "4",
+        "--pbp",
+        "off",
+        "--use-roster-artifacts",
+        "on",
+        "--write-roster-artifacts",
+        "on",
+        "--seed",
+        "516118223",
+        "--seed-source",
+        "auto_future_date"
+      ],
+      "exit_code": 0
     },
     "current_day_roster_snapshot": {
       "status": "ok",
@@ -904,7 +974,7 @@
       "summary": {
         "games": 15,
         "projected_teams": 30,
-        "adjusted_teams": 0,
+        "adjusted_teams": 1,
         "partial_teams": 0,
         "fallback_pool_teams": 0,
         "confirmed_teams": 0,
@@ -914,7 +984,7 @@
         "exact_match_teams": 0,
         "true_mismatch_teams": 0
       },
-      "adjusted_teams": 0,
+      "adjusted_teams": 1,
       "partial_teams": 0,
       "fallback_pool_teams": 0
     },
@@ -927,11 +997,12 @@
       "status": "skipped",
       "date": "2026-06-13",
       "season": 2026,
-      "reason": "validate_render_frontend=off"
+      "reason": "render validation skipped because no published commit is available"
     }
   },
   "notes": [
-    "current-day official betting card day artifact has no selected rows yet"
+    "current-day official betting card day artifact has no selected rows yet",
+    "current-day lineup validation adjusted projected lineups for 1 team(s)"
   ],
   "warnings": [
     "current-day OddsAPI ingest captured no game lines",
@@ -941,7 +1012,7 @@
   "validation_errors": [],
   "errors": [],
   "next_day": {
-    "requested": false,
+    "requested": true,
     "date": "2026-06-14",
     "season": 2026
   },
