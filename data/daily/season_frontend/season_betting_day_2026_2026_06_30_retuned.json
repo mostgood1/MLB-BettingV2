@@ -7,13 +7,16 @@
   },
   "found": true,
   "games": {},
-  "source_kind": "canonical_daily_fallback",
+  "source_kind": "canonical_daily_override",
   "manifest_source": "data/eval/seasons/2026/season_betting_cards_retuned_manifest.json",
   "card_source": "data/daily/daily_summary_2026_06_30_locked_policy.json",
   "summary": {
     "date": "2026-06-30",
     "month": "2026-06",
     "card_path": "data/daily/daily_summary_2026_06_30_locked_policy.json",
+    "report_path": null,
+    "payload_path": "data/eval/seasons/2026/betting_day_payloads_retuned/season_betting_day_2026_06_30.json",
+    "cap_profile": "nototals_p1_tbheavy11_r1_nohr",
     "selected_counts": {
       "totals": 0,
       "ml": 0,
@@ -37,10 +40,16 @@
         "roi": null
       }
     },
-    "profit_u": 0.0,
-    "roi": null,
     "settled_n": 0,
-    "unresolved_n": 0
+    "unresolved_n": 0,
+    "warnings": [
+      "No game lines entries found in data/market/oddsapi/oddsapi_game_lines_2026_06_30.json",
+      "No pitcher lines entries found in data/market/oddsapi/oddsapi_pitcher_props_2026_06_30.json",
+      "No hitter lines entries found in data/market/oddsapi/oddsapi_hitter_props_2026_06_30.json",
+      "No support-qualified hitter strikeout shadow candidates were published; current hitter sim artifacts may not include strikeout distributions yet."
+    ],
+    "profit_u": 0.0,
+    "roi": null
   },
   "cap_profile": "nototals_p1_tbheavy11_r1_nohr",
   "selected_counts": {
@@ -115,7 +124,7 @@
   "card": {
     "date": "2026-06-30",
     "season": 2026,
-    "generated_at": "2026-06-29T16:47:05.326341",
+    "generated_at": "2026-06-30T16:23:12.609885",
     "tool": "tools/daily_update_multi_profile.py",
     "selection_source": "_tmp_best_set_selection_holdout13.json",
     "best_selection": null,
@@ -218,7 +227,7 @@
           "data/tuning/pitch_model_overrides/_tmp_hr_bbhbp1p04_starterbbhbp1p04.json"
         ],
         "exit_code": 0,
-        "duration_s": 129.055,
+        "duration_s": 843.513,
         "skipped": false
       },
       "pitcher_props_recos": {
@@ -261,20 +270,20 @@
       "outs_prob_calibration": "data/tuning/outs_calibration/default.json"
     },
     "warnings": [
-      "No game lines entries found in data/market/oddsapi/oddsapi_game_lines_2026_06_30.json",
-      "No pitcher lines entries found in data/market/oddsapi/oddsapi_pitcher_props_2026_06_30.json",
-      "No hitter lines entries found in data/market/oddsapi/oddsapi_hitter_props_2026_06_30.json",
+      "Missing game lines: data/market/oddsapi/oddsapi_game_lines_2026_06_30.json",
+      "Missing pitcher lines: data/market/oddsapi/oddsapi_pitcher_props_2026_06_30.json",
+      "Missing hitter lines: data/market/oddsapi/oddsapi_hitter_props_2026_06_30.json",
       "No support-qualified hitter strikeout shadow candidates were published; current hitter sim artifacts may not include strikeout distributions yet."
     ],
     "timings": {
-      "collect_game_candidates_s": 0.025,
+      "collect_game_candidates_s": 0.0,
       "collect_pitcher_candidates_s": 0.0,
       "collect_shadow_pitcher_candidates_s": 0.0,
       "collect_hitter_candidates_s": 0.0,
       "collect_shadow_hitter_candidates_s": 0.0,
       "selection_and_support_s": 0.0,
       "explanation_diagnostics_s": 0.0,
-      "total_build_s": 0.026
+      "total_build_s": 0.001
     },
     "explanation_diagnostics": {
       "selected_rows_n": 0,
