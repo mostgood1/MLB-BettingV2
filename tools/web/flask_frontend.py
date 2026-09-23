@@ -16812,6 +16812,12 @@ def _normalize_live_lens_live_prop_row(row: Dict[str, Any], snapshot: Optional[D
         "playerName": _prop_owner_name(row),
         "teamSide": row.get("team_side"),
         "selection": row.get("selection"),
+        # Market identity travels on the row, not only inside the transient
+        # dict handed to `_prop_result_state` below. Consumers key live prop
+        # rows on (player, market, line); without these two the market half
+        # is always empty and the key cannot be built at all.
+        "market": row.get("market"),
+        "prop": row.get("prop"),
         "line": market_line,
         "actual": actual_value,
         "modelMean": model_mean,
