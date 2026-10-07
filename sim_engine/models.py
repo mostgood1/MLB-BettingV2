@@ -420,9 +420,16 @@ class GameConfig:
     bip_baserunning: bool = True
     # Tuning knobs for the batted-ball-informed OUT logic.
     # These are intentionally simple (global) until we model speed/arm/depth.
-    bip_dp_rate: float = 0.06
-    bip_sf_rate_flypop: float = 0.48
-    bip_sf_rate_line: float = 0.36
+    # 2026-10-07 (lane mlb-combined-calibration): the bip_* / sb_* defaults below are the
+    # combined-calibration values -- MEASURED from 2026 StatsAPI play-by-play (scripts/
+    # mlb_dp_advancement_rates.py, mlb_steal_rate_calibration.py) or FITTED (bip_dp_rate) --
+    # shipped by logged user override of one guard (see .syndicate/lanes.md).
+    bip_dp_rate: float = 0.30
+    bip_sf_rate_flypop: float = 0.750
+    bip_sf_rate_line: float = 0.657
+    # Popups almost never score a runner from 3rd (2026 pbp: 1/54) while fly balls
+    # do (102/136). None = popups share bip_sf_rate_flypop, the behaviour before 2026-10-06.
+    bip_sf_rate_pop: Optional[float] = 0.019
     # Tuning knobs for the batted-ball-informed HIT baserunning logic.
     # These scale the probabilities that runners score on singles/doubles.
     # 1.0 = baseline behavior.
@@ -432,10 +439,36 @@ class GameConfig:
     bip_ground_rbi_out_rate: float = 0.18
     bip_out_2b_to_3b_rate: float = 0.24
     bip_out_1b_to_2b_rate: float = 0.14
-    bip_misc_advance_pitch_rate: float = 0.004
+    bip_misc_advance_pitch_rate: float = 0.00733
     bip_roe_rate: float = 0.012
-    bip_fc_rate: float = 0.04
+    # Per-trajectory reached-on-error rates. None = bip_roe_rate x the fixed trajectory
+    # multipliers in simulate._roe_reach_rate (the behaviour before 2026-10-06). Measured
+    # 2026 pbp: ground 0.028, line 0.006, fly+pop 0.003 -- errors concentrate on grounders.
+    bip_roe_rate_ground: Optional[float] = 0.0283
+    bip_roe_rate_line: Optional[float] = 0.0057
+    bip_roe_rate_air: Optional[float] = 0.0029
+    # Stolen-base calibration. The roster attempt rate is (SB+CS) per time on base, but
+    # the sim draws it before EVERY PA the runner sits on 1B, so it over-attempts.
+    # Measured on 2026 pbp against the profile rates (scripts/mlb_steal_rate_calibration.py).
+    # 1.0 = no change (the behaviour before 2026-10-06).
+    sb_attempt_mult: float = 0.689
+    sb_success_mult: float = 0.954
+    # Steals of THIRD (runner on 2B, 3B empty, <= 1 out), keyed off the same runner
+    # rates. 0.0 = no steals of third (the behaviour before 2026-10-06, no RNG draw).
+    # Measured 2026 pbp: 25 attempts in 1763 opportunities -> 0.144 x the profile rate.
+    sb3_attempt_mult: float = 0.144
+    sb3_success_mult: float = 0.997
+    # Double steal: on a steal-of-third attempt with a runner on 1B, the trailer goes
+    # with it with this prob (2026 pbp: 11/16). 0.0 = he does not (no RNG draw).
+    sb_double_steal_trail_prob: float = 0.6875
+    bip_fc_rate: float = 0.484
     bip_fc_runner_on_3b_score_rate: float = 0.0
+    # On a double play with 0 outs before it, real runners do not hold: the runner on
+    # 2nd usually takes 3rd and the runner on 3rd usually scores (no RBI). Rates are
+    # MEASURED from StatsAPI play-by-play (scripts/mlb_dp_advancement_rates.py), not
+    # fitted. 0.0 = runners hold, the behaviour before 2026-10-06.
+    bip_dp_r2_to_3b_rate: float = 0.979
+    bip_dp_r3_scores_rate: float = 1.0
     # Optional: sample per-game pitcher rates (K/BB/HBP/HR/in-play hit).
     # This injects "today" uncertainty while keeping within-game consistency.
     pitcher_rate_sampling: bool = True
