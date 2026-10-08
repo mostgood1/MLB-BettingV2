@@ -4411,6 +4411,9 @@ def _sim_many(
                 "hits_1plus": ("p_h_1plus", "H", "h_mean"),
                 "hits_2plus": ("p_h_2plus", "H", "h_mean"),
                 "hits_3plus": ("p_h_3plus", "H", "h_mean"),
+                # The 0.5 line's rung: counted by `_inc_ge_thresholds` (1..5) but never
+                # written, so every H+R+RBI 0.5 prop had no projection downstream.
+                "hits_runs_rbis_1plus": ("p_hrr_1plus", "H+R+RBI", "hrr_mean"),
                 "hits_runs_rbis_2plus": ("p_hrr_2plus", "H+R+RBI", "hrr_mean"),
                 "hits_runs_rbis_3plus": ("p_hrr_3plus", "H+R+RBI", "hrr_mean"),
                 "hits_runs_rbis_4plus": ("p_hrr_4plus", "H+R+RBI", "hrr_mean"),
