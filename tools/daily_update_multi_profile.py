@@ -5468,8 +5468,13 @@ def main() -> int:
     # Profile default knobs.
     ap.add_argument(
         "--game-pitch-model-overrides",
-        default="data/tuning/pitch_model_overrides/_tmp_hr_bbhbp1p04_starterbbhbp1p04.json",
-        help="Pitch-model override for the game-ROI profile (set to 'off' to disable)",
+        # "off" = pass no flag, so daily_update's forward-tuning default applies (the same
+        # calibrated file the props profiles run). The previous default pointed at
+        # `_tmp_hr_bbhbp1p04_starterbbhbp1p04.json`, which never existed: `_load_jsonish`
+        # returned None and the explicit flag suppressed the forward default, so game
+        # lines ran PitchModelConfig class defaults.
+        default="off",
+        help="Pitch-model override for the game-ROI profile (default off = forward-tuning default)",
     )
     ap.add_argument(
         "--pitcher-pitch-model-overrides",
