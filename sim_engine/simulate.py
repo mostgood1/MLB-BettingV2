@@ -1510,6 +1510,18 @@ def _select_pitcher_v2(roster: TeamRoster, state: GameState, rng: random.Random,
     starter_leash_lev_max = _clamp01(_ov_f("starter_leash_lev_max", 1.0))
     starter_leash_runner_max = _clamp01(_ov_f("starter_leash_runner_max", 1.0))
     starter_leash_tto_max = max(0.0, _ov_f("starter_leash_tto_max", 99.0))
+    # SHELLED HOOK. The pull decision had no channel for how the starter is
+    # PITCHING: inside the leash he stayed in unless the pitch count was extreme,
+    # and a big deficit (`blowout`) made a pull LESS likely. Measured on 4,170
+    # real 2026 starts: the <=9-out exit rate is 4.9% at 2-3 runs allowed and
+    # 16.3% at 6+, and 41% of early exits allowed 4+ runs; a replay of the
+    # engine gives 1.8% early exits against 9.0% actual.
+    # While the starter is still in, the batting team's score IS the runs he has
+    # allowed. At `starter_shell_runs_start` runs the leash breaks, and each run
+    # from there adds `starter_shell_runs_weight` to the pull logit. Defaults
+    # (99, 0) are a byte-for-byte no-op: no extra rng draws, identical branches.
+    starter_shell_runs_start = max(0, _ov_i("starter_shell_runs_start", 99))
+    starter_shell_runs_weight = max(0.0, _ov_f("starter_shell_runs_weight", 0.0))
     # Promoted default: rare large negative hook shift to prevent pathological
     # overconfidence in starter outs-at-line.
     starter_short_start_prob = _clamp01(_ov_f("starter_short_start_prob", 0.06))
@@ -1626,6 +1638,9 @@ def _select_pitcher_v2(roster: TeamRoster, state: GameState, rng: random.Random,
             matchup_hook_delta = 0.75 * float(raw_matchup_hook_delta)
         eff_hook = int(_clamp(float(eff_hook) + float(matchup_hook_delta), 45.0, 120.0))
 
+        runs_allowed = int(state.away_score if state.top else state.home_score)
+        shelled = runs_allowed >= int(starter_shell_runs_start)
+
         # Keep starter early unless extreme. Allow a "leash break" in high-pressure spots
         # (high leverage, runners, or 3rd time through) via tuning overrides.
         if (
@@ -1635,6 +1650,7 @@ def _select_pitcher_v2(roster: TeamRoster, state: GameState, rng: random.Random,
             and float(lev) < float(starter_leash_lev_max)
             and float(runner_pressure) < float(starter_leash_runner_max)
             and float(tto) < float(starter_leash_tto_max)
+            and not shelled
         ):
             state.current_pitcher_by_team[team_id] = int(current)
             return int(current)
@@ -1650,6 +1666,8 @@ def _select_pitcher_v2(roster: TeamRoster, state: GameState, rng: random.Random,
         x += float(matchup_hook.get("pull_delta", 0.0) or 0.0)
         if blowout:
             x -= 0.8  # leave him in during blowouts
+        if shelled:
+            x += float(starter_shell_runs_weight) * float(runs_allowed - int(starter_shell_runs_start) + 1)
 
         p_pull = _clamp01(_sigmoid(x) - float(starter_pull_bias_eff))
 
@@ -1658,7 +1676,7 @@ def _select_pitcher_v2(roster: TeamRoster, state: GameState, rng: random.Random,
             p_pull = 1.0
 
         # Mid-inning: be more conservative unless there's pressure.
-        if outs > 0 and lev < 0.65 and runner_pressure < 0.55 and pc < eff_hook + 18:
+        if outs > 0 and lev < 0.65 and runner_pressure < 0.55 and pc < eff_hook + 18 and not shelled:
             p_pull = 0.0
 
         if rng.random() < p_pull:
